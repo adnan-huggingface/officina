@@ -9,10 +9,24 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[-]` deferred
 
 ## Current state
 
-**Chunk:** C0 — toolchain + workspace scaffold
-**Status:** in progress
-**Handoff note:** Rust 1.97.1 (`x86_64-pc-windows-gnu`) installing. No workspace yet.
-Next action: scaffold the cargo workspace per DESIGN.md §2 and get a window on screen.
+**Chunk:** C2 — fidelity harness (C0 and C1 done)
+**Status:** harness built; **blocked on corpus**
+**Handoff note:**
+
+- Rust 1.97.1 `x86_64-pc-windows-gnu` installed at `~/.cargo/bin` (not on PATH —
+  installed with `--no-modify-path`). Links against MSYS2 mingw-w64 GCC 12.1.0,
+  so no Visual Studio is needed.
+- `ooxml` is complete for C1 and C2: 38 tests, clippy clean.
+- `cargo xtask fidelity` runs and correctly **fails** on an empty corpus rather
+  than reporting a vacuous pass.
+- **Next action:** put real Word/Excel documents under `corpus/` (see
+  `corpus/README.md`), then `cargo xtask fidelity` until green. That green is
+  C2's exit criterion and the gate for starting C3.
+- Watch item: `eframe` 0.36 replaced `App::update(ctx)` with `App::ui(&mut Ui)`.
+  Any eframe example found online will be for the older API.
+- Watch item: the `crt-static` rustflag in `.cargo/config.toml` is there to make
+  the exe standalone (requirement 4). It has not yet been verified against the
+  wgpu stack — if linking fails, that flag is the first suspect.
 
 ---
 
@@ -27,18 +41,18 @@ Next action: scaffold the cargo workspace per DESIGN.md §2 and get a window on 
 
 ## Phase 0 — Foundation
 
-- [~] **C0. Toolchain + workspace scaffold**
+- [x] **C0. Toolchain + workspace scaffold**
   Rust stable gnu toolchain, cargo workspace, all crates from DESIGN.md §2 stubbed,
   `cargo xtask` runner, CI-equivalent local check script, empty egui+wgpu window for
   both apps. *Exit: `cargo run -p app-calx` opens a window on Windows.*
 
-- [ ] **C1. OPC container + Preservation Vault**
+- [x] **C1. OPC container + Preservation Vault**
   Zip read/write, `[Content_Types].xml`, relationship graph, part classification
   (modeled/retained/derived), opaque-node capture inside modeled parts.
   *Exit: any .docx or .xlsx opens and re-saves byte-identically (normalized compare).*
   **This is the load-bearing chunk. Everything downstream trusts it.**
 
-- [ ] **C2. Fidelity harness + corpus**
+- [~] **C2. Fidelity harness + corpus**
   `cargo xtask fidelity`, the three checks from DESIGN.md §7, and a starter corpus of
   real Word/Excel documents covering the awkward cases.
   *Exit: harness runs green on C1's round-trip guarantee.*

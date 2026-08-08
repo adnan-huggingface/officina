@@ -5,6 +5,8 @@
 //! Deliberately dependency-free — this is the thing that has to keep working when
 //! the rest of the workspace does not build.
 
+mod fidelity;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
@@ -56,7 +58,14 @@ cargo xtask <command>
 
 fn check() -> Result<(), String> {
     cargo(&["fmt", "--all", "--check"])?;
-    cargo(&["clippy", "--workspace", "--all-targets", "--", "-D", "warnings"])?;
+    cargo(&[
+        "clippy",
+        "--workspace",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings",
+    ])?;
     cargo(&["test", "--workspace"])?;
     Ok(())
 }
@@ -86,10 +95,7 @@ fn install() -> Result<(), String> {
         eprintln!("note: {} is not on your PATH.", bin_dir.display());
         if cfg!(windows) {
             eprintln!("      Add it with:");
-            eprintln!(
-                "        setx PATH \"%PATH%;{}\"",
-                bin_dir.display()
-            );
+            eprintln!("        setx PATH \"%PATH%;{}\"", bin_dir.display());
         } else {
             eprintln!("      Add this to your shell profile:");
             eprintln!("        export PATH=\"$HOME/.local/bin:$PATH\"");
@@ -98,10 +104,24 @@ fn install() -> Result<(), String> {
     Ok(())
 }
 
-fn fidelity(_args: &[String]) -> Result<(), String> {
-    // Lands with chunk C2. Until then this is honestly unimplemented rather than
-    // a green check that means nothing.
-    Err("fidelity harness not implemented yet (chunk C2 — see PROGRESS.md)".into())
+fn fidelity(args: &[String]) -> Result<(), String> {
+    let corpus = match args.first() {
+        Some(p) => PathBuf::from(p),
+        None => workspace_root().join("corpus"),
+    };
+
+    println!("fidelity: no-op round trip over {}", corpus.display());
+    let report = fidelity::run(&corpus)?;
+    if fidelity::print(&report) {
+        Ok(())
+    } else if report.total() == 0 {
+        Err(format!(
+            "corpus at {} is empty — add real .docx/.xlsx files produced by Word and Excel",
+            corpus.display()
+        ))
+    } else {
+        Err("fidelity check failed: the rewrite is not faithful to the original".into())
+    }
 }
 
 fn cargo(args: &[&str]) -> Result<(), String> {
