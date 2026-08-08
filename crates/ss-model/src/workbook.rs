@@ -8,7 +8,7 @@ use crate::store::CellStore;
 use crate::strings::StringTable;
 
 /// A range of cells, inclusive at both ends.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CellRange {
     pub start: CellRef,
     pub end: CellRef,

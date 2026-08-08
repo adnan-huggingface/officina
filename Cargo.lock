@@ -2218,6 +2218,9 @@ version = "0.1.0"
 [[package]]
 name = "ss-formula"
 version = "0.1.0"
+dependencies = [
+ "ss-model",
+]
 
 [[package]]
 name = "ss-model"
