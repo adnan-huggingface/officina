@@ -8,6 +8,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod compare;
 pub mod content_types;
 pub mod error;
 pub mod name;

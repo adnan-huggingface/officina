@@ -8,7 +8,7 @@ use quick_xml::events::BytesStart;
 use quick_xml::XmlVersion;
 
 /// OOXML packages are XML 1.0 throughout; ECMA-376 does not permit 1.1.
-const XML_VERSION: XmlVersion = XmlVersion::Explicit1_0;
+pub(crate) const XML_VERSION: XmlVersion = XmlVersion::Explicit1_0;
 
 /// Strips any namespace prefix from a qualified name.
 fn strip_prefix(qname: &[u8]) -> &[u8] {
