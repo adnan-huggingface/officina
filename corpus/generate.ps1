@@ -42,12 +42,23 @@
 
 [CmdletBinding()]
 param(
-    [string]$OutDir = (Join-Path $PSScriptRoot 'corpus-out'),
+    [string]$OutDir,
     [switch]$NoZip,
     [switch]$SkipPreflight
 )
 
 $ErrorActionPreference = 'Stop'
+
+# `$PSScriptRoot` is empty under some invocation paths, which turned into an
+# unhelpful "cannot bind argument to parameter 'Path'" from Join-Path before the
+# script had run a single line. Resolved here, with the current directory as the
+# fallback, rather than in the param block where it cannot be checked.
+if (-not $OutDir) {
+    $base = $PSScriptRoot
+    if (-not $base) { $base = Split-Path -Parent $MyInvocation.MyCommand.Path }
+    if (-not $base) { $base = (Get-Location).Path }
+    $OutDir = Join-Path $base 'corpus-out'
+}
 
 $docxDir = Join-Path $OutDir 'docx'
 $xlsxDir = Join-Path $OutDir 'xlsx'
