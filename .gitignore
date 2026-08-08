@@ -1,0 +1,5 @@
+/target
+**/*.rs.bk
+
+# Fidelity harness scratch output (expected snapshots ARE committed).
+/corpus/**/actual/

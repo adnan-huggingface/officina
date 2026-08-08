@@ -1,0 +1,49 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/ooxml",
+    "crates/ss-model",
+    "crates/ss-formula",
+    "crates/ss-xlsx",
+    "crates/ss-csv",
+    "crates/wp-model",
+    "crates/wp-layout",
+    "crates/wp-docx",
+    "crates/cfb",
+    "crates/ui-kit",
+    "crates/app-calx",
+    "crates/app-scriva",
+    "xtask",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.95"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/adnan/calx-scriva"
+
+[workspace.dependencies]
+ooxml = { path = "crates/ooxml" }
+ss-model = { path = "crates/ss-model" }
+ss-formula = { path = "crates/ss-formula" }
+ss-xlsx = { path = "crates/ss-xlsx" }
+ss-csv = { path = "crates/ss-csv" }
+wp-model = { path = "crates/wp-model" }
+wp-layout = { path = "crates/wp-layout" }
+wp-docx = { path = "crates/wp-docx" }
+cfb-reader = { path = "crates/cfb" }
+ui-kit = { path = "crates/ui-kit" }
+
+# Release profile: optimize for a small, fast, self-contained binary.
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+# Dev builds of dependencies are optimized so that opening a large xlsx while
+# debugging our own code does not take a minute.
+[profile.dev.package."*"]
+opt-level = 2
