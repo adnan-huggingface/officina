@@ -46,11 +46,65 @@ pub(crate) fn rewrite(part: &str, data: &[u8], ctx: &mut Context<'_>) -> Result<
     let mut in_data = false;
     let mut prefix: Vec<u8> = Vec::new();
     let mut next_row = 0u32;
+    // Column styles live in `<cols>`, which is a sibling of `<sheetData>` and
+    // has to be dealt with before it is passed.
+    let mut wrote_cols = false;
+    let mut in_cols = false;
+    // Which columns the file's own `<col>` elements already speak for.
+    let mut covered: std::collections::BTreeSet<u32> = Default::default();
 
     while let Some((event, span)) = splicer.next()? {
         match &event {
+            Event::Start(e) | Event::Empty(e) if local_name(e) == b"cols" => {
+                prefix = prefix_of(e);
+                in_cols = !matches!(event, Event::Empty(_));
+                if in_cols {
+                    out.extend_from_slice(splicer.bytes(span));
+                } else {
+                    // An empty `<cols/>` grows a body when the model has
+                    // column styles to put in it.
+                    let extra = missing_columns(ctx.sheet, &Default::default());
+                    if extra.is_empty() {
+                        out.extend_from_slice(splicer.bytes(span));
+                    } else {
+                        out.extend_from_slice(&retag(e, &[], false));
+                        write_columns(&mut out, &prefix, &extra);
+                        close(&mut out, &prefix, b"cols");
+                    }
+                    wrote_cols = true;
+                }
+                covered.clear();
+            }
+            Event::Start(e) | Event::Empty(e) if in_cols && local_name(e) == b"col" => {
+                write_col(
+                    &mut out,
+                    splicer.bytes(span.clone()),
+                    e,
+                    ctx.sheet,
+                    &mut covered,
+                );
+            }
+            Event::End(e) if end_local_name(e) == b"cols" => {
+                let extra = missing_columns(ctx.sheet, &covered);
+                write_columns(&mut out, &prefix, &extra);
+                out.extend_from_slice(splicer.bytes(span));
+                in_cols = false;
+                wrote_cols = true;
+            }
+
             Event::Start(e) if local_name(e) == b"sheetData" => {
                 prefix = prefix_of(e);
+                // The schema fixes `<cols>` immediately before `<sheetData>`,
+                // so this is the last chance to add one the file left out.
+                if !wrote_cols {
+                    let extra = missing_columns(ctx.sheet, &covered);
+                    if !extra.is_empty() {
+                        open(&mut out, &prefix, b"cols", &[], false);
+                        write_columns(&mut out, &prefix, &extra);
+                        close(&mut out, &prefix, b"cols");
+                    }
+                    wrote_cols = true;
+                }
                 out.extend_from_slice(splicer.bytes(span));
                 in_data = true;
                 next_row = 0;
@@ -58,6 +112,15 @@ pub(crate) fn rewrite(part: &str, data: &[u8], ctx: &mut Context<'_>) -> Result<
 
             Event::Empty(e) if local_name(e) == b"sheetData" => {
                 prefix = prefix_of(e);
+                if !wrote_cols {
+                    let extra = missing_columns(ctx.sheet, &covered);
+                    if !extra.is_empty() {
+                        open(&mut out, &prefix, b"cols", &[], false);
+                        write_columns(&mut out, &prefix, &extra);
+                        close(&mut out, &prefix, b"cols");
+                    }
+                    wrote_cols = true;
+                }
                 if pending.peek().is_none() {
                     out.extend_from_slice(splicer.bytes(span));
                 } else {
@@ -206,7 +269,13 @@ fn write_row(
     // model does not carry and must not delete.
     if !row.geometry_matches(ctx.sheet) {
         sets.extend(geometry_sets(ctx.sheet, row.index));
-        for name in [b"ht".as_slice(), b"customHeight", b"hidden"] {
+        for name in [
+            b"ht".as_slice(),
+            b"customHeight",
+            b"hidden",
+            b"s",
+            b"customFormat",
+        ] {
             if !sets.iter().any(|s| s.name == name) {
                 sets.push(Set::off(name));
             }
@@ -318,13 +387,20 @@ fn parse_spans(text: &str) -> Option<(u32, u32)> {
 
 /// The height attributes the model implies for `row`.
 fn geometry_sets(sheet: &Sheet, row: u32) -> Vec<Set<'static>> {
-    match sheet.row_heights.get(&row) {
+    let mut sets = match sheet.row_heights.get(&row) {
         // Zero is how the reader records a hidden row: a hidden row has no
         // height to speak of.
         Some(h) if *h == 0.0 => vec![Set::to(b"hidden", "1")],
         Some(h) => vec![Set::to(b"ht", h.to_string()), Set::to(b"customHeight", "1")],
         None => Vec::new(),
+    };
+    // A row style needs `customFormat` beside it or Excel ignores the `s`
+    // entirely, which makes a formatted row come back unformatted.
+    if let Some(style) = sheet.row_styles.get(&row) {
+        sets.push(Set::to(b"s", style.0.to_string()));
+        sets.push(Set::to(b"customFormat", "1"));
     }
+    sets
 }
 
 /// One `<c>` element of the file, with the bytes it came from.
@@ -358,6 +434,10 @@ struct FileRow {
     hidden: bool,
     /// The `spans` hint as the file wrote it, one-based.
     spans: Option<(u32, u32)>,
+    /// `s` on the row, but only when `customFormat` says it counts. Without
+    /// that attribute Excel ignores the style, so recording it would make the
+    /// model and the file disagree about a row nobody formatted.
+    style: Option<ss_model::StyleId>,
 }
 
 impl FileRow {
@@ -371,6 +451,13 @@ impl FileRow {
             .unwrap_or(false);
         let spans = raw_attr(&start, b"spans")
             .and_then(|a| parse_spans(&String::from_utf8_lossy(&a.value)));
+        let style = raw_attr(&start, b"customFormat")
+            .and_then(|a| parse_bool(&a.value))
+            .unwrap_or(false)
+            .then(|| raw_attr(&start, b"s").and_then(|a| parse_u32(&a.value)))
+            .flatten()
+            .map(ss_model::StyleId)
+            .filter(|s| *s != ss_model::StyleId::DEFAULT);
         let tail = span.end..span.end;
         FileRow {
             index,
@@ -382,6 +469,7 @@ impl FileRow {
             custom_height,
             hidden,
             spans,
+            style,
         }
     }
 
@@ -395,6 +483,7 @@ impl FileRow {
             None
         };
         stated == sheet.row_heights.get(&self.index).copied()
+            && self.style == sheet.row_styles.get(&self.index).copied()
     }
 }
 
@@ -742,6 +831,129 @@ fn push_inline(out: &mut Vec<u8>, text: &str, prefix: &[u8]) {
     close(out, prefix, b"is");
 }
 
+/// A `<col>` from the file, re-emitted so its span carries the model's styles.
+///
+/// A span whose columns no longer agree is *split* rather than replaced: each
+/// piece is a retag of the original element, so every attribute nobody here
+/// models — `outlineLevel`, `collapsed`, `bestFit`, `phonetic` — goes back
+/// unchanged on each piece.
+fn write_col(
+    out: &mut Vec<u8>,
+    original: &[u8],
+    e: &BytesStart<'_>,
+    sheet: &Sheet,
+    covered: &mut std::collections::BTreeSet<u32>,
+) {
+    let (Some(min), Some(max)) = (
+        raw_attr(e, b"min").and_then(|a| parse_u32(&a.value)),
+        raw_attr(e, b"max").and_then(|a| parse_u32(&a.value)),
+    ) else {
+        out.extend_from_slice(original);
+        return;
+    };
+    if min == 0 || min > max {
+        out.extend_from_slice(original);
+        return;
+    }
+    let file_style = raw_attr(e, b"style")
+        .and_then(|a| parse_u32(&a.value))
+        .unwrap_or(0);
+    // Beyond the limit the reader materializes, the model knows nothing and the
+    // file's own value is the only truth there is.
+    let horizon = max.min(min.saturating_add(1024));
+    for column in min..=horizon {
+        covered.insert(column - 1);
+    }
+
+    let wanted = |column: u32| {
+        sheet
+            .column_styles
+            .get(&(column - 1))
+            .map(|s| s.0)
+            .unwrap_or(0)
+    };
+    if (min..=horizon).all(|c| wanted(c) == file_style) && horizon == max {
+        out.extend_from_slice(original);
+        return;
+    }
+
+    // Split into runs that agree.
+    let mut start = min;
+    while start <= max {
+        let style = if start <= horizon {
+            wanted(start)
+        } else {
+            file_style
+        };
+        let mut end = start;
+        while end < max {
+            let next = end + 1;
+            let next_style = if next <= horizon {
+                wanted(next)
+            } else {
+                file_style
+            };
+            if next_style != style {
+                break;
+            }
+            end = next;
+        }
+        let sets = [
+            Set::to(b"min", start.to_string()),
+            Set::to(b"max", end.to_string()),
+            Set::maybe(b"style", (style != 0).then(|| style.to_string())),
+        ];
+        out.extend_from_slice(&retag(e, &sets, true));
+        start = end + 1;
+    }
+}
+
+/// Column styles the model has that no `<col>` in the file speaks for,
+/// gathered into runs of `(first, last, style)`.
+fn missing_columns(
+    sheet: &Sheet,
+    covered: &std::collections::BTreeSet<u32>,
+) -> Vec<(u32, u32, u32)> {
+    let mut runs: Vec<(u32, u32, u32)> = Vec::new();
+    for (column, style) in sheet
+        .column_styles
+        .iter()
+        .filter(|(c, s)| !covered.contains(c) && **s != ss_model::StyleId::DEFAULT)
+        .map(|(c, s)| (*c, s.0))
+    {
+        match runs.last_mut() {
+            // `column_styles` is a BTreeMap, so this walks in order and a run
+            // only ever grows at its end.
+            Some((_, last, existing)) if *last + 1 == column && *existing == style => {
+                *last = column
+            }
+            _ => runs.push((column, column, style)),
+        }
+    }
+    runs
+}
+
+/// Emits the `<col>` elements for the runs `missing_columns` found.
+fn write_columns(out: &mut Vec<u8>, prefix: &[u8], runs: &[(u32, u32, u32)]) {
+    for (first, last, style) in runs {
+        open(
+            out,
+            prefix,
+            b"col",
+            &[
+                // `min` and `max` are one-based and inclusive at both ends.
+                Set::to(b"min", (first + 1).to_string()),
+                Set::to(b"max", (last + 1).to_string()),
+                Set::to(b"style", style.to_string()),
+                // Excel repairs a `<col>` with no width, so the workbook
+                // default goes out with it.
+                Set::to(b"width", "8.43"),
+            ],
+            true,
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -814,6 +1026,92 @@ mod tests {
         };
         let out = rewrite("sheet1.xml", SHEET.as_bytes(), &mut ctx).expect("writes");
         String::from_utf8(out).expect("utf-8")
+    }
+
+    /// The same worksheet, but with a `<cols>` block already in it.
+    const WITH_COLS: &str = concat!(
+        r#"<?xml version="1.0"?><worksheet xmlns="http://x">"#,
+        r#"<cols><col min="1" max="3" width="12.5" customWidth="1" outlineLevel="1"/></cols>"#,
+        r#"<sheetData><row r="1"><c r="A1"><v>1</v></c></row></sheetData></worksheet>"#,
+    );
+
+    fn written_from(source: &str, sheet: &Sheet) -> String {
+        let strings = StringTable::new();
+        let mut sst = Sst::absent();
+        let mut ctx = Context {
+            sheet,
+            strings: &strings,
+            sst: &mut sst,
+            regenerate: false,
+        };
+        String::from_utf8(rewrite("sheet1.xml", source.as_bytes(), &mut ctx).expect("writes"))
+            .expect("utf-8")
+    }
+
+    #[test]
+    fn a_column_style_reaches_the_file_without_materializing_a_column_of_cells() {
+        // Shading a column is one attribute. Writing it as cells would turn a
+        // sparse sheet into a million-row one, and writing it nowhere — which
+        // is what happened before `<cols>` had a writer — loses it on save.
+        let mut sheet = Sheet::new("Data");
+        set(&mut sheet, "A1", CellValue::Number(1.0), 0);
+        sheet.column_styles.insert(3, StyleId(2));
+        sheet.column_styles.insert(4, StyleId(2));
+
+        let out = written_from(
+            r#"<worksheet><sheetData><row r="1"><c r="A1"><v>1</v></c></row></sheetData></worksheet>"#,
+            &sheet,
+        );
+        assert!(
+            out.contains(r#"<cols><col min="4" max="5" style="2" width="8.43"/></cols>"#),
+            "adjacent columns share one span: {out}"
+        );
+        // And it goes before `<sheetData>`, which the schema fixes.
+        assert!(out.find("<cols>") < out.find("<sheetData>"), "{out}");
+    }
+
+    #[test]
+    fn a_span_whose_columns_stop_agreeing_is_split_and_keeps_its_attributes() {
+        // The file's span covers A to C; only B is styled now. Splitting has to
+        // carry `customWidth` and `outlineLevel` onto every piece, because this
+        // writer does not model either and must not drop them.
+        let mut sheet = Sheet::new("Data");
+        set(&mut sheet, "A1", CellValue::Number(1.0), 0);
+        sheet.column_styles.insert(1, StyleId(4));
+
+        let out = written_from(WITH_COLS, &sheet);
+        assert_eq!(out.matches("<col ").count(), 3, "{out}");
+        assert!(out.contains(r#"min="2" max="2""#), "{out}");
+        assert!(out.contains(r#"style="4""#), "{out}");
+        assert_eq!(
+            out.matches("outlineLevel=\"1\"").count(),
+            3,
+            "every piece keeps what nobody here models: {out}"
+        );
+        assert_eq!(out.matches("width=\"12.5\"").count(), 3, "{out}");
+    }
+
+    #[test]
+    fn a_column_nobody_restyled_comes_back_byte_for_byte() {
+        let mut sheet = Sheet::new("Data");
+        set(&mut sheet, "A1", CellValue::Number(1.0), 0);
+        assert_eq!(written_from(WITH_COLS, &sheet), WITH_COLS);
+    }
+
+    #[test]
+    fn a_row_style_is_written_with_the_flag_that_makes_excel_honour_it() {
+        // `s` alone on a `<row>` is advisory and Excel ignores it. Without
+        // `customFormat` beside it, a formatted row comes back unformatted.
+        let mut sheet = Sheet::new("Data");
+        set(&mut sheet, "A1", CellValue::Number(1.0), 0);
+        sheet.row_styles.insert(0, StyleId(3));
+
+        let out = written_from(
+            r#"<worksheet><sheetData><row r="1"><c r="A1"><v>1</v></c></row></sheetData></worksheet>"#,
+            &sheet,
+        );
+        assert!(out.contains(r#"s="3""#), "{out}");
+        assert!(out.contains(r#"customFormat="1""#), "{out}");
     }
 
     #[test]

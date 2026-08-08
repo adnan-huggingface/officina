@@ -9,7 +9,7 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[-]` deferred
 
 ## Current state
 
-**Chunk:** C11 — formatting (C0–C10 all done)
+**Chunk:** C15 — the legacy .xls reader (C0–C14 all done)
 **Status:** not started
 **Handoff note:**
 
@@ -49,9 +49,13 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[-]` deferred
   reprinting them; `write::splice` is the primitive that makes that possible, and
   everything else in the module is built on it. `rfd` is Calx's file dialog, on
   default features so a Linux build needs the XDG portal rather than GTK headers.
-- Workspace total is **435 tests**, all green;
+- Workspace total is **563 tests**, all green;
   `cargo clippy --workspace --all-targets -- -D warnings` and
   `cargo fmt --all --check` are both clean.
+- `ss-model` grew four modules across C11–C14: `color` (the four spellings of
+  a colour), `cond` (conditional formatting and data validation), `chart`, and
+  `pivot`. `ss-formula` grew `cond` (evaluating those rules) and four function
+  families. `ss-csv` is now real.
 - Watch item: whether text becomes a number depends on **how the value reached
   the function**, not on what it is. `SUM(TRUE)` is 1, `SUM({TRUE})` is 0.
   `functions::visit_args` tags each value `Direct` or `Inside` for exactly this;
@@ -94,6 +98,59 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[-]` deferred
   makes a save cost a parse. On C29's list with the recalc scan.
 - Watch item: **`spans` is a sixteen-row block hint, not a row hint.** Widen it;
   never recompute it. See C10.
+- Watch item: **theme index 0 is `lt1`, and `<a:clrScheme>` writes `dk1` first.**
+  The first two pairs are swapped when the scheme is read. Read in order, every
+  themed heading is painted white on white, which reads as "the text vanished"
+  rather than as an off-by-one.
+- Watch item: **a solid fill's colour is `fgColor`; a *differential* fill's is
+  `bgColor`.** The two are opposite, and reading a `<dxf>` the ordinary way
+  leaves every conditional format in the workbook uncoloured.
+- Watch item: **`tint` is defined in HSL.** Scaling the RGB channels instead
+  gives a colour of the wrong hue — obvious side by side, invisible alone.
+- Watch item: **`showDropDown="1"` on a data validation *hides* the arrow.**
+  The attribute is inverted in the file.
+- Watch item: **a conditional format's formula is written against the region's
+  top-left cell**, not against the cell being tested, so every relative
+  reference is shifted before evaluation. `ss_formula::cond` does this.
+- Watch item: **the style tables are index-addressed and append-only.**
+  `StyleTable::restyle` is the only way to change formatting; nothing inserts
+  or reorders. A font inserted at index 2 re-letters every cell past it.
+- Watch item: **formatting a whole column is one attribute on `<col>`**, not a
+  million styled cells. `edit::format` knows the difference,
+  `Patch::AxisStyles` makes it undoable, and `write::sheet_out` writes it.
+- Watch item: **a row's `s` needs `customFormat="1"` beside it.** Without that
+  attribute Excel ignores the style, so a formatted row comes back unformatted.
+- Watch item: **every test can pass while the file is still wrong.** The
+  `<cols>` gap survived a green workspace and a green fidelity run, because the
+  model round-tripped through itself perfectly and nothing asked the *file*.
+  Check the bytes with an independent reader — openpyxl — before believing a
+  writer.
+- Watch item: **bold in the grid is faked by drawing the glyphs twice.** egui
+  ships one weight of its default font and no way to ask for another. Italic is
+  genuine (epaint slants it). If a real bold face is ever embedded, delete
+  `paint_text`'s double draw rather than leaving both.
+- Watch item: **`<xdr:cNvPr id="2">` comes before a chart's `r:id` in document
+  order.** Taking the first `id` attribute points every chart at part two.
+- Watch item: **`<c:pt idx="3">` may skip.** A chart's value cache read as a
+  flat list puts every point after a gap against the wrong category.
+- Watch item: **a `<c:title>` may hold formatting and no text at all.** Editing
+  its runs finds none and silently does nothing, so `chart_out` replaces such a
+  title wholesale. `<c:autoTitleDeleted>` has to be cleared at the same time.
+- Watch item: **which functions spill is a list, not a rule.** `=A1:A5` is an
+  array result too and must stay an implicit intersection in a legacy file.
+  `functions::dynamic::spills` is the list; adding a function to the library
+  does not add it there.
+- Watch item: **`Sheet::spills` is derived at recalculation and never read from
+  a file.** It exists so a shrinking result clears what it used to fill.
+- Watch item: **a csv delimiter is chosen by consistency, not frequency**, and
+  counted outside quotes. Prose separated by semicolons has far more commas
+  than semicolons.
+- Watch item: **`007` imports as 7**, which is Excel's behaviour and therefore
+  the contract. `ss-csv/tests/typed_import.rs` says so by name so nobody
+  "fixes" it.
+- Watch item: **typing into a pivot table's region leaves the file
+  self-contradictory** — Excel discards the edit at the next refresh. Calx
+  refuses; `Sheet::pivot_at` is the check.
 - Watch item: **adding or removing a sheet has no writer.** `flush` walks the
   `<sheet>` entries in the workbook part and rewrites the parts they name, so a
   sheet the model grew after the package was built has nowhere to be written.
@@ -109,8 +166,9 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[-]` deferred
   the 1,200-cell stress test; it will not survive a 100k-formula workbook. C5
   recorded this as a deliberate trade; `recalculate` is what makes it reachable
   by a user, so it is now on C29's list rather than a hypothetical.
-- `cargo xtask fidelity` is green: **27 passed, 0 failed**. It still correctly
-  *fails* on an empty corpus rather than reporting a vacuous pass.
+- `cargo xtask fidelity` is green on both checks: **check 1, 27 of 27; check 2,
+  12 of 12**. It still correctly *fails* on an empty corpus rather than
+  reporting a vacuous pass.
 - **Watch item — driving Office through COM in-process hangs.** Not a licensing
   problem, though it looks like one: `Documents.Add()` never returns, Word spins
   at 100% CPU, and no error is ever raised. It reproduced on two machines. The
@@ -416,17 +474,91 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[-]` deferred
 
 ## Phase 2 — Calx completeness
 
-- [ ] **C11. Formatting** — fonts, borders, fills, alignment, conditional formatting,
-      data validation, cell styles. Number formats already landed in C8; what is
-      left here is everything else in styles.xml, plus `TEXT()`, which can now be
-      written against `ss-model::numfmt`.
-- [ ] **C12. Charts** — read/preserve/render the common types; edit basic properties.
-- [ ] **C13. csv/tsv** — dialect sniffing, encoding detection, large-file streaming.
-- [ ] **C14. Function library — batch 3** (financial, database, dynamic arrays,
-      engineering) + pivot table read/preserve. Dynamic-array spilling belongs
-      here; C7 left the legacy non-CSE behaviour of array-valued functions
-      unmodelled and reported by name in the corpus test.
+- [x] **C11. Formatting** — fonts, borders, fills, alignment, conditional
+      formatting, data validation, cell styles, plus `TEXT()`.
+
+  **A cell's colour is almost never an RGB triple.** `theme="4" tint="-0.25"` is
+  what the whole modern palette uses, so `ss-model::color` resolves all four
+  spellings — rgb, theme, indexed, auto — and `ss-xlsx::theme` reads the scheme
+  out of `theme1.xml`. Two traps live in that alone, both recorded above.
+
+  **The style tables are index-addressed, and that governs every mutation.**
+  `StyleTable::restyle` is the whole formatting API: look a style up, change a
+  field, ask for the style that *has* that look. Nothing is edited in place and
+  nothing is inserted. `write::styles_out` appends fonts, fills, borders and
+  xfs the same way it already appended `<numFmt>`, and re-reads the file's own
+  counts rather than trusting the reader.
+
+  Conditional formatting is evaluated in `ss-formula::cond`, because half the
+  rule kinds are a formula. Colour scales and data bars need the whole region,
+  so the rules are prepared once per sheet rather than asked per cell.
+
+  Data validation is read, enforced on entry, and offered as a dropdown. A rule
+  is about the *value* rather than the characters, so `edit::typed_value`
+  decides what an entry would become before anything is stored.
+
+  **A whole-column format is one attribute on `<col>`**, and `write::sheet_out`
+  grew a writer for it — found by checking the output with openpyxl rather than
+  by a test, because every test we had was satisfied by the model alone. A
+  `<col>` span whose columns stop agreeing is *split*, each piece a retag of
+  the original, so `outlineLevel`, `customWidth`, and everything else nobody
+  models rides along. A row style needs `customFormat="1"` beside its `s` or
+  Excel ignores it entirely.
+
+  Known limits, stated rather than hidden: bold is synthetic (see the watch
+  item), icon sets are not drawn though `showValue="0"` is honoured, and
+  stacked text (rotation 255) is drawn upright.
+
+- [x] **C12. Charts** — read, preserve, render; the title is editable.
+
+  A chart is three parts and two relationship hops: worksheet → drawing →
+  chart. The numbers are re-read from the cells every frame, so editing B7
+  redraws the bar above it; the file's cache is the fallback for a series whose
+  reference cannot be resolved.
+
+  Drawn: bar and column (clustered and stacked), line, area, scatter, pie,
+  doughnut, with gridlines, value labels, thinned category labels, and a legend.
+  The value axis always includes zero, because an axis starting at the smallest
+  value exaggerates every difference on it. Not drawn: 3-D perspective (a
+  `bar3DChart` is drawn flat), trendlines, gradients, per-point formatting —
+  none of which costs anything, because the parts go back byte for byte.
+
+  `tests/charts.rs` runs against the corpus rather than a fixture, and checks
+  that a retitle changes one chart part and nothing else.
+
+- [x] **C13. csv/tsv** — dialect sniffing, encoding detection, streaming.
+
+  Nothing holds a whole file: `Reader` pulls one record at a time into a buffer
+  it reuses, and a record is not a line because a quoted field may contain
+  newlines. Encoding is a byte-order mark, then unmarked UTF-16 by where its
+  NULs fall, then UTF-8, then Windows-1252 — the fallback precisely because it
+  cannot fail.
+
+  Fields are *interpreted* rather than stored as text, through the same
+  `edit::typed_cell` typing uses. Calx opens and exports csv, tsv, tab and txt;
+  an import does not adopt the path as the document's own, because a csv holds
+  one sheet of values and Ctrl+S over the original would discard everything
+  added since.
+
+- [x] **C14. Function library — batch 3** (financial, database, engineering,
+      dynamic arrays) + pivot table read/preserve. **271 functions.**
+
+  The financial family turns on two conventions — money out is negative, and
+  `type` says when in the period the payment falls. `RATE`, `IRR` and `XIRR`
+  use Newton with a bisection fallback, because Newton alone diverges on a
+  series that changes sign more than once.
+
+  **Dynamic arrays spill**, and three things had to be true for that to be
+  safe: which functions spill is a list rather than a rule, the sheet remembers
+  where each spill went so a shrinking result clears its tail, and a cell in
+  the way is reported as `#SPILL!` with the obstruction untouched.
+
+  Pivot tables are read for their *rectangle* — the cells are already in the
+  worksheet, so the grid drew them correctly all along; what it needed was to
+  know not to let anyone type into them.
 - [ ] **C15. .xls reader (legacy)** — CFB container + BIFF8 records, read-only.
+      `cfb-reader` is still a stub; this is the whole of it plus the BIFF record
+      stream. Read-only by design (see Deferred).
 
 ## Phase 3 — Scriva (word processor) core
 
