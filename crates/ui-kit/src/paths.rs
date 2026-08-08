@@ -58,7 +58,10 @@ mod tests {
     #[test]
     fn config_path_ends_with_app_slug() {
         let p = config_dir_path(crate::CALX).expect("home dir should resolve in tests");
-        assert!(p.ends_with("calx"), "expected path ending in `calx`, got {p:?}");
+        assert!(
+            p.ends_with("calx"),
+            "expected path ending in `calx`, got {p:?}"
+        );
     }
 
     #[test]

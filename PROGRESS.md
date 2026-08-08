@@ -9,14 +9,16 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[-]` deferred
 
 ## Current state
 
-**Chunk:** C3 — spreadsheet model (C0, C1 done; C2 blocked on corpus)
-**Status:** in progress
+**Chunk:** C4 — xlsx reader (C0, C1, C3 done; C2 blocked on corpus)
+**Status:** not started
 **Handoff note:**
 
 - Rust 1.97.1 `x86_64-pc-windows-gnu` installed at `~/.cargo/bin` (not on PATH —
   installed with `--no-modify-path`). Links against MSYS2 mingw-w64 GCC 12.1.0,
   so no Visual Studio is needed.
 - `ooxml` is complete for C1 and C2: 38 tests, clippy clean.
+- `ss-model` is complete for C3: 33 tests, clippy clean. Cell store is 16x16
+  chunks in a BTreeMap; `Cell` is pinned at 24 bytes by a test.
 - `cargo xtask fidelity` runs and correctly **fails** on an empty corpus rather
   than reporting a vacuous pass.
 - **C2 is blocked on you:** put real Word/Excel documents under `corpus/` (see
@@ -62,7 +64,7 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[-]` deferred
 
 ## Phase 1 — Calx (spreadsheet) core
 
-- [ ] **C3. Spreadsheet model**
+- [x] **C3. Spreadsheet model**
   Sparse chunked cell store, interned strings, style table, defined names, number
   formats. *Exit: property tests pin the store's invariants across randomized
   insert/overwrite/erase sequences, checked against a naive reference map.*

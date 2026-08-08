@@ -21,5 +21,11 @@ pub struct AppId {
     pub display: &'static str,
 }
 
-pub const CALX: AppId = AppId { slug: "calx", display: "Calx" };
-pub const SCRIVA: AppId = AppId { slug: "scriva", display: "Scriva" };
+pub const CALX: AppId = AppId {
+    slug: "calx",
+    display: "Calx",
+};
+pub const SCRIVA: AppId = AppId {
+    slug: "scriva",
+    display: "Scriva",
+};
