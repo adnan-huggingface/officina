@@ -84,6 +84,13 @@ pub enum Patch {
         sheet: usize,
         shift: Shift,
     },
+    /// A chart's title. The rest of a chart is preserved verbatim, so this is
+    /// the only thing in one the model can disagree with the file about.
+    ChartTitle {
+        sheet: usize,
+        chart: usize,
+        title: Option<String>,
+    },
     /// A style put on whole rows or columns.
     ///
     /// Shading a column is not shading a million cells: Excel stores it once on
@@ -145,6 +152,22 @@ fn apply_patch(book: &mut Workbook, patch: Patch) -> Vec<Patch> {
             vec![Patch::Cells {
                 sheet,
                 cells: before,
+            }]
+        }
+
+        Patch::ChartTitle {
+            sheet,
+            chart,
+            title,
+        } => {
+            let Some(target) = book.sheet_mut(sheet).and_then(|s| s.charts.get_mut(chart)) else {
+                return Vec::new();
+            };
+            let before = std::mem::replace(&mut target.title, title);
+            vec![Patch::ChartTitle {
+                sheet,
+                chart,
+                title: before,
             }]
         }
 
@@ -589,6 +612,19 @@ pub fn typed_value(text: &str) -> Value {
         Typed::Error(e) => Value::Error(e),
         Typed::Text(t) => Value::Text(t),
     }
+}
+
+/// Retitles a chart, or clears its title when `title` is empty.
+pub fn chart_title(sheet: usize, chart: usize, title: &str) -> Change {
+    let trimmed = title.trim();
+    Change::new(
+        "Chart title",
+        vec![Patch::ChartTitle {
+            sheet,
+            chart,
+            title: (!trimmed.is_empty()).then(|| trimmed.to_string()),
+        }],
+    )
 }
 
 #[cfg(test)]

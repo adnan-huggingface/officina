@@ -15,6 +15,7 @@
 //! measure the part that scales with the sheet.
 
 pub mod axis;
+pub mod chart;
 pub mod editor;
 pub mod paint;
 pub mod selection;
@@ -542,6 +543,9 @@ pub struct GridView {
     pub(crate) conditional: Option<(usize, u32, Formatting)>,
     /// Bumped whenever a row or column is resized, to invalidate the cache.
     pub(crate) generation: u32,
+    /// The chart the last click landed on, if any. Charts float above the
+    /// cells, so a click on one is not a click on the cell underneath.
+    pub selected_chart: Option<usize>,
     pub(crate) drag: Option<Drag>,
     /// How the sheet looked before the resize drag in progress started.
     pub(crate) before_resize: Option<Geometry>,
@@ -582,6 +586,7 @@ impl Default for GridView {
             layout: None,
             conditional: None,
             generation: 0,
+            selected_chart: None,
             drag: None,
             before_resize: None,
             fill_target: None,

@@ -73,6 +73,9 @@ struct Calx {
     /// Where a cut came from, cleared when the paste lands.
     cut_from: Option<(usize, CellRange)>,
     edited: bool,
+    /// The title box's buffer while a chart is selected. Kept out of the model
+    /// so that typing does not push an undo entry per keystroke.
+    chart_title: Option<String>,
     /// What the user asked for that unsaved changes are standing in the way of.
     pending: Option<Pending>,
 }
@@ -103,6 +106,7 @@ impl Calx {
             clip_text: String::new(),
             cut_from: None,
             edited: false,
+            chart_title: None,
             pending: None,
         }
     }
@@ -590,6 +594,7 @@ impl Calx {
     /// finding out that the keystroke exists.
     fn toolbar(&mut self, ui: &mut egui::Ui) {
         let mut requested = None;
+        let mut title_change = None;
         let mut file = None;
         let mut save = false;
         let mut save_as = false;
@@ -787,9 +792,46 @@ impl Calx {
                 requested = Some(Action::Format(Format::Clear));
             }
         });
+
+        // The chart row appears only when a chart is selected, because that is
+        // the only time it can do anything.
+        if let Some(index) = self.grid.selected_chart {
+            let sheet = self.grid.sheet_index;
+            let existing = self
+                .doc
+                .workbook
+                .sheet(sheet)
+                .and_then(|s| s.charts.get(index))
+                .map(|c| c.title.clone().unwrap_or_default());
+            if let Some(existing) = existing {
+                ui.horizontal(|ui| {
+                    ui.label("Chart title");
+                    if self.chart_title.is_none() {
+                        self.chart_title = Some(existing.clone());
+                    }
+                    let buffer = self.chart_title.get_or_insert_with(String::new);
+                    let response = ui.add(
+                        egui::TextEdit::singleline(buffer)
+                            .desired_width(220.0)
+                            .hint_text("(none)"),
+                    );
+                    // On losing focus rather than on every keystroke: one undo
+                    // entry per title, not one per letter.
+                    if response.lost_focus() && *buffer != existing {
+                        title_change = Some((index, buffer.clone()));
+                    }
+                });
+            }
+        } else {
+            self.chart_title = None;
+        }
         if let Some(action) = requested {
             let ui = &*ui;
             self.act(ui, action);
+        }
+        if let Some((chart, title)) = title_change {
+            let change = edit::chart_title(self.grid.sheet_index, chart, &title);
+            self.perform(change);
         }
         if save {
             self.save();

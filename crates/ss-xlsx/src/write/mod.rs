@@ -20,6 +20,7 @@
 
 mod blank;
 mod cells;
+mod chart_out;
 mod sheet_out;
 mod splice;
 mod strings_out;
@@ -134,6 +135,28 @@ impl XlsxDocument {
             };
             let data = sheet_out::rewrite(name.as_str(), part.data(), &mut ctx)?;
             written.push((name, content_type, data));
+        }
+
+        // Chart titles. A chart is otherwise entirely preserved, so this is the
+        // one thing in it the model can disagree with the file about — and the
+        // comparison is against the *file*, re-read, rather than against a flag
+        // set when the user typed.
+        for sheet in &self.workbook.sheets {
+            for chart in &sheet.charts {
+                let Ok(name) = PartName::new(&chart.part) else {
+                    continue;
+                };
+                let Some(part) = self.package.part(&name) else {
+                    continue;
+                };
+                let body = crate::chart::parse(name.as_str(), part.data())?;
+                if body.title == chart.title {
+                    continue;
+                }
+                let content_type = part.content_type.clone();
+                let data = chart_out::retitle(name.as_str(), part.data(), chart.title.as_deref())?;
+                written.push((name, content_type, data));
+            }
         }
 
         if let Some(name) = &located.shared_strings {

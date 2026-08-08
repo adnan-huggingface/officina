@@ -93,6 +93,9 @@ pub struct Sheet {
     pub row_styles: BTreeMap<u32, crate::StyleId>,
     pub conditional_formats: Vec<crate::cond::ConditionalFormat>,
     pub validations: Vec<crate::cond::DataValidation>,
+    /// Charts anchored to this sheet. A view over parts kept verbatim, never a
+    /// replacement for them.
+    pub charts: Vec<crate::chart::Chart>,
 }
 
 impl Sheet {

@@ -10,6 +10,8 @@
 
 #![forbid(unsafe_code)]
 
+mod chart;
+mod drawing;
 mod error;
 mod parts;
 mod shared_strings;
@@ -113,13 +115,14 @@ fn build(package: &Package) -> Result<Workbook> {
             };
             if sheet.kind.has_grid() {
                 if let Some(part) = package.part(part_name) {
-                    sheet::parse(
+                    let extras = sheet::parse(
                         part_name.as_str(),
                         part.data(),
                         &mut sheet,
                         &sst,
                         &mut wb.strings,
                     )?;
+                    sheet.charts = read_charts(package, part_name, extras.drawing.as_deref())?;
                 }
             }
         }
@@ -128,6 +131,67 @@ fn build(package: &Package) -> Result<Workbook> {
     }
 
     Ok(wb)
+}
+
+/// Follows worksheet -> drawing -> chart and reads whatever is at the end.
+///
+/// Two relationship hops, and a failure at any of them is silence rather than
+/// an error: a chart we cannot read is a chart we do not draw, and the part is
+/// preserved either way. Refusing to open the workbook over it would be much
+/// worse than showing it without its charts.
+fn read_charts(
+    package: &Package,
+    sheet_part: &ooxml::PartName,
+    drawing_rel: Option<&str>,
+) -> Result<Vec<ss_model::Chart>> {
+    let Some(rel_id) = drawing_rel else {
+        return Ok(Vec::new());
+    };
+    let Some(drawing_name) = resolve(package, sheet_part, rel_id) else {
+        return Ok(Vec::new());
+    };
+    let Some(drawing_part) = package.part(&drawing_name) else {
+        return Ok(Vec::new());
+    };
+
+    let anchored = drawing::parse(drawing_name.as_str(), drawing_part.data())?;
+    let mut charts = Vec::new();
+    for found in anchored {
+        let Some(target) = resolve(package, &drawing_name, &found.rel_id) else {
+            continue;
+        };
+        let Some(part) = package.part(&target) else {
+            continue;
+        };
+        // The relationship may point at a picture or an OLE object just as
+        // easily as at a chart. The content type is what says which.
+        if !part.content_type.contains("chart") {
+            continue;
+        }
+        let body = chart::parse(target.as_str(), part.data())?;
+        let Some(kind) = body.kind else {
+            continue;
+        };
+        charts.push(ss_model::Chart {
+            part: target.as_str().to_string(),
+            anchor: found.anchor,
+            kind,
+            grouping: body.grouping,
+            horizontal: body.horizontal,
+            title: body.title,
+            title_ref: body.title_ref,
+            legend: body.legend,
+            series: body.series,
+        });
+    }
+    Ok(charts)
+}
+
+/// A relationship id, resolved against the part that declared it.
+fn resolve(package: &Package, from: &ooxml::PartName, rel_id: &str) -> Option<ooxml::PartName> {
+    let rels = package.relationships(from).ok()?;
+    let rel = rels.iter().find(|r| r.id == rel_id)?;
+    rel.resolve(from)?.ok()
 }
 
 #[cfg(test)]

@@ -8,6 +8,7 @@
 #![forbid(unsafe_code)]
 
 pub mod cell;
+pub mod chart;
 pub mod color;
 pub mod cond;
 pub mod datetime;
@@ -20,6 +21,7 @@ pub mod style;
 pub mod workbook;
 
 pub use cell::{column_index, column_name, Cell, CellError, CellRef, CellValue, FormulaId};
+pub use chart::{Anchor, Chart, ChartKind, Series};
 pub use color::{Color, Theme};
 pub use cond::{ConditionalFormat, DataValidation};
 pub use formula::{Formula, FormulaKind};

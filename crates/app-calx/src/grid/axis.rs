@@ -185,6 +185,9 @@ pub struct Layout {
     pub header_width: f64,
     /// Height of the column-letter strip across the top.
     pub header_height: f64,
+    /// The scale this layout was built at. Anything measured in the file's own
+    /// units — a drawing's EMU offsets — has to be scaled the same way.
+    pub zoom: f64,
 }
 
 impl Layout {
@@ -206,6 +209,7 @@ impl Layout {
             // row number needs.
             header_width: 46.0 * scale,
             header_height: row_pixels(DEFAULT_ROW_POINTS, scale),
+            zoom: scale,
         }
     }
 }

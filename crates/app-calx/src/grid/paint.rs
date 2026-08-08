@@ -180,6 +180,22 @@ impl GridView {
             .as_ref()
             .and_then(|open| cell_rect(layout, &panes, open.at));
 
+        // A chart floats above the cells, so a click on one is not a click on
+        // the cell underneath. Resolved here, where the panes are still known.
+        if response.clicked() {
+            self.selected_chart = ui.ctx().pointer_interact_pos().and_then(|pos| {
+                panes.iter().find_map(|pane| {
+                    if !pane.rect.contains(pos) {
+                        return None;
+                    }
+                    sheet.charts.iter().position(|chart| {
+                        super::chart::rect_of(layout, &chart.anchor, pane.rect, pane.scroll)
+                            .contains(pos)
+                    })
+                })
+            });
+        }
+
         let cursor_rect = cell_rect(layout, &panes, self.selection.cursor());
 
         self.layout = Some(cached);
@@ -531,6 +547,30 @@ impl GridView {
                 _ => cell.rect.center().y - galley.size().y / 2.0,
             };
             paint_text(&painter, egui::pos2(x, y), galley, color, cell.look.bold);
+        }
+
+        // Charts over everything the cells drew, and under the cursor outline.
+        // They float above the grid in Excel too — a chart is not clipped by
+        // the cells it happens to sit on.
+        for chart in &sheet.charts {
+            let rect = super::chart::rect_of(layout, &chart.anchor, pane.rect, pane.scroll);
+            if !rect.intersect(pane.rect).is_positive() {
+                continue;
+            }
+            let series = super::chart::resolve(book, chart);
+            super::chart::draw(
+                &painter,
+                rect,
+                chart,
+                &series,
+                &super::chart::Style {
+                    background: palette.background,
+                    outline: palette.grid,
+                    text: palette.text,
+                    grid: palette.header_text,
+                    zoom: self.zoom as f32,
+                },
+            );
         }
 
         // The active cell's heavier outline, drawn last so nothing covers it.

@@ -63,7 +63,7 @@ pub(crate) fn parse(
     sheet: &mut Sheet,
     sst: &[StrId],
     strings: &mut StringTable,
-) -> Result<()> {
+) -> Result<Extras> {
     let mut reader = Reader::from_reader(data);
     reader.config_mut().check_end_names = true;
 
@@ -90,6 +90,7 @@ pub(crate) fn parse(
 
     // Conditional formatting and data validation are regions rather than cells,
     // and both are built up across several child elements.
+    let mut extras = Extras::default();
     let mut block: Option<ConditionalFormat> = None;
     let mut rule: Option<PartialRule> = None;
     let mut validation: Option<DataValidation> = None;
@@ -173,6 +174,12 @@ pub(crate) fn parse(
                     }
                     b"col" => read_col_geometry(e, sheet),
                     b"pane" => read_pane(e, sheet),
+                    // A worksheet does not name a chart. It names a *drawing*,
+                    // by relationship id, and the drawing names the chart.
+                    b"drawing" => {
+                        extras.drawing =
+                            attr_raw(e, b"id").map(|id| String::from_utf8_lossy(&id).into_owned());
+                    }
 
                     b"conditionalFormatting" => {
                         let ranges = attr_raw(e, b"sqref")
@@ -325,7 +332,14 @@ pub(crate) fn parse(
         buf.clear();
     }
 
-    Ok(())
+    Ok(extras)
+}
+
+/// What the worksheet says about parts other than itself.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Extras {
+    /// The relationship id of `<drawing r:id="rId1"/>`.
+    pub drawing: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

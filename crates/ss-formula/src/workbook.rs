@@ -275,6 +275,26 @@ fn write_back(book: &mut Workbook, node: Node, value: &Value) {
     sheet.set(node.at, cell);
 }
 
+/// Evaluates a reference written the way a chart writes one, e.g.
+/// `Sheet1!$B$2:$B$13`, and hands back the values in order.
+///
+/// This is what makes a chart redraw when a cell under it changes: the file's
+/// cached numbers are what the producing application last computed, and going
+/// back to the cells is the only way to be current. `None` when the reference
+/// names something we cannot resolve — a closed workbook, most often — and the
+/// caller falls back to the cache.
+pub fn range_values(book: &Workbook, formula: &str) -> Option<Vec<Value>> {
+    let text = formula.strip_prefix('=').unwrap_or(formula);
+    let expr = crate::parse(text).ok()?;
+    let ctx = WorkbookContext::new(book);
+    let mut ev = Evaluator::new(&ctx, Position::new(0, CellRef::new(0, 0)));
+    let operand = ev.eval(&expr);
+    if let Operand::Value(Value::Error(_)) = operand {
+        return None;
+    }
+    Some(ev.spread(&operand).values().cloned().collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
