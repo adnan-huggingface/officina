@@ -410,21 +410,29 @@ impl GridView {
             }
         }
 
-        // A drag in progress owns the pointer until it is released.
+        // A drag in progress owns the pointer until the button comes back up.
+        // The end condition is "no button is down", not "a release arrived this
+        // frame": a release delivered while the pointer is outside the window,
+        // or swallowed by another widget, would otherwise leave the grid
+        // selecting cells under a pointer that is merely hovering.
         if let Some(drag) = self.drag {
-            if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
-                self.continue_drag(drag, book, &frame, pos);
-            }
-            if ui.input(|i| i.pointer.any_released()) {
-                self.drag = None;
-                self.invalidate();
+            let (down, at) = ui.input(|i| (i.pointer.any_down(), i.pointer.interact_pos()));
+            match (down, at) {
+                (true, Some(pos)) => self.continue_drag(drag, book, &frame, pos),
+                (false, _) => {
+                    self.drag = None;
+                    self.invalidate();
+                }
+                _ => {}
             }
             self.layout = Some(cached);
             return;
         }
 
+        // On press, not on click: `clicked()` fires on *release*, so starting a
+        // drag there begins one whose release has already happened.
         if let Some(pos) = response.interact_pointer_pos() {
-            if response.drag_started() || response.clicked() {
+            if ui.input(|i| i.pointer.any_pressed()) {
                 self.begin_drag(book, &frame, pos, modifiers);
             }
         }
@@ -707,4 +715,103 @@ fn split_panes(
         },
     });
     panes
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::grid::Selection;
+
+    /// Drives one egui frame with the given events and returns the view.
+    fn frame(
+        view: &mut GridView,
+        book: &mut Workbook,
+        events: Vec<egui::Event>,
+        ctx: &egui::Context,
+    ) {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1000.0, 700.0),
+            )),
+            events,
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| {
+            view.show(ui, book);
+        });
+        // Nobody is going to upload the font atlas to a GPU here.
+        out.textures_delta.clear();
+    }
+
+    fn press(pos: egui::Pos2, pressed: bool) -> egui::Event {
+        egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        }
+    }
+
+    #[test]
+    fn a_click_does_not_leave_a_drag_running() {
+        let ctx = egui::Context::default();
+        let mut book = Workbook::blank();
+        let mut view = GridView::default();
+        let start = egui::pos2(200.0, 200.0);
+
+        // Press and release in place: an ordinary click.
+        frame(
+            &mut view,
+            &mut book,
+            vec![egui::Event::PointerMoved(start)],
+            &ctx,
+        );
+        frame(&mut view, &mut book, vec![press(start, true)], &ctx);
+        frame(&mut view, &mut book, vec![press(start, false)], &ctx);
+        let clicked = view.selection.cursor();
+        assert!(
+            view.drag.is_none(),
+            "the button is up, so nothing is being dragged"
+        );
+
+        // Now move the pointer across the sheet with no button held. Nothing
+        // about the selection may change.
+        for x in [300.0, 400.0, 500.0_f32] {
+            frame(
+                &mut view,
+                &mut book,
+                vec![egui::Event::PointerMoved(egui::pos2(x, 400.0))],
+                &ctx,
+            );
+        }
+        assert_eq!(view.selection.cursor(), clicked);
+        assert_eq!(view.selection, Selection::at(clicked));
+    }
+
+    #[test]
+    fn holding_the_button_down_does_extend_the_selection() {
+        let ctx = egui::Context::default();
+        let mut book = Workbook::blank();
+        let mut view = GridView::default();
+        let start = egui::pos2(200.0, 200.0);
+
+        frame(
+            &mut view,
+            &mut book,
+            vec![egui::Event::PointerMoved(start)],
+            &ctx,
+        );
+        frame(&mut view, &mut book, vec![press(start, true)], &ctx);
+        frame(
+            &mut view,
+            &mut book,
+            vec![egui::Event::PointerMoved(egui::pos2(500.0, 400.0))],
+            &ctx,
+        );
+        assert!(
+            !view.selection.is_single_cell(),
+            "a held drag selects a block"
+        );
+    }
 }
