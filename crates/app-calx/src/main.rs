@@ -5,6 +5,7 @@
 // somewhere visible.
 #![cfg_attr(all(not(debug_assertions), windows), windows_subsystem = "windows")]
 
+use std::io::BufRead;
 use std::path::{Path, PathBuf};
 
 use ss_formula::clip::{self, Clip};
@@ -112,6 +113,10 @@ impl Calx {
     }
 
     fn open(&mut self, path: &Path) {
+        if is_delimited(path) {
+            self.open_delimited(path);
+            return;
+        }
         match ss_xlsx::XlsxDocument::open(path) {
             Ok(doc) => {
                 self.doc = doc;
@@ -121,6 +126,135 @@ impl Calx {
                 self.reset();
             }
             Err(e) => self.status = format!("could not open {}: {e}", path.display()),
+        }
+    }
+
+    /// Imports a delimited text file into a new workbook.
+    ///
+    /// The path is deliberately *not* remembered as the document's own. A csv
+    /// holds one sheet of values and no formulas, formats, or second sheet, so
+    /// Ctrl+S over the original would quietly throw away everything the user
+    /// then added. Save-as is the way back out, and it defaults to xlsx.
+    fn open_delimited(&mut self, path: &Path) {
+        let file = match std::fs::File::open(path) {
+            Ok(file) => file,
+            Err(e) => {
+                self.status = format!("could not open {}: {e}", path.display());
+                return;
+            }
+        };
+        let mut source = std::io::BufReader::new(file);
+        // The sniffer needs a look at the start without consuming it.
+        let sample = match source.fill_buf() {
+            Ok(bytes) => bytes.to_vec(),
+            Err(e) => {
+                self.status = format!("could not read {}: {e}", path.display());
+                return;
+            }
+        };
+        let (encoding, mut dialect) = ss_csv::sniff(&sample);
+        // The extension is a stronger signal than any guess when the file has
+        // no delimiter on its first lines at all.
+        if let Some(extension) = path.extension().and_then(|e| e.to_str()) {
+            if sample.iter().all(|b| *b != dialect.delimiter) {
+                dialect = ss_csv::Dialect::for_extension(extension);
+            }
+        }
+
+        let mut book = Workbook::blank();
+        book.sheets[0].name = sheet_name(path);
+        let mut reader = ss_csv::Reader::new(source, encoding, dialect);
+        let imported = ss_csv::read_into(&mut reader, |row, fields| {
+            for (col, field) in fields.iter().enumerate() {
+                if field.is_empty() {
+                    continue;
+                }
+                // Two mutable borrows of the workbook, one after the other: the
+                // interpretation may allocate a number format or a formula, and
+                // only then is there a cell to store.
+                let cell = edit::typed_cell(&mut book, 0, ss_model::StyleId::DEFAULT, field);
+                book.sheets[0].set(ss_model::CellRef::new(row, col as u32), cell);
+            }
+        });
+
+        match imported {
+            Ok(stats) => {
+                self.doc = match ss_xlsx::XlsxDocument::new(book) {
+                    Ok(doc) => doc,
+                    Err(e) => {
+                        self.status = format!("could not import {}: {e}", path.display());
+                        return;
+                    }
+                };
+                self.path = None;
+                self.reset();
+                self.recalculate();
+                // Imported, not opened: the user has an unsaved workbook.
+                self.edited = true;
+                let mut note = format!(
+                    "imported {} rows x {} columns ({}, {:?})",
+                    stats.rows,
+                    stats.columns,
+                    delimiter_name(dialect.delimiter),
+                    encoding
+                );
+                if stats.truncated > 0 {
+                    note.push_str(&format!(
+                        ", {} rows past the sheet dropped",
+                        stats.truncated
+                    ));
+                }
+                self.status = note;
+            }
+            Err(e) => self.status = format!("could not read {}: {e}", path.display()),
+        }
+    }
+
+    /// Exports the active sheet as delimited text.
+    fn write_delimited(&mut self, path: &Path) {
+        let dialect = ss_csv::Dialect::for_extension(
+            path.extension().and_then(|e| e.to_str()).unwrap_or("csv"),
+        );
+        let book = &self.doc.workbook;
+        let Some(sheet) = book.sheet(self.grid.sheet_index) else {
+            self.status = "nothing to export".to_string();
+            return;
+        };
+        let file = match std::fs::File::create(path) {
+            Ok(file) => file,
+            Err(e) => {
+                self.status = format!("could not save {}: {e}", path.display());
+                return;
+            }
+        };
+        let mut out = std::io::BufWriter::new(file);
+        let written = ss_csv::write_sheet(&mut out, sheet, dialect, |at| {
+            // The *displayed* text, which is what a csv is for: a column of
+            // dates has to come out as dates rather than as five-digit serials.
+            let Some(cell) = sheet.get(at) else {
+                return String::new();
+            };
+            let value = match cell.value {
+                ss_model::CellValue::Blank => return String::new(),
+                ss_model::CellValue::Number(n) => ss_model::FormatValue::Number(n),
+                ss_model::CellValue::Bool(b) => ss_model::FormatValue::Bool(b),
+                ss_model::CellValue::Error(e) => ss_model::FormatValue::Error(e),
+                ss_model::CellValue::Text(id) => {
+                    ss_model::FormatValue::Text(book.strings.resolve(id))
+                }
+            };
+            book.styles
+                .number_format(sheet.style_at(at))
+                .format(value)
+                .text
+        });
+        match written.and_then(|()| std::io::Write::flush(&mut out)) {
+            Ok(()) => {
+                // Exported rather than saved: the workbook still belongs to its
+                // own file, and `edited` stays as it was.
+                self.status = format!("exported {} to {}", sheet.name, name_of(path));
+            }
+            Err(e) => self.status = format!("could not save {}: {e}", path.display()),
         }
     }
 
@@ -155,7 +289,10 @@ impl Calx {
     }
 
     fn save_as(&mut self) {
-        let mut dialog = rfd::FileDialog::new().add_filter("Excel workbook", &["xlsx"]);
+        let mut dialog = rfd::FileDialog::new()
+            .add_filter("Excel workbook", &["xlsx"])
+            .add_filter("Comma-separated values", &["csv"])
+            .add_filter("Tab-separated values", &["tsv", "txt"]);
         if let Some(current) = self.path.as_ref().and_then(|p| p.parent()) {
             dialog = dialog.set_directory(current);
         }
@@ -175,6 +312,11 @@ impl Calx {
             self.act_headless(action);
         }
 
+        if is_delimited(path) {
+            self.write_delimited(path);
+            return;
+        }
+
         match self.doc.save(path) {
             Ok(()) => {
                 self.path = Some(path.to_path_buf());
@@ -188,7 +330,10 @@ impl Calx {
     }
 
     fn browse(&mut self) {
-        let mut dialog = rfd::FileDialog::new().add_filter("Excel workbook", &["xlsx", "xlsm"]);
+        let mut dialog = rfd::FileDialog::new()
+            .add_filter("Spreadsheets", &["xlsx", "xlsm", "csv", "tsv", "txt"])
+            .add_filter("Excel workbook", &["xlsx", "xlsm"])
+            .add_filter("Delimited text", &["csv", "tsv", "txt"]);
         if let Some(current) = self.path.as_ref().and_then(|p| p.parent()) {
             dialog = dialog.set_directory(current);
         }
@@ -1040,4 +1185,47 @@ fn short_format_name(code: &str) -> &str {
         .iter()
         .find(|(_, known)| *known == code)
         .map_or(code, |(label, _)| label)
+}
+
+/// A sheet name from a file name, without the extension.
+///
+/// Excel names the sheet after the file, and a workbook saved from it keeps
+/// that name — so it is worth getting right rather than calling it "Sheet1".
+fn sheet_name(path: &Path) -> String {
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("Sheet1");
+    // Excel's limit, and the characters it refuses in a sheet name.
+    let cleaned: String = stem
+        .chars()
+        .map(|c| if "[]:*?/\\".contains(c) { '_' } else { c })
+        .take(31)
+        .collect();
+    if cleaned.trim().is_empty() {
+        "Sheet1".to_string()
+    } else {
+        cleaned
+    }
+}
+
+/// True for a path this application should treat as delimited text.
+fn is_delimited(path: &Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|e| e.to_str())
+            .map(str::to_ascii_lowercase)
+            .as_deref(),
+        Some("csv") | Some("tsv") | Some("tab") | Some("txt")
+    )
+}
+
+/// What to call a delimiter in a status line.
+fn delimiter_name(byte: u8) -> &'static str {
+    match byte {
+        b'\t' => "tab-separated",
+        b';' => "semicolon-separated",
+        b'|' => "pipe-separated",
+        _ => "comma-separated",
+    }
 }

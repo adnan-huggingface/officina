@@ -18,5 +18,6 @@ ui-kit.workspace = true
 ss-model.workspace = true
 ss-formula.workspace = true
 ss-xlsx.workspace = true
+ss-csv.workspace = true
 # Default features: the XDG portal on Linux, so a build needs no GTK headers.
 rfd = "0.15"

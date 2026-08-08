@@ -6,3 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+ss-model.workspace = true
+
+[dev-dependencies]
+ss-formula.workspace = true

@@ -450,6 +450,7 @@ name = "calx"
 version = "0.1.0"
 dependencies = [
  "rfd",
+ "ss-csv",
  "ss-formula",
  "ss-model",
  "ss-xlsx",
@@ -2773,6 +2774,10 @@ dependencies = [
 [[package]]
 name = "ss-csv"
 version = "0.1.0"
+dependencies = [
+ "ss-formula",
+ "ss-model",
+]
 
 [[package]]
 name = "ss-formula"

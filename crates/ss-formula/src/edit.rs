@@ -345,7 +345,13 @@ pub fn input(book: &mut Workbook, sheet: usize, at: CellRef, typed: &str) -> Cha
 ///
 /// Shared with paste, because text arriving from another program has to be read
 /// exactly the way text arriving from the keyboard is.
-pub(crate) fn typed_cell(book: &mut Workbook, sheet: usize, style: StyleId, typed: &str) -> Cell {
+/// What typing `typed` into a cell of `style` produces, ready to store.
+///
+/// Public because importing a csv is the same interpretation as typing: `5` is
+/// a number, `2024-01-15` is a date with a date format, `=A1` is a formula, and
+/// `007` is text. An importer that skipped this would turn every column into
+/// strings.
+pub fn typed_cell(book: &mut Workbook, sheet: usize, style: StyleId, typed: &str) -> Cell {
     match classify(typed) {
         Typed::Empty => Cell {
             value: CellValue::Blank,
