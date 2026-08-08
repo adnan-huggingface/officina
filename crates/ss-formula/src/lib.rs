@@ -12,7 +12,6 @@
 #![forbid(unsafe_code)]
 
 pub mod ast;
-pub mod datetime;
 pub mod error;
 pub mod eval;
 pub mod functions;
@@ -21,6 +20,10 @@ pub mod lexer;
 pub mod parser;
 pub mod value;
 pub mod workbook;
+
+/// Serial dates live in the model — a cell value *is* a serial, and the grid
+/// needs the calendar to render one as a date without the formula engine.
+pub use ss_model::datetime;
 
 pub use ast::{Area, BinaryOp, Expr, Reference, SheetRef, UnaryOp};
 pub use error::{ParseError, ParseErrorKind};

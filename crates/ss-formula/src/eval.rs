@@ -59,7 +59,7 @@ pub trait Context {
         let seconds = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0.0, |d| d.as_secs_f64());
-        crate::datetime::UNIX_EPOCH_SERIAL_F64 + seconds / 86_400.0
+        ss_model::datetime::UNIX_EPOCH_SERIAL_F64 + seconds / 86_400.0
     }
 }
 

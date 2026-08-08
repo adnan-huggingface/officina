@@ -9,7 +9,7 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[-]` deferred
 
 ## Current state
 
-**Chunk:** C8 — grid UI (C0–C7 all done)
+**Chunk:** C9 — editing, undo, keybindings (C0–C8 all done)
 **Status:** not started
 **Handoff note:**
 
@@ -30,11 +30,21 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[-]` deferred
   as a separate `Event::GeneralRef`, so any text accumulator must handle it or it
   silently drops every `&`, `<`, and `>`. `xml::push_text` is the one place that
   does this; use it rather than matching `Event::Text` directly.
-- `ss-formula` is complete for C5, C6, and C7: 171 tests, of which 57 are the
+- `ss-formula` is complete for C5, C6, and C7: 153 tests, of which 57 are the
   conformance suite in `tests/conformance.rs`. Lexer, Pratt parser, dependency
-  graph, evaluator, serial dates, and **199 functions**. Workspace total is
-  **303 tests**, all green; `cargo clippy --workspace --all-targets -- -D warnings`
-  and `cargo fmt --all --check` are both clean.
+  graph, evaluator, and **199 functions**.
+- `ss-model` grew two things in C8 that other crates needed: `datetime` (moved
+  out of ss-formula, because a cell value *is* a serial and the grid has to
+  render one without the formula engine) and `numfmt`, the number-format
+  engine. `format_general` and decimal rounding live there now too, so the
+  engine and the grid cannot disagree about what a number looks like.
+- `app-calx` is a library plus a thin binary. The split is not cosmetic: the
+  grid's geometry, selection model, and frame planner are all testable with no
+  window and no GPU, which is the only way the million-row criterion could be
+  measured at all.
+- Workspace total is **345 tests**, all green;
+  `cargo clippy --workspace --all-targets -- -D warnings` and
+  `cargo fmt --all --check` are both clean.
 - Watch item: whether text becomes a number depends on **how the value reached
   the function**, not on what it is. `SUM(TRUE)` is 1, `SUM({TRUE})` is 0.
   `functions::visit_args` tags each value `Direct` or `Inside` for exactly this;
@@ -51,6 +61,15 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[-]` deferred
 - Watch item: `Context::now()` is **UTC**, and Excel's `NOW` is local. A host
   that knows the user's time zone should override it. Near midnight `TODAY()`
   is otherwise off by a day.
+- Watch item: **grid positions are `f64`, screen positions are `f32`.** A
+  million rows of twenty pixels is a twenty-million-pixel axis, and above
+  sixteen million an `f32` counts in twos — a cell would be painted at one
+  place and clicked at another for the bottom nineteen-twentieths of the sheet.
+  `Axis` is `f64` throughout and only the viewport-relative difference is cast.
+- Watch item: `<cellStyleXfs>` and `<cellXfs>` are two different lists of `<xf>`
+  elements in styles.xml, and a cell's `s` attribute indexes only the second.
+  Reading both into one list shifts every style by the size of the first and
+  formats the whole sheet plausibly wrongly.
 - Watch item: `DependencyGraph::dependents_of` is a linear scan over every
   formula, so `evaluation_order` is O(formulas^2). Fine at corpus scale and for
   the 1,200-cell stress test; it will not survive a 100k-formula workbook. C5
@@ -245,14 +264,43 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[-]` deferred
   because the parser is; a cell fed by an array formula's spill is not a node in
   the dependency graph, so a formula reading one may be ordered before it.
 
-- [ ] **C8. Grid UI**
+- [x] **C8. Grid UI**
   Virtualized wgpu grid, selection model, frozen panes, merged ranges, number-format
   rendering, resize/insert/delete rows+cols.
-  *Exit: 1M-row sheet scrolls at frame rate.*
+  *Exit: 1M-row sheet scrolls at frame rate.* — **met**, by
+  `grid::tests::scrolling_a_million_rows_stays_flat`: a frame's cell planning at
+  the bottom of a million rows costs the same as at the top, and both fit inside
+  a 16 ms frame. It is measured on the pure planning step, which is the part
+  that scales with the sheet; the GPU cannot be tested headlessly.
+
+  Nothing may ever be O(rows). `Axis` stores a default size plus a sorted list
+  of exceptions with a running total beside it, so "where does row 900,000
+  start?" is one binary search rather than 900,000 additions. That is also how
+  the file stores sizes, so the two shapes match.
+
+  Frozen panes are why painting is not one loop: a sheet frozen on both axes is
+  drawn as four independent views of itself, each the same `plan()` call with a
+  different scroll offset and clip rectangle.
+
+  **Number formats came with this chunk, not C11.** A grid cannot render
+  `45352` without knowing it is a date, so `ss-model::numfmt` parses and applies
+  Excel's format language — four sections split by sign, `m` meaning month or
+  minute depending on its neighbours, a comma that groups between digits and
+  divides by a thousand after them, `[h]` for elapsed time, fractions,
+  conditions, and colours. `ss-xlsx` now reads `<numFmts>` and `<cellXfs>` from
+  styles.xml to drive it. Fonts, fills, borders, and alignment are still C11.
+
+  **Moved to C9:** insert and delete rows/columns. They are editing operations
+  that are unusable without undo, and doing them properly needs formula
+  reference translation (a reference into a deleted range becomes `#REF!`),
+  which in turn needs token spans in the lexer. All three belong together in
+  the editing chunk. Column and row *resizing* is done here.
 
 - [ ] **C9. Editing + undo + keybindings**
   Cell editor, formula bar with reference highlighting, fill handle, cut/copy/paste
   (incl. clipboard interop with real Excel), Excel keybinding table.
+  Plus insert/delete rows+cols carried over from C8, with the formula reference
+  translation they need.
   *Exit: an hour of real spreadsheet work without hitting a missing verb.*
 
 - [ ] **C10. xlsx writer**
@@ -262,7 +310,9 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[-]` deferred
 ## Phase 2 — Calx completeness
 
 - [ ] **C11. Formatting** — fonts, borders, fills, alignment, conditional formatting,
-      data validation, cell styles.
+      data validation, cell styles. Number formats already landed in C8; what is
+      left here is everything else in styles.xml, plus `TEXT()`, which can now be
+      written against `ss-model::numfmt`.
 - [ ] **C12. Charts** — read/preserve/render the common types; edit basic properties.
 - [ ] **C13. csv/tsv** — dialect sniffing, encoding detection, large-file streaming.
 - [ ] **C14. Function library — batch 3** (financial, database, dynamic arrays,

@@ -5,9 +5,16 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[lib]
+name = "calx"
+path = "src/lib.rs"
+
 [[bin]]
 name = "calx"
 path = "src/main.rs"
 
 [dependencies]
 ui-kit.workspace = true
+ss-model.workspace = true
+ss-formula.workspace = true
+ss-xlsx.workspace = true

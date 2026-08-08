@@ -14,6 +14,7 @@ mod error;
 mod parts;
 mod shared_strings;
 mod sheet;
+mod styles;
 mod workbook_part;
 mod xml;
 
@@ -60,6 +61,14 @@ fn build(package: &Package) -> Result<Workbook> {
 
     let mut wb = Workbook::new();
     wb.defined_names = meta.defined_names;
+
+    // Styles before the sheets: a cell's `s` attribute indexes this table, and
+    // without it every date in the document is a five-digit number.
+    if let Some(name) = &located.styles {
+        if let Some(part) = package.part(name) {
+            wb.styles = styles::parse(name.as_str(), part.data())?;
+        }
+    }
 
     // Shared strings first: the sheets index into it.
     let mut sst = Vec::new();

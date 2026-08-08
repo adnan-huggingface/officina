@@ -10,9 +10,9 @@
 use ss_model::CellError;
 
 use crate::ast::Expr;
-use crate::datetime::{self, days_in_month, from_serial, DateTime};
 use crate::eval::Evaluator;
 use crate::value::{text_to_number, Operand, Value};
+use ss_model::datetime::{self, days_in_month, from_serial, DateTime};
 
 use super::{arity, visit_args, FnImpl, Source};
 

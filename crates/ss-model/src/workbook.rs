@@ -131,6 +131,8 @@ pub struct Workbook {
     pub strings: StringTable,
     /// Workbook-scoped names. Sheet-scoped names carry their sheet index.
     pub defined_names: Vec<DefinedName>,
+    /// What a cell's [`StyleId`](crate::StyleId) resolves to.
+    pub styles: crate::style::StyleTable,
 }
 
 #[derive(Debug, Clone)]

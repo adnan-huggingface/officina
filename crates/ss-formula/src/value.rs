@@ -271,71 +271,11 @@ pub fn text_to_number(s: &str) -> Option<f64> {
     }
 }
 
-/// How many significant digits Excel keeps when a number becomes text.
-const SIGNIFICANT_DIGITS: usize = 15;
-
-/// Renders a number the way Excel's General format does.
+/// Excel's General format, which is also its number-to-text coercion.
 ///
-/// Fifteen significant digits, then trailing zeros dropped. This is why
-/// `=0.1+0.2&""` is `"0.3"` and not `"0.30000000000000004"`: the sixteenth digit,
-/// where the binary representation shows through, is never printed.
-pub fn format_general(x: f64) -> String {
-    if x == 0.0 {
-        // Also catches -0.0, which Excel shows as 0.
-        return "0".to_string();
-    }
-    if !x.is_finite() {
-        // Unreachable from evaluation — every operation that would produce one
-        // yields an error value instead — but a panic here would be worse.
-        return CellError::Num.as_str().to_string();
-    }
-
-    // `{:e}` rounds for us and fixes up the exponent if rounding carries
-    // (9.99..e0 becomes 1e1), which hand-rolled scaling gets wrong.
-    let sci = format!("{:.*e}", SIGNIFICANT_DIGITS - 1, x);
-    let (mantissa, exp) = sci
-        .split_once('e')
-        .expect("`{:e}` always emits an exponent");
-    let exp: i32 = exp.parse().expect("`{:e}` emits a decimal exponent");
-
-    let negative = mantissa.starts_with('-');
-    let digits: String = mantissa.chars().filter(char::is_ascii_digit).collect();
-    let digits = digits.trim_end_matches('0');
-    let digits = if digits.is_empty() { "0" } else { digits };
-
-    let sign = if negative { "-" } else { "" };
-
-    // Outside this band a plain decimal would be mostly padding zeros, and Excel
-    // switches to scientific notation.
-    if exp >= SIGNIFICANT_DIGITS as i32 || exp <= -5 {
-        let mut out = String::from(sign);
-        out.push_str(&digits[..1]);
-        if digits.len() > 1 {
-            out.push('.');
-            out.push_str(&digits[1..]);
-        }
-        // Excel always writes at least two exponent digits: `1E-08`, not `1E-8`.
-        out.push_str(if exp < 0 { "E-" } else { "E+" });
-        out.push_str(&format!("{:02}", exp.abs()));
-        return out;
-    }
-
-    let point = exp + 1; // digits that belong before the decimal point
-    let mut out = String::from(sign);
-    if point <= 0 {
-        out.push_str("0.");
-        out.extend(std::iter::repeat_n('0', (-point) as usize));
-        out.push_str(digits);
-    } else if point as usize >= digits.len() {
-        out.push_str(digits);
-        out.extend(std::iter::repeat_n('0', point as usize - digits.len()));
-    } else {
-        out.push_str(&digits[..point as usize]);
-        out.push('.');
-        out.push_str(&digits[point as usize..]);
-    }
-    out
-}
+/// Lives in the model because the grid needs it to paint an unformatted cell,
+/// and `&` needs it to concatenate one. The two must never disagree.
+pub use ss_model::format_general;
 
 /// A rectangular block of values.
 ///
@@ -476,37 +416,6 @@ impl<T: Into<Value>> From<Result<T, CellError>> for Operand {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn general_format_stops_at_fifteen_digits() {
-        // The whole point: the sixteenth digit is where binary floating point
-        // stops agreeing with what the user typed.
-        assert_eq!(format_general(0.1 + 0.2), "0.3");
-        assert_eq!(format_general(1.0 / 3.0), "0.333333333333333");
-        assert_eq!(format_general(2.0 / 3.0), "0.666666666666667");
-    }
-
-    #[test]
-    fn general_format_writes_integers_without_a_point() {
-        assert_eq!(format_general(1.0), "1");
-        assert_eq!(format_general(-42.0), "-42");
-        assert_eq!(format_general(0.0), "0");
-        assert_eq!(format_general(-0.0), "0", "negative zero displays as zero");
-        assert_eq!(format_general(1234567890.0), "1234567890");
-    }
-
-    #[test]
-    fn general_format_switches_to_scientific_at_the_edges() {
-        assert_eq!(format_general(1e15), "1E+15");
-        assert_eq!(format_general(1e-8), "1E-08", "two exponent digits minimum");
-        assert_eq!(format_general(1e-5), "1E-05");
-        assert_eq!(
-            format_general(0.0001),
-            "0.0001",
-            "just inside the plain band"
-        );
-        assert_eq!(format_general(123456789012345.0), "123456789012345");
-    }
 
     #[test]
     fn text_to_number_accepts_what_excel_accepts() {

@@ -261,6 +261,9 @@ dependencies = [
 name = "calx"
 version = "0.1.0"
 dependencies = [
+ "ss-formula",
+ "ss-model",
+ "ss-xlsx",
  "ui-kit",
 ]
 

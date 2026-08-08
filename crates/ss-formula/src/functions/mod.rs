@@ -18,6 +18,10 @@ use crate::ast::Expr;
 use crate::eval::Evaluator;
 use crate::value::{Array, Operand, Value};
 
+/// Decimal rounding lives in the model: the number-format engine needs exactly
+/// the same rule to decide what a cell displays.
+pub(crate) use ss_model::numfmt::{round_decimal as decimal_round, Rounding};
+
 mod criteria;
 mod date;
 mod info;
@@ -182,138 +186,5 @@ pub(crate) fn map_text(ev: &mut Evaluator, args: &[Expr], f: impl Fn(&str) -> Va
             let cells: Vec<Value> = a.values().map(apply).collect();
             Operand::from_array(Array::new(a.rows(), a.cols(), cells))
         }
-    }
-}
-
-/// How a value is rounded once the digit to drop has been found.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Rounding {
-    /// Half away from zero: 2.5 goes to 3, and -2.5 goes to -3.
-    HalfAway,
-    /// Always away from zero.
-    Up,
-    /// Always toward zero.
-    Down,
-}
-
-/// Rounds to `digits` places after the decimal point, in decimal.
-///
-/// The detour through a decimal string is not decoration. `ROUND(1.005, 2)` is
-/// 1.01 in Excel, but 1.005 as an f64 is really 1.00499999999999989, so scaling
-/// by 100 and rounding gives 1.00. Excel rounds the fifteen-significant-digit
-/// decimal it would *display*, and matching it means doing the same.
-pub(crate) fn decimal_round(x: f64, digits: i32, mode: Rounding) -> f64 {
-    if x == 0.0 || !x.is_finite() {
-        return x;
-    }
-    let sign = if x < 0.0 { -1.0 } else { 1.0 };
-
-    let sci = format!("{:.14e}", x.abs());
-    let (mantissa, exp) = sci
-        .split_once('e')
-        .expect("`{:e}` always emits an exponent");
-    let exp: i32 = exp.parse().expect("`{:e}` emits a decimal exponent");
-    let all: Vec<u8> = mantissa.bytes().filter(u8::is_ascii_digit).collect();
-
-    // Digit `i` has place value 10^(exp - i); we keep those down to 10^-digits.
-    let keep = exp + digits + 1;
-
-    if keep <= 0 {
-        let carry = match mode {
-            Rounding::HalfAway => keep == 0 && all[0] >= b'5',
-            Rounding::Up => true,
-            Rounding::Down => false,
-        };
-        return if carry {
-            sign * 10f64.powi(-digits)
-        } else {
-            0.0
-        };
-    }
-    let keep = keep as usize;
-    if keep >= all.len() {
-        return x;
-    }
-
-    let mut kept: Vec<u8> = all[..keep].to_vec();
-    let carry = match mode {
-        Rounding::HalfAway => all[keep] >= b'5',
-        Rounding::Up => all[keep..].iter().any(|&d| d != b'0'),
-        Rounding::Down => false,
-    };
-
-    let mut exp = exp;
-    if carry {
-        let mut i = keep;
-        loop {
-            if i == 0 {
-                // Every digit was a nine: 999 became 1000, one place wider.
-                kept.insert(0, b'1');
-                kept.pop();
-                exp += 1;
-                break;
-            }
-            i -= 1;
-            if kept[i] == b'9' {
-                kept[i] = b'0';
-            } else {
-                kept[i] += 1;
-                break;
-            }
-        }
-    }
-
-    let digits_text = String::from_utf8(kept).expect("ASCII digits");
-    let rebuilt: f64 = format!("{}e{}", digits_text, exp - (keep as i32 - 1))
-        .parse()
-        .unwrap_or(x.abs());
-    sign * rebuilt
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn rounding_is_half_away_from_zero_not_bankers() {
-        // Rust's `f64::round` agrees here, but `format!("{:.0}")` does not — it
-        // rounds half to even, which would make this 2.
-        assert_eq!(decimal_round(2.5, 0, Rounding::HalfAway), 3.0);
-        assert_eq!(decimal_round(-2.5, 0, Rounding::HalfAway), -3.0);
-        assert_eq!(decimal_round(1.5, 0, Rounding::HalfAway), 2.0);
-        assert_eq!(decimal_round(0.5, 0, Rounding::HalfAway), 1.0);
-    }
-
-    #[test]
-    fn rounding_works_on_the_decimal_not_the_binary_value() {
-        // The case that catches every naive implementation.
-        assert_eq!(decimal_round(1.005, 2, Rounding::HalfAway), 1.01);
-        assert_eq!(decimal_round(2.675, 2, Rounding::HalfAway), 2.68);
-        assert_eq!(decimal_round(1.015, 2, Rounding::HalfAway), 1.02);
-    }
-
-    #[test]
-    fn rounding_to_negative_digits_rounds_left_of_the_point() {
-        assert_eq!(decimal_round(1234.0, -2, Rounding::HalfAway), 1200.0);
-        assert_eq!(decimal_round(1250.0, -2, Rounding::HalfAway), 1300.0);
-        assert_eq!(decimal_round(1234.0, -5, Rounding::HalfAway), 0.0);
-        assert_eq!(decimal_round(1234.0, -3, Rounding::Up), 2000.0);
-    }
-
-    #[test]
-    fn rounding_carries_all_the_way_through_nines() {
-        assert_eq!(decimal_round(9.99, 1, Rounding::HalfAway), 10.0);
-        assert_eq!(decimal_round(0.999, 2, Rounding::Up), 1.0);
-        assert_eq!(decimal_round(-9.99, 1, Rounding::HalfAway), -10.0);
-    }
-
-    #[test]
-    fn up_and_down_move_away_from_and_toward_zero() {
-        assert_eq!(decimal_round(3.2, 0, Rounding::Up), 4.0);
-        assert_eq!(decimal_round(-3.2, 0, Rounding::Up), -4.0);
-        assert_eq!(decimal_round(3.9, 0, Rounding::Down), 3.0);
-        assert_eq!(decimal_round(-3.9, 0, Rounding::Down), -3.0);
-        assert_eq!(decimal_round(0.001, 1, Rounding::Up), 0.1);
-        assert_eq!(decimal_round(0.001, 1, Rounding::Down), 0.0);
     }
 }
