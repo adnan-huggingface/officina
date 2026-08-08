@@ -1,0 +1,875 @@
+//! Conformance suite for the function library.
+//!
+//! Every expectation here is Excel's answer, not a reasonable answer. Where the
+//! two differ the comment says so. The point of the suite is the awkward cases:
+//! when text becomes a number, when it does not, which error wins, and what
+//! happens at the boundaries where Excel's arithmetic parts ways with IEEE 754.
+//!
+//! Formulas are written without the leading `=`, exactly as a file stores them.
+
+use std::collections::BTreeMap;
+
+use ss_formula::graph::AreaRef;
+use ss_formula::value::format_general;
+use ss_formula::{parse, Context, Evaluator, Operand, Position, RefSet, Value};
+use ss_model::{CellError, CellRange, CellRef};
+
+// ---------------------------------------------------------------- the harness
+
+#[derive(Default)]
+struct Book {
+    sheets: Vec<(String, BTreeMap<CellRef, Value>)>,
+    names: BTreeMap<String, RefSet>,
+}
+
+impl Book {
+    fn sheet(mut self, name: &str, cells: &[(&str, Value)]) -> Self {
+        let map = cells
+            .iter()
+            .map(|(at, v)| (CellRef::from_a1(at).expect("test address"), v.clone()))
+            .collect();
+        self.sheets.push((name.to_string(), map));
+        self
+    }
+
+    fn name(mut self, name: &str, sheet: usize, range: &str) -> Self {
+        let (start, end) = range.split_once(':').unwrap_or((range, range));
+        let range = CellRange::new(
+            CellRef::from_a1(start).expect("test address"),
+            CellRef::from_a1(end).expect("test address"),
+        );
+        self.names.insert(
+            name.to_ascii_uppercase(),
+            RefSet::one(AreaRef { sheet, range }),
+        );
+        self
+    }
+}
+
+impl Context for Book {
+    fn sheet_index(&self, name: &str) -> Option<usize> {
+        self.sheets
+            .iter()
+            .position(|(n, _)| n.eq_ignore_ascii_case(name))
+    }
+
+    fn cell(&self, sheet: usize, at: CellRef) -> Value {
+        self.sheets
+            .get(sheet)
+            .and_then(|(_, cells)| cells.get(&at))
+            .cloned()
+            .unwrap_or(Value::Blank)
+    }
+
+    fn used_bounds(&self, sheet: usize) -> Option<CellRange> {
+        let (_, cells) = self.sheets.get(sheet)?;
+        let mut keys = cells.keys();
+        let first = *keys.next()?;
+        let mut range = CellRange::new(first, first);
+        for &at in cells.keys() {
+            range = CellRange::new(
+                CellRef::new(range.start.row.min(at.row), range.start.col.min(at.col)),
+                CellRef::new(range.end.row.max(at.row), range.end.col.max(at.col)),
+            );
+        }
+        Some(range)
+    }
+
+    fn resolve_name(&self, _sheet: usize, name: &str) -> Option<Operand> {
+        self.names
+            .get(&name.to_ascii_uppercase())
+            .cloned()
+            .map(Operand::Ref)
+    }
+}
+
+fn num(n: f64) -> Value {
+    Value::Number(n)
+}
+
+fn text(s: &str) -> Value {
+    Value::text(s)
+}
+
+/// Evaluates a formula and renders the result in a form a test can read.
+///
+/// Text is quoted so `"1"` and `1` are visibly different — which, given how much
+/// of this suite is about exactly that distinction, is the whole point.
+fn eval_in(book: &Book, formula: &str) -> String {
+    let expr = match parse(formula) {
+        Ok(e) => e,
+        Err(e) => return format!("<parse error: {e}>"),
+    };
+    let mut ev = Evaluator::new(book, Position::new(0, CellRef::new(0, 0)));
+    show(&ev.eval(&expr), &ev)
+}
+
+fn show(op: &Operand, ev: &Evaluator) -> String {
+    match op {
+        Operand::Value(v) => show_value(v),
+        Operand::Array(a) => {
+            let rows: Vec<String> = (0..a.rows())
+                .map(|r| {
+                    (0..a.cols())
+                        .map(|c| show_value(a.get(r, c).expect("in bounds")))
+                        .collect::<Vec<_>>()
+                        .join(",")
+                })
+                .collect();
+            format!("{{{}}}", rows.join(";"))
+        }
+        // A single-cell reference reads as the value in it, the same way a
+        // one-by-one array collapses.
+        Operand::Ref(_) => {
+            let a = ev.spread(op);
+            if a.rows() == 1 && a.cols() == 1 {
+                show_value(&a.first())
+            } else {
+                show(&Operand::Array(a), ev)
+            }
+        }
+    }
+}
+
+fn show_value(v: &Value) -> String {
+    match v {
+        Value::Blank => "<blank>".to_string(),
+        Value::Number(n) => format_general(*n),
+        Value::Text(s) => format!("\"{s}\""),
+        Value::Bool(b) => if *b { "TRUE" } else { "FALSE" }.to_string(),
+        Value::Error(e) => e.as_str().to_string(),
+    }
+}
+
+/// Runs a table of `(formula, expected)` against an empty workbook.
+#[track_caller]
+fn check(cases: &[(&str, &str)]) {
+    check_in(&Book::default().sheet("Sheet1", &[]), cases);
+}
+
+#[track_caller]
+fn check_in(book: &Book, cases: &[(&str, &str)]) {
+    let mut failures = Vec::new();
+    for (formula, expected) in cases {
+        let got = eval_in(book, formula);
+        if got != *expected {
+            failures.push(format!(
+                "  ={formula}\n    expected {expected}\n    got      {got}"
+            ));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} of {} cases disagree with Excel:\n{}",
+        failures.len(),
+        cases.len(),
+        failures.join("\n")
+    );
+}
+
+// ------------------------------------------------------------------ coercion
+
+#[test]
+fn arithmetic_coerces_text_and_booleans() {
+    check(&[
+        ("\"1\"+1", "2"),
+        ("\"1.5\"*2", "3"),
+        ("TRUE+1", "2"),
+        ("FALSE+1", "1"),
+        ("\"a\"+1", "#VALUE!"),
+        ("\"\"+1", "#VALUE!"),
+        // A percent-suffixed string is a number to Excel's coercion.
+        ("\"50%\"+0", "0.5"),
+        ("-\"2\"", "-2"),
+    ]);
+}
+
+#[test]
+fn concatenation_coerces_everything_to_text() {
+    check(&[
+        ("1&1", "\"11\""),
+        ("TRUE&\"\"", "\"TRUE\""),
+        ("1.5&\"\"", "\"1.5\""),
+        // Fifteen significant digits, which is where the binary representation
+        // stops being visible.
+        ("(1/3)&\"\"", "\"0.333333333333333\""),
+        ("(0.1+0.2)&\"\"", "\"0.3\""),
+        ("1000000&\"\"", "\"1000000\""),
+    ]);
+}
+
+#[test]
+fn unary_plus_passes_its_operand_through_untouched() {
+    // Unlike unary minus, which coerces. `+"abc"` is text, not #VALUE!.
+    check(&[("+\"abc\"", "\"abc\""), ("-\"abc\"", "#VALUE!")]);
+}
+
+#[test]
+fn exponentiation_follows_excel_not_ieee() {
+    check(&[
+        // Unary minus binds tighter than `^`, so this is (-2)^2.
+        ("-2^2", "4"),
+        ("0^0", "1"),
+        ("0^-1", "#DIV/0!"),
+        // No complex results: a negative base with a fractional power is #NUM!,
+        // where `f64::powf` would hand back NaN.
+        ("(-8)^(1/3)", "#NUM!"),
+        ("(-8)^2", "64"),
+        ("2^-1", "0.5"),
+        ("1/0", "#DIV/0!"),
+    ]);
+}
+
+#[test]
+fn comparison_orders_by_type_before_value() {
+    check(&[
+        ("1<\"a\"", "TRUE"),
+        ("\"a\"<TRUE", "TRUE"),
+        ("9.99999E+307<\"\"", "TRUE"),
+        ("\"A\"=\"a\"", "TRUE"),
+        ("EXACT(\"A\",\"a\")", "FALSE"),
+        // Different types, so not equal — the classic trap when testing for an
+        // empty cell with `=0`.
+        ("\"\"=0", "FALSE"),
+        ("\"10\"<\"9\"", "TRUE"),
+        ("10<9", "FALSE"),
+    ]);
+}
+
+#[test]
+fn a_blank_cell_equals_both_zero_and_empty_text() {
+    let book = Book::default().sheet("Sheet1", &[("B1", num(5.0))]);
+    check_in(
+        &book,
+        &[
+            ("A1=0", "TRUE"),
+            ("A1=\"\"", "TRUE"),
+            ("A1+1", "1"),
+            ("A1&\"x\"", "\"x\""),
+            ("ISBLANK(A1)", "TRUE"),
+            ("ISBLANK(B1)", "FALSE"),
+        ],
+    );
+}
+
+// --------------------------------------------------------------- aggregation
+
+#[test]
+fn aggregation_treats_direct_arguments_differently_from_ranges() {
+    // The single most surprising rule in the language, and the reason arguments
+    // are not simply flattened before a function sees them.
+    let book = Book::default().sheet(
+        "Sheet1",
+        &[
+            ("A1", num(1.0)),
+            ("A2", text("2")),
+            ("A3", Value::Bool(true)),
+            ("A4", text("not a number")),
+        ],
+    );
+    check_in(
+        &book,
+        &[
+            ("SUM(TRUE)", "1"),
+            ("SUM({TRUE})", "0"),
+            ("SUM(\"1\",1)", "2"),
+            ("SUM(\"a\")", "#VALUE!"),
+            // Text and booleans inside a range are skipped, so this is A1 alone.
+            ("SUM(A1:A4)", "1"),
+            ("SUM(A1:A4,\"1\")", "2"),
+            ("COUNTOFNOTHING()", "#NAME?"),
+        ],
+    );
+}
+
+#[test]
+fn aggregation_never_skips_an_error() {
+    let book = Book::default().sheet(
+        "Sheet1",
+        &[
+            ("A1", num(1.0)),
+            ("A2", Value::Error(CellError::Div0)),
+            ("A3", num(3.0)),
+        ],
+    );
+    check_in(
+        &book,
+        &[
+            ("SUM(A1:A3)", "#DIV/0!"),
+            ("SUM(1,1/0)", "#DIV/0!"),
+            ("PRODUCT(A1:A3)", "#DIV/0!"),
+        ],
+    );
+}
+
+#[test]
+fn product_of_an_empty_range_is_zero_not_one() {
+    let book = Book::default().sheet("Sheet1", &[("D1", text("x"))]);
+    check_in(&book, &[("PRODUCT(A1:A3)", "0"), ("PRODUCT(2,3)", "6")]);
+}
+
+#[test]
+fn ranges_and_range_operators() {
+    let book = Book::default().sheet(
+        "Sheet1",
+        &[
+            ("A1", num(1.0)),
+            ("A2", num(2.0)),
+            ("B1", num(10.0)),
+            ("B2", num(20.0)),
+            ("C3", num(100.0)),
+        ],
+    );
+    check_in(
+        &book,
+        &[
+            ("SUM(A1:B2)", "33"),
+            ("SUM(A:A)", "3"),
+            ("SUM(1:1)", "11"),
+            // A space is the intersection operator.
+            ("SUM(A1:B2 B1:C3)", "30"),
+            ("SUM(A1:A2 C3:C3)", "#NULL!"),
+            // A comma inside extra parentheses is a union, not an argument list.
+            ("SUM((A1,B2))", "21"),
+            ("SUM(A1:A2,B1:B2)", "33"),
+        ],
+    );
+}
+
+#[test]
+fn whole_column_references_stop_at_the_used_range() {
+    // Not a correctness test so much as a promise about cost: without clipping,
+    // this is a million calls into the context for one number.
+    let mut visited = 0usize;
+    struct Counting<'a>(&'a std::cell::Cell<usize>);
+    impl Context for Counting<'_> {
+        fn sheet_index(&self, _: &str) -> Option<usize> {
+            Some(0)
+        }
+        fn cell(&self, _: usize, at: CellRef) -> Value {
+            self.0.set(self.0.get() + 1);
+            Value::Number(f64::from(at.row))
+        }
+        fn used_bounds(&self, _: usize) -> Option<CellRange> {
+            Some(CellRange::new(CellRef::new(0, 0), CellRef::new(9, 3)))
+        }
+    }
+    let counter = std::cell::Cell::new(0);
+    let ctx = Counting(&counter);
+    let expr = parse("SUM(A:A)").expect("parses");
+    let mut ev = Evaluator::new(&ctx, Position::new(0, CellRef::new(0, 0)));
+    let got = ev.eval(&expr);
+    visited += counter.get();
+
+    assert_eq!(show(&got, &ev), "45", "rows 0..9 summed");
+    assert_eq!(
+        visited, 10,
+        "visited only the used range, not 1,048,576 rows"
+    );
+}
+
+// ------------------------------------------------------------------ rounding
+
+#[test]
+fn rounding_matches_excel_at_the_halfway_point() {
+    check(&[
+        ("ROUND(2.5,0)", "3"),
+        ("ROUND(-2.5,0)", "-3"),
+        ("ROUND(2.4,0)", "2"),
+        // 1.005 is really 1.00499999999999989 as an f64. Excel rounds the
+        // decimal it displays, so this is 1.01 and not 1.
+        ("ROUND(1.005,2)", "1.01"),
+        ("ROUND(2.675,2)", "2.68"),
+        ("ROUND(1234,-2)", "1200"),
+        ("ROUNDUP(3.1,0)", "4"),
+        ("ROUNDUP(-3.1,0)", "-4"),
+        ("ROUNDDOWN(3.9,0)", "3"),
+        ("ROUNDDOWN(-3.9,0)", "-3"),
+    ]);
+}
+
+#[test]
+fn int_floors_but_trunc_truncates() {
+    check(&[
+        ("INT(2.7)", "2"),
+        ("INT(-2.7)", "-3"),
+        ("TRUNC(2.7)", "2"),
+        ("TRUNC(-2.7)", "-2"),
+        ("TRUNC(-2.789,2)", "-2.78"),
+    ]);
+}
+
+#[test]
+fn mod_takes_the_sign_of_its_divisor() {
+    // Where every language that borrows C's `%` disagrees with Excel.
+    check(&[
+        ("MOD(-3,2)", "1"),
+        ("MOD(3,-2)", "-1"),
+        ("MOD(3,2)", "1"),
+        ("MOD(-3,-2)", "-1"),
+        ("MOD(3,0)", "#DIV/0!"),
+        ("QUOTIENT(-3,2)", "-1"),
+    ]);
+}
+
+#[test]
+fn ceiling_and_floor_step_toward_the_significance_sign() {
+    check(&[
+        ("CEILING(4.5,2)", "6"),
+        ("CEILING(-4.5,2)", "-4"),
+        ("CEILING(-4.5,-2)", "-6"),
+        ("CEILING(4.5,-2)", "#NUM!"),
+        ("CEILING(4.5,0)", "0"),
+        ("FLOOR(4.5,2)", "4"),
+        ("FLOOR(-4.5,2)", "-6"),
+        ("FLOOR(-4.5,-2)", "-4"),
+        ("FLOOR(4.5,0)", "#DIV/0!"),
+        // The .MATH pair ignores the significance sign and takes a mode instead.
+        ("CEILING.MATH(-4.5)", "-4"),
+        ("CEILING.MATH(-4.5,1,-1)", "-5"),
+        ("CEILING.MATH(4.5,2)", "6"),
+        ("FLOOR.MATH(-4.5)", "-5"),
+        ("FLOOR.MATH(-4.5,1,-1)", "-4"),
+        ("ISO.CEILING(-4.5)", "-4"),
+    ]);
+}
+
+#[test]
+fn even_odd_and_mround() {
+    check(&[
+        ("EVEN(1.5)", "2"),
+        ("EVEN(-1.5)", "-2"),
+        ("EVEN(2)", "2"),
+        ("ODD(2)", "3"),
+        ("ODD(-2)", "-3"),
+        ("ODD(3)", "3"),
+        ("ODD(0)", "1"),
+        ("MROUND(10,3)", "9"),
+        ("MROUND(-10,-3)", "-9"),
+        // Rounding toward a multiple of the opposite sign is refused.
+        ("MROUND(10,-3)", "#NUM!"),
+        ("MROUND(10,0)", "0"),
+    ]);
+}
+
+#[test]
+fn math_domain_errors_are_num_not_nan() {
+    check(&[
+        ("SQRT(-1)", "#NUM!"),
+        ("LN(0)", "#NUM!"),
+        ("LOG(-1)", "#NUM!"),
+        ("LOG(8,2)", "3"),
+        ("LOG(8,1)", "#NUM!"),
+        ("ASIN(2)", "#NUM!"),
+        ("ACOS(-1)", "3.14159265358979"),
+        ("ACOSH(0.5)", "#NUM!"),
+        ("FACT(-1)", "#NUM!"),
+        ("FACT(171)", "#NUM!"),
+        ("FACT(5)", "120"),
+        ("FACT(0)", "1"),
+        ("COMBIN(5,2)", "10"),
+        ("COMBIN(2,5)", "#NUM!"),
+        ("PERMUT(5,2)", "20"),
+        ("GCD(12,18)", "6"),
+        ("LCM(4,6)", "12"),
+        ("GCD(-1)", "#NUM!"),
+        ("SIGN(-3)", "-1"),
+        ("SIGN(0)", "0"),
+    ]);
+}
+
+// ------------------------------------------------------------------- logical
+
+#[test]
+fn branches_that_are_not_taken_are_not_evaluated() {
+    // If this failed, `IF(A1=0,0,1/A1)` — the standard guard against division by
+    // zero — would return #DIV/0! exactly when it is supposed to help.
+    check(&[
+        ("IF(FALSE,1/0,5)", "5"),
+        ("IF(TRUE,5,1/0)", "5"),
+        ("IFERROR(1/0,\"caught\")", "\"caught\""),
+        ("IFERROR(5,1/0)", "5"),
+        ("IFNA(1/0,\"caught\")", "#DIV/0!"),
+        ("IFNA(NA(),\"caught\")", "\"caught\""),
+    ]);
+}
+
+#[test]
+fn an_omitted_branch_and_an_empty_branch_are_different() {
+    check(&[
+        ("IF(FALSE,1)", "FALSE"),
+        ("IF(FALSE,1,)", "0"),
+        ("IF(TRUE,,9)", "0"),
+    ]);
+}
+
+#[test]
+fn and_or_ignore_text_in_ranges_but_not_in_arguments() {
+    let book = Book::default().sheet(
+        "Sheet1",
+        &[
+            ("A1", Value::Bool(true)),
+            ("A2", text("header")),
+            ("A3", Value::Bool(false)),
+            ("C1", text("header")),
+            ("C2", text("also text")),
+        ],
+    );
+    check_in(
+        &book,
+        &[
+            ("AND(TRUE,1)", "TRUE"),
+            ("AND(TRUE,0)", "FALSE"),
+            ("OR(FALSE,\"TRUE\")", "TRUE"),
+            ("AND(\"yes\")", "#VALUE!"),
+            ("AND(A1:A3)", "FALSE"),
+            ("OR(A1:A3)", "TRUE"),
+            // Nothing usable in the range at all, so #VALUE! rather than TRUE.
+            ("AND(C1:C2)", "#VALUE!"),
+            ("NOT(0)", "TRUE"),
+            ("XOR(TRUE,TRUE,TRUE)", "TRUE"),
+            ("XOR(TRUE,TRUE)", "FALSE"),
+        ],
+    );
+}
+
+#[test]
+fn ifs_and_switch_pick_the_first_match() {
+    check(&[
+        ("IFS(FALSE,1,TRUE,2)", "2"),
+        ("IFS(FALSE,1)", "#N/A"),
+        ("IFS(TRUE,1,TRUE,2)", "1"),
+        ("SWITCH(2,1,\"a\",2,\"b\",\"z\")", "\"b\""),
+        ("SWITCH(9,1,\"a\",2,\"b\",\"z\")", "\"z\""),
+        ("SWITCH(9,1,\"a\",2,\"b\")", "#N/A"),
+    ]);
+}
+
+#[test]
+fn information_functions_do_not_propagate_errors() {
+    // The one family that must look at an error instead of passing it on.
+    check(&[
+        ("ISERROR(1/0)", "TRUE"),
+        ("ISERROR(NA())", "TRUE"),
+        ("ISERR(NA())", "FALSE"),
+        ("ISERR(1/0)", "TRUE"),
+        ("ISNA(NA())", "TRUE"),
+        ("ISNUMBER(1)", "TRUE"),
+        ("ISNUMBER(\"1\")", "FALSE"),
+        ("ISTEXT(\"a\")", "TRUE"),
+        ("ISNONTEXT(1)", "TRUE"),
+        ("ISLOGICAL(TRUE)", "TRUE"),
+        ("ERROR.TYPE(1/0)", "2"),
+        ("ERROR.TYPE(NA())", "7"),
+        ("ERROR.TYPE(1)", "#N/A"),
+        ("TYPE(1)", "1"),
+        ("TYPE(\"a\")", "2"),
+        ("TYPE(TRUE)", "4"),
+        ("TYPE(NA())", "16"),
+        ("TYPE({1,2})", "64"),
+        ("N(\"a\")", "0"),
+        ("N(TRUE)", "1"),
+        ("ISEVEN(4)", "TRUE"),
+        ("ISODD(-3)", "TRUE"),
+    ]);
+}
+
+#[test]
+fn isref_distinguishes_a_reference_from_its_value() {
+    let book = Book::default().sheet("Sheet1", &[("A1", num(1.0))]);
+    check_in(&book, &[("ISREF(A1)", "TRUE"), ("ISREF(1)", "FALSE")]);
+}
+
+// ---------------------------------------------------------------------- text
+
+#[test]
+fn text_positions_are_one_based() {
+    check(&[
+        ("LEFT(\"abc\")", "\"a\""),
+        ("LEFT(\"abc\",2)", "\"ab\""),
+        ("LEFT(\"abc\",10)", "\"abc\""),
+        ("LEFT(\"abc\",0)", "\"\""),
+        ("LEFT(\"abc\",-1)", "#VALUE!"),
+        ("RIGHT(\"abc\",2)", "\"bc\""),
+        ("MID(\"abcdef\",2,3)", "\"bcd\""),
+        // Zero is not the start of the string; it is an error.
+        ("MID(\"abc\",0,1)", "#VALUE!"),
+        ("MID(\"abc\",2,10)", "\"bc\""),
+        ("MID(\"abc\",10,1)", "\"\""),
+        ("LEN(\"abc\")", "3"),
+        ("LEN(\"\")", "0"),
+    ]);
+}
+
+#[test]
+fn find_is_exact_and_search_is_not() {
+    check(&[
+        ("FIND(\"a\",\"banana\")", "2"),
+        ("FIND(\"A\",\"banana\")", "#VALUE!"),
+        ("FIND(\"a\",\"banana\",3)", "4"),
+        ("SEARCH(\"A\",\"banana\")", "2"),
+        // Wildcards work in SEARCH and are literal in FIND.
+        ("SEARCH(\"b*n\",\"banana\")", "1"),
+        ("SEARCH(\"?n\",\"banana\")", "2"),
+        ("FIND(\"b*n\",\"banana\")", "#VALUE!"),
+        ("SEARCH(\"z\",\"banana\")", "#VALUE!"),
+    ]);
+}
+
+#[test]
+fn text_transforms() {
+    check(&[
+        ("UPPER(\"aB\")", "\"AB\""),
+        ("LOWER(\"aB\")", "\"ab\""),
+        ("PROPER(\"o'brien mcdonald\")", "\"O'Brien Mcdonald\""),
+        ("TRIM(\"  a   b  \")", "\"a b\""),
+        ("REPT(\"ab\",3)", "\"ababab\""),
+        ("REPT(\"ab\",0)", "\"\""),
+        ("REPLACE(\"abcdef\",2,3,\"X\")", "\"aXef\""),
+        ("SUBSTITUTE(\"aaa\",\"a\",\"b\")", "\"bbb\""),
+        ("SUBSTITUTE(\"aaa\",\"a\",\"b\",2)", "\"aba\""),
+        ("SUBSTITUTE(\"aaa\",\"\",\"b\")", "\"aaa\""),
+        ("CONCATENATE(\"a\",1,TRUE)", "\"a1TRUE\""),
+        ("CONCAT(\"a\",1)", "\"a1\""),
+        ("TEXTJOIN(\"-\",TRUE,\"a\",\"\",\"b\")", "\"a-b\""),
+        ("TEXTJOIN(\"-\",FALSE,\"a\",\"\",\"b\")", "\"a--b\""),
+        ("T(\"a\")", "\"a\""),
+        ("T(1)", "\"\""),
+        ("VALUE(\"50%\")", "0.5"),
+        ("VALUE(\"abc\")", "#VALUE!"),
+        ("NUMBERVALUE(\"1.234,56\",\",\",\".\")", "1234.56"),
+    ]);
+}
+
+#[test]
+fn char_and_code_speak_windows_1252() {
+    check(&[
+        ("CHAR(65)", "\"A\""),
+        ("CODE(\"A\")", "65"),
+        ("CHAR(0)", "#VALUE!"),
+        ("CHAR(256)", "#VALUE!"),
+        // 128-159 is where the Windows code page diverges from Latin-1.
+        ("CHAR(133)", "\"\u{2026}\""),
+        ("CODE(\"\u{2026}\")", "133"),
+        ("UNICHAR(8364)", "\"\u{20AC}\""),
+        ("UNICODE(\"\u{20AC}\")", "8364"),
+    ]);
+}
+
+#[test]
+fn text_length_counts_characters() {
+    // Documented divergence: Excel counts UTF-16 code units, so LEN of an astral
+    // character is 2 there and 1 here. Matching it would let MID cut a surrogate
+    // pair in half, which a Rust `String` cannot hold.
+    check(&[
+        ("LEN(\"h\u{e9}llo\")", "5"),
+        ("MID(\"h\u{e9}llo\",2,1)", "\"\u{e9}\""),
+    ]);
+}
+
+// -------------------------------------------------------------------- arrays
+
+#[test]
+fn operators_broadcast_over_arrays() {
+    check(&[
+        ("{1,2}+{10,20}", "{11,22}"),
+        ("{1,2}+10", "{11,12}"),
+        ("{1;2}*{10,20}", "{10,20;20,40}"),
+        ("ABS({-1,-2})", "{1,2}"),
+        // Shapes that genuinely disagree give #N/A in the cells that do not
+        // line up, not an error over the whole result.
+        ("{1,2,3}+{10,20}", "{11,22,#N/A}"),
+        ("SUM({1,2;3,4})", "10"),
+        ("SUMPRODUCT({1,2},{3,4})", "11"),
+        ("SUMPRODUCT({1,2},{3,4,5})", "#VALUE!"),
+    ]);
+}
+
+#[test]
+fn sumproduct_treats_non_numbers_as_zero() {
+    // What makes the `(a=b)*(c=d)` conditional-sum idiom work at all.
+    let book = Book::default().sheet(
+        "Sheet1",
+        &[
+            ("A1", num(1.0)),
+            ("A2", text("x")),
+            ("A3", num(3.0)),
+            ("B1", num(10.0)),
+            ("B2", num(20.0)),
+            ("B3", num(30.0)),
+        ],
+    );
+    check_in(
+        &book,
+        &[
+            ("SUMPRODUCT(A1:A3,B1:B3)", "100"),
+            // A reminder that `>` is not the criteria language: text sorts
+            // above every number, so A2 satisfies `>2` even though it is "x".
+            // `SUMIF` would not count it; a comparison operator does.
+            ("SUMPRODUCT((A1:A3>2)*1,B1:B3)", "50"),
+        ],
+    );
+}
+
+// ---------------------------------------------------------------- conditional
+
+#[test]
+fn sumif_matches_by_criteria() {
+    let book = Book::default().sheet(
+        "Sheet1",
+        &[
+            ("A1", num(1.0)),
+            ("A2", num(3.0)),
+            ("A3", num(5.0)),
+            ("A4", text("apple")),
+            ("B1", num(10.0)),
+            ("B2", num(20.0)),
+            ("B3", num(30.0)),
+            ("B4", num(40.0)),
+        ],
+    );
+    check_in(
+        &book,
+        &[
+            ("SUMIF(A1:A4,\">2\")", "8"),
+            ("SUMIF(A1:A4,\">2\",B1:B4)", "50"),
+            ("SUMIF(A1:A4,\"apple\",B1:B4)", "40"),
+            ("SUMIF(A1:A4,\"a*\",B1:B4)", "40"),
+            ("SUMIF(A1:A4,3,B1:B4)", "20"),
+            ("SUMIF(A1:A4,\"<>3\",B1:B4)", "80"),
+            ("SUMIFS(B1:B4,A1:A4,\">1\",A1:A4,\"<5\")", "20"),
+            ("SUMIFS(B1:B4,A1:A4,\">0\")", "60"),
+        ],
+    );
+}
+
+#[test]
+fn whole_column_criteria_ranges_stay_aligned_with_their_sum_range() {
+    // Clipping a whole-column reference to the used range moves where iteration
+    // starts. If the offsets into the sum range were measured from there rather
+    // than from the range as written, every row would pair with the wrong one —
+    // and because both columns are still the same *length*, the answer would
+    // simply be quietly wrong rather than an error.
+    let book = Book::default().sheet(
+        "Sheet1",
+        &[
+            ("A4", num(1.0)),
+            ("A5", num(9.0)),
+            ("A6", num(9.0)),
+            ("B4", num(100.0)),
+            ("B5", num(200.0)),
+            ("B6", num(400.0)),
+        ],
+    );
+    check_in(
+        &book,
+        &[
+            ("SUMIF(A:A,9,B:B)", "600"),
+            ("SUMIF(A:A,\">0\",B:B)", "700"),
+            ("SUMIFS(B:B,A:A,9)", "600"),
+            ("SUMIFS(B:B,A:A,\">0\",B:B,\">150\")", "600"),
+        ],
+    );
+}
+
+#[test]
+fn sumif_does_not_treat_a_blank_cell_as_zero() {
+    // If it did, `SUMIF(range,"=0")` over a sparse column would pick up every
+    // empty row in it.
+    let book = Book::default().sheet(
+        "Sheet1",
+        &[
+            ("A1", num(0.0)),
+            ("A3", num(0.0)),
+            ("B1", num(1.0)),
+            ("B2", num(2.0)),
+            ("B3", num(4.0)),
+        ],
+    );
+    check_in(
+        &book,
+        &[
+            ("SUMIF(A1:A3,0,B1:B3)", "5"),
+            ("SUMIF(A1:A3,\"=\",B1:B3)", "2"),
+            ("SUMIF(A1:A3,\"<>\",B1:B3)", "5"),
+        ],
+    );
+}
+
+// --------------------------------------------------------------- names, sheets
+
+#[test]
+fn references_reach_other_sheets_and_defined_names() {
+    let book = Book::default()
+        .sheet("Sheet1", &[("A1", num(1.0))])
+        .sheet("Data Sheet", &[("A1", num(10.0)), ("A2", num(20.0))])
+        .name("Totals", 1, "A1:A2");
+    check_in(
+        &book,
+        &[
+            ("'Data Sheet'!A1", "10"),
+            ("SUM('Data Sheet'!A1:A2)", "30"),
+            ("SUM(Totals)", "30"),
+            ("SUM(Sheet1:'Data Sheet'!A1)", "11"),
+            ("Nowhere!A1", "#REF!"),
+            ("SUM(Unknown_Name)", "#NAME?"),
+        ],
+    );
+}
+
+#[test]
+fn an_unknown_function_is_a_name_error_not_a_crash() {
+    // Files contain functions we have not implemented yet. Every one of them has
+    // to come back as a value the user can see, never as a failure to open.
+    check(&[
+        ("NOSUCHFUNCTION()", "#NAME?"),
+        ("NOSUCHFUNCTION(1,2,3)", "#NAME?"),
+        // The `_xlfn.` prefix is how Excel stores post-2007 functions.
+        ("_xlfn.CONCAT(\"a\",\"b\")", "\"ab\""),
+        ("_xlfn.NOSUCHTHING()", "#NAME?"),
+    ]);
+}
+
+#[test]
+fn deep_nesting_is_bounded() {
+    // A generated or hostile formula must not blow the stack.
+    let deep = format!("{}1{}", "ABS(".repeat(200), ")".repeat(200));
+    let book = Book::default().sheet("Sheet1", &[]);
+    let got = eval_in(&book, &deep);
+    assert!(
+        got == "#NUM!" || got.starts_with("<parse error"),
+        "deep nesting should be refused, got {got}"
+    );
+}
+
+#[test]
+fn rand_stays_inside_its_range_and_is_reproducible() {
+    let book = Book::default().sheet("Sheet1", &[]);
+    let expr = parse("RAND()").expect("parses");
+    let sample = |seed: u64| {
+        let mut ev = Evaluator::new(&book, Position::new(0, CellRef::new(0, 0))).with_seed(seed);
+        let mut out = Vec::new();
+        for _ in 0..64 {
+            match ev.eval(&expr) {
+                Operand::Value(Value::Number(n)) => out.push(n),
+                other => panic!("RAND returned {other:?}"),
+            }
+        }
+        out
+    };
+    let a = sample(1);
+    assert!(a.iter().all(|&n| (0.0..1.0).contains(&n)), "out of range");
+    assert_eq!(a, sample(1), "same seed, same sequence");
+    assert_ne!(a, sample(2), "different seeds should differ");
+
+    let between = parse("RANDBETWEEN(1,6)").expect("parses");
+    let mut ev = Evaluator::new(&book, Position::new(0, CellRef::new(0, 0)));
+    for _ in 0..256 {
+        match ev.eval(&between) {
+            Operand::Value(Value::Number(n)) => {
+                assert!((1.0..=6.0).contains(&n) && n.fract() == 0.0, "got {n}");
+            }
+            other => panic!("RANDBETWEEN returned {other:?}"),
+        }
+    }
+}

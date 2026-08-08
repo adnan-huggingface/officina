@@ -2232,6 +2232,7 @@ version = "0.1.0"
 dependencies = [
  "ooxml",
  "quick-xml",
+ "ss-formula",
  "ss-model",
  "zip",
 ]

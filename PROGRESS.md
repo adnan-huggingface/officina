@@ -9,7 +9,7 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[-]` deferred
 
 ## Current state
 
-**Chunk:** C6 — function library, batch 1 (C0–C5 all done)
+**Chunk:** C7 — function library, batch 2 (C0–C6 all done)
 **Status:** not started
 **Handoff note:**
 
@@ -21,15 +21,32 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[-]` deferred
   chunks in a BTreeMap; `Cell` is pinned at 24 bytes by a test. C4 added a
   per-sheet formula arena and `SheetKind` (chart/dialog sheets keep their slot in
   the sheet list, because `localSheetId` indexes it).
-- `ss-xlsx` is complete for C4: 54 tests plus 2 ignored performance checks.
-  Run those with `cargo test --release -p ss-xlsx -- --ignored --nocapture`;
-  they are meaningless in a debug build.
+- `ss-xlsx` is complete for C4: 54 tests plus 2 ignored performance checks, and
+  since C6 an integration test that recalculates the whole corpus and compares
+  against the values Excel cached in it. Run the performance ones with
+  `cargo test --release -p ss-xlsx -- --ignored --nocapture`; they are
+  meaningless in a debug build.
 - Watch item: quick-xml 0.41 does **not** fold entities into text. `&amp;` arrives
   as a separate `Event::GeneralRef`, so any text accumulator must handle it or it
   silently drops every `&`, `<`, and `>`. `xml::push_text` is the one place that
   does this; use it rather than matching `Event::Text` directly.
-- `ss-formula` is complete for C5: 64 tests. Lexer, Pratt parser, dependency
-  graph. No evaluation yet — that is C6/C7.
+- `ss-formula` is complete for C5 and C6: 133 tests, of which 37 are the
+  conformance suite in `tests/conformance.rs`. Lexer, Pratt parser, dependency
+  graph, evaluator, and ~110 functions. Workspace total is **265 tests**, all
+  green; `cargo clippy --workspace --all-targets -- -D warnings` and
+  `cargo fmt --all --check` are both clean.
+- Watch item: whether text becomes a number depends on **how the value reached
+  the function**, not on what it is. `SUM(TRUE)` is 1, `SUM({TRUE})` is 0.
+  `functions::visit_args` tags each value `Direct` or `Inside` for exactly this;
+  never flatten arguments before a function sees them.
+- Watch item: the criteria language (`SUMIF`, and `COUNTIF` in C7) compares
+  *within* a type. Under the `=` operator's rules text sorts above every number,
+  so `SUMIF(A:A,">0")` would otherwise count a column's text header.
+- Watch item: `DependencyGraph::dependents_of` is a linear scan over every
+  formula, so `evaluation_order` is O(formulas^2). Fine at corpus scale and for
+  the 1,200-cell stress test; it will not survive a 100k-formula workbook. C5
+  recorded this as a deliberate trade; `recalculate` is what makes it reachable
+  by a user, so it is now on C29's list rather than a hypothetical.
 - `cargo xtask fidelity` is green: **27 passed, 0 failed**. It still correctly
   *fails* on an empty corpus rather than reporting a vacuous pass.
 - **Watch item — driving Office through COM in-process hangs.** Not a licensing
@@ -132,13 +149,58 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[-]` deferred
   `with_checks(false)` took the whole parse from 3.6 s to 2.1 s. Nothing else came
   close — the store, value building, and interning together were under 0.5 s.
 
-- [ ] **C5. Formula engine — parser + graph**
+- [x] **C5. Formula engine — parser + graph**
   Lexer, Pratt parser, AST, A1/R1C1 references, ranges, dependency graph, topological
   incremental recalc, cycle detection, volatile tracking.
-  *Exit: dependency-order recalc correct on a generated stress workbook.*
+  *Exit: dependency-order recalc correct on a generated stress workbook.* — **met**
+  by `workbook::tests::a_stress_workbook_recalculates_correctly`, which checks a
+  60x20 grid of cross-referencing formulas against an independent computation of
+  the same recurrence.
 
-- [ ] **C6. Function library — batch 1** (math/trig, logical, text)
+  Precedents are stored as *areas*, never expanded: `SUM(A:A)` would otherwise be
+  a million edges. Cells in a cycle — including cells merely downstream of one —
+  are excluded from the order and reported, rather than given an arbitrary value.
+  A self-reference needs its own detection: a self-loop contributes no in-degree,
+  so Kahn's algorithm hands it back as perfectly sortable.
+
+- [x] **C6. Function library — batch 1** (math/trig, logical, text)
   *Exit: conformance suite passes, incl. Excel's coercion and error-propagation quirks.*
+  — **met: 37 conformance tests, all green.**
+
+  Roughly 110 functions across math/trig, logical, text, and the `IS*` family
+  (which the logical ones need). Plus `SUMIF`/`SUMIFS` and the criteria
+  mini-language they share with C7's `COUNTIF`.
+
+  What took the work was not the functions; it was the three rules underneath
+  them, each of which is invisible until it is wrong:
+
+  - **Arguments arrive unevaluated.** `IF` must not compute the branch it does
+    not take, and aggregation has to know whether a value was written directly
+    or found in a range.
+  - **`ROUND` rounds the decimal, not the binary.** `ROUND(1.005,2)` is 1.01 in
+    Excel; 1.005 as an f64 is 1.00499999999999989, so scaling and rounding gives
+    1.00. `functions::decimal_round` goes through the 15-significant-digit
+    decimal that General format would display.
+  - **Criteria are not comparisons.** See the watch item above.
+
+  Not implemented, and deliberately: `TEXT`, which needs the number-format
+  engine from C11. Implicit intersection is C7's; until then a multi-cell
+  operand in scalar context collapses to its first cell.
+
+  `workbook::recalculate` is the loop that drives all of this over a real
+  `Workbook` — parse, build the graph, evaluate in topological order, write
+  back. A formula that does not parse keeps the value the file cached for it:
+  Excel's own answer is better than one we know we cannot compute.
+
+  **The strongest check is not the hand-written suite.** Every formula cell in
+  an xlsx carries the value Excel last computed for it, which makes the corpus a
+  conformance suite nobody had to write:
+  `ss-xlsx/tests/recalc_against_excel.rs` opens each workbook, recalculates from
+  the formula text alone, and compares. **27 of 27 comparable cells match.** The
+  5 skipped cells all name a function that is genuinely not written yet —
+  AVERAGE, COUNTIF, TEXT, TODAY, TRANSPOSE, VLOOKUP — and the test proves that
+  by parsing the formula and checking the registry, so a `#NAME?` from a
+  function we *do* have still fails.
 
 - [ ] **C7. Function library — batch 2** (lookup/reference, date/time, statistical)
   Includes the 1900 leap-year bug and implicit intersection. *Exit: as C6.*
@@ -196,6 +258,8 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[-]` deferred
 - [ ] **C28. Packaging + install** — `cargo xtask install` to `~/.local/bin`,
       config/state in `~/.config/{calx,scriva}/`, Linux build verified on Ubuntu.
 - [ ] **C29. Performance pass** — startup, large-file open, scroll, recalc.
+      Known item from C6: `DependencyGraph::dependents_of` is a linear scan, so
+      building the evaluation order is quadratic in the formula count.
 - [ ] **C30. Docs** — user guide, format support matrix, honest fidelity report.
 
 ## Deferred
