@@ -47,6 +47,9 @@ pub(super) fn lookup(name: &str) -> Option<FnImpl> {
         "UNICHAR" => unichar,
         "UNICODE" => unicode,
         "NUMBERVALUE" => numbervalue,
+        "TEXT" => text_fn,
+        "FIXED" => fixed,
+        "DOLLAR" => dollar,
         _ => return None,
     })
 }
@@ -535,4 +538,118 @@ fn numbervalue(ev: &mut Evaluator, args: &[Expr]) -> Operand {
         Some(n) => Operand::number(n),
         None => Operand::error(CellError::Value),
     }
+}
+
+/// `TEXT(value, format_text)` — the number-format engine, exposed as a function.
+///
+/// The same code a cell's style carries, applied on demand. Which is why this
+/// waited for `ss-model::numfmt`: implementing it separately would have given
+/// the workbook two formatters that agree until the day they do not.
+///
+/// A quirk worth keeping: `TEXT` of a blank cell is the empty string, not "0".
+fn text_fn(ev: &mut Evaluator, args: &[Expr]) -> Operand {
+    if !arity(args, 2, Some(2)) {
+        return Operand::error(CellError::Value);
+    }
+    let values = match scalar_args(ev, args) {
+        Ok(v) => v,
+        Err(e) => return Operand::error(e),
+    };
+    let code = match values[1].to_text() {
+        Ok(c) => c,
+        Err(e) => return Operand::error(e),
+    };
+    let format = ss_model::NumberFormat::parse(&code);
+    let shown = match &values[0] {
+        Value::Blank => return Operand::text(String::new()),
+        Value::Number(n) => format.format(ss_model::FormatValue::Number(*n)),
+        Value::Bool(b) => format.format(ss_model::FormatValue::Bool(*b)),
+        Value::Error(e) => return Operand::error(*e),
+        // Text that reads as a number is formatted as one — `TEXT("1234","#,##0")`
+        // is "1,234". Text that does not goes through the format's fourth
+        // section, which is what the text section exists for.
+        Value::Text(t) => match text_to_number(t) {
+            Some(n) => format.format(ss_model::FormatValue::Number(n)),
+            None => format.format(ss_model::FormatValue::Text(t)),
+        },
+    };
+    Operand::text(shown.text)
+}
+
+/// `FIXED(number, [decimals], [no_commas])`.
+fn fixed(ev: &mut Evaluator, args: &[Expr]) -> Operand {
+    if !arity(args, 1, Some(3)) {
+        return Operand::error(CellError::Value);
+    }
+    let values = match scalar_args(ev, args) {
+        Ok(v) => v,
+        Err(e) => return Operand::error(e),
+    };
+    let number = match values[0].to_number() {
+        Ok(n) => n,
+        Err(e) => return Operand::error(e),
+    };
+    let decimals = match values.get(1).map(Value::to_number).transpose() {
+        Ok(d) => d.unwrap_or(2.0).trunc() as i32,
+        Err(e) => return Operand::error(e),
+    };
+    let grouped = match values.get(2).map(Value::to_bool).transpose() {
+        Ok(no_commas) => !no_commas.unwrap_or(false),
+        Err(e) => return Operand::error(e),
+    };
+    Operand::text(grouped_decimal(number, decimals, grouped, ""))
+}
+
+/// `DOLLAR(number, [decimals])` — currency, rounded, with a thousands separator.
+///
+/// The symbol is `$` whatever the locale, which is what the function name
+/// promises and what every file using it was written against.
+fn dollar(ev: &mut Evaluator, args: &[Expr]) -> Operand {
+    if !arity(args, 1, Some(2)) {
+        return Operand::error(CellError::Value);
+    }
+    let values = match scalar_args(ev, args) {
+        Ok(v) => v,
+        Err(e) => return Operand::error(e),
+    };
+    let number = match values[0].to_number() {
+        Ok(n) => n,
+        Err(e) => return Operand::error(e),
+    };
+    let decimals = match values.get(1).map(Value::to_number).transpose() {
+        Ok(d) => d.unwrap_or(2.0).trunc() as i32,
+        Err(e) => return Operand::error(e),
+    };
+    // Excel brackets a negative dollar amount rather than signing it.
+    let text = grouped_decimal(number.abs(), decimals, true, "$");
+    Operand::text(if number < 0.0 {
+        format!("({text})")
+    } else {
+        text
+    })
+}
+
+/// Builds the format code `FIXED` and `DOLLAR` describe and runs it through the
+/// one formatter, rather than reimplementing grouping and rounding twice more.
+///
+/// A negative `decimals` rounds to the left of the point — `FIXED(1234.5,-2)` is
+/// "1,200" — which the format language cannot express, so it happens first.
+fn grouped_decimal(number: f64, decimals: i32, grouped: bool, prefix: &str) -> String {
+    let (number, places) = if decimals < 0 {
+        let scale = 10f64.powi(-decimals);
+        (
+            super::decimal_round(number / scale, 0, super::Rounding::HalfAway) * scale,
+            0,
+        )
+    } else {
+        (number, decimals)
+    };
+    let integer = if grouped { "#,##0" } else { "0" };
+    let code = match places {
+        0 => format!("{prefix}{integer}"),
+        n => format!("{prefix}{integer}.{}", "0".repeat(n as usize)),
+    };
+    ss_model::NumberFormat::parse(&code)
+        .format(ss_model::FormatValue::Number(number))
+        .text
 }

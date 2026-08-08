@@ -13,6 +13,7 @@
 
 pub mod ast;
 pub mod clip;
+pub mod cond;
 pub mod edit;
 pub mod error;
 pub mod eval;

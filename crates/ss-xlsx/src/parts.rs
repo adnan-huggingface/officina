@@ -32,6 +32,8 @@ pub(crate) struct WorkbookParts {
     pub workbook: PartName,
     pub shared_strings: Option<PartName>,
     pub styles: Option<PartName>,
+    /// The colour scheme almost every formatted cell refers to.
+    pub theme: Option<PartName>,
     /// Relationship id -> part, for everything reachable from workbook.xml.
     ///
     /// Keyed by rel id rather than by index because `<sheet r:id="rId3">` is the
@@ -82,6 +84,7 @@ pub(crate) fn locate(package: &Package) -> Result<WorkbookParts> {
         workbook: workbook.clone(),
         shared_strings: None,
         styles: None,
+        theme: None,
         by_rel_id: BTreeMap::new(),
     };
 
@@ -96,6 +99,7 @@ pub(crate) fn locate(package: &Package) -> Result<WorkbookParts> {
         match kind {
             "sharedStrings" => found.shared_strings = Some(target.clone()),
             "styles" => found.styles = Some(target.clone()),
+            "theme" => found.theme = Some(target.clone()),
             _ => {}
         }
         found

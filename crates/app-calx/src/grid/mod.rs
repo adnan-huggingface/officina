@@ -19,8 +19,10 @@ pub mod editor;
 pub mod paint;
 pub mod selection;
 
+use ss_formula::cond::{Effect, Formatting, Overlay};
 use ss_formula::edit::Geometry;
 use ss_model::numfmt::FormatValue;
+use ss_model::style::{BorderStyle, Edge, HAlign, VAlign};
 use ss_model::{Axis, CellRange, CellRef, CellValue, Sheet, Workbook};
 use ui_kit::egui;
 
@@ -37,6 +39,79 @@ const RESIZE_GRAB: f32 = 4.0;
 /// wider than this is unreadable anyway.
 const MAX_OVERFLOW: u32 = 12;
 
+/// One edge of a cell's border, resolved to something drawable.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PaintEdge {
+    pub style: BorderStyle,
+    pub color: [u8; 3],
+}
+
+/// Where the four edges of a cell go. Indexed by [`LEFT`], [`RIGHT`],
+/// [`TOP`], [`BOTTOM`].
+pub type Edges = [Option<PaintEdge>; 4];
+
+pub const LEFT: usize = 0;
+pub const RIGHT: usize = 1;
+pub const TOP: usize = 2;
+pub const BOTTOM: usize = 3;
+
+/// Everything about how a cell is drawn that came from its style, with the
+/// theme colours already resolved and any conditional format merged in.
+///
+/// Resolved here rather than in the painter because this is the part that is
+/// testable without a window, and because a conditional format is a *partial*
+/// override — working out what actually wins is exactly the sort of thing that
+/// should not be re-derived inside a paint loop.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CellLook {
+    pub fill: Option<[u8; 3]>,
+    pub text: Option<[u8; 3]>,
+    pub bold: bool,
+    pub italic: bool,
+    pub underline: bool,
+    pub strike: bool,
+    /// In points, as the file stores it.
+    pub size: f32,
+    pub horizontal: HAlign,
+    pub vertical: VAlign,
+    pub wrap: bool,
+    pub indent: u32,
+    /// Excel's encoding: 0-90 anticlockwise, 91-180 for -1 to -90, 255 stacked.
+    pub rotation: u32,
+    pub edges: Edges,
+}
+
+impl Default for CellLook {
+    fn default() -> Self {
+        CellLook {
+            fill: None,
+            text: None,
+            bold: false,
+            italic: false,
+            underline: false,
+            strike: false,
+            size: ss_model::style::DEFAULT_FONT_SIZE as f32,
+            horizontal: HAlign::General,
+            vertical: VAlign::Bottom,
+            wrap: false,
+            indent: 0,
+            rotation: 0,
+            edges: [None; 4],
+        }
+    }
+}
+
+impl CellLook {
+    /// True when the cell would look like any other empty cell.
+    ///
+    /// What decides whether a *valueless* cell is worth drawing at all. A blank
+    /// cell with a fill or a border is content; a blank cell with a font size is
+    /// not, because nothing shows.
+    pub fn is_invisible(&self) -> bool {
+        self.fill.is_none() && self.edges.iter().all(Option::is_none)
+    }
+}
+
 /// One cell to draw.
 pub struct PaintCell {
     pub rect: egui::Rect,
@@ -46,6 +121,9 @@ pub struct PaintCell {
     pub numeric: bool,
     /// Extra width borrowed from empty neighbours, for a label that overruns.
     pub overflow: f32,
+    pub look: CellLook,
+    /// A data bar or colour scale drawn behind the value.
+    pub overlay: Option<Overlay>,
 }
 
 /// Everything one frame needs to draw, and nothing about the rest of the sheet.
@@ -86,6 +164,7 @@ pub fn plan(
     layout: &Layout,
     view: egui::Rect,
     scroll: Scroll,
+    conditional: &Formatting,
 ) -> Plan {
     let rows = layout
         .rows
@@ -99,6 +178,14 @@ pub fn plan(
         return Plan { rows, cols, cells };
     }
 
+    // A sheet index is needed to ask the conditional formats about a cell, and
+    // `Sheet` does not know its own position in the workbook.
+    let index = book
+        .sheets
+        .iter()
+        .position(|s| std::ptr::eq(s, sheet))
+        .unwrap_or(0);
+
     for row in rows.clone() {
         for col in cols.clone() {
             let at = CellRef::new(row, col);
@@ -107,20 +194,40 @@ pub fn plan(
             if merge.is_some_and(|m| m.start != at) {
                 continue;
             }
-            let Some(cell) = sheet.get(at) else { continue };
-            if cell.value.is_blank() {
+            let effect = conditional.effect(book, index, at);
+            let look = look_at(book, sheet, at, effect.as_ref());
+            let cell = sheet.get(at);
+            let blank = cell.is_none_or(|c| c.value.is_blank());
+
+            // A cell with nothing in it is still drawn when it is shaded or
+            // bordered — which is how a whole formatted-but-empty table looks
+            // like a table.
+            if blank && look.is_invisible() && effect.is_none() {
                 continue;
             }
 
-            let value = match cell.value {
-                CellValue::Blank => FormatValue::Blank,
-                CellValue::Number(n) => FormatValue::Number(n),
-                CellValue::Bool(b) => FormatValue::Bool(b),
-                CellValue::Error(e) => FormatValue::Error(e),
-                CellValue::Text(id) => FormatValue::Text(book.strings.resolve(id)),
+            let shown = if blank {
+                ss_model::Formatted::default()
+            } else {
+                let cell = cell.expect("not blank");
+                let value = match cell.value {
+                    CellValue::Blank => FormatValue::Blank,
+                    CellValue::Number(n) => FormatValue::Number(n),
+                    CellValue::Bool(b) => FormatValue::Bool(b),
+                    CellValue::Error(e) => FormatValue::Error(e),
+                    CellValue::Text(id) => FormatValue::Text(book.strings.resolve(id)),
+                };
+                // A conditional format may replace the number format too, not
+                // only the colours.
+                match effect.as_ref().and_then(|e| e.dxf.number_format.as_deref()) {
+                    Some(code) => ss_model::NumberFormat::parse(code).format(value),
+                    None => book.styles.number_format(sheet.style_at(at)).format(value),
+                }
             };
-            let shown = book.styles.number_format(cell.style).format(value);
-            if shown.text.is_empty() {
+            let hidden = effect.as_ref().is_some_and(|e| e.hide_value);
+            let text = if hidden { String::new() } else { shown.text };
+            let overlay = effect.as_ref().and_then(|e| e.overlay);
+            if text.is_empty() && look.is_invisible() && overlay.is_none() {
                 continue;
             }
 
@@ -130,22 +237,109 @@ pub fn plan(
             };
             // Text runs on into empty neighbours; a number never does — it
             // turns into `####` instead, which the painter decides once it can
-            // measure the glyphs.
-            let overflow = if shown.numeric || merge.is_some() {
+            // measure the glyphs. Wrapped text stays in its own cell too.
+            let overflow = if shown.numeric || merge.is_some() || look.wrap {
                 0.0
             } else {
                 overflow_width(sheet, at, layout)
             };
+            let color = look.text.or(shown.color);
             cells.push(PaintCell {
                 rect,
-                text: shown.text,
-                color: shown.color,
+                text,
+                color,
                 numeric: shown.numeric,
                 overflow,
+                look,
+                overlay,
             });
         }
     }
     Plan { rows, cols, cells }
+}
+
+/// Works out what a cell actually looks like: its own style, the style its row
+/// or column carries, and then whatever a conditional format overrides.
+///
+/// The precedence for colour is worth stating because all three can disagree:
+/// a conditional format wins over the number format's own colour (the `[Red]`
+/// in `0.00;[Red]-0.00`), which wins over the font's.
+pub fn look_at(book: &Workbook, sheet: &Sheet, at: CellRef, effect: Option<&Effect>) -> CellLook {
+    let styles = &book.styles;
+    let theme = styles.theme();
+    let style = sheet.style_at(at);
+    let font = styles.font(style);
+    let alignment = styles.alignment(style);
+    let border = styles.border(style);
+
+    let mut look = CellLook {
+        fill: styles.fill(style).shade(theme),
+        text: font.color.resolve(theme),
+        bold: font.bold,
+        italic: font.italic,
+        underline: !font.underline.is_none(),
+        strike: font.strike,
+        size: font.size as f32,
+        horizontal: alignment.horizontal,
+        vertical: alignment.vertical,
+        wrap: alignment.wrap,
+        indent: alignment.indent,
+        rotation: alignment.rotation,
+        edges: [
+            edge(border.left, theme),
+            edge(border.right, theme),
+            edge(border.top, theme),
+            edge(border.bottom, theme),
+        ],
+    };
+
+    if let Some(effect) = effect {
+        let dxf = &effect.dxf;
+        if let Some(bold) = dxf.bold {
+            look.bold = bold;
+        }
+        if let Some(italic) = dxf.italic {
+            look.italic = italic;
+        }
+        if let Some(underline) = dxf.underline {
+            look.underline = !underline.is_none();
+        }
+        if let Some(strike) = dxf.strike {
+            look.strike = strike;
+        }
+        if let Some(color) = dxf.color {
+            look.text = color.resolve(theme).or(look.text);
+        }
+        if let Some(fill) = &dxf.fill {
+            look.fill = fill.shade(theme).or(look.fill);
+        }
+        if let Some(border) = dxf.border {
+            for (slot, edge_of) in [
+                (LEFT, border.left),
+                (RIGHT, border.right),
+                (TOP, border.top),
+                (BOTTOM, border.bottom),
+            ] {
+                if let Some(drawn) = edge(edge_of, theme) {
+                    look.edges[slot] = Some(drawn);
+                }
+            }
+        }
+    }
+    look
+}
+
+fn edge(edge: Edge, theme: &ss_model::Theme) -> Option<PaintEdge> {
+    if edge.is_none() {
+        return None;
+    }
+    Some(PaintEdge {
+        style: edge.style,
+        // An unset border colour is the window's foreground, which at cell size
+        // reads as the grid's own text colour. Mid-grey is close enough in both
+        // a light and a dark theme, and is what Excel's "automatic" resolves to.
+        color: edge.color.resolve(theme).unwrap_or([0x40, 0x40, 0x40]),
+    })
 }
 
 /// How far a label may run past its own column before hitting something.
@@ -224,6 +418,85 @@ pub enum Action {
     /// A row or column resize finished; the payload is how the sheet looked
     /// before it started, which is the whole undo entry.
     Resized(Geometry),
+    /// Formatting applied to the selection.
+    Format(Format),
+}
+
+/// A formatting command, as the toolbar and the keyboard both produce it.
+///
+/// The toggles carry no value because they are toggles *of the selection*: what
+/// Ctrl+B does depends on whether the cursor's cell is already bold, which the
+/// grid does not decide — the application does, when it has the workbook.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Format {
+    Bold,
+    Italic,
+    Underline,
+    Strike,
+    Align(HAlign),
+    Vertical(VAlign),
+    Wrap,
+    /// Positive to indent, negative to outdent.
+    Indent(i32),
+    FontSize(f64),
+    /// `None` clears back to automatic.
+    TextColor(Option<ss_model::Color>),
+    Fill(Option<ss_model::Color>),
+    Border(BorderPreset),
+    NumberFormat(String),
+    /// Back to the workbook default, keeping the value.
+    Clear,
+}
+
+/// The border buttons, which set several edges at once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BorderPreset {
+    None,
+    All,
+    Outline,
+    Bottom,
+    Top,
+    Left,
+    Right,
+    Thick,
+}
+
+impl BorderPreset {
+    /// Applies the preset to a border, leaving edges it does not name alone.
+    ///
+    /// `All` and `Outline` differ only in a rectangle: a single cell gets the
+    /// same four edges from either, which is why the grid sends the preset and
+    /// not a computed set of edges.
+    pub fn apply(self, border: &mut ss_model::Border) {
+        use ss_model::style::{BorderStyle, Edge};
+        let thin = Edge::new(BorderStyle::Thin);
+        let thick = Edge::new(BorderStyle::Thick);
+        match self {
+            BorderPreset::None => *border = ss_model::Border::default(),
+            BorderPreset::All | BorderPreset::Outline => {
+                *border = ss_model::Border {
+                    left: thin,
+                    right: thin,
+                    top: thin,
+                    bottom: thin,
+                    ..*border
+                }
+            }
+            BorderPreset::Thick => {
+                *border = ss_model::Border {
+                    left: thick,
+                    right: thick,
+                    top: thick,
+                    bottom: thick,
+                    ..*border
+                }
+            }
+            BorderPreset::Bottom => border.bottom = thin,
+            BorderPreset::Top => border.top = thin,
+            BorderPreset::Left => border.left = thin,
+            BorderPreset::Right => border.right = thin,
+        }
+    }
 }
 
 /// What the formula bar and the editor show for a cell: its formula if it has
@@ -263,6 +536,10 @@ pub struct GridView {
     /// Rebuilt only when the sheet, the zoom, or a size changes — building it
     /// per frame would sort every row height on a sheet that has many.
     pub(crate) layout: Option<(usize, u32, Layout)>,
+    /// The sheet's conditional formats, prepared. Cached on the same key as the
+    /// layout because preparing one scans every region it covers, and a colour
+    /// scale's answer for one cell depends on all of them.
+    pub(crate) conditional: Option<(usize, u32, Formatting)>,
     /// Bumped whenever a row or column is resized, to invalidate the cache.
     pub(crate) generation: u32,
     pub(crate) drag: Option<Drag>,
@@ -303,6 +580,7 @@ impl Default for GridView {
             editor: None,
             actions: Vec::new(),
             layout: None,
+            conditional: None,
             generation: 0,
             drag: None,
             before_resize: None,
@@ -363,6 +641,138 @@ impl GridView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_shaded_empty_cell_is_drawn_and_an_unshaded_one_is_not() {
+        // A blank cell with a fill is content: it is how a formatted-but-empty
+        // table looks like a table. A blank cell with only a font size is not.
+        let mut book = Workbook::blank();
+        let shaded = book.styles.restyle(StyleId::DEFAULT, |look| {
+            look.fill = ss_model::Fill::solid(ss_model::Color::rgb(0xFF, 0xEB, 0x9C))
+        });
+        let bigger = book
+            .styles
+            .restyle(StyleId::DEFAULT, |look| look.font.size = 24.0);
+        let sheet = book.sheet_mut(0).expect("sheet 0");
+        sheet.set(
+            CellRef::new(0, 0),
+            Cell {
+                style: shaded,
+                ..Cell::default()
+            },
+        );
+        sheet.set(
+            CellRef::new(0, 1),
+            Cell {
+                style: bigger,
+                ..Cell::default()
+            },
+        );
+
+        let sheet = book.sheet(0).expect("sheet 0");
+        let layout = Layout::for_sheet(sheet, 1.0);
+        let plan = plan(
+            &book,
+            sheet,
+            &layout,
+            viewport(),
+            Scroll::default(),
+            &Formatting::empty(),
+        );
+        assert_eq!(plan.cells.len(), 1);
+        assert_eq!(plan.cells[0].look.fill, Some([0xFF, 0xEB, 0x9C]));
+        assert!(plan.cells[0].text.is_empty());
+    }
+
+    #[test]
+    fn a_column_style_reaches_a_cell_that_has_none_of_its_own() {
+        let mut book = Workbook::blank();
+        let bold = book
+            .styles
+            .restyle(StyleId::DEFAULT, |look| look.font.bold = true);
+        let sheet = book.sheet_mut(0).expect("sheet 0");
+        sheet.column_styles.insert(0, bold);
+        sheet.set(
+            CellRef::new(0, 0),
+            Cell {
+                value: CellValue::Number(1.0),
+                ..Cell::default()
+            },
+        );
+
+        let sheet = book.sheet(0).expect("sheet 0");
+        let layout = Layout::for_sheet(sheet, 1.0);
+        let plan = plan(
+            &book,
+            sheet,
+            &layout,
+            viewport(),
+            Scroll::default(),
+            &Formatting::empty(),
+        );
+        assert!(plan.cells[0].look.bold);
+    }
+
+    #[test]
+    fn a_conditional_format_wins_over_the_cells_own_look() {
+        use ss_model::cond::{CfKind, CfOperator, CfRule, ConditionalFormat};
+
+        let mut book = Workbook::blank();
+        book.styles = ss_model::StyleTable::from_parts(ss_model::style::Parts {
+            cell_xfs: vec![ss_model::CellFormat::default()],
+            dxfs: vec![ss_model::Dxf {
+                bold: Some(true),
+                fill: Some(ss_model::Fill::solid(ss_model::Color::rgb(
+                    0xFF, 0xC7, 0xCE,
+                ))),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        let plain = book.styles.restyle(StyleId::DEFAULT, |look| {
+            look.fill = ss_model::Fill::solid(ss_model::Color::rgb(0xEE, 0xEE, 0xEE))
+        });
+        let sheet = book.sheet_mut(0).expect("sheet 0");
+        sheet.set(
+            CellRef::new(0, 0),
+            Cell {
+                value: CellValue::Number(99.0),
+                style: plain,
+                ..Cell::default()
+            },
+        );
+        sheet.conditional_formats.push(ConditionalFormat {
+            ranges: vec![CellRange::new(CellRef::new(0, 0), CellRef::new(0, 0))],
+            rules: vec![CfRule {
+                kind: CfKind::CellIs {
+                    operator: CfOperator::GreaterThan,
+                    formulas: vec!["10".to_string()],
+                },
+                dxf: Some(0),
+                priority: 1,
+                stop_if_true: false,
+            }],
+        });
+
+        let conditional = Formatting::prepare(&book, 0);
+        let sheet = book.sheet(0).expect("sheet 0");
+        let layout = Layout::for_sheet(sheet, 1.0);
+        let plan = plan(
+            &book,
+            sheet,
+            &layout,
+            viewport(),
+            Scroll::default(),
+            &conditional,
+        );
+        assert!(plan.cells[0].look.bold, "the rule's dxf applied");
+        assert_eq!(
+            plan.cells[0].look.fill,
+            Some([0xFF, 0xC7, 0xCE]),
+            "and its fill won over the cell's own"
+        );
+    }
+
     use ss_model::{Cell, StyleId};
 
     fn book_with_million_rows() -> Workbook {
@@ -405,7 +815,14 @@ mod tests {
             x: 0.0,
             y: layout.rows.offset(1_048_536),
         };
-        let plan = plan(&book, sheet, &layout, viewport(), scroll);
+        let plan = plan(
+            &book,
+            sheet,
+            &layout,
+            viewport(),
+            scroll,
+            &Formatting::empty(),
+        );
         assert_eq!(plan.rows.clone().count(), 40, "800 pixels of 20-pixel rows");
         assert!(plan.cols.clone().count() < 25);
         // Only the last row has anything in it down here.
@@ -430,7 +847,14 @@ mod tests {
             };
             let start = std::time::Instant::now();
             for _ in 0..frames {
-                let p = plan(&book, sheet, &layout, viewport(), scroll);
+                let p = plan(
+                    &book,
+                    sheet,
+                    &layout,
+                    viewport(),
+                    scroll,
+                    &Formatting::empty(),
+                );
                 std::hint::black_box(&p);
             }
             start.elapsed()
@@ -477,7 +901,14 @@ mod tests {
         );
         let sheet = book.sheet(0).expect("sheet 0");
         let layout = Layout::for_sheet(sheet, 1.0);
-        let plan = plan(&book, sheet, &layout, viewport(), Scroll::default());
+        let plan = plan(
+            &book,
+            sheet,
+            &layout,
+            viewport(),
+            Scroll::default(),
+            &Formatting::empty(),
+        );
         assert_eq!(plan.cells.len(), 1);
         let cell = &plan.cells[0];
         assert_eq!(cell.rect.width(), layout.cols.size(0) as f32 * 3.0);
@@ -512,7 +943,14 @@ mod tests {
         );
         let sheet = book.sheet(0).expect("sheet 0");
         let layout = Layout::for_sheet(sheet, 1.0);
-        let plan = plan(&book, sheet, &layout, viewport(), Scroll::default());
+        let plan = plan(
+            &book,
+            sheet,
+            &layout,
+            viewport(),
+            Scroll::default(),
+            &Formatting::empty(),
+        );
         let first = plan
             .cells
             .iter()
@@ -544,7 +982,14 @@ mod tests {
         );
         let sheet = book.sheet(0).expect("sheet 0");
         let layout = Layout::for_sheet(sheet, 1.0);
-        let plan = plan(&book, sheet, &layout, viewport(), Scroll::default());
+        let plan = plan(
+            &book,
+            sheet,
+            &layout,
+            viewport(),
+            Scroll::default(),
+            &Formatting::empty(),
+        );
         assert_eq!(plan.cells[0].text, "03-01-24");
         assert!(plan.cells[0].numeric, "a date sits right, like a number");
     }

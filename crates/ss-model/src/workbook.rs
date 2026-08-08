@@ -85,6 +85,14 @@ pub struct Sheet {
     /// Rows above and columns left of this stay pinned when scrolling.
     pub frozen: Option<CellRef>,
     pub hidden: bool,
+    /// A column's style, applied to every cell in it that has none of its own.
+    /// This is `<col style="..">`, and it is how a whole column gets shaded
+    /// without the file storing a million cells.
+    pub column_styles: BTreeMap<u32, crate::StyleId>,
+    /// The same for `<row s=".." customFormat="1">`.
+    pub row_styles: BTreeMap<u32, crate::StyleId>,
+    pub conditional_formats: Vec<crate::cond::ConditionalFormat>,
+    pub validations: Vec<crate::cond::DataValidation>,
 }
 
 impl Sheet {
@@ -106,6 +114,33 @@ impl Sheet {
     /// The merge covering `at`, if any.
     pub fn merge_at(&self, at: CellRef) -> Option<&CellRange> {
         self.merges.iter().find(|m| m.contains(at))
+    }
+
+    /// The style that governs a cell, whether or not the cell exists.
+    ///
+    /// Excel shades a whole column by putting a style on `<col>`, not by storing
+    /// a million cells — so a grid that only reads `Cell::style` draws an empty
+    /// shaded column as unshaded, and a value typed into it loses its formatting
+    /// the moment the row is written. The row wins over the column, matching
+    /// Excel's own precedence.
+    pub fn style_at(&self, at: CellRef) -> crate::StyleId {
+        if let Some(cell) = self.get(at) {
+            if cell.style != crate::StyleId::DEFAULT {
+                return cell.style;
+            }
+        }
+        if let Some(style) = self.row_styles.get(&at.row) {
+            return *style;
+        }
+        self.column_styles
+            .get(&at.col)
+            .copied()
+            .unwrap_or(crate::StyleId::DEFAULT)
+    }
+
+    /// The validation rule covering a cell, if any.
+    pub fn validation_at(&self, at: CellRef) -> Option<&crate::cond::DataValidation> {
+        self.validations.iter().find(|v| v.covers(at))
     }
 
     /// Adds a formula to the arena and returns its handle.
@@ -166,6 +201,26 @@ impl Sheet {
             .iter()
             .filter_map(|(index, size)| shift.point(*index).map(|moved| (moved, *size)))
             .collect();
+
+        let styles = match shift.axis {
+            Axis::Rows => &mut self.row_styles,
+            Axis::Columns => &mut self.column_styles,
+        };
+        *styles = styles
+            .iter()
+            .filter_map(|(index, style)| shift.point(*index).map(|moved| (moved, *style)))
+            .collect();
+
+        // A conditional format or a validation whose whole region is deleted
+        // goes with it; one that survives moves with the cells it was applied to.
+        for cf in &mut self.conditional_formats {
+            cf.ranges = cf.ranges.iter().filter_map(|r| shift.range(*r)).collect();
+        }
+        self.conditional_formats.retain(|cf| !cf.ranges.is_empty());
+        for dv in &mut self.validations {
+            dv.ranges = dv.ranges.iter().filter_map(|r| shift.range(*r)).collect();
+        }
+        self.validations.retain(|dv| !dv.ranges.is_empty());
 
         // The freeze is a boundary line, not content: deleting the rows it sits
         // in pulls it up to where they were rather than removing it.

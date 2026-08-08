@@ -14,8 +14,11 @@ use ui_kit::egui;
 
 use super::editor::{self, Editor, Mode};
 use super::{
-    plan, rect_of, rect_of_range, Action, Direction, Drag, GridView, Layout, Scroll, RESIZE_GRAB,
+    plan, rect_of, rect_of_range, Action, Direction, Drag, Format, GridView, Layout, PaintEdge,
+    Scroll, BOTTOM, LEFT, RESIZE_GRAB, RIGHT, TOP,
 };
+use ss_formula::cond::{Formatting, Overlay};
+use ss_model::style::{BorderStyle, HAlign, VAlign};
 
 /// Side of the little square at the corner of the selection.
 const FILL_HANDLE: f32 = 6.0;
@@ -97,6 +100,7 @@ struct Frame<'a> {
     /// Just the cells, with the headers taken off the top and left.
     body: egui::Rect,
     panes: &'a [Pane],
+    conditional: &'a Formatting,
 }
 
 impl GridView {
@@ -114,8 +118,10 @@ impl GridView {
         // Taken rather than borrowed: the layout lives in `self` and so does
         // everything the input handlers need to change.
         self.ensure_layout(sheet);
+        self.ensure_conditional(book, sheet);
         let cached = self.layout.take().expect("just ensured");
         let layout = &cached.2;
+        let conditional = self.conditional.take().expect("just ensured");
 
         let palette = Palette::of(ui);
         ui.painter().rect_filled(full, 0.0, palette.background);
@@ -139,6 +145,7 @@ impl GridView {
             full,
             body,
             panes: &panes,
+            conditional: &conditional.2,
         };
         for pane in &panes {
             if pane.rect.width() <= 0.0 || pane.rect.height() <= 0.0 {
@@ -173,8 +180,12 @@ impl GridView {
             .as_ref()
             .and_then(|open| cell_rect(layout, &panes, open.at));
 
+        let cursor_rect = cell_rect(layout, &panes, self.selection.cursor());
+
         self.layout = Some(cached);
+        self.conditional = Some(conditional);
         self.paint_editor(ui, editor_rect);
+        self.paint_dropdown(ui, book, cursor_rect);
         self.handle_input(ui, book, &response, full, body);
         response
     }
@@ -233,6 +244,72 @@ impl GridView {
         }
     }
 
+    /// The list-validation dropdown on the selected cell.
+    ///
+    /// Only on the cursor: Excel draws the arrow for the active cell alone, and
+    /// resolving a range-sourced list costs an evaluation, which is not
+    /// something to do for every visible cell of a validated column.
+    fn paint_dropdown(&mut self, ui: &mut egui::Ui, book: &Workbook, rect: Option<egui::Rect>) {
+        let Some(rect) = rect else { return };
+        if self.editor.is_some() {
+            return;
+        }
+        let at = self.selection.cursor();
+        let shown = book
+            .sheet(self.sheet_index)
+            .and_then(|s| s.validation_at(at))
+            .is_some_and(|dv| dv.show_dropdown);
+        if !shown {
+            return;
+        }
+        let Some(choices) = ss_formula::cond::choices(book, self.sheet_index, at) else {
+            return;
+        };
+        if choices.is_empty() {
+            return;
+        }
+
+        let button = egui::Rect::from_min_size(
+            egui::pos2(rect.right(), rect.top()),
+            egui::vec2(16.0, rect.height().min(20.0)),
+        );
+        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(button));
+        let mut picked = None;
+        egui::ComboBox::from_id_salt("calx-validation-list")
+            .selected_text("▾")
+            .width(16.0)
+            .show_ui(&mut child, |ui| {
+                for choice in &choices {
+                    if ui.selectable_label(false, choice).clicked() {
+                        picked = Some(choice.clone());
+                    }
+                }
+            });
+        if let Some(text) = picked {
+            self.actions.push(Action::Commit {
+                at,
+                text,
+                advance: None,
+            });
+        }
+    }
+
+    fn ensure_conditional(&mut self, book: &Workbook, sheet: &Sheet) {
+        let key = (self.sheet_index, self.generation);
+        let stale = match &self.conditional {
+            Some((index, generation, _)) => (*index, *generation) != key,
+            None => true,
+        };
+        if stale {
+            let index = book
+                .sheets
+                .iter()
+                .position(|s| std::ptr::eq(s, sheet))
+                .unwrap_or(self.sheet_index);
+            self.conditional = Some((key.0, key.1, Formatting::prepare(book, index)));
+        }
+    }
+
     fn ensure_layout(&mut self, sheet: &Sheet) {
         let key = (self.sheet_index, self.generation);
         let stale = match &self.layout {
@@ -263,7 +340,14 @@ impl GridView {
     ) {
         let (layout, palette) = (frame.layout, frame.palette);
         let painter = ui.painter().with_clip_rect(pane.rect);
-        let drawn = plan(book, sheet, layout, pane.rect, pane.scroll);
+        let drawn = plan(
+            book,
+            sheet,
+            layout,
+            pane.rect,
+            pane.scroll,
+            frame.conditional,
+        );
         let stroke = egui::Stroke::new(1.0, palette.grid);
 
         // Gridlines first, so cell text sits on top of them.
@@ -276,6 +360,35 @@ impl GridView {
             let x = pane.rect.left()
                 + (layout.cols.offset(col) + layout.cols.size(col) - pane.scroll.x) as f32;
             painter.vline(x.round(), pane.rect.y_range(), stroke);
+        }
+
+        // Fills over the gridlines: a shaded cell in Excel has no gridlines
+        // showing through it, which is what makes a filled table read as solid.
+        for cell in &drawn.cells {
+            if let Some([r, g, b]) = cell.look.fill {
+                painter.rect_filled(cell.rect, 0.0, egui::Color32::from_rgb(r, g, b));
+            }
+            match cell.overlay {
+                Some(Overlay::Shade([r, g, b])) => {
+                    painter.rect_filled(cell.rect, 0.0, egui::Color32::from_rgb(r, g, b));
+                }
+                Some(Overlay::Bar {
+                    fraction,
+                    color: [r, g, b],
+                }) => {
+                    let inset = cell.rect.shrink(1.0);
+                    let bar = egui::Rect::from_min_size(
+                        inset.min,
+                        egui::vec2(inset.width() * fraction as f32, inset.height()),
+                    );
+                    painter.rect_filled(
+                        bar,
+                        1.0,
+                        egui::Color32::from_rgb(r, g, b).gamma_multiply(0.85),
+                    );
+                }
+                None => {}
+            }
         }
 
         // Selection under the text.
@@ -330,42 +443,94 @@ impl GridView {
             }
         }
 
-        let font = egui::FontId::proportional((13.0 * self.zoom) as f32);
+        // Cell borders over the fills and under the text.
         for cell in &drawn.cells {
+            let r = cell.rect;
+            for (slot, from, to) in [
+                (LEFT, r.left_top(), r.left_bottom()),
+                (RIGHT, r.right_top(), r.right_bottom()),
+                (TOP, r.left_top(), r.right_top()),
+                (BOTTOM, r.left_bottom(), r.right_bottom()),
+            ] {
+                if let Some(edge) = cell.look.edges[slot] {
+                    draw_edge(&painter, from, to, edge, self.zoom as f32);
+                }
+            }
+        }
+
+        for cell in &drawn.cells {
+            if cell.text.is_empty() {
+                continue;
+            }
             let color = cell
                 .color
                 .map_or(palette.text, |[r, g, b]| egui::Color32::from_rgb(r, g, b));
-            let galley = painter.layout_no_wrap(cell.text.clone(), font.clone(), color);
-            let padding = 3.0;
-            let room = cell.rect.width() - padding * 2.0;
+            let padding = 3.0 + cell.look.indent as f32 * 9.0 * self.zoom as f32;
+            let room = cell.rect.width() - padding - 3.0;
+            // Points to logical pixels. The grid's default is 13 px for an 11 pt
+            // font and every other size follows from that, so a 22 pt heading
+            // comes out twice the height of 11 pt body text.
+            let font = egui::FontId::proportional(
+                (cell.look.size * 13.0 / 11.0 * self.zoom as f32).max(1.0),
+            );
+            let job = text_job(cell, font.clone(), color, room);
+            let galley = ui.fonts_mut(|f| f.layout_job(job));
 
             // A number too wide for its column is not truncated — Excel shows a
             // row of hashes, because a clipped number reads as a smaller one.
-            if cell.numeric && galley.size().x > room {
+            if cell.numeric && !cell.look.wrap && galley.size().x > room && cell.look.rotation == 0
+            {
                 let hashes = "#".repeat(((room / 7.0).max(1.0)) as usize);
-                let galley = painter.layout_no_wrap(hashes, font.clone(), color);
+                let job = text_job_for(&hashes, cell, font.clone(), color, f32::INFINITY);
+                let galley = ui.fonts_mut(|f| f.layout_job(job));
                 let pos = egui::pos2(
                     cell.rect.right() - padding - galley.size().x,
                     cell.rect.center().y - galley.size().y / 2.0,
                 );
-                painter.galley(pos, galley, color);
+                paint_text(&painter, pos, galley, color, cell.look.bold);
                 continue;
             }
 
-            let x = if cell.numeric {
-                cell.rect.right() - padding - galley.size().x
-            } else {
-                cell.rect.left() + padding
-            };
-            let pos = egui::pos2(x, cell.rect.center().y - galley.size().y / 2.0);
             // Text may run into empty neighbours; clip to what it borrowed.
-            let room = egui::Rect::from_min_max(
+            let clip = egui::Rect::from_min_max(
                 cell.rect.min,
                 egui::pos2(cell.rect.right() + cell.overflow, cell.rect.bottom()),
-            );
-            painter
-                .with_clip_rect(room.intersect(pane.rect))
-                .galley(pos, galley, color);
+            )
+            .intersect(pane.rect);
+            let painter = painter.with_clip_rect(clip);
+
+            let angle = match cell.look.rotation {
+                // Stacked text is drawn upright rather than one glyph per line:
+                // that layout is a paragraph problem, not a cell one.
+                255 => 0.0,
+                r if r <= 90 => -(r as f32).to_radians(),
+                r if r <= 180 => ((r - 90) as f32).to_radians(),
+                _ => 0.0,
+            };
+            if angle != 0.0 {
+                // Rotation pivots on the text origin, so the anchor is the
+                // bottom-left corner and the glyphs sweep up out of it.
+                let pos = egui::pos2(
+                    cell.rect.left() + padding,
+                    cell.rect.bottom() - 2.0 - galley.size().y,
+                );
+                painter.add(egui::epaint::TextShape::new(pos, galley, color).with_angle(angle));
+                continue;
+            }
+
+            let x = match resolved_align(cell) {
+                HAlign::Right => cell.rect.right() - 3.0 - galley.size().x,
+                HAlign::Center | HAlign::CenterContinuous | HAlign::Distributed => {
+                    cell.rect.center().x - galley.size().x / 2.0
+                }
+                _ => cell.rect.left() + padding,
+            };
+            let y = match cell.look.vertical {
+                VAlign::Top => cell.rect.top() + 1.0,
+                VAlign::Bottom => cell.rect.bottom() - 1.0 - galley.size().y,
+                _ => cell.rect.center().y - galley.size().y / 2.0,
+            };
+            paint_text(&painter, egui::pos2(x, y), galley, color, cell.look.bold);
         }
 
         // The active cell's heavier outline, drawn last so nothing covers it.
@@ -392,6 +557,7 @@ impl GridView {
             full,
             body,
             panes,
+            ..
         } = *frame;
         let painter = ui.painter();
         let header_font = egui::FontId::proportional((11.0 * self.zoom) as f32);
@@ -527,6 +693,8 @@ impl GridView {
             full,
             body,
             panes: &panes,
+            // Input only ever asks this frame about geometry.
+            conditional: &Formatting::empty(),
         };
 
         let (scroll_delta, zoom_delta, modifiers) =
@@ -912,6 +1080,10 @@ impl GridView {
             egui::Key::D if modifiers.ctrl => self.fill_within(Direction::Down),
             egui::Key::R if modifiers.ctrl => self.fill_within(Direction::Right),
             egui::Key::A if modifiers.ctrl => self.selection.select_all(),
+            egui::Key::B if modifiers.ctrl => self.actions.push(Action::Format(Format::Bold)),
+            egui::Key::I if modifiers.ctrl => self.actions.push(Action::Format(Format::Italic)),
+            egui::Key::U if modifiers.ctrl => self.actions.push(Action::Format(Format::Underline)),
+            egui::Key::Num5 if modifiers.ctrl => self.actions.push(Action::Format(Format::Strike)),
             egui::Key::Space if modifiers.ctrl => {
                 let range = self.selection.active_range();
                 self.selection
@@ -1056,6 +1228,127 @@ fn split_panes(
         },
     });
     panes
+}
+
+/// Builds the laid-out text for one cell.
+///
+/// A [`egui::text::LayoutJob`] rather than a plain string because underline and
+/// strikethrough are properties of the layout rather than of the drawing, and
+/// because wrapping is one field on the same object.
+fn text_job(
+    cell: &super::PaintCell,
+    font: egui::FontId,
+    color: egui::Color32,
+    room: f32,
+) -> egui::text::LayoutJob {
+    text_job_for(&cell.text, cell, font, color, room)
+}
+
+/// The same, for text that is not the cell's own — the row of hashes a number
+/// too wide for its column is replaced by.
+fn text_job_for(
+    text: &str,
+    cell: &super::PaintCell,
+    font: egui::FontId,
+    color: egui::Color32,
+    room: f32,
+) -> egui::text::LayoutJob {
+    let hairline = (font.size / 14.0).max(1.0);
+    let rule = |on: bool| {
+        if on {
+            egui::Stroke::new(hairline, color)
+        } else {
+            egui::Stroke::NONE
+        }
+    };
+    let mut job = egui::text::LayoutJob::single_section(
+        text.to_string(),
+        egui::TextFormat {
+            font_id: font,
+            color,
+            italics: cell.look.italic,
+            underline: rule(cell.look.underline),
+            strikethrough: rule(cell.look.strike),
+            ..Default::default()
+        },
+    );
+    job.wrap.max_width = if cell.look.wrap && room.is_finite() {
+        room.max(1.0)
+    } else {
+        f32::INFINITY
+    };
+    job
+}
+
+/// Draws a galley, faking bold by drawing it twice a fraction of a pixel apart.
+///
+/// egui ships one weight of its default font and no way to ask for another, so
+/// bold here is synthetic. At cell sizes it is convincing; what it is *not* is a
+/// real bold face, so a heavy heading reads a little lighter than in Excel.
+/// Italic is genuine — epaint slants the glyphs itself.
+fn paint_text(
+    painter: &egui::Painter,
+    pos: egui::Pos2,
+    galley: std::sync::Arc<egui::Galley>,
+    color: egui::Color32,
+    bold: bool,
+) {
+    if bold {
+        painter.galley(pos + egui::vec2(0.55, 0.0), galley.clone(), color);
+    }
+    painter.galley(pos, galley, color);
+}
+
+/// General alignment resolved against the value: numbers right, text left.
+///
+/// It has to happen here rather than in the style, because one style on a
+/// number and on a label aligns them differently — which is the whole reason
+/// `General` is a distinct value and not just "left".
+fn resolved_align(cell: &super::PaintCell) -> HAlign {
+    match cell.look.horizontal {
+        HAlign::General if cell.numeric => HAlign::Right,
+        HAlign::General => HAlign::Left,
+        other => other,
+    }
+}
+
+/// One border edge, dashed if its style says so.
+fn draw_edge(
+    painter: &egui::Painter,
+    from: egui::Pos2,
+    to: egui::Pos2,
+    edge: PaintEdge,
+    zoom: f32,
+) {
+    let color = egui::Color32::from_rgb(edge.color[0], edge.color[1], edge.color[2]);
+    let width = (edge.style.width() * zoom).max(1.0);
+    let stroke = egui::Stroke::new(width, color);
+    match edge.style.dash() {
+        Some((on, off)) => {
+            painter.add(egui::Shape::dashed_line(
+                &[from, to],
+                stroke,
+                on * zoom,
+                off * zoom,
+            ));
+        }
+        None if edge.style == BorderStyle::Double => {
+            // Two hairlines with a gap.
+            // Two hairlines with a gap. Drawn as one thick line it is
+            // indistinguishable from `medium`, which is a different border.
+            let normal = if (to.x - from.x).abs() > (to.y - from.y).abs() {
+                egui::vec2(0.0, 2.0 * zoom)
+            } else {
+                egui::vec2(2.0 * zoom, 0.0)
+            };
+            let thin = egui::Stroke::new(1.0, color);
+            painter.line_segment([from, to], thin);
+            painter.line_segment([from + normal, to + normal], thin);
+        }
+        None => {
+            painter.line_segment([from, to], stroke);
+        }
+    }
 }
 
 #[cfg(test)]

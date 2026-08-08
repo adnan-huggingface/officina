@@ -1337,3 +1337,37 @@ fn the_conditional_aggregates_share_one_criteria_language() {
         ],
     );
 }
+
+#[test]
+fn text_formats_through_the_same_engine_a_cell_does() {
+    // `TEXT` is the number-format language as a function. Anything it gets
+    // wrong here, a cell displaying the same code gets wrong too — which is
+    // exactly why there is one implementation and not two.
+    check(&[
+        (r##"TEXT(1234.567,"#,##0.00")"##, "\"1,234.57\""),
+        (r#"TEXT(0.42,"0.0%")"#, "\"42.0%\""),
+        (r##"TEXT(-5,"#,##0;(#,##0)")"##, "\"(5)\""),
+        (r#"TEXT(45306,"yyyy-mm-dd")"#, "\"2024-01-15\""),
+        (r#"TEXT(45306.5,"h:mm AM/PM")"#, "\"12:00 PM\""),
+        // Text that reads as a number is formatted as one.
+        (r##"TEXT("1234","#,##0")"##, "\"1,234\""),
+        // A blank is the empty string, not "0".
+        (r#"TEXT(A9,"0.00")"#, "\"\""),
+        (r#"TEXT(1,"0.00","extra")"#, "#VALUE!"),
+    ]);
+}
+
+#[test]
+fn fixed_and_dollar_round_before_they_group() {
+    check(&[
+        ("FIXED(1234.567)", "\"1,234.57\""),
+        ("FIXED(1234.567,1)", "\"1,234.6\""),
+        ("FIXED(1234.567,1,TRUE)", "\"1234.6\""),
+        // A negative count rounds left of the point, which the format language
+        // cannot express on its own.
+        ("FIXED(1234.567,-2)", "\"1,200\""),
+        ("DOLLAR(1234.567)", "\"$1,234.57\""),
+        ("DOLLAR(-1234.567)", "\"($1,234.57)\""),
+        ("DOLLAR(1234.567,0)", "\"$1,235\""),
+    ]);
+}

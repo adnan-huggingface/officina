@@ -1,19 +1,22 @@
 //! Adding to `styles.xml` without rewriting it.
 //!
-//! Typing a date into an empty cell needs a style that displays as a date, and
-//! if the workbook has no such style one has to be created. That is the only
-//! reason this exists at C10 — everything else in styles.xml (fonts, fills,
-//! borders, alignment, the named-style table, differential formats, table
-//! styles) is read by nobody yet, and reprinting the part would erase all of it.
+//! Five tables live in this part and four of them are addressed by position:
+//! `<fonts>`, `<fills>`, and `<borders>` by an `<xf>`, and `<cellXfs>` by a
+//! cell's `s` attribute. So the file's own entries are copied through and ours
+//! are appended. Appending is not a stylistic choice — inserting anywhere but
+//! the end would silently reformat every cell in the workbook after the
+//! insertion point, and the file would still be valid, so nothing would report
+//! it.
 //!
-//! So the file's own entries are copied through and ours are appended. Appending
-//! is not a stylistic choice: a cell's `s` attribute is an index into `cellXfs`,
-//! and inserting anywhere but the end would silently reformat every cell in the
-//! workbook after the insertion point.
+//! Everything the file already has is copied byte for byte, including the parts
+//! nobody here reads: gradient fills, table styles, the `<colors>` palette,
+//! `extLst`. Only entries we authored are ever written out, and those by
+//! construction contain nothing we did not model.
 
 use quick_xml::events::Event;
 
-use ss_model::style::StyleTable;
+use ss_model::style::{Border, CellFormat, Edge, Fill, Font, Pattern, StyleTable};
+use ss_model::Color;
 
 use crate::error::Result;
 use crate::write::splice::{close, open, prefix_of, raw_attr, retag, Set, Splicer};
@@ -23,36 +26,50 @@ use crate::xml::{end_local_name, local_name, parse_u32};
 pub(crate) struct Additions {
     /// `numFmtId` -> format code, for codes the file never declared.
     formats: Vec<(u32, String)>,
-    /// The `numFmtId` of each `<xf>` to append to `cellXfs`.
-    styles: Vec<u32>,
+    fonts: Vec<Font>,
+    fills: Vec<Fill>,
+    borders: Vec<Border>,
+    /// The `<xf>` entries to append to `cellXfs`.
+    styles: Vec<CellFormat>,
 }
 
 /// Compares the model's style table against the file's.
 ///
 /// The file is read again rather than remembered from open, so that this is a
 /// statement about the bytes being written and not about what a reader believed
-/// some time earlier.
+/// some time earlier. Where the two disagree the *file* wins: appending from an
+/// index the file does not actually end at is how a style table gets shifted.
 pub(crate) fn additions(part: &str, data: &[u8], styles: &StyleTable) -> Result<Additions> {
     let file = scan(part, data)?;
-    let formats = styles
-        .codes()
-        .iter()
-        .filter(|(id, _)| !file.declared.contains(id))
-        .map(|(id, code)| (*id, code.clone()))
-        .collect();
-    let styles = (file.cell_xfs..styles.len())
-        .map(|i| styles.format_id(ss_model::StyleId(i as u32)))
-        .collect();
-    Ok(Additions { formats, styles })
+    Ok(Additions {
+        formats: styles
+            .codes()
+            .iter()
+            .filter(|(id, _)| !file.declared.contains(id))
+            .map(|(id, code)| (*id, code.clone()))
+            .collect(),
+        fonts: after(styles.fonts(), file.fonts),
+        fills: after(styles.fills(), file.fills),
+        borders: after(styles.borders(), file.borders),
+        styles: after(styles.entries(), file.cell_xfs),
+    })
 }
 
-/// Rewrites `styles.xml` with the additions spliced into their two elements.
+fn after<T: Clone>(table: &[T], count: usize) -> Vec<T> {
+    table.get(count..).unwrap_or_default().to_vec()
+}
+
+/// Rewrites `styles.xml` with the additions spliced into their five elements.
 pub(crate) fn rewrite(part: &str, data: &[u8], add: &Additions) -> Result<Vec<u8>> {
     let file = scan(part, data)?;
     let mut out = Vec::with_capacity(data.len() + 256);
     let mut splicer = Splicer::new(part, data);
     let mut prefix = Vec::new();
     let mut done_formats = false;
+    // Sections the file does not have but our additions need. `<numFmts>` is
+    // handled separately because its schema position is *first child*, before
+    // even `<fonts>`; the other three sit together just before the xf tables.
+    let mut pending_tables = !file.has_fonts || !file.has_fills || !file.has_borders;
 
     while let Some((event, span)) = splicer.next()? {
         match &event {
@@ -90,17 +107,102 @@ pub(crate) fn rewrite(part: &str, data: &[u8], add: &Additions) -> Result<Vec<u8
                 out.extend_from_slice(splicer.bytes(span));
             }
 
-            Event::Start(e) | Event::Empty(e) if local_name(e) == b"cellXfs" => {
-                let count = file.cell_xfs + add.styles.len();
-                let sets = [Set::to(b"count", count.to_string())];
-                if matches!(event, Event::Empty(_)) {
-                    out.extend_from_slice(&retag(e, &sets, add.styles.is_empty()));
-                    if !add.styles.is_empty() {
-                        push_styles(&mut out, &prefix, &add.styles);
-                        close(&mut out, &prefix, b"cellXfs");
+            Event::Start(e) | Event::Empty(e) if local_name(e) == b"fonts" => {
+                open_table(
+                    &mut out,
+                    &mut splicer,
+                    e,
+                    span,
+                    &event,
+                    file.fonts,
+                    add.fonts.len(),
+                );
+                if matches!(event, Event::Empty(_)) && !add.fonts.is_empty() {
+                    for font in &add.fonts {
+                        write_font(&mut out, &prefix, font);
+                    }
+                    close(&mut out, &prefix, b"fonts");
+                }
+            }
+            Event::End(e) if end_local_name(e) == b"fonts" => {
+                for font in &add.fonts {
+                    write_font(&mut out, &prefix, font);
+                }
+                out.extend_from_slice(splicer.bytes(span));
+            }
+
+            Event::Start(e) | Event::Empty(e) if local_name(e) == b"fills" => {
+                open_table(
+                    &mut out,
+                    &mut splicer,
+                    e,
+                    span,
+                    &event,
+                    file.fills,
+                    add.fills.len(),
+                );
+                if matches!(event, Event::Empty(_)) && !add.fills.is_empty() {
+                    for fill in &add.fills {
+                        write_fill(&mut out, &prefix, fill);
+                    }
+                    close(&mut out, &prefix, b"fills");
+                }
+            }
+            Event::End(e) if end_local_name(e) == b"fills" => {
+                for fill in &add.fills {
+                    write_fill(&mut out, &prefix, fill);
+                }
+                out.extend_from_slice(splicer.bytes(span));
+            }
+
+            Event::Start(e) | Event::Empty(e) if local_name(e) == b"borders" => {
+                open_table(
+                    &mut out,
+                    &mut splicer,
+                    e,
+                    span,
+                    &event,
+                    file.borders,
+                    add.borders.len(),
+                );
+                if matches!(event, Event::Empty(_)) && !add.borders.is_empty() {
+                    for border in &add.borders {
+                        write_border(&mut out, &prefix, border);
+                    }
+                    close(&mut out, &prefix, b"borders");
+                }
+            }
+            Event::End(e) if end_local_name(e) == b"borders" => {
+                for border in &add.borders {
+                    write_border(&mut out, &prefix, border);
+                }
+                out.extend_from_slice(splicer.bytes(span));
+            }
+
+            Event::Start(e) | Event::Empty(e)
+                if matches!(local_name(e), b"cellStyleXfs" | b"cellXfs") =>
+            {
+                // The last chance to add a table the file left out: this is the
+                // schema position for all three, after `<numFmts>` and before
+                // the xf tables.
+                if pending_tables {
+                    write_missing_tables(&mut out, &prefix, &file, add);
+                    pending_tables = false;
+                }
+                if local_name(e) == b"cellXfs" {
+                    let count = file.cell_xfs + add.styles.len();
+                    let sets = [Set::to(b"count", count.to_string())];
+                    if matches!(event, Event::Empty(_)) {
+                        out.extend_from_slice(&retag(e, &sets, add.styles.is_empty()));
+                        if !add.styles.is_empty() {
+                            push_styles(&mut out, &prefix, &add.styles);
+                            close(&mut out, &prefix, b"cellXfs");
+                        }
+                    } else {
+                        out.extend_from_slice(&retag(e, &sets, false));
                     }
                 } else {
-                    out.extend_from_slice(&retag(e, &sets, false));
+                    out.extend_from_slice(splicer.bytes(span));
                 }
             }
             Event::End(e) if end_local_name(e) == b"cellXfs" => {
@@ -113,6 +215,72 @@ pub(crate) fn rewrite(part: &str, data: &[u8], add: &Additions) -> Result<Vec<u8
     }
 
     Ok(out)
+}
+
+/// Re-emits a table's start tag with its count corrected.
+fn open_table(
+    out: &mut Vec<u8>,
+    splicer: &mut Splicer<'_>,
+    e: &quick_xml::events::BytesStart<'_>,
+    span: std::ops::Range<usize>,
+    event: &Event<'_>,
+    had: usize,
+    adding: usize,
+) {
+    if adding == 0 {
+        // Not even the count changes, so the file's own bytes go back untouched
+        // — whitespace, attribute order, and all.
+        out.extend_from_slice(splicer.bytes(span));
+        return;
+    }
+    // An empty `<fonts count="0"/>` has to become a start tag: the entries are
+    // going inside it.
+    let _ = event;
+    let sets = [Set::to(b"count", (had + adding).to_string())];
+    out.extend_from_slice(&retag(e, &sets, false));
+}
+
+/// Writes the tables the file omitted entirely, in schema order.
+fn write_missing_tables(out: &mut Vec<u8>, prefix: &[u8], file: &Scan, add: &Additions) {
+    if !file.has_fonts && !add.fonts.is_empty() {
+        open(
+            out,
+            prefix,
+            b"fonts",
+            &[Set::to(b"count", add.fonts.len().to_string())],
+            false,
+        );
+        for font in &add.fonts {
+            write_font(out, prefix, font);
+        }
+        close(out, prefix, b"fonts");
+    }
+    if !file.has_fills && !add.fills.is_empty() {
+        open(
+            out,
+            prefix,
+            b"fills",
+            &[Set::to(b"count", add.fills.len().to_string())],
+            false,
+        );
+        for fill in &add.fills {
+            write_fill(out, prefix, fill);
+        }
+        close(out, prefix, b"fills");
+    }
+    if !file.has_borders && !add.borders.is_empty() {
+        open(
+            out,
+            prefix,
+            b"borders",
+            &[Set::to(b"count", add.borders.len().to_string())],
+            false,
+        );
+        for border in &add.borders {
+            write_border(out, prefix, border);
+        }
+        close(out, prefix, b"borders");
+    }
 }
 
 fn write_num_fmts(out: &mut Vec<u8>, prefix: &[u8], formats: &[(u32, String)], count: usize) {
@@ -142,25 +310,194 @@ fn push_formats(out: &mut Vec<u8>, prefix: &[u8], formats: &[(u32, String)]) {
     }
 }
 
-fn push_styles(out: &mut Vec<u8>, prefix: &[u8], styles: &[u32]) {
-    for id in styles {
-        // The font, fill, and border of the workbook default. A style we created
-        // exists to carry a number format and nothing else; inheriting anything
-        // else would need an understanding of the tables C11 has not built yet.
+/// A font, in the order Excel writes one.
+///
+/// `CT_Font` is a repeated choice rather than a sequence, so the order is not
+/// forced by the schema — but matching Excel's keeps a diff against a file it
+/// produced readable, which is the whole reason the fidelity harness can see
+/// anything at all.
+fn write_font(out: &mut Vec<u8>, prefix: &[u8], font: &Font) {
+    open(out, prefix, b"font", &[], false);
+    if font.bold {
+        open(out, prefix, b"b", &[], true);
+    }
+    if font.italic {
+        open(out, prefix, b"i", &[], true);
+    }
+    if font.strike {
+        open(out, prefix, b"strike", &[], true);
+    }
+    if !font.underline.is_none() {
         open(
             out,
             prefix,
-            b"xf",
-            &[
-                Set::to(b"numFmtId", id.to_string()),
-                Set::to(b"fontId", "0"),
-                Set::to(b"fillId", "0"),
-                Set::to(b"borderId", "0"),
-                Set::to(b"xfId", "0"),
-                Set::to(b"applyNumberFormat", "1"),
-            ],
+            b"u",
+            &[Set::to(b"val", font.underline.as_str())],
             true,
         );
+    }
+    if let Some(vert) = font.vert_align {
+        let val = match vert {
+            ss_model::style::VertAlign::Superscript => "superscript",
+            ss_model::style::VertAlign::Subscript => "subscript",
+        };
+        open(out, prefix, b"vertAlign", &[Set::to(b"val", val)], true);
+    }
+    open(
+        out,
+        prefix,
+        b"sz",
+        &[Set::to(b"val", ss_model::format_general(font.size))],
+        true,
+    );
+    write_color(out, prefix, b"color", font.color);
+    open(
+        out,
+        prefix,
+        b"name",
+        &[Set::to(b"val", font.name.clone())],
+        true,
+    );
+    close(out, prefix, b"font");
+}
+
+fn write_fill(out: &mut Vec<u8>, prefix: &[u8], fill: &Fill) {
+    open(out, prefix, b"fill", &[], false);
+    let pattern = match &fill.pattern {
+        Pattern::None => "none",
+        Pattern::Solid => "solid",
+        Pattern::Named(name) => name.as_str(),
+    };
+    let has_colors = !fill.fg.is_auto() || !fill.bg.is_auto();
+    open(
+        out,
+        prefix,
+        b"patternFill",
+        &[Set::to(b"patternType", pattern)],
+        !has_colors,
+    );
+    if has_colors {
+        write_color(out, prefix, b"fgColor", fill.fg);
+        write_color(out, prefix, b"bgColor", fill.bg);
+        close(out, prefix, b"patternFill");
+    }
+    close(out, prefix, b"fill");
+}
+
+/// A border. All five edges are written even when empty, because `CT_Border`
+/// *is* a sequence and a missing `<left>` moves every edge after it.
+fn write_border(out: &mut Vec<u8>, prefix: &[u8], border: &Border) {
+    let mut sets = Vec::new();
+    if border.diagonal_up {
+        sets.push(Set::to(b"diagonalUp", "1"));
+    }
+    if border.diagonal_down {
+        sets.push(Set::to(b"diagonalDown", "1"));
+    }
+    open(out, prefix, b"border", &sets, false);
+    for (name, edge) in [
+        (b"left".as_slice(), border.left),
+        (b"right".as_slice(), border.right),
+        (b"top".as_slice(), border.top),
+        (b"bottom".as_slice(), border.bottom),
+        (b"diagonal".as_slice(), border.diagonal),
+    ] {
+        write_edge(out, prefix, name, edge);
+    }
+    close(out, prefix, b"border");
+}
+
+fn write_edge(out: &mut Vec<u8>, prefix: &[u8], name: &[u8], edge: Edge) {
+    if edge.is_none() {
+        open(out, prefix, name, &[], true);
+        return;
+    }
+    let styled = [Set::to(b"style", edge.style.as_str())];
+    if edge.color.is_auto() {
+        open(out, prefix, name, &styled, true);
+        return;
+    }
+    open(out, prefix, name, &styled, false);
+    write_color(out, prefix, b"color", edge.color);
+    close(out, prefix, name);
+}
+
+/// One of the colour elements, or nothing at all for `Auto`.
+///
+/// Writing `<color auto="1"/>` would be legal but is not what Excel does for an
+/// unset colour, and the difference shows up in every diff.
+fn write_color(out: &mut Vec<u8>, prefix: &[u8], name: &[u8], color: Color) {
+    let sets = match color {
+        Color::Auto => return,
+        Color::Rgb(_) => vec![Set::to(b"rgb", color.to_hex().unwrap_or_default())],
+        Color::Indexed(i) => vec![Set::to(b"indexed", i.to_string())],
+        Color::Theme { index, tint } => {
+            let mut sets = vec![Set::to(b"theme", index.to_string())];
+            if tint != 0.0 {
+                sets.push(Set::to(b"tint", ss_model::format_general(tint)));
+            }
+            sets
+        }
+    };
+    open(out, prefix, name, &sets, true);
+}
+
+fn push_styles(out: &mut Vec<u8>, prefix: &[u8], styles: &[CellFormat]) {
+    for xf in styles {
+        let mut sets = vec![
+            Set::to(b"numFmtId", xf.num_fmt_id.to_string()),
+            Set::to(b"fontId", xf.font.to_string()),
+            Set::to(b"fillId", xf.fill.to_string()),
+            Set::to(b"borderId", xf.border.to_string()),
+            Set::to(b"xfId", xf.xf_id.to_string()),
+        ];
+        // The `apply*` flags say "this xf's own value overrides the named style
+        // it is based on". Everything we author is direct formatting, so each
+        // one is set exactly when the field is not the default.
+        if xf.num_fmt_id != 0 {
+            sets.push(Set::to(b"applyNumberFormat", "1"));
+        }
+        if xf.font != 0 {
+            sets.push(Set::to(b"applyFont", "1"));
+        }
+        if xf.fill != 0 {
+            sets.push(Set::to(b"applyFill", "1"));
+        }
+        if xf.border != 0 {
+            sets.push(Set::to(b"applyBorder", "1"));
+        }
+        let aligned = !xf.alignment.is_default();
+        if aligned {
+            sets.push(Set::to(b"applyAlignment", "1"));
+        }
+        if xf.quote_prefix {
+            sets.push(Set::to(b"quotePrefix", "1"));
+        }
+        open(out, prefix, b"xf", &sets, !aligned);
+        if aligned {
+            let a = xf.alignment;
+            let mut align = Vec::new();
+            if let Some(h) = a.horizontal.as_str() {
+                align.push(Set::to(b"horizontal", h));
+            }
+            if let Some(v) = a.vertical.as_str() {
+                align.push(Set::to(b"vertical", v));
+            }
+            if a.rotation != 0 {
+                align.push(Set::to(b"textRotation", a.rotation.to_string()));
+            }
+            if a.wrap {
+                align.push(Set::to(b"wrapText", "1"));
+            }
+            if a.indent != 0 {
+                align.push(Set::to(b"indent", a.indent.to_string()));
+            }
+            if a.shrink {
+                align.push(Set::to(b"shrinkToFit", "1"));
+            }
+            open(out, prefix, b"alignment", &align, true);
+            close(out, prefix, b"xf");
+        }
     }
 }
 
@@ -168,6 +505,12 @@ fn push_styles(out: &mut Vec<u8>, prefix: &[u8], styles: &[u32]) {
 struct Scan {
     declared: std::collections::BTreeSet<u32>,
     has_num_fmts: bool,
+    has_fonts: bool,
+    has_fills: bool,
+    has_borders: bool,
+    fonts: usize,
+    fills: usize,
+    borders: usize,
     cell_xfs: usize,
 }
 
@@ -176,26 +519,56 @@ fn scan(part: &str, data: &[u8]) -> Result<Scan> {
     let mut out = Scan {
         declared: Default::default(),
         has_num_fmts: false,
+        has_fonts: false,
+        has_fills: false,
+        has_borders: false,
+        fonts: 0,
+        fills: 0,
+        borders: 0,
         cell_xfs: 0,
     };
-    let mut in_cell_xfs = false;
+    // `<font>`, `<fill>`, and `<border>` all appear inside `<dxfs>` too, where
+    // they are differential formats and not table entries. Counting those would
+    // make every appended font land past the end of the table.
+    let mut section: &[u8] = b"";
+    let mut depth_in_dxfs = false;
 
     while let Some((event, _)) = splicer.next()? {
         match &event {
             Event::Start(e) | Event::Empty(e) => match local_name(e) {
                 b"numFmts" => out.has_num_fmts = true,
-                b"numFmt" => {
+                b"numFmt" if !depth_in_dxfs => {
                     if let Some(id) = raw_attr(e, b"numFmtId").and_then(|a| parse_u32(&a.value)) {
                         out.declared.insert(id);
                     }
                 }
-                b"cellXfs" => in_cell_xfs = true,
+                b"fonts" => {
+                    out.has_fonts = true;
+                    section = b"fonts";
+                }
+                b"fills" => {
+                    out.has_fills = true;
+                    section = b"fills";
+                }
+                b"borders" => {
+                    out.has_borders = true;
+                    section = b"borders";
+                }
+                b"cellXfs" => section = b"cellXfs",
+                b"dxfs" => depth_in_dxfs = true,
+                b"font" if section == b"fonts" => out.fonts += 1,
+                b"fill" if section == b"fills" => out.fills += 1,
+                b"border" if section == b"borders" => out.borders += 1,
                 // `<cellStyleXfs>` holds `<xf>` elements too, and a cell's `s`
                 // attribute does not index it.
-                b"xf" if in_cell_xfs => out.cell_xfs += 1,
+                b"xf" if section == b"cellXfs" => out.cell_xfs += 1,
                 _ => {}
             },
-            Event::End(e) if end_local_name(e) == b"cellXfs" => in_cell_xfs = false,
+            Event::End(e) => match end_local_name(e) {
+                b"fonts" | b"fills" | b"borders" | b"cellXfs" => section = b"",
+                b"dxfs" => depth_in_dxfs = false,
+                _ => {}
+            },
             _ => {}
         }
     }
@@ -205,15 +578,24 @@ fn scan(part: &str, data: &[u8]) -> Result<Scan> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ss_model::style::{BorderStyle, HAlign, StyleId};
     use std::collections::BTreeMap;
 
     const STYLES: &str = concat!(
         r#"<?xml version="1.0"?><styleSheet xmlns="http://x">"#,
-        r#"<fonts count="1"><font><sz val="11"/></font></fonts>"#,
+        r#"<fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts>"#,
+        r#"<fills count="2"><fill><patternFill patternType="none"/></fill>"#,
+        r#"<fill><patternFill patternType="gray125"/></fill></fills>"#,
+        r#"<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>"#,
         r#"<cellStyleXfs count="1"><xf numFmtId="0"/></cellStyleXfs>"#,
         r#"<cellXfs count="1"><xf numFmtId="0" fontId="0"/></cellXfs>"#,
-        r#"<dxfs count="0"/></styleSheet>"#,
+        r#"<dxfs count="1"><dxf><font><b/></font><fill><patternFill><bgColor rgb="FFFFC7CE"/></patternFill></fill></dxf></dxfs>"#,
+        r#"</styleSheet>"#,
     );
+
+    fn table() -> StyleTable {
+        StyleTable::build(&BTreeMap::new(), &[0])
+    }
 
     fn rewritten(styles: &StyleTable) -> String {
         let add = additions("styles.xml", STYLES.as_bytes(), styles).expect("scans");
@@ -223,13 +605,25 @@ mod tests {
 
     #[test]
     fn a_workbook_nobody_edited_comes_back_unchanged() {
-        let styles = StyleTable::build(&BTreeMap::new(), &[0]);
-        assert_eq!(rewritten(&styles), STYLES);
+        assert_eq!(rewritten(&table()), STYLES);
+    }
+
+    #[test]
+    fn the_dxfs_tables_own_fonts_and_fills_are_not_counted_as_table_entries() {
+        // `<dxf>` holds a `<font>` and a `<fill>` that are differential formats,
+        // not entries. Counting them would place every appended font past the
+        // end of the real table, and a cell pointing at it would get whatever
+        // Excel decided a missing font looks like.
+        let scan = scan("styles.xml", STYLES.as_bytes()).expect("scans");
+        assert_eq!(scan.fonts, 1);
+        assert_eq!(scan.fills, 2);
+        assert_eq!(scan.borders, 1);
+        assert_eq!(scan.cell_xfs, 1);
     }
 
     #[test]
     fn a_typed_date_adds_a_style_that_points_at_a_builtin() {
-        let mut styles = StyleTable::build(&BTreeMap::new(), &[0]);
+        let mut styles = table();
         styles.style_for_format("mm-dd-yy");
         let out = rewritten(&styles);
 
@@ -239,15 +633,16 @@ mod tests {
             !out.contains("<numFmts"),
             "a built-in format is never declared: {out}"
         );
-        assert!(
-            out.contains(r#"<dxfs count="0"/>"#),
-            "everything else survives: {out}"
+        assert_eq!(
+            out.matches("<font>").count(),
+            2,
+            "one in the fonts table and the dxf's, and no new one: {out}"
         );
     }
 
     #[test]
     fn a_format_excel_has_no_id_for_gets_a_numfmts_element() {
-        let mut styles = StyleTable::build(&BTreeMap::new(), &[0]);
+        let mut styles = table();
         styles.style_for_format("0.000");
         let out = rewritten(&styles);
 
@@ -262,10 +657,69 @@ mod tests {
     }
 
     #[test]
+    fn bolding_a_cell_appends_a_font_and_points_a_new_xf_at_it() {
+        let mut styles = table();
+        let bold = styles.restyle(StyleId::DEFAULT, |look| look.font.bold = true);
+        assert_eq!(bold, StyleId(1));
+        let out = rewritten(&styles);
+
+        assert!(out.contains(r#"<fonts count="2">"#), "{out}");
+        assert!(
+            out.contains(r#"<font><b/><sz val="11"/><name val="Calibri"/></font>"#),
+            "{out}"
+        );
+        assert!(
+            out.contains(
+                r#"<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/>"#
+            ),
+            "{out}"
+        );
+        assert!(
+            out.contains(r#"<fills count="2">"#),
+            "an untouched table keeps its own count: {out}"
+        );
+    }
+
+    #[test]
+    fn a_fill_a_border_and_an_alignment_all_land_in_their_own_tables() {
+        let mut styles = table();
+        styles.restyle(StyleId::DEFAULT, |look| {
+            look.fill = Fill::solid(Color::rgb(0xFF, 0xEB, 0x9C));
+            look.border = Border::all(BorderStyle::Thin);
+            look.alignment.horizontal = HAlign::Center;
+            look.alignment.wrap = true;
+        });
+        let out = rewritten(&styles);
+
+        assert!(out.contains(r#"<fills count="3">"#), "{out}");
+        assert!(
+            out.contains(
+                r#"<patternFill patternType="solid"><fgColor rgb="FFFFEB9C"/></patternFill>"#
+            ),
+            "{out}"
+        );
+        assert!(out.contains(r#"<borders count="2">"#), "{out}");
+        assert!(
+            out.contains(
+                r#"<border><left style="thin"/><right style="thin"/><top style="thin"/><bottom style="thin"/><diagonal/></border>"#
+            ),
+            "every edge is written, in order, or the sequence shifts: {out}"
+        );
+        assert!(
+            out.contains(r#"<alignment horizontal="center" wrapText="1"/>"#),
+            "{out}"
+        );
+        assert!(out.contains(r#"applyAlignment="1""#), "{out}");
+    }
+
+    #[test]
     fn an_existing_numfmts_element_is_added_to_rather_than_replaced() {
         let file = concat!(
             r#"<styleSheet><numFmts count="1">"#,
             r#"<numFmt numFmtId="164" formatCode="&quot;$&quot;#,##0"/></numFmts>"#,
+            r#"<fonts count="1"><font/></fonts>"#,
+            r#"<fills count="2"><fill/><fill/></fills>"#,
+            r#"<borders count="1"><border/></borders>"#,
             r#"<cellXfs count="1"><xf numFmtId="164"/></cellXfs></styleSheet>"#,
         );
         let codes = BTreeMap::from([(164, "\"$\"#,##0".to_string())]);

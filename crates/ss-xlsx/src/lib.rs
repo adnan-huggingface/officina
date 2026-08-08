@@ -15,6 +15,7 @@ mod parts;
 mod shared_strings;
 mod sheet;
 mod styles;
+mod theme;
 mod workbook_part;
 mod write;
 mod xml;
@@ -63,11 +64,23 @@ fn build(package: &Package) -> Result<Workbook> {
     let mut wb = Workbook::new();
     wb.defined_names = meta.defined_names;
 
+    // The theme before the styles: almost every colour in a modern workbook is
+    // an index into the theme's scheme rather than an RGB triple, and a style
+    // table built without it resolves the whole palette to nothing.
+    let theme = match located.theme.as_ref().and_then(|name| {
+        package
+            .part(name)
+            .map(|part| theme::parse(name.as_str(), part.data()))
+    }) {
+        Some(read) => read?,
+        None => ss_model::color::Theme::default(),
+    };
+
     // Styles before the sheets: a cell's `s` attribute indexes this table, and
     // without it every date in the document is a five-digit number.
     if let Some(name) = &located.styles {
         if let Some(part) = package.part(name) {
-            wb.styles = styles::parse(name.as_str(), part.data())?;
+            wb.styles = styles::parse(name.as_str(), part.data(), theme)?;
         }
     }
 

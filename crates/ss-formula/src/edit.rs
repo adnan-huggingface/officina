@@ -24,6 +24,7 @@ use ss_model::{
 };
 
 use crate::translate::translate;
+use crate::value::Value;
 
 /// Merges, sizes, and the freeze — everything positional a sheet holds that is
 /// not a cell.
@@ -83,6 +84,16 @@ pub enum Patch {
         sheet: usize,
         shift: Shift,
     },
+    /// A style put on whole rows or columns.
+    ///
+    /// Shading a column is not shading a million cells: Excel stores it once on
+    /// `<col>`, and so do we. Without this, formatting a column selection would
+    /// materialize the entire sheet.
+    AxisStyles {
+        sheet: usize,
+        axis: Axis,
+        entries: Vec<(u32, Option<StyleId>)>,
+    },
 }
 
 /// One user-visible action, as a list of patches applied in order.
@@ -134,6 +145,33 @@ fn apply_patch(book: &mut Workbook, patch: Patch) -> Vec<Patch> {
             vec![Patch::Cells {
                 sheet,
                 cells: before,
+            }]
+        }
+
+        Patch::AxisStyles {
+            sheet,
+            axis,
+            entries,
+        } => {
+            let Some(target) = book.sheet_mut(sheet) else {
+                return Vec::new();
+            };
+            let styles = match axis {
+                Axis::Rows => &mut target.row_styles,
+                Axis::Columns => &mut target.column_styles,
+            };
+            let mut before = Vec::with_capacity(entries.len());
+            for (index, style) in entries {
+                before.push((index, styles.get(&index).copied()));
+                match style {
+                    Some(style) => styles.insert(index, style),
+                    None => styles.remove(&index),
+                };
+            }
+            vec![Patch::AxisStyles {
+                sheet,
+                axis,
+                entries: before,
             }]
         }
 
@@ -430,9 +468,206 @@ fn degroup(text: &str) -> Option<String> {
     Some(text.replace(',', ""))
 }
 
+/// The most cells a formatting command will materialize.
+///
+/// A rectangle bigger than this is almost certainly a mis-drag, and writing a
+/// styled cell for each one would turn a sparse sheet into a dense one.
+pub const MAX_FORMAT_CELLS: usize = 1 << 18;
+
+/// Applies a formatting change to a selection.
+///
+/// Three shapes, because Excel stores them three ways and so must we: a whole
+/// column goes on `<col>`, a whole row on `<row>`, and anything else on the
+/// cells themselves. Formatting a column selection as cells would materialize a
+/// million of them — the file has one attribute for exactly this reason.
+///
+/// The style table is append-only, so nothing here mutates a style: each target
+/// gets the id of a style that *has* the new look, which may be one that
+/// already existed.
+pub fn format(
+    book: &mut Workbook,
+    sheet: usize,
+    ranges: &[CellRange],
+    label: impl Into<String>,
+    edit: impl Fn(&mut ss_model::Look),
+) -> Change {
+    let Some(model) = book.sheet(sheet) else {
+        return Change::default();
+    };
+
+    // Everything is read before anything is changed: `restyle` borrows the
+    // style table mutably and the sheet is where the current styles come from.
+    let mut cells: Vec<(CellRef, StyleId)> = Vec::new();
+    let mut columns: Vec<(u32, StyleId)> = Vec::new();
+    let mut rows: Vec<(u32, StyleId)> = Vec::new();
+    for range in ranges {
+        if range.rows() == ss_model::cell::MAX_ROWS {
+            for col in range.start.col..=range.end.col {
+                columns.push((
+                    col,
+                    model.column_styles.get(&col).copied().unwrap_or_default(),
+                ));
+            }
+        } else if range.cols() == ss_model::cell::MAX_COLS {
+            for row in range.start.row..=range.end.row {
+                rows.push((row, model.row_styles.get(&row).copied().unwrap_or_default()));
+            }
+        } else {
+            for row in range.start.row..=range.end.row {
+                for col in range.start.col..=range.end.col {
+                    if cells.len() >= MAX_FORMAT_CELLS {
+                        break;
+                    }
+                    let at = CellRef::new(row, col);
+                    cells.push((at, model.style_at(at)));
+                }
+            }
+        }
+    }
+
+    let mut patches = Vec::new();
+    if !cells.is_empty() {
+        let written: Vec<(CellRef, Option<Cell>)> = cells
+            .into_iter()
+            .map(|(at, style)| {
+                let style = book.styles.restyle(style, &edit);
+                let existing = book.sheet(sheet).and_then(|s| s.get(at)).copied();
+                let cell = Cell {
+                    style,
+                    ..existing.unwrap_or_default()
+                };
+                (at, Some(cell))
+            })
+            .collect();
+        patches.push(Patch::Cells {
+            sheet,
+            cells: written,
+        });
+    }
+    for (axis, targets) in [(Axis::Columns, columns), (Axis::Rows, rows)] {
+        if targets.is_empty() {
+            continue;
+        }
+        let entries = targets
+            .into_iter()
+            .map(|(index, style)| {
+                let style = book.styles.restyle(style, &edit);
+                // The workbook default is the absence of a style, not a style
+                // of zero: writing `s="0"` on every column would be noise.
+                (index, (style != StyleId::DEFAULT).then_some(style))
+            })
+            .collect();
+        patches.push(Patch::AxisStyles {
+            sheet,
+            axis,
+            entries,
+        });
+    }
+
+    Change::new(label, patches)
+}
+
+/// What typing `text` into a cell would store, without storing it.
+///
+/// Data validation is a rule about the *value*, not about the characters: a
+/// "whole number between 1 and 10" rule has to see 5 rather than "5", and a
+/// date rule has to see the serial. So the same interpretation the editor uses
+/// runs first, and only then does the rule get asked.
+///
+/// A formula is not interpreted here — it would have to be evaluated, and a
+/// validation that refused a formula because it could not read it would be
+/// worse than one that let it through.
+pub fn typed_value(text: &str) -> Value {
+    match classify(text) {
+        Typed::Empty => Value::Blank,
+        // Not interpreted: it would have to be evaluated, and a validation that
+        // refused a formula because it could not read it would be worse than
+        // one that let it through.
+        Typed::Formula(_) => Value::Blank,
+        Typed::Number(n, _) => Value::Number(n),
+        Typed::Bool(b) => Value::Bool(b),
+        Typed::Error(e) => Value::Error(e),
+        Typed::Text(t) => Value::Text(t),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn at(a1: &str) -> CellRef {
+        CellRef::from_a1(a1).expect("valid address")
+    }
+
+    #[test]
+    fn formatting_a_selection_is_undoable_like_anything_else() {
+        let mut book = Workbook::blank();
+        let change = input(&mut book, 0, at("A1"), "7");
+        apply(&mut book, change);
+
+        let range = CellRange::new(at("A1"), at("B2"));
+        let bold = format(&mut book, 0, &[range], "Bold", |look| look.font.bold = true);
+        let undo = apply(&mut book, bold);
+
+        let style = |book: &Workbook, a1: &str| book.sheets[0].style_at(at(a1));
+        assert!(book.styles.font(style(&book, "A1")).bold);
+        assert!(
+            book.styles.font(style(&book, "B2")).bold,
+            "an empty cell in the selection is formatted too"
+        );
+        assert_eq!(
+            book.sheets[0].get(at("A1")).map(|c| c.value),
+            Some(CellValue::Number(7.0)),
+            "the value came along unchanged"
+        );
+
+        apply(&mut book, undo);
+        assert!(!book.styles.font(style(&book, "A1")).bold);
+        assert!(!book.styles.font(style(&book, "B2")).bold);
+    }
+
+    #[test]
+    fn formatting_a_whole_column_does_not_materialize_a_million_cells() {
+        // Excel stores this once on `<col>`. Writing a styled cell per row would
+        // turn a sparse sheet into a dense one and make the file enormous.
+        let mut book = Workbook::blank();
+        let whole = CellRange::new(
+            CellRef::new(0, 2),
+            CellRef::new(ss_model::cell::MAX_ROWS - 1, 2),
+        );
+        let change = format(&mut book, 0, &[whole], "Fill", |look| {
+            look.fill = ss_model::Fill::solid(ss_model::Color::rgb(0xFF, 0xFF, 0))
+        });
+        let undo = apply(&mut book, change);
+
+        assert!(book.sheets[0].cells.is_empty(), "no cells were created");
+        let style = book.sheets[0].style_at(CellRef::new(500_000, 2));
+        assert_ne!(style, StyleId::DEFAULT);
+        assert!(!book.styles.fill(style).is_none());
+
+        apply(&mut book, undo);
+        assert_eq!(
+            book.sheets[0].style_at(CellRef::new(500_000, 2)),
+            StyleId::DEFAULT
+        );
+    }
+
+    #[test]
+    fn what_typing_would_store_is_decided_before_it_is_stored() {
+        // Data validation is a rule about the value, so it has to see the
+        // number rather than the characters.
+        assert_eq!(typed_value("5"), Value::Number(5.0));
+        assert_eq!(typed_value("50%"), Value::Number(0.5));
+        assert_eq!(typed_value("TRUE"), Value::Bool(true));
+        assert_eq!(typed_value(""), Value::Blank);
+        assert_eq!(typed_value("north"), Value::Text("north".to_string()));
+        assert_eq!(
+            typed_value("=SUM(A1:A9)"),
+            Value::Blank,
+            "a formula is not judged by a rule that cannot evaluate it"
+        );
+    }
+
     use ss_model::{CellValue, Sheet};
 
     fn book() -> Workbook {

@@ -8,6 +8,8 @@
 #![forbid(unsafe_code)]
 
 pub mod cell;
+pub mod color;
+pub mod cond;
 pub mod datetime;
 pub mod formula;
 pub mod numfmt;
@@ -18,10 +20,15 @@ pub mod style;
 pub mod workbook;
 
 pub use cell::{column_index, column_name, Cell, CellError, CellRef, CellValue, FormulaId};
+pub use color::{Color, Theme};
+pub use cond::{ConditionalFormat, DataValidation};
 pub use formula::{Formula, FormulaKind};
 pub use numfmt::{format_general, FormatValue, Formatted, NumberFormat};
 pub use shift::{Axis, Shift};
 pub use store::CellStore;
 pub use strings::{StrId, StringTable};
-pub use style::{StyleId, StyleTable};
+pub use style::{
+    Alignment, Border, BorderStyle, CellFormat, Dxf, Edge, Fill, Font, HAlign, Look, Pattern,
+    StyleId, StyleTable, Underline, VAlign,
+};
 pub use workbook::{CellRange, DefinedName, Sheet, SheetKind, Workbook};

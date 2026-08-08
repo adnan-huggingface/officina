@@ -8,13 +8,17 @@ use quick_xml::events::{BytesStart, Event};
 use quick_xml::Reader;
 
 use ss_model::cell::{CellError, MAX_COLS, MAX_ROWS};
+use ss_model::cond::{
+    CfKind, CfOperator, CfRule, CfValue, CfValueKind, ConditionalFormat, DataValidation, DvKind,
+    DvOperator, DvSeverity, TextOp,
+};
 use ss_model::formula::{Formula, FormulaKind};
 use ss_model::{Cell, CellRange, CellRef, CellValue, Sheet, StrId, StringTable, StyleId};
 
 use crate::error::{xml_err, Result};
 use crate::xml::{
-    attr_f64, attr_raw, attr_u32, attributes, end_local_name, local_name, parse_bool, parse_f64,
-    parse_u32, push_text, strip_prefix,
+    attr_f64, attr_raw, attr_text, attr_u32, attributes, end_local_name, local_name, parse_bool,
+    parse_f64, parse_u32, push_text, strip_prefix,
 };
 
 /// What `t=` said the cell holds.
@@ -83,6 +87,13 @@ pub(crate) fn parse(
     let mut formula_kind: Option<FormulaKind> = None;
     let mut in_cell = false;
     let mut in_phonetic = 0usize;
+
+    // Conditional formatting and data validation are regions rather than cells,
+    // and both are built up across several child elements.
+    let mut block: Option<ConditionalFormat> = None;
+    let mut rule: Option<PartialRule> = None;
+    let mut validation: Option<DataValidation> = None;
+    let mut side = String::new();
 
     loop {
         let ev = reader
@@ -162,6 +173,76 @@ pub(crate) fn parse(
                     }
                     b"col" => read_col_geometry(e, sheet),
                     b"pane" => read_pane(e, sheet),
+
+                    b"conditionalFormatting" => {
+                        let ranges = attr_raw(e, b"sqref")
+                            .map(|raw| parse_sqref(&raw))
+                            .unwrap_or_default();
+                        block = Some(ConditionalFormat {
+                            ranges,
+                            rules: Vec::new(),
+                        });
+                    }
+                    b"cfRule" => {
+                        let started = read_cf_rule(e);
+                        if empty {
+                            if let (Some(b), Some(r)) = (block.as_mut(), started.finish()) {
+                                b.rules.push(r);
+                            }
+                        } else {
+                            rule = Some(started);
+                        }
+                    }
+                    b"cfvo" => {
+                        if let Some(r) = rule.as_mut() {
+                            r.stops.push(CfValue {
+                                kind: attr_text(e, b"type")
+                                    .map_or(CfValueKind::Number, |t| CfValueKind::from_xml(&t)),
+                                value: attr_text(e, b"val").unwrap_or_default(),
+                            });
+                        }
+                    }
+                    b"color" => {
+                        if let Some(r) = rule.as_mut() {
+                            r.colors.push(crate::styles::read_color(e));
+                        }
+                    }
+                    b"dataBar" => {
+                        if let Some(r) = rule.as_mut() {
+                            r.show_value = attr_raw(e, b"showValue")
+                                .and_then(|v| parse_bool(&v))
+                                .unwrap_or(true);
+                        }
+                    }
+                    b"iconSet" => {
+                        if let Some(r) = rule.as_mut() {
+                            r.icon_set = attr_text(e, b"iconSet").unwrap_or_default();
+                            r.show_value = attr_raw(e, b"showValue")
+                                .and_then(|v| parse_bool(&v))
+                                .unwrap_or(true);
+                            r.reverse = attr_raw(e, b"reverse")
+                                .and_then(|v| parse_bool(&v))
+                                .unwrap_or(false);
+                        }
+                    }
+                    b"formula" if rule.is_some() => {
+                        side.clear();
+                        sink = Sink::Side;
+                    }
+
+                    b"dataValidation" => {
+                        let dv = read_validation(e);
+                        if empty {
+                            push_validation(sheet, dv);
+                        } else {
+                            validation = Some(dv);
+                        }
+                    }
+                    b"formula1" | b"formula2" if validation.is_some() => {
+                        side.clear();
+                        sink = Sink::Side;
+                    }
+
                     _ => {}
                 }
             }
@@ -181,6 +262,48 @@ pub(crate) fn parse(
                 }
                 b"v" | b"t" | b"f" => sink = Sink::None,
                 b"rPh" => in_phonetic = in_phonetic.saturating_sub(1),
+
+                b"formula" => {
+                    if let Some(r) = rule.as_mut() {
+                        r.formulas.push(std::mem::take(&mut side));
+                    }
+                    sink = Sink::None;
+                }
+                b"cfRule" => {
+                    if let (Some(b), Some(r)) =
+                        (block.as_mut(), rule.take().and_then(|r| r.finish()))
+                    {
+                        b.rules.push(r);
+                    }
+                    sink = Sink::None;
+                }
+                b"conditionalFormatting" => {
+                    if let Some(b) = block.take() {
+                        // A block with no ranges applies to nothing; one with no
+                        // rules formats nothing. Neither is worth carrying.
+                        if !b.ranges.is_empty() && !b.rules.is_empty() {
+                            sheet.conditional_formats.push(b);
+                        }
+                    }
+                }
+
+                b"formula1" => {
+                    if let Some(dv) = validation.as_mut() {
+                        dv.formula1 = std::mem::take(&mut side);
+                    }
+                    sink = Sink::None;
+                }
+                b"formula2" => {
+                    if let Some(dv) = validation.as_mut() {
+                        dv.formula2 = std::mem::take(&mut side);
+                    }
+                    sink = Sink::None;
+                }
+                b"dataValidation" => {
+                    if let Some(dv) = validation.take() {
+                        push_validation(sheet, dv);
+                    }
+                }
                 _ => {}
             },
 
@@ -192,6 +315,9 @@ pub(crate) fn parse(
                 }
                 Sink::Formula => {
                     push_text(&mut formula_text, other)?;
+                }
+                Sink::Side => {
+                    push_text(&mut side, other)?;
                 }
                 _ => {}
             },
@@ -207,6 +333,210 @@ enum Sink {
     None,
     Value,
     Formula,
+    /// A `<formula>` of a conditional format, or a `<formula1>`/`<formula2>` of
+    /// a validation. All three are text beside the grid rather than in it.
+    Side,
+}
+
+/// A `<cfRule>` while its children are still arriving.
+///
+/// The rule's *type* is an attribute but its operands are elements, so nothing
+/// can be decided until the element closes.
+struct PartialRule {
+    kind: String,
+    operator: Option<CfOperator>,
+    dxf: Option<u32>,
+    priority: i32,
+    stop_if_true: bool,
+    rank: u32,
+    percent: bool,
+    bottom: bool,
+    equal_average: bool,
+    above: bool,
+    std_dev: Option<i32>,
+    text: String,
+    time_period: String,
+    icon_set: String,
+    show_value: bool,
+    reverse: bool,
+    formulas: Vec<String>,
+    stops: Vec<CfValue>,
+    colors: Vec<ss_model::color::Color>,
+}
+
+impl PartialRule {
+    fn finish(self) -> Option<CfRule> {
+        let kind = match self.kind.as_str() {
+            "cellIs" => CfKind::CellIs {
+                operator: self.operator?,
+                formulas: self.formulas,
+            },
+            "expression" => CfKind::Expression {
+                formula: self.formulas.into_iter().next()?,
+            },
+            "colorScale" => CfKind::ColorScale {
+                stops: self.stops,
+                colors: self.colors,
+            },
+            "dataBar" => CfKind::DataBar {
+                min: self.stops.first().cloned()?,
+                max: self.stops.get(1).cloned()?,
+                color: self.colors.first().copied().unwrap_or_default(),
+                show_value: self.show_value,
+            },
+            "iconSet" => CfKind::IconSet {
+                set: self.icon_set,
+                stops: self.stops,
+                show_value: self.show_value,
+                reverse: self.reverse,
+            },
+            "top10" => CfKind::Top10 {
+                rank: self.rank,
+                percent: self.percent,
+                bottom: self.bottom,
+            },
+            "aboveAverage" => CfKind::AboveAverage {
+                above: self.above,
+                equal_average: self.equal_average,
+                std_dev: self.std_dev,
+            },
+            "containsText" => CfKind::Text {
+                op: TextOp::Contains,
+                text: self.text,
+            },
+            "notContainsText" => CfKind::Text {
+                op: TextOp::NotContains,
+                text: self.text,
+            },
+            "beginsWith" => CfKind::Text {
+                op: TextOp::BeginsWith,
+                text: self.text,
+            },
+            "endsWith" => CfKind::Text {
+                op: TextOp::EndsWith,
+                text: self.text,
+            },
+            "timePeriod" => CfKind::TimePeriod {
+                period: self.time_period,
+            },
+            "duplicateValues" => CfKind::Duplicates { unique: false },
+            "uniqueValues" => CfKind::Duplicates { unique: true },
+            "containsBlanks" => CfKind::Presence {
+                blanks: true,
+                negated: false,
+            },
+            "notContainsBlanks" => CfKind::Presence {
+                blanks: true,
+                negated: true,
+            },
+            "containsErrors" => CfKind::Presence {
+                blanks: false,
+                negated: false,
+            },
+            "notContainsErrors" => CfKind::Presence {
+                blanks: false,
+                negated: true,
+            },
+            other => CfKind::Other(other.to_string()),
+        };
+        Some(CfRule {
+            kind,
+            dxf: self.dxf,
+            priority: self.priority,
+            stop_if_true: self.stop_if_true,
+        })
+    }
+}
+
+fn read_cf_rule(e: &BytesStart<'_>) -> PartialRule {
+    let mut out = PartialRule {
+        kind: String::new(),
+        operator: None,
+        dxf: None,
+        // Excel writes a priority on every rule; a missing one is last rather
+        // than first, so that a rule we could not read cannot shadow one we could.
+        priority: i32::MAX,
+        stop_if_true: false,
+        rank: 10,
+        percent: false,
+        bottom: false,
+        equal_average: false,
+        above: true,
+        std_dev: None,
+        text: String::new(),
+        time_period: String::new(),
+        icon_set: String::new(),
+        show_value: true,
+        reverse: false,
+        formulas: Vec::new(),
+        stops: Vec::new(),
+        colors: Vec::new(),
+    };
+    for a in attributes(e) {
+        let text = || String::from_utf8_lossy(&a.value).into_owned();
+        match strip_prefix(a.key.as_ref()) {
+            b"type" => out.kind = text(),
+            b"operator" => out.operator = CfOperator::from_xml(&text()),
+            b"dxfId" => out.dxf = parse_u32(&a.value),
+            b"priority" => {
+                out.priority = text().parse().unwrap_or(i32::MAX);
+            }
+            b"stopIfTrue" => out.stop_if_true = parse_bool(&a.value).unwrap_or(false),
+            b"rank" => out.rank = parse_u32(&a.value).unwrap_or(10),
+            b"percent" => out.percent = parse_bool(&a.value).unwrap_or(false),
+            b"bottom" => out.bottom = parse_bool(&a.value).unwrap_or(false),
+            b"aboveAverage" => out.above = parse_bool(&a.value).unwrap_or(true),
+            b"equalAverage" => out.equal_average = parse_bool(&a.value).unwrap_or(false),
+            b"stdDev" => out.std_dev = text().parse().ok(),
+            b"text" => out.text = text(),
+            b"timePeriod" => out.time_period = text(),
+            _ => {}
+        }
+    }
+    out
+}
+
+fn read_validation(e: &BytesStart<'_>) -> DataValidation {
+    let mut out = DataValidation::default();
+    for a in attributes(e) {
+        let text = || String::from_utf8_lossy(&a.value).into_owned();
+        match strip_prefix(a.key.as_ref()) {
+            b"sqref" => out.ranges = parse_sqref(&a.value),
+            b"type" => out.kind = DvKind::from_xml(&text()),
+            b"operator" => out.operator = DvOperator::from_xml(&text()),
+            b"allowBlank" => out.allow_blank = parse_bool(&a.value).unwrap_or(false),
+            // Inverted in the file: `showDropDown="1"` *hides* the arrow. Read
+            // literally, every list in the workbook loses its dropdown.
+            b"showDropDown" => out.show_dropdown = !parse_bool(&a.value).unwrap_or(false),
+            b"errorStyle" => {
+                out.severity = match a.value.as_ref() {
+                    b"warning" => DvSeverity::Warning,
+                    b"information" => DvSeverity::Information,
+                    _ => DvSeverity::Stop,
+                }
+            }
+            b"errorTitle" => out.error_title = text(),
+            b"error" => out.error_message = text(),
+            b"promptTitle" => out.prompt_title = text(),
+            b"prompt" => out.prompt_message = text(),
+            _ => {}
+        }
+    }
+    out
+}
+
+fn push_validation(sheet: &mut Sheet, dv: DataValidation) {
+    if !dv.ranges.is_empty() && dv.kind != DvKind::None {
+        sheet.validations.push(dv);
+    }
+}
+
+/// `sqref="A1:A5 C1 E2:G9"` — a space-separated list of ranges.
+fn parse_sqref(raw: &[u8]) -> Vec<CellRange> {
+    raw.split(|b| b.is_ascii_whitespace())
+        .filter(|part| !part.is_empty())
+        .filter_map(parse_range_bytes)
+        .collect()
 }
 
 /// Stores a cell, unless it carries nothing at all.
@@ -319,6 +649,10 @@ struct RowAttrs {
     height: Option<f64>,
     custom_height: bool,
     hidden: bool,
+    /// `s` plus `customFormat="1"`: a style for every cell in the row that has
+    /// none of its own. Without `customFormat` the `s` is advisory and Excel
+    /// ignores it.
+    style: Option<StyleId>,
 }
 
 fn read_row_attrs(e: &BytesStart<'_>) -> RowAttrs {
@@ -327,15 +661,23 @@ fn read_row_attrs(e: &BytesStart<'_>) -> RowAttrs {
         height: None,
         custom_height: false,
         hidden: false,
+        style: None,
     };
+    let mut style = None;
+    let mut custom_format = false;
     for a in attributes(e) {
         match strip_prefix(a.key.as_ref()) {
             b"r" => out.number = parse_u32(&a.value),
             b"ht" => out.height = parse_f64(&a.value),
             b"customHeight" => out.custom_height = parse_bool(&a.value).unwrap_or(false),
             b"hidden" => out.hidden = parse_bool(&a.value).unwrap_or(false),
+            b"s" => style = parse_u32(&a.value).map(StyleId),
+            b"customFormat" => custom_format = parse_bool(&a.value).unwrap_or(false),
             _ => {}
         }
+    }
+    if custom_format {
+        out.style = style.filter(|s| *s != StyleId::DEFAULT);
     }
     out
 }
@@ -351,6 +693,9 @@ fn apply_row_geometry(attrs: &RowAttrs, sheet: &mut Sheet, row: u32) {
     if attrs.hidden {
         sheet.row_heights.insert(row, 0.0);
     }
+    if let Some(style) = attrs.style {
+        sheet.row_styles.insert(row, style);
+    }
 }
 
 fn read_col_geometry(e: &BytesStart<'_>, sheet: &mut Sheet) {
@@ -358,9 +703,15 @@ fn read_col_geometry(e: &BytesStart<'_>, sheet: &mut Sheet) {
     let (Some(min), Some(max)) = (attr_u32(e, b"min"), attr_u32(e, b"max")) else {
         return;
     };
-    let Some(width) = attr_f64(e, b"width") else {
+    // A `<col>` may carry a style without a width — that is how a whole column
+    // gets shaded, and it is the only record of it anywhere in the file.
+    let width = attr_f64(e, b"width");
+    let style = attr_u32(e, b"style")
+        .map(StyleId)
+        .filter(|s| *s != StyleId::DEFAULT);
+    if width.is_none() && style.is_none() {
         return;
-    };
+    }
     if min == 0 || min > max {
         return;
     }
@@ -370,7 +721,12 @@ fn read_col_geometry(e: &BytesStart<'_>, sheet: &mut Sheet) {
         .min(min.saturating_add(MAX_COLS_SPAN_LIMIT))
         .min(MAX_COLS);
     for c in min..=last {
-        sheet.column_widths.insert(c - 1, width);
+        if let Some(width) = width {
+            sheet.column_widths.insert(c - 1, width);
+        }
+        if let Some(style) = style {
+            sheet.column_styles.insert(c - 1, style);
+        }
     }
 }
 
@@ -463,6 +819,128 @@ mod tests {
             .get(CellRef::from_a1(a1).expect("valid address"))
             .map(|c| c.value)
             .unwrap_or(CellValue::Blank)
+    }
+
+    #[test]
+    fn conditional_formatting_comes_back_with_its_regions_and_its_order() {
+        let (sheet, _) = read(
+            r#"<worksheet><sheetData/>
+              <conditionalFormatting sqref="B2:B10 D2:D10">
+                <cfRule type="cellIs" dxfId="0" priority="2" operator="greaterThan">
+                  <formula>100</formula></cfRule>
+                <cfRule type="expression" dxfId="1" priority="1" stopIfTrue="1">
+                  <formula>MOD(ROW(),2)=0</formula></cfRule>
+              </conditionalFormatting>
+              <conditionalFormatting sqref="F1:F9">
+                <cfRule type="colorScale" priority="3">
+                  <colorScale><cfvo type="min"/><cfvo type="max"/>
+                    <color rgb="FFF8696B"/><color rgb="FF63BE7B"/></colorScale></cfRule>
+              </conditionalFormatting>
+            </worksheet>"#,
+        );
+
+        assert_eq!(sheet.conditional_formats.len(), 2);
+        let first = &sheet.conditional_formats[0];
+        assert_eq!(first.ranges.len(), 2, "sqref is a space-separated list");
+        assert!(first.covers(CellRef::from_a1("D5").expect("a1")));
+        assert!(!first.covers(CellRef::from_a1("C5").expect("a1")));
+        assert_eq!(first.rules.len(), 2);
+        assert_eq!(
+            first.rules[0].kind,
+            CfKind::CellIs {
+                operator: CfOperator::GreaterThan,
+                formulas: vec!["100".to_string()],
+            }
+        );
+        assert!(first.rules[1].stop_if_true);
+        assert_eq!(first.rules[1].dxf, Some(1));
+
+        match &sheet.conditional_formats[1].rules[0].kind {
+            CfKind::ColorScale { stops, colors } => {
+                assert_eq!(stops.len(), 2);
+                assert_eq!(colors.len(), 2);
+                assert_eq!(stops[0].kind, CfValueKind::Min);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_data_validation_list_keeps_its_choices_and_its_dropdown() {
+        let (sheet, _) = read(
+            r#"<worksheet><sheetData/>
+              <dataValidation type="list" allowBlank="1" showInputMessage="1"
+                errorTitle="No" error="Pick one" sqref="A1:A20">
+                <formula1>"North,South,East,West"</formula1></dataValidation>
+              <dataValidation type="whole" operator="between" showDropDown="1" sqref="C1">
+                <formula1>1</formula1><formula2>10</formula2></dataValidation>
+            </worksheet>"#,
+        );
+
+        assert_eq!(sheet.validations.len(), 2);
+        let list = sheet
+            .validation_at(CellRef::from_a1("A7").expect("a1"))
+            .expect("covered");
+        assert_eq!(list.kind, DvKind::List);
+        assert!(list.allow_blank);
+        assert_eq!(list.error_message, "Pick one");
+        assert_eq!(
+            list.inline_choices(),
+            Some(vec![
+                "North".to_string(),
+                "South".to_string(),
+                "East".to_string(),
+                "West".to_string()
+            ])
+        );
+        assert!(list.show_dropdown, "absent means shown");
+
+        let whole = sheet
+            .validation_at(CellRef::from_a1("C1").expect("a1"))
+            .expect("covered");
+        assert_eq!(whole.formula1, "1");
+        assert_eq!(whole.formula2, "10");
+        assert!(
+            !whole.show_dropdown,
+            "showDropDown=\"1\" hides it; the attribute is inverted in the file"
+        );
+    }
+
+    #[test]
+    fn a_column_style_reaches_cells_the_file_never_stored() {
+        // Shading a whole column puts a style on `<col>` and stores no cells at
+        // all. A grid reading only `Cell::style` draws it unshaded.
+        let (sheet, _) = read(
+            r#"<worksheet>
+              <cols><col min="2" max="3" style="4"/><col min="5" max="5" width="20" customWidth="1"/></cols>
+              <sheetData>
+                <row r="1" s="7" customFormat="1"><c r="A1"><v>1</v></c><c r="B1" s="9"><v>2</v></c></row>
+              </sheetData></worksheet>"#,
+        );
+
+        assert_eq!(
+            sheet.style_at(CellRef::from_a1("B4").expect("a1")),
+            StyleId(4)
+        );
+        assert_eq!(
+            sheet.style_at(CellRef::from_a1("D4").expect("a1")),
+            StyleId::DEFAULT
+        );
+        assert_eq!(
+            sheet.style_at(CellRef::from_a1("A1").expect("a1")),
+            StyleId(7),
+            "the row's style, since the cell has none of its own"
+        );
+        assert_eq!(
+            sheet.style_at(CellRef::from_a1("B1").expect("a1")),
+            StyleId(9),
+            "the cell's own style wins over both"
+        );
+        assert!(
+            sheet.column_widths.contains_key(&4),
+            "a width-only col still sets a width"
+        );
+        assert!(!sheet.column_styles.contains_key(&4));
     }
 
     #[test]

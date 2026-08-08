@@ -8,11 +8,13 @@
 use std::path::{Path, PathBuf};
 
 use ss_formula::clip::{self, Clip};
+use ss_formula::cond;
 use ss_formula::edit::{self, Change, Patch};
-use ss_model::{Axis, CellRange, Shift, Workbook};
+use ss_model::style::Underline;
+use ss_model::{Axis, CellRange, Color, Fill, HAlign, Shift, Workbook};
 use ui_kit::{egui, paths, AppId, DocumentApp, CALX};
 
-use calx::grid::{self, Action, Editor, GridView, Mode};
+use calx::grid::{self, Action, BorderPreset, Editor, Format, GridView, Mode};
 
 enum Choice {
     Save,
@@ -350,6 +352,19 @@ impl Calx {
         let sheet = self.grid.sheet_index;
         match action {
             Action::Commit { at, text, advance } => {
+                // Validation runs on what the entry *becomes*, not on the
+                // characters typed: a rule about whole numbers has to see the
+                // number, and a date rule has to see the serial.
+                let typed = edit::typed_value(&text);
+                if let Some(refusal) = cond::validate(&self.doc.workbook, sheet, at, &typed) {
+                    let blocks = refusal.blocks();
+                    self.status = refusal.message;
+                    if blocks {
+                        // The cell keeps what it had and the cursor stays put,
+                        // so the user can see what was refused and fix it.
+                        return;
+                    }
+                }
                 let change = edit::input(&mut self.doc.workbook, sheet, at, &text);
                 self.perform(change);
                 // Re-borrowed after the mutation, not held across it.
@@ -376,6 +391,7 @@ impl Calx {
                     self.grid.selection.extend_to(to.end, s);
                 }
             }
+            Action::Format(command) => self.format(command),
             Action::Resized(before) => {
                 // The sheet already has the new sizes; what goes on the stack is
                 // how it looked before, which is the undo.
@@ -390,6 +406,131 @@ impl Calx {
                 self.edited = true;
             }
         }
+    }
+
+    /// Applies a formatting command to the selection.
+    ///
+    /// A toggle is a toggle *of the selection*, and what it toggles to is
+    /// decided by the cursor's own cell — pressing Ctrl+B over a mixed
+    /// selection makes all of it bold, and pressing it again over an all-bold
+    /// one takes it all off. Deciding per cell instead would make Ctrl+B
+    /// invert a selection rather than set it, which is not what anyone means.
+    fn format(&mut self, command: Format) {
+        let sheet = self.grid.sheet_index;
+        let ranges = self.grid.selection.ranges().to_vec();
+        let cursor = self.grid.selection.cursor();
+        let current = self
+            .doc
+            .workbook
+            .sheet(sheet)
+            .map(|s| self.doc.workbook.styles.look(s.style_at(cursor)))
+            .unwrap_or_default();
+
+        let label = format_label(&command);
+        let change = match command {
+            Format::Bold => {
+                let on = !current.font.bold;
+                edit::format(&mut self.doc.workbook, sheet, &ranges, label, move |l| {
+                    l.font.bold = on
+                })
+            }
+            Format::Italic => {
+                let on = !current.font.italic;
+                edit::format(&mut self.doc.workbook, sheet, &ranges, label, move |l| {
+                    l.font.italic = on
+                })
+            }
+            Format::Underline => {
+                let on = current.font.underline.is_none();
+                edit::format(&mut self.doc.workbook, sheet, &ranges, label, move |l| {
+                    l.font.underline = if on {
+                        Underline::Single
+                    } else {
+                        Underline::None
+                    }
+                })
+            }
+            Format::Strike => {
+                let on = !current.font.strike;
+                edit::format(&mut self.doc.workbook, sheet, &ranges, label, move |l| {
+                    l.font.strike = on
+                })
+            }
+            Format::Align(h) => {
+                // Pressing the alignment a cell already has puts it back to
+                // General, which is how Excel's buttons behave.
+                let to = if current.alignment.horizontal == h {
+                    HAlign::General
+                } else {
+                    h
+                };
+                edit::format(&mut self.doc.workbook, sheet, &ranges, label, move |l| {
+                    l.alignment.horizontal = to
+                })
+            }
+            Format::Vertical(v) => {
+                edit::format(&mut self.doc.workbook, sheet, &ranges, label, move |l| {
+                    l.alignment.vertical = v
+                })
+            }
+            Format::Wrap => {
+                let on = !current.alignment.wrap;
+                edit::format(&mut self.doc.workbook, sheet, &ranges, label, move |l| {
+                    l.alignment.wrap = on
+                })
+            }
+            Format::Indent(by) => {
+                edit::format(&mut self.doc.workbook, sheet, &ranges, label, move |l| {
+                    l.alignment.indent = l.alignment.indent.saturating_add_signed(by).min(250)
+                })
+            }
+            Format::FontSize(points) => {
+                edit::format(&mut self.doc.workbook, sheet, &ranges, label, move |l| {
+                    l.font.size = points
+                })
+            }
+            Format::TextColor(color) => {
+                edit::format(&mut self.doc.workbook, sheet, &ranges, label, move |l| {
+                    l.font.color = color.unwrap_or(Color::Auto)
+                })
+            }
+            Format::Fill(color) => {
+                edit::format(&mut self.doc.workbook, sheet, &ranges, label, move |l| {
+                    l.fill = match color {
+                        Some(color) => Fill::solid(color),
+                        None => Fill::default(),
+                    }
+                })
+            }
+            Format::Border(preset) => {
+                edit::format(&mut self.doc.workbook, sheet, &ranges, label, move |l| {
+                    preset.apply(&mut l.border)
+                })
+            }
+            Format::NumberFormat(code) => {
+                edit::format(&mut self.doc.workbook, sheet, &ranges, label, move |l| {
+                    l.number_format = code.clone()
+                })
+            }
+            Format::Clear => edit::format(&mut self.doc.workbook, sheet, &ranges, label, |l| {
+                *l = ss_model::Look::default()
+            }),
+        };
+        self.perform(change);
+        self.grid.invalidate();
+    }
+
+    /// The formatting under the cursor, which is what the toolbar shows as on
+    /// or off. A selection can be mixed; the cursor's cell is the one the user
+    /// can see the state of.
+    fn cursor_look(&self) -> ss_model::Look {
+        let sheet = self.grid.sheet_index;
+        let cursor = self.grid.selection.cursor();
+        self.doc
+            .workbook
+            .sheet(sheet)
+            .map(|s| self.doc.workbook.styles.look(s.style_at(cursor)))
+            .unwrap_or_default()
     }
 
     fn structural(&mut self, axis: Axis, delete: bool) {
@@ -501,6 +642,149 @@ impl Calx {
                 if button.clicked() {
                     requested = Some(action);
                 }
+            }
+        });
+        // The formatting row. Second line rather than the first because the
+        // first is about the *document* and this is about the selection.
+        ui.horizontal(|ui| {
+            let look = self.cursor_look();
+            for (label, hover, on, command) in [
+                ("B", "Bold (Ctrl+B)", look.font.bold, Format::Bold),
+                ("I", "Italic (Ctrl+I)", look.font.italic, Format::Italic),
+                (
+                    "U",
+                    "Underline (Ctrl+U)",
+                    !look.font.underline.is_none(),
+                    Format::Underline,
+                ),
+                (
+                    "S",
+                    "Strikethrough (Ctrl+5)",
+                    look.font.strike,
+                    Format::Strike,
+                ),
+            ] {
+                if ui
+                    .selectable_label(on, label)
+                    .on_hover_text(hover)
+                    .clicked()
+                {
+                    requested = Some(Action::Format(command));
+                }
+            }
+            ui.separator();
+            for (label, hover, align) in [
+                ("⏴", "Align left", HAlign::Left),
+                ("⏷", "Centre", HAlign::Center),
+                ("⏵", "Align right", HAlign::Right),
+            ] {
+                let on = look.alignment.horizontal == align;
+                if ui
+                    .selectable_label(on, label)
+                    .on_hover_text(hover)
+                    .clicked()
+                {
+                    requested = Some(Action::Format(Format::Align(align)));
+                }
+            }
+            if ui
+                .selectable_label(look.alignment.wrap, "⏎")
+                .on_hover_text("Wrap text")
+                .clicked()
+            {
+                requested = Some(Action::Format(Format::Wrap));
+            }
+            for (label, hover, by) in [("→", "Increase indent", 1), ("←", "Decrease indent", -1)]
+            {
+                if ui.button(label).on_hover_text(hover).clicked() {
+                    requested = Some(Action::Format(Format::Indent(by)));
+                }
+            }
+            ui.separator();
+
+            let mut text_rgb = look
+                .font
+                .color
+                .resolve(self.doc.workbook.styles.theme())
+                .unwrap_or([0, 0, 0]);
+            if ui
+                .color_edit_button_srgb(&mut text_rgb)
+                .on_hover_text("Text colour")
+                .changed()
+            {
+                let [r, g, b] = text_rgb;
+                requested = Some(Action::Format(Format::TextColor(Some(Color::rgb(r, g, b)))));
+            }
+            let mut fill_rgb = look
+                .fill
+                .shade(self.doc.workbook.styles.theme())
+                .unwrap_or([255, 255, 255]);
+            if ui
+                .color_edit_button_srgb(&mut fill_rgb)
+                .on_hover_text("Fill colour")
+                .changed()
+            {
+                let [r, g, b] = fill_rgb;
+                requested = Some(Action::Format(Format::Fill(Some(Color::rgb(r, g, b)))));
+            }
+            if ui.button("No fill").clicked() {
+                requested = Some(Action::Format(Format::Fill(None)));
+            }
+            ui.separator();
+
+            egui::ComboBox::from_id_salt("calx-borders")
+                .selected_text("Borders")
+                .width(90.0)
+                .show_ui(ui, |ui| {
+                    for (label, preset) in [
+                        ("All", BorderPreset::All),
+                        ("Outline", BorderPreset::Outline),
+                        ("Thick outline", BorderPreset::Thick),
+                        ("Bottom", BorderPreset::Bottom),
+                        ("Top", BorderPreset::Top),
+                        ("Left", BorderPreset::Left),
+                        ("Right", BorderPreset::Right),
+                        ("None", BorderPreset::None),
+                    ] {
+                        if ui.selectable_label(false, label).clicked() {
+                            requested = Some(Action::Format(Format::Border(preset)));
+                        }
+                    }
+                });
+
+            let mut size = look.font.size;
+            if ui
+                .add(
+                    egui::DragValue::new(&mut size)
+                        .speed(0.5)
+                        .range(1.0..=409.0),
+                )
+                .on_hover_text("Font size")
+                .changed()
+            {
+                requested = Some(Action::Format(Format::FontSize(size)));
+            }
+
+            egui::ComboBox::from_id_salt("calx-number-format")
+                .selected_text(short_format_name(&look.number_format))
+                .width(120.0)
+                .show_ui(ui, |ui| {
+                    for (label, code) in NUMBER_FORMATS {
+                        if ui
+                            .selectable_label(look.number_format == *code, *label)
+                            .clicked()
+                        {
+                            requested =
+                                Some(Action::Format(Format::NumberFormat(code.to_string())));
+                        }
+                    }
+                });
+            if ui
+                .button("Clear")
+                .on_hover_text("Clear formatting")
+                .clicked()
+            {
+                requested = Some(Action::Format(Format::Clear));
             }
         });
         if let Some(action) = requested {
@@ -671,4 +955,47 @@ impl DocumentApp for Calx {
             });
         });
     }
+}
+
+/// What the undo stack calls a formatting command.
+fn format_label(command: &Format) -> &'static str {
+    match command {
+        Format::Bold => "Bold",
+        Format::Italic => "Italic",
+        Format::Underline => "Underline",
+        Format::Strike => "Strikethrough",
+        Format::Align(_) => "Align",
+        Format::Vertical(_) => "Vertical align",
+        Format::Wrap => "Wrap text",
+        Format::Indent(_) => "Indent",
+        Format::FontSize(_) => "Font size",
+        Format::TextColor(_) => "Text colour",
+        Format::Fill(_) => "Fill colour",
+        Format::Border(_) => "Borders",
+        Format::NumberFormat(_) => "Number format",
+        Format::Clear => "Clear formatting",
+    }
+}
+
+/// The formats the toolbar offers, which are Excel's own menu.
+const NUMBER_FORMATS: &[(&str, &str)] = &[
+    ("General", "General"),
+    ("Number", "0.00"),
+    ("Thousands", "#,##0.00"),
+    ("Currency", "\"$\"#,##0.00"),
+    ("Percent", "0.00%"),
+    ("Scientific", "0.00E+00"),
+    ("Short date", "mm-dd-yy"),
+    ("Long date", "d-mmm-yy"),
+    ("Time", "h:mm:ss AM/PM"),
+    ("Text", "@"),
+];
+
+/// The menu label for a format code, or the code itself for one we did not
+/// offer — a workbook's own custom formats have to be visible as *something*.
+fn short_format_name(code: &str) -> &str {
+    NUMBER_FORMATS
+        .iter()
+        .find(|(_, known)| *known == code)
+        .map_or(code, |(label, _)| label)
 }
