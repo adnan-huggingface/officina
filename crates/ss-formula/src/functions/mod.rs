@@ -23,7 +23,7 @@ use crate::value::{Array, Operand, Value};
 pub(crate) use ss_model::numfmt::{round_decimal as decimal_round, Rounding};
 
 mod criteria;
-mod date;
+pub(crate) mod date;
 mod info;
 mod logical;
 mod lookup;

@@ -8,10 +8,17 @@
 //! rectangle, which is the whole reason `plan` takes those as parameters rather
 //! than reading them from the view.
 
-use ss_model::{column_name, CellRef, Sheet, Workbook};
+use ss_formula::edit::Geometry;
+use ss_model::{column_name, Axis, CellRange, CellRef, Sheet, Workbook};
 use ui_kit::egui;
 
-use super::{plan, rect_of, Direction, Drag, GridView, Layout, Scroll, RESIZE_GRAB};
+use super::editor::{self, Editor, Mode};
+use super::{
+    plan, rect_of, rect_of_range, Action, Direction, Drag, GridView, Layout, Scroll, RESIZE_GRAB,
+};
+
+/// Side of the little square at the corner of the selection.
+const FILL_HANDLE: f32 = 6.0;
 
 /// Line and fill colours, resolved from the surrounding egui theme so the grid
 /// follows a light or dark visual style without a second palette.
@@ -44,6 +51,34 @@ impl Palette {
             selection_edge: visuals.selection.stroke.color,
             background: visuals.extreme_bg_color,
         }
+    }
+}
+
+/// Where a cell sits on screen, across whichever pane holds it.
+fn cell_rect(layout: &Layout, panes: &[Pane], at: CellRef) -> Option<egui::Rect> {
+    panes.iter().find_map(|pane| {
+        let rect = rect_of(layout, at, pane.rect, pane.scroll);
+        pane.rect.contains(rect.center()).then_some(rect)
+    })
+}
+
+/// The rectangle a fill drag covers: the source, grown along one axis only.
+///
+/// Excel fills in a single direction. Dragging diagonally still fills whichever
+/// way you pulled further, because a fill extrapolates one series, not two.
+fn fill_target(from: CellRange, to: CellRef) -> CellRange {
+    let down = to.row.max(from.end.row) - to.row.min(from.start.row) - (from.rows() - 1);
+    let across = to.col.max(from.end.col) - to.col.min(from.start.col) - (from.cols() - 1);
+    if down >= across {
+        CellRange::new(
+            CellRef::new(from.start.row.min(to.row), from.start.col),
+            CellRef::new(from.end.row.max(to.row), from.end.col),
+        )
+    } else {
+        CellRange::new(
+            CellRef::new(from.start.row, from.start.col.min(to.col)),
+            CellRef::new(from.end.row, from.end.col.max(to.col)),
+        )
     }
 }
 
@@ -131,9 +166,71 @@ impl GridView {
             );
         }
 
+        // Resolved while the layout is still borrowed, painted after it goes
+        // back into `self`.
+        let editor_rect = self
+            .editor
+            .as_ref()
+            .and_then(|open| cell_rect(layout, &panes, open.at));
+
         self.layout = Some(cached);
+        self.paint_editor(ui, editor_rect);
         self.handle_input(ui, book, &response, full, body);
         response
+    }
+
+    /// The small square at the bottom-right corner of the selection.
+    fn fill_handle(&self, layout: &Layout, pane: &Pane) -> egui::Rect {
+        let corner = rect_of_range(
+            layout,
+            self.selection.active_range(),
+            pane.rect,
+            pane.scroll,
+        )
+        .right_bottom();
+        egui::Rect::from_center_size(corner, egui::vec2(FILL_HANDLE, FILL_HANDLE))
+    }
+
+    /// Draws the open editor over its cell.
+    fn paint_editor(&mut self, ui: &mut egui::Ui, rect: Option<egui::Rect>) {
+        let zoom = self.zoom;
+        let Some(open) = &mut self.editor else {
+            return;
+        };
+        // Scrolled out of view: the formula bar is still showing the same text,
+        // so there is nothing to draw and nothing lost.
+        let Some(rect) = rect else {
+            return;
+        };
+
+        let id = egui::Id::new("calx-cell-editor");
+        let font = egui::FontId::proportional((13.0 * zoom) as f32);
+        let plain = ui.visuals().text_color();
+        let mut layouter = |ui: &egui::Ui, text: &dyn egui::TextBuffer, wrap: f32| {
+            let mut job = editor::highlight(text.as_str(), font.clone(), plain);
+            job.wrap.max_width = wrap;
+            ui.fonts_mut(|f| f.layout_job(job))
+        };
+
+        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect.expand(1.0)));
+        let output = egui::TextEdit::singleline(&mut open.text)
+            .id(id)
+            .margin(egui::Margin::symmetric(2, 0))
+            .layouter(&mut layouter)
+            .desired_width(rect.width().max(60.0))
+            .show(&mut child);
+
+        if open.fresh {
+            output.response.request_focus();
+            // The caret belongs after what was seeded, not before it.
+            let mut state = output.state.clone();
+            let end = egui::text::CCursor::new(open.text.chars().count());
+            state
+                .cursor
+                .set_char_range(Some(egui::text::CCursorRange::one(end)));
+            state.store(ui.ctx(), id);
+            open.fresh = false;
+        }
     }
 
     fn ensure_layout(&mut self, sheet: &Sheet) {
@@ -195,6 +292,42 @@ impl GridView {
                 egui::Stroke::new(1.0, palette.selection_edge),
                 egui::StrokeKind::Inside,
             );
+        }
+
+        // While a formula is being typed its references are outlined in the
+        // same colours the text is coloured with, so `=SUM(B2:B9)` and the box
+        // round B2:B9 are visibly the same thing.
+        if let Some(open) = self.editor.as_ref().filter(|e| e.is_formula()) {
+            for (index, range) in open.references().iter().enumerate() {
+                let rect = rect_of_range(layout, *range, pane.rect, pane.scroll);
+                if !rect.intersect(pane.rect).is_positive() {
+                    continue;
+                }
+                let color = editor::REFERENCE_COLORS[index % editor::REFERENCE_COLORS.len()];
+                painter.rect_stroke(
+                    rect,
+                    0.0,
+                    egui::Stroke::new(1.5, color),
+                    egui::StrokeKind::Inside,
+                );
+            }
+        }
+
+        // The fill preview, and the handle that starts one.
+        if let (Some(Drag::Fill { from }), Some(to)) = (self.drag, self.fill_target) {
+            let _ = from;
+            let rect = rect_of_range(layout, to, pane.rect, pane.scroll);
+            painter.rect_stroke(
+                rect,
+                0.0,
+                egui::Stroke::new(1.0, palette.selection_edge),
+                egui::StrokeKind::Inside,
+            );
+        } else if self.editor.is_none() {
+            let handle = self.fill_handle(layout, pane);
+            if handle.intersect(pane.rect).is_positive() {
+                painter.rect_filled(handle, 1.0, palette.selection_edge);
+            }
         }
 
         let font = egui::FontId::proportional((13.0 * self.zoom) as f32);
@@ -420,7 +553,7 @@ impl GridView {
             match (down, at) {
                 (true, Some(pos)) => self.continue_drag(drag, book, &frame, pos),
                 (false, _) => {
-                    self.drag = None;
+                    self.finish_drag(drag);
                     self.invalidate();
                 }
                 _ => {}
@@ -432,9 +565,22 @@ impl GridView {
         // On press, not on click: `clicked()` fires on *release*, so starting a
         // drag there begins one whose release has already happened.
         if let Some(pos) = response.interact_pointer_pos() {
-            if ui.input(|i| i.pointer.any_pressed()) {
+            // A click inside the open editor is the user placing the caret, not
+            // leaving the cell.
+            let inside_editor = self
+                .editor
+                .as_ref()
+                .and_then(|open| cell_rect(layout, &panes, open.at))
+                .is_some_and(|rect| rect.expand(2.0).contains(pos));
+            if ui.input(|i| i.pointer.any_pressed()) && !inside_editor {
+                // Clicking away from an open editor keeps what was typed, the
+                // way every spreadsheet does.
+                self.commit(None);
                 self.begin_drag(book, &frame, pos, modifiers);
             }
+        }
+        if response.double_clicked() {
+            self.open_editor(book, Mode::Edit);
         }
 
         self.handle_keys(ui, book, body, layout);
@@ -471,6 +617,7 @@ impl GridView {
             let edge = layout.cols.offset(col) + layout.cols.size(col) - pane.scroll.x;
             // Within a few pixels of the edge, the drag resizes instead.
             if (f64::from(pos.x - pane.rect.left()) - edge).abs() < f64::from(RESIZE_GRAB) {
+                self.before_resize = Some(Geometry::of(sheet));
                 self.drag = Some(Drag::ResizeColumn {
                     index: col,
                     origin: pos.x,
@@ -491,6 +638,7 @@ impl GridView {
             let row = layout.rows.index_at(y);
             let edge = layout.rows.offset(row) + layout.rows.size(row) - pane.scroll.y;
             if (f64::from(pos.y - pane.rect.top()) - edge).abs() < f64::from(RESIZE_GRAB) {
+                self.before_resize = Some(Geometry::of(sheet));
                 self.drag = Some(Drag::ResizeRow {
                     index: row,
                     origin: pos.y,
@@ -506,6 +654,17 @@ impl GridView {
         if pos.x < body.left() && pos.y < body.top() && full.contains(pos) {
             self.selection.select_all();
             return;
+        }
+
+        // The fill handle sits on top of the cell under it, so it is tested first.
+        for pane in panes {
+            if pane.rect.contains(pos) && self.fill_handle(layout, pane).contains(pos) {
+                self.drag = Some(Drag::Fill {
+                    from: self.selection.active_range(),
+                });
+                self.fill_target = Some(self.selection.active_range());
+                return;
+            }
         }
 
         let Some(at) = self.cell_at(layout, body, panes, pos) else {
@@ -524,6 +683,12 @@ impl GridView {
     fn continue_drag(&mut self, drag: Drag, book: &mut Workbook, frame: &Frame, pos: egui::Pos2) {
         let (layout, body, panes) = (frame.layout, frame.body, frame.panes);
         match drag {
+            Drag::Fill { from } => {
+                let Some(at) = self.cell_at(layout, body, panes, pos) else {
+                    return;
+                };
+                self.fill_target = Some(fill_target(from, at));
+            }
             Drag::Select => {
                 let Some(at) = self.cell_at(layout, body, panes, pos) else {
                     return;
@@ -559,96 +724,272 @@ impl GridView {
         }
     }
 
+    /// The pointer came up. A resize or a fill only becomes an undoable change
+    /// here, at the end, rather than once per frame of the drag.
+    fn finish_drag(&mut self, drag: Drag) {
+        self.drag = None;
+        match drag {
+            Drag::Fill { from } => {
+                if let Some(to) = self.fill_target.take() {
+                    if to != from {
+                        self.actions.push(Action::Fill { from, to });
+                    }
+                }
+            }
+            Drag::ResizeColumn { .. } | Drag::ResizeRow { .. } => {
+                if let Some(before) = self.before_resize.take() {
+                    self.actions.push(Action::Resized(before));
+                }
+            }
+            Drag::Select => {}
+        }
+    }
+
+    /// Opens the editor on the cursor cell.
+    fn open_editor(&mut self, book: &Workbook, mode: Mode) {
+        if self.editor.is_some() {
+            return;
+        }
+        let at = self.selection.cursor();
+        self.editor = Some(match mode {
+            Mode::Edit => Editor::editing(at, super::source_text(book, self.sheet_index, at)),
+            Mode::Enter => Editor::typing(at, String::new()),
+        });
+    }
+
     fn handle_keys(&mut self, ui: &egui::Ui, book: &Workbook, body: egui::Rect, layout: &Layout) {
         let Some(sheet) = book.sheet(self.sheet_index) else {
             return;
         };
         let events = ui.input(|i| i.events.clone());
         let mut moved = false;
+
         for event in events {
-            let egui::Event::Key {
-                key,
-                pressed: true,
-                modifiers,
-                ..
-            } = event
-            else {
-                continue;
-            };
-            let direction = match key {
-                egui::Key::ArrowUp => Some(Direction::Up),
-                egui::Key::ArrowDown => Some(Direction::Down),
-                egui::Key::ArrowLeft => Some(Direction::Left),
-                egui::Key::ArrowRight => Some(Direction::Right),
-                _ => None,
-            };
-            if let Some(direction) = direction {
-                if modifiers.ctrl {
-                    self.selection.jump(direction, sheet, modifiers.shift);
-                } else if modifiers.shift {
-                    self.selection.extend(direction, sheet);
-                } else {
-                    self.selection.step(direction, sheet);
+            match event {
+                // Copy and cut arrive as their own events rather than as key
+                // presses, because the platform may raise them from a menu.
+                egui::Event::Copy if self.editor.is_none() => {
+                    self.actions.push(Action::Copy { cut: false })
                 }
-                moved = true;
-                continue;
-            }
-            match key {
-                egui::Key::Tab => {
-                    let dir = if modifiers.shift {
-                        Direction::Left
-                    } else {
-                        Direction::Right
-                    };
-                    self.selection.advance(dir, sheet);
-                    moved = true;
+                egui::Event::Cut if self.editor.is_none() => {
+                    self.actions.push(Action::Copy { cut: true })
                 }
-                egui::Key::Enter => {
-                    let dir = if modifiers.shift {
-                        Direction::Up
-                    } else {
-                        Direction::Down
-                    };
-                    self.selection.advance(dir, sheet);
-                    moved = true;
+                egui::Event::Paste(text) if self.editor.is_none() => {
+                    self.actions.push(Action::Paste(text))
                 }
-                egui::Key::A if modifiers.ctrl => self.selection.select_all(),
-                egui::Key::Home => {
-                    let at = if modifiers.ctrl {
-                        CellRef::new(0, 0)
-                    } else {
-                        CellRef::new(self.selection.cursor().row, 0)
-                    };
-                    self.selection.move_to(at, sheet);
-                    moved = true;
+                // Typing over a selected cell starts an edit, seeded with what
+                // was typed. Control characters are not typing.
+                egui::Event::Text(text)
+                    if self.editor.is_none() && !text.chars().any(char::is_control) =>
+                {
+                    self.editor = Some(Editor::typing(self.selection.cursor(), text));
                 }
-                // A page is however many rows currently fit, which is why it
-                // depends on the viewport rather than on a constant.
-                egui::Key::PageDown | egui::Key::PageUp => {
-                    let rows = layout
-                        .rows
-                        .visible(self.scroll.y, self.scroll.y + f64::from(body.height()));
-                    let page = rows.clone().count().max(1) as u32;
-                    let cursor = self.selection.cursor();
-                    let row = if key == egui::Key::PageDown {
-                        cursor.row.saturating_add(page)
+                egui::Event::Key {
+                    key,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } => {
+                    if self.editor.is_some() {
+                        self.editing_key(key, modifiers);
                     } else {
-                        cursor.row.saturating_sub(page)
-                    };
-                    let at = CellRef::new(row.min(ss_model::cell::MAX_ROWS - 1), cursor.col);
-                    if modifiers.shift {
-                        self.selection.extend_to(at, sheet);
-                    } else {
-                        self.selection.move_to(at, sheet);
+                        moved |= self.grid_key(key, modifiers, sheet, book, body, layout);
                     }
-                    moved = true;
                 }
                 _ => {}
             }
         }
+
         if moved {
             let cursor = self.selection.cursor();
             self.scroll_into_view(cursor, body.size(), sheet);
+        }
+    }
+
+    /// Keys while the editor is open.
+    ///
+    /// The mode is the whole point: an arrow key commits and moves when the
+    /// editor was opened by typing, and moves the caret when it was opened with
+    /// F2. Getting this backwards makes a half-typed formula unusable in one
+    /// mode and cell navigation unusable in the other.
+    fn editing_key(&mut self, key: egui::Key, modifiers: egui::Modifiers) {
+        let enter_mode = self.editor.as_ref().is_some_and(|e| e.mode == Mode::Enter);
+        let direction = match key {
+            egui::Key::ArrowUp => Some(Direction::Up),
+            egui::Key::ArrowDown => Some(Direction::Down),
+            egui::Key::ArrowLeft => Some(Direction::Left),
+            egui::Key::ArrowRight => Some(Direction::Right),
+            _ => None,
+        };
+        if let Some(direction) = direction {
+            if enter_mode {
+                self.commit(Some(direction));
+            }
+            return;
+        }
+        match key {
+            egui::Key::Enter => self.commit(Some(if modifiers.shift {
+                Direction::Up
+            } else {
+                Direction::Down
+            })),
+            egui::Key::Tab => self.commit(Some(if modifiers.shift {
+                Direction::Left
+            } else {
+                Direction::Right
+            })),
+            // Escape throws the edit away. Nothing is reported, so nothing is
+            // written and there is nothing to undo.
+            egui::Key::Escape => self.editor = None,
+            // F2 promotes a typing edit to a caret edit, as Excel does.
+            egui::Key::F2 => {
+                if let Some(open) = &mut self.editor {
+                    open.mode = Mode::Edit;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Keys while the grid itself has the keyboard. Returns whether the cursor
+    /// moved, so the caller can scroll it back into view.
+    fn grid_key(
+        &mut self,
+        key: egui::Key,
+        modifiers: egui::Modifiers,
+        sheet: &Sheet,
+        book: &Workbook,
+        body: egui::Rect,
+        layout: &Layout,
+    ) -> bool {
+        let direction = match key {
+            egui::Key::ArrowUp => Some(Direction::Up),
+            egui::Key::ArrowDown => Some(Direction::Down),
+            egui::Key::ArrowLeft => Some(Direction::Left),
+            egui::Key::ArrowRight => Some(Direction::Right),
+            _ => None,
+        };
+        if let Some(direction) = direction {
+            if modifiers.ctrl {
+                self.selection.jump(direction, sheet, modifiers.shift);
+            } else if modifiers.shift {
+                self.selection.extend(direction, sheet);
+            } else {
+                self.selection.step(direction, sheet);
+            }
+            return true;
+        }
+
+        match key {
+            egui::Key::Tab => {
+                let dir = if modifiers.shift {
+                    Direction::Left
+                } else {
+                    Direction::Right
+                };
+                self.selection.advance(dir, sheet);
+                return true;
+            }
+            egui::Key::Enter => {
+                let dir = if modifiers.shift {
+                    Direction::Up
+                } else {
+                    Direction::Down
+                };
+                self.selection.advance(dir, sheet);
+                return true;
+            }
+            egui::Key::F2 => self.open_editor(book, Mode::Edit),
+            // Backspace opens an editor on an emptied cell; Delete just empties.
+            egui::Key::Backspace => self.open_editor(book, Mode::Enter),
+            egui::Key::Delete => self.actions.push(Action::Clear),
+            egui::Key::Z if modifiers.ctrl => self.actions.push(if modifiers.shift {
+                Action::Redo
+            } else {
+                Action::Undo
+            }),
+            egui::Key::Y if modifiers.ctrl => self.actions.push(Action::Redo),
+            egui::Key::D if modifiers.ctrl => self.fill_within(Direction::Down),
+            egui::Key::R if modifiers.ctrl => self.fill_within(Direction::Right),
+            egui::Key::A if modifiers.ctrl => self.selection.select_all(),
+            egui::Key::Space if modifiers.ctrl => {
+                let range = self.selection.active_range();
+                self.selection
+                    .select_columns(range.start.col, range.end.col, modifiers.shift);
+            }
+            egui::Key::Space if modifiers.shift => {
+                let range = self.selection.active_range();
+                self.selection
+                    .select_rows(range.start.row, range.end.row, false);
+            }
+            // Ctrl-plus and Ctrl-minus. Excel asks which way with a dialog; the
+            // selection already answers it whenever it covers whole rows or
+            // whole columns, which is how people use these keys anyway.
+            egui::Key::Plus | egui::Key::Equals if modifiers.ctrl => {
+                self.actions.push(Action::Insert(self.structural_axis()));
+            }
+            egui::Key::Minus if modifiers.ctrl => {
+                self.actions.push(Action::Delete(self.structural_axis()));
+            }
+            egui::Key::Home => {
+                let at = if modifiers.ctrl {
+                    CellRef::new(0, 0)
+                } else {
+                    CellRef::new(self.selection.cursor().row, 0)
+                };
+                self.selection.move_to(at, sheet);
+                return true;
+            }
+            // A page is however many rows currently fit, which is why it
+            // depends on the viewport rather than on a constant.
+            egui::Key::PageDown | egui::Key::PageUp => {
+                let rows = layout
+                    .rows
+                    .visible(self.scroll.y, self.scroll.y + f64::from(body.height()));
+                let page = rows.clone().count().max(1) as u32;
+                let cursor = self.selection.cursor();
+                let row = if key == egui::Key::PageDown {
+                    cursor.row.saturating_add(page)
+                } else {
+                    cursor.row.saturating_sub(page)
+                };
+                let at = CellRef::new(row.min(ss_model::cell::MAX_ROWS - 1), cursor.col);
+                if modifiers.shift {
+                    self.selection.extend_to(at, sheet);
+                } else {
+                    self.selection.move_to(at, sheet);
+                }
+                return true;
+            }
+            _ => {}
+        }
+        false
+    }
+
+    /// Ctrl-D and Ctrl-R: fill the selection from its own first row or column.
+    fn fill_within(&mut self, direction: Direction) {
+        let to = self.selection.active_range();
+        let from = match direction {
+            Direction::Down => CellRange::new(to.start, CellRef::new(to.start.row, to.end.col)),
+            Direction::Right => CellRange::new(to.start, CellRef::new(to.end.row, to.start.col)),
+            _ => return,
+        };
+        if from != to {
+            self.actions.push(Action::Fill { from, to });
+        }
+    }
+
+    /// Whether an insert or delete should move rows or columns.
+    ///
+    /// A selection of whole columns says columns; anything else says rows,
+    /// which is the answer for a selection of whole rows and the safer default
+    /// for a selection of neither.
+    fn structural_axis(&self) -> Axis {
+        let range = self.selection.active_range();
+        if range.rows() == ss_model::cell::MAX_ROWS && range.cols() < ss_model::cell::MAX_COLS {
+            Axis::Columns
+        } else {
+            Axis::Rows
         }
     }
 }
@@ -787,6 +1128,190 @@ mod tests {
         }
         assert_eq!(view.selection.cursor(), clicked);
         assert_eq!(view.selection, Selection::at(clicked));
+    }
+
+    fn key(k: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
+        egui::Event::Key {
+            key: k,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        }
+    }
+
+    fn plain(k: egui::Key) -> egui::Event {
+        key(k, egui::Modifiers::default())
+    }
+
+    fn ctrl(k: egui::Key) -> egui::Event {
+        key(k, egui::Modifiers::CTRL)
+    }
+
+    /// A grid with the keyboard, ready to be typed at.
+    fn typing() -> (egui::Context, Workbook, GridView) {
+        (
+            egui::Context::default(),
+            Workbook::blank(),
+            GridView::default(),
+        )
+    }
+
+    #[test]
+    fn typing_a_character_opens_the_editor_with_it() {
+        let (ctx, mut book, mut view) = typing();
+        frame(
+            &mut view,
+            &mut book,
+            vec![egui::Event::Text("5".into())],
+            &ctx,
+        );
+        let open = view.editor.as_ref().expect("editor opened");
+        assert_eq!(open.text, "5");
+        assert_eq!(open.mode, Mode::Enter, "typed edits commit on arrow keys");
+    }
+
+    #[test]
+    fn enter_commits_and_moves_down() {
+        let (ctx, mut book, mut view) = typing();
+        frame(
+            &mut view,
+            &mut book,
+            vec![egui::Event::Text("hi".into())],
+            &ctx,
+        );
+        frame(&mut view, &mut book, vec![plain(egui::Key::Enter)], &ctx);
+
+        assert!(view.editor.is_none());
+        assert_eq!(
+            view.take_actions(),
+            vec![Action::Commit {
+                at: CellRef::new(0, 0),
+                text: "hi".into(),
+                advance: Some(Direction::Down),
+            }]
+        );
+    }
+
+    #[test]
+    fn escape_throws_the_edit_away_without_reporting_it() {
+        let (ctx, mut book, mut view) = typing();
+        frame(
+            &mut view,
+            &mut book,
+            vec![egui::Event::Text("oops".into())],
+            &ctx,
+        );
+        frame(&mut view, &mut book, vec![plain(egui::Key::Escape)], &ctx);
+
+        assert!(view.editor.is_none());
+        assert!(
+            view.take_actions().is_empty(),
+            "nothing was written, so there is nothing to undo"
+        );
+    }
+
+    #[test]
+    fn an_arrow_key_commits_a_typed_edit_but_not_an_f2_edit() {
+        // This is the difference between Excel's enter and edit modes, and it is
+        // what makes `=A1+` followed by an arrow key point at a cell.
+        let (ctx, mut book, mut view) = typing();
+        frame(
+            &mut view,
+            &mut book,
+            vec![egui::Event::Text("1".into())],
+            &ctx,
+        );
+        frame(
+            &mut view,
+            &mut book,
+            vec![plain(egui::Key::ArrowRight)],
+            &ctx,
+        );
+        assert!(view.editor.is_none(), "typed edit committed");
+        assert_eq!(view.take_actions().len(), 1);
+
+        frame(&mut view, &mut book, vec![plain(egui::Key::F2)], &ctx);
+        frame(
+            &mut view,
+            &mut book,
+            vec![plain(egui::Key::ArrowRight)],
+            &ctx,
+        );
+        assert!(view.editor.is_some(), "F2 edit keeps the caret in the text");
+        assert!(view.take_actions().is_empty());
+    }
+
+    #[test]
+    fn the_keyboard_reports_what_it_cannot_do_itself() {
+        let (ctx, mut book, mut view) = typing();
+        frame(&mut view, &mut book, vec![plain(egui::Key::Delete)], &ctx);
+        frame(&mut view, &mut book, vec![ctrl(egui::Key::Z)], &ctx);
+        frame(&mut view, &mut book, vec![ctrl(egui::Key::Y)], &ctx);
+        frame(&mut view, &mut book, vec![egui::Event::Copy], &ctx);
+        frame(
+            &mut view,
+            &mut book,
+            vec![egui::Event::Paste("a\tb".into())],
+            &ctx,
+        );
+
+        assert_eq!(
+            view.take_actions(),
+            vec![
+                Action::Clear,
+                Action::Undo,
+                Action::Redo,
+                Action::Copy { cut: false },
+                Action::Paste("a\tb".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn navigation_keys_do_nothing_while_a_cell_is_being_edited() {
+        let (ctx, mut book, mut view) = typing();
+        frame(&mut view, &mut book, vec![plain(egui::Key::F2)], &ctx);
+        frame(&mut view, &mut book, vec![plain(egui::Key::Delete)], &ctx);
+        frame(&mut view, &mut book, vec![ctrl(egui::Key::Z)], &ctx);
+
+        assert!(view.editor.is_some());
+        assert!(
+            view.take_actions().is_empty(),
+            "Delete inside an editor deletes a character, not the sheet"
+        );
+    }
+
+    #[test]
+    fn ctrl_d_fills_the_selection_from_its_own_first_row() {
+        let (ctx, mut book, mut view) = typing();
+        view.selection = Selection::at(CellRef::new(0, 0));
+        view.selection
+            .extend_to(CellRef::new(3, 1), book.sheet(0).expect("sheet"));
+
+        frame(&mut view, &mut book, vec![ctrl(egui::Key::D)], &ctx);
+        assert_eq!(
+            view.take_actions(),
+            vec![Action::Fill {
+                from: CellRange::new(CellRef::new(0, 0), CellRef::new(0, 1)),
+                to: CellRange::new(CellRef::new(0, 0), CellRef::new(3, 1)),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_fill_drag_grows_along_whichever_axis_was_pulled_further() {
+        let from = CellRange::new(CellRef::new(0, 0), CellRef::new(0, 0));
+        assert_eq!(
+            fill_target(from, CellRef::new(5, 1)),
+            CellRange::new(CellRef::new(0, 0), CellRef::new(5, 0)),
+            "mostly downward"
+        );
+        assert_eq!(
+            fill_target(from, CellRef::new(1, 5)),
+            CellRange::new(CellRef::new(0, 0), CellRef::new(0, 5)),
+            "mostly rightward"
+        );
     }
 
     #[test]

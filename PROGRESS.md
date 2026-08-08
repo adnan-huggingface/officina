@@ -9,7 +9,7 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[-]` deferred
 
 ## Current state
 
-**Chunk:** C9 — editing, undo, keybindings (C0–C8 all done)
+**Chunk:** C10 — xlsx writer (C0–C9 all done)
 **Status:** not started
 **Handoff note:**
 
@@ -42,7 +42,10 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[-]` deferred
   grid's geometry, selection model, and frame planner are all testable with no
   window and no GPU, which is the only way the million-row criterion could be
   measured at all.
-- Workspace total is **345 tests**, all green;
+- `ss-formula` also owns editing (`edit`) and the clipboard (`clip`). Both sit
+  above the model rather than in it because every editing operation has to keep
+  formula text consistent, and that needs the lexer.
+- Workspace total is **403 tests**, all green;
   `cargo clippy --workspace --all-targets -- -D warnings` and
   `cargo fmt --all --check` are both clean.
 - Watch item: whether text becomes a number depends on **how the value reached
@@ -70,6 +73,16 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[-]` deferred
   elements in styles.xml, and a cell's `s` attribute indexes only the second.
   Reading both into one list shifts every style by the size of the first and
   formats the whole sheet plausibly wrongly.
+- Watch item: **`$` means different things to the two translations.** Moving the
+  grid moves anchored references with everything else; copying a formula leaves
+  them behind. A single shared "adjust a reference" helper would be wrong for
+  one caller or the other.
+- Watch item: **every edit currently recalculates the whole workbook.**
+  `DependencyGraph::dependents_of` is still a linear scan, so a large sheet will
+  feel this. On C29's list, along with the graph.
+- Watch item: **`edit::input` and `clip::paste` grow the formula arena even when
+  the change is later undone.** The orphaned entries are unreachable and
+  harmless, but a writer must emit only what cells point at.
 - Watch item: `DependencyGraph::dependents_of` is a linear scan over every
   formula, so `evaluation_order` is O(formulas^2). Fine at corpus scale and for
   the 1,200-cell stress test; it will not survive a 100k-formula workbook. C5
@@ -296,14 +309,45 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[-]` deferred
   which in turn needs token spans in the lexer. All three belong together in
   the editing chunk. Column and row *resizing* is done here.
 
-- [ ] **C9. Editing + undo + keybindings**
+- [x] **C9. Editing + undo + keybindings**
   Cell editor, formula bar with reference highlighting, fill handle, cut/copy/paste
   (incl. clipboard interop with real Excel), Excel keybinding table.
   Plus insert/delete rows+cols carried over from C8, with the formula reference
   translation they need.
-  *Exit: an hour of real spreadsheet work without hitting a missing verb.*
+  *Exit: an hour of real spreadsheet work without hitting a missing verb.* — **met**
+  as far as a test can state it, by `ss-formula/tests/editing_session.rs`: type
+  numbers, total them, fill the total sideways, insert a row in the middle, undo
+  it, cut the block and paste it elsewhere, with a recalculation after every
+  step. The keyboard table itself is tested headlessly in
+  `grid::paint::tests`, driving real pointer and key events through
+  `GridView::show`.
 
-- [ ] **C10. xlsx writer**
+  **Undo is a value, not a second implementation.** Applying a `Change` returns
+  the `Change` that undoes it, so redo is just the undo of the undo and the two
+  directions cannot drift apart. Cost is bounded by what actually changed: the
+  cells a deletion destroyed, the formulas whose text was rewritten, and one
+  snapshot of merges, sizes, and the freeze. Nothing clones a sheet.
+
+  **Two different translations, and `$` distinguishes them.**
+  `translate::translate` rewrites references when the grid moves under a formula
+  — inserting a row moves the data that was in `$A$1` down to `$A$2`, so an
+  anchored reference moves too. `translate::offset` rewrites them when the
+  formula itself is copied, and *there* the dollar signs pin. Both work on the
+  token stream rather than the parse tree, so `=sum( A1 , A2 )` keeps its
+  spacing, its lowercase, and every byte the user typed that is not a reference.
+
+  **A structural edit is workbook-wide.** A formula on Sheet2 naming
+  `Sheet1!A1` is just as wrong after Sheet1 gains a row, so `edit::structural`
+  walks every sheet's formula arena, not only the one that moved.
+
+  Typing needed a writable style table: a date is a serial *plus* a format, and
+  without the second half the user sees `45306`. `StyleTable::style_for_format`
+  reuses an existing style, resolves a built-in `numFmtId` when the code is one
+  of Excel's, and only then allocates a custom id — the ids a C10 writer has to
+  put back.
+
+- [ ] **C10. xlsx writer** — plus a file dialog and Ctrl+S; until then edits
+      cannot leave the process.
   Serialize from model through the Preservation Vault.
   *Exit: harness check 2 (edit round-trip) green across the corpus.*
 

@@ -714,7 +714,7 @@ const MONTHS: [&str; 12] = [
 /// locale plumbing that arrives with C11's number formats. What is here covers
 /// ISO dates, the two slash orders, and spelled month names — which is what
 /// files actually contain — and refuses the rest rather than guessing wrong.
-fn parse_datetime_text(text: &str) -> Option<f64> {
+pub(crate) fn parse_datetime_text(text: &str) -> Option<f64> {
     let t = text.trim();
     if t.is_empty() {
         return None;
@@ -737,6 +737,20 @@ fn parse_datetime_text(text: &str) -> Option<f64> {
         (None, Some(t)) => Some(t),
         (None, None) => None,
     }
+}
+
+/// A typed date or time, with the number format that should display it.
+///
+/// Excel picks the locale's short date here; ours is the US one, which is the
+/// same choice the built-in format table already encodes.
+pub(crate) fn typed_datetime(text: &str) -> Option<(f64, &'static str)> {
+    let serial = parse_datetime_text(text)?;
+    let (date, time) = split_date_and_time(text.trim());
+    Some(match (date.is_some(), time.is_some()) {
+        (true, true) => (serial, "m/d/yy h:mm"),
+        (false, true) => (serial, "h:mm:ss AM/PM"),
+        _ => (serial, "mm-dd-yy"),
+    })
 }
 
 /// Splits "2024-01-01 13:00" into its two halves. A colon is what marks a time.

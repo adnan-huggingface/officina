@@ -12,12 +12,15 @@
 #![forbid(unsafe_code)]
 
 pub mod ast;
+pub mod clip;
+pub mod edit;
 pub mod error;
 pub mod eval;
 pub mod functions;
 pub mod graph;
 pub mod lexer;
 pub mod parser;
+pub mod translate;
 pub mod value;
 pub mod workbook;
 
@@ -26,10 +29,13 @@ pub mod workbook;
 pub use ss_model::datetime;
 
 pub use ast::{Area, BinaryOp, Expr, Reference, SheetRef, UnaryOp};
+pub use edit::{apply, Change, Patch};
 pub use error::{ParseError, ParseErrorKind};
 pub use eval::{Context, Evaluator, Position};
 pub use graph::{AreaRef, DependencyGraph, Node, Precedents};
 pub use lexer::A1;
 pub use parser::parse;
+pub use ss_model::{Axis, Shift};
+pub use translate::translate;
 pub use value::{Array, Operand, RefSet, Value};
 pub use workbook::{recalculate, Recalculation, WorkbookContext};

@@ -13,6 +13,7 @@
 use std::collections::BTreeMap;
 
 use crate::cell::{Cell, CellRef, MAX_COLS, MAX_ROWS};
+use crate::shift::Shift;
 
 const CHUNK_BITS: u32 = 4;
 const CHUNK_SIDE: u32 = 1 << CHUNK_BITS; // 16
@@ -201,6 +202,38 @@ impl CellStore {
             }
             out
         })
+    }
+
+    /// Applies `shift` to every cell, returning those it destroyed.
+    ///
+    /// The returned cells are what undo needs: an insert can push content off
+    /// the far edge of the grid and a delete removes a band outright, and in
+    /// both cases the data is gone from the store the moment this returns.
+    ///
+    /// Cells before the shift point do not move, so only the ones at or after it
+    /// are touched. Every destination is also at or after it, so lifting them
+    /// out and putting them back cannot collide with a cell that stayed put.
+    pub fn shift(&mut self, shift: Shift) -> Vec<(CellRef, Cell)> {
+        let moving: Vec<(CellRef, Cell)> = self
+            .iter()
+            .filter(|(at, _)| shift.touches(shift.axis.index(*at)))
+            .map(|(at, cell)| (at, *cell))
+            .collect();
+
+        for (at, _) in &moving {
+            self.clear(*at);
+        }
+
+        let mut destroyed = Vec::new();
+        for (at, cell) in moving {
+            match shift.point(shift.axis.index(at)) {
+                Some(index) => {
+                    self.set(shift.axis.with(at, index), cell);
+                }
+                None => destroyed.push((at, cell)),
+            }
+        }
+        destroyed
     }
 
     /// Approximate heap footprint, for diagnostics and the performance chunk.

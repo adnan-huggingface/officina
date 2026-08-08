@@ -24,6 +24,10 @@ impl StyleId {
     pub const DEFAULT: StyleId = StyleId(0);
 }
 
+/// The first `numFmtId` a file is allowed to define. Everything below it is an
+/// Excel built-in and is never written out.
+pub const FIRST_CUSTOM_FORMAT_ID: u32 = 164;
+
 /// The formatting a workbook's cells can refer to.
 #[derive(Debug, Clone, Default)]
 pub struct StyleTable {
@@ -31,6 +35,11 @@ pub struct StyleTable {
     formats: Vec<NumberFormat>,
     /// Which entry of `formats` each [`StyleId`] uses.
     by_style: Vec<u32>,
+    /// The `numFmtId` each style names, kept as the file wrote it so a save can
+    /// put it back rather than inventing an equivalent one.
+    format_ids: Vec<u32>,
+    /// Custom format codes by id, as read and as added since.
+    codes: BTreeMap<u32, String>,
     /// General, returned for any style the table does not cover.
     fallback: NumberFormat,
 }
@@ -64,8 +73,69 @@ impl StyleTable {
         StyleTable {
             formats,
             by_style,
+            format_ids: style_format_ids.to_vec(),
+            codes: codes.clone(),
             fallback: NumberFormat::general(),
         }
+    }
+
+    /// The `numFmtId` a style names, for a writer putting styles.xml back.
+    pub fn format_id(&self, style: StyleId) -> u32 {
+        self.format_ids.get(style.0 as usize).copied().unwrap_or(0)
+    }
+
+    /// Custom format codes by id — everything a writer has to emit as `<numFmt>`.
+    pub fn codes(&self) -> &BTreeMap<u32, String> {
+        &self.codes
+    }
+
+    /// A style that displays through `code`, reusing an existing one if there is
+    /// a match and adding one otherwise.
+    ///
+    /// This is what typing a date into an empty cell needs. Excel does the same
+    /// thing: the value it stores is the serial `45306`, and what makes the cell
+    /// read as a date is a style pointing at a date format.
+    pub fn style_for_format(&mut self, code: &str) -> StyleId {
+        if let Some(index) =
+            (0..self.by_style.len()).find(|i| self.code_of(StyleId(*i as u32)) == code)
+        {
+            return StyleId(index as u32);
+        }
+
+        let id = self
+            .codes
+            .iter()
+            .find(|(_, existing)| existing.as_str() == code)
+            .map(|(id, _)| *id)
+            .or_else(|| {
+                (0..FIRST_CUSTOM_FORMAT_ID).find(|id| NumberFormat::builtin(*id) == Some(code))
+            })
+            .unwrap_or_else(|| {
+                let next = self
+                    .codes
+                    .keys()
+                    .copied()
+                    .filter(|id| *id >= FIRST_CUSTOM_FORMAT_ID)
+                    .max()
+                    .map_or(FIRST_CUSTOM_FORMAT_ID, |max| max + 1);
+                self.codes.insert(next, code.to_string());
+                next
+            });
+
+        self.formats.push(NumberFormat::parse(code));
+        self.by_style.push(self.formats.len() as u32 - 1);
+        self.format_ids.push(id);
+        StyleId(self.by_style.len() as u32 - 1)
+    }
+
+    /// The format code behind a style, resolving built-ins.
+    fn code_of(&self, style: StyleId) -> &str {
+        let id = self.format_id(style);
+        self.codes
+            .get(&id)
+            .map(String::as_str)
+            .or_else(|| NumberFormat::builtin(id))
+            .unwrap_or("General")
     }
 
     /// The number format a cell should display through.
@@ -132,6 +202,49 @@ mod tests {
         let table = StyleTable::build(&BTreeMap::new(), &[14, 14, 14, 0]);
         assert_eq!(table.len(), 4);
         assert_eq!(table.formats.len(), 2, "one parse per distinct format");
+    }
+
+    #[test]
+    fn asking_for_a_format_reuses_a_style_that_already_has_it() {
+        let mut table = StyleTable::build(&BTreeMap::new(), &[0, 14]);
+        let before = table.len();
+        assert_eq!(table.style_for_format("General"), StyleId(0));
+        assert_eq!(table.len(), before, "no new style for one that exists");
+    }
+
+    #[test]
+    fn a_new_format_gets_a_custom_id_a_writer_can_emit() {
+        let mut table = StyleTable::build(&BTreeMap::new(), &[0]);
+        let style = table.style_for_format("0.000");
+        assert_eq!(
+            table
+                .number_format(style)
+                .format(FormatValue::Number(1.5))
+                .text,
+            "1.500"
+        );
+        assert_eq!(table.format_id(style), FIRST_CUSTOM_FORMAT_ID);
+        assert_eq!(
+            table
+                .codes()
+                .get(&FIRST_CUSTOM_FORMAT_ID)
+                .map(String::as_str),
+            Some("0.000")
+        );
+
+        // A second style for the same code shares the id rather than inventing one.
+        let again = table.style_for_format("0.000");
+        assert_eq!(again, style);
+    }
+
+    #[test]
+    fn a_builtin_code_is_recognized_rather_than_redefined() {
+        // `mm-dd-yy` is built-in id 14. Writing it as a custom format would be
+        // legal but would make our files differ from Excel's for no reason.
+        let mut table = StyleTable::build(&BTreeMap::new(), &[0]);
+        let style = table.style_for_format("mm-dd-yy");
+        assert_eq!(table.format_id(style), 14);
+        assert!(table.codes().is_empty());
     }
 
     #[test]

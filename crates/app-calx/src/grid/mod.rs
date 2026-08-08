@@ -15,14 +15,17 @@
 //! measure the part that scales with the sheet.
 
 pub mod axis;
+pub mod editor;
 pub mod paint;
 pub mod selection;
 
+use ss_formula::edit::Geometry;
 use ss_model::numfmt::FormatValue;
-use ss_model::{CellRange, CellRef, CellValue, Sheet, Workbook};
+use ss_model::{Axis, CellRange, CellRef, CellValue, Sheet, Workbook};
 use ui_kit::egui;
 
 pub use axis::Layout;
+pub use editor::{Editor, Mode};
 pub use selection::{Direction, Selection};
 
 /// How far a click may be from a header edge and still grab it.
@@ -188,6 +191,64 @@ pub fn rect_of_range(
     rect_of(layout, range.start, view, scroll).union(rect_of(layout, range.end, view, scroll))
 }
 
+/// Something the user asked for that the grid cannot do on its own.
+///
+/// The grid owns geometry and selection; it does not own the document. Editing
+/// a cell has to go through undo, and undo is the application's, so the grid
+/// reports the intent and the application performs it. That is also what makes
+/// the whole keyboard table testable without a document.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Action {
+    /// The editor was closed with Enter, Tab, or a click elsewhere.
+    Commit {
+        at: CellRef,
+        text: String,
+        advance: Option<Direction>,
+    },
+    /// Delete: empty the selection but keep its formatting.
+    Clear,
+    Insert(Axis),
+    Delete(Axis),
+    Undo,
+    Redo,
+    Copy {
+        cut: bool,
+    },
+    /// Text arrived from the system clipboard.
+    Paste(String),
+    /// The fill handle was dragged from `from` out to `to`.
+    Fill {
+        from: CellRange,
+        to: CellRange,
+    },
+    /// A row or column resize finished; the payload is how the sheet looked
+    /// before it started, which is the whole undo entry.
+    Resized(Geometry),
+}
+
+/// What the formula bar and the editor show for a cell: its formula if it has
+/// one, otherwise its value written the way the user would type it.
+///
+/// Deliberately not the *displayed* text. A cell showing `15-Jan-24` is edited
+/// as the date it holds, and a cell showing `1,235` is edited as `1234.56`.
+pub fn source_text(book: &Workbook, sheet: usize, at: CellRef) -> String {
+    let Some(sheet) = book.sheet(sheet) else {
+        return String::new();
+    };
+    if let Some(formula) = sheet.formula_at(at) {
+        if !formula.text.is_empty() {
+            return format!("={}", formula.text);
+        }
+    }
+    match sheet.get(at).map(|c| c.value) {
+        Some(CellValue::Text(id)) => book.strings.resolve(id).to_string(),
+        Some(CellValue::Number(n)) => ss_model::format_general(n),
+        Some(CellValue::Bool(b)) => if b { "TRUE" } else { "FALSE" }.to_string(),
+        Some(CellValue::Error(e)) => e.as_str().to_string(),
+        _ => String::new(),
+    }
+}
+
 /// The grid widget's own state, kept between frames.
 pub struct GridView {
     pub sheet_index: usize,
@@ -195,12 +256,20 @@ pub struct GridView {
     /// Scroll position in sheet pixels, for the scrolling pane.
     pub scroll: Scroll,
     pub zoom: f64,
+    /// The open cell editor, if any. The formula bar edits the same buffer.
+    pub editor: Option<Editor>,
+    /// What the last frame asked the application to do. Drained by the caller.
+    pub actions: Vec<Action>,
     /// Rebuilt only when the sheet, the zoom, or a size changes — building it
     /// per frame would sort every row height on a sheet that has many.
     pub(crate) layout: Option<(usize, u32, Layout)>,
     /// Bumped whenever a row or column is resized, to invalidate the cache.
     pub(crate) generation: u32,
     pub(crate) drag: Option<Drag>,
+    /// How the sheet looked before the resize drag in progress started.
+    pub(crate) before_resize: Option<Geometry>,
+    /// The rectangle the fill drag currently covers.
+    pub(crate) fill_target: Option<CellRange>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -218,6 +287,10 @@ pub(crate) enum Drag {
         origin: f32,
         start: f32,
     },
+    /// Dragging the small square at the corner of the selection.
+    Fill {
+        from: CellRange,
+    },
 }
 
 impl Default for GridView {
@@ -227,14 +300,34 @@ impl Default for GridView {
             selection: Selection::default(),
             scroll: Scroll::default(),
             zoom: 1.0,
+            editor: None,
+            actions: Vec::new(),
             layout: None,
             generation: 0,
             drag: None,
+            before_resize: None,
+            fill_target: None,
         }
     }
 }
 
 impl GridView {
+    /// Takes everything the grid asked for since the last call.
+    pub fn take_actions(&mut self) -> Vec<Action> {
+        std::mem::take(&mut self.actions)
+    }
+
+    /// Closes the editor, reporting what was in it.
+    pub fn commit(&mut self, advance: Option<Direction>) {
+        if let Some(editor) = self.editor.take() {
+            self.actions.push(Action::Commit {
+                at: editor.at,
+                text: editor.text,
+                advance,
+            });
+        }
+    }
+
     pub fn invalidate(&mut self) {
         self.generation = self.generation.wrapping_add(1);
     }

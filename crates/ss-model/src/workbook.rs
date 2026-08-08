@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 
 use crate::cell::{Cell, CellRef, FormulaId};
 use crate::formula::Formula;
+use crate::shift::{Axis, Shift};
 use crate::store::CellStore;
 use crate::strings::StringTable;
 
@@ -122,6 +123,76 @@ impl Sheet {
     pub fn formula_at(&self, at: CellRef) -> Option<&Formula> {
         self.formula(self.get(at)?.formula?)
     }
+
+    /// Moves everything the sheet holds by position, returning the cells the
+    /// shift destroyed.
+    ///
+    /// Formula *text* is deliberately not touched here. Rewriting `A1` to `A2`
+    /// means lexing the formula, which is `ss-formula`'s job and would invert
+    /// the dependency between these two crates. The caller has to do both —
+    /// [`ss_formula::edit`] is the one that does.
+    pub fn shift(&mut self, shift: Shift) -> Vec<(CellRef, Cell)> {
+        let removed = self.cells.shift(shift);
+
+        // A merge that loses all but one of its cells stops being a merge.
+        self.merges = self
+            .merges
+            .iter()
+            .filter_map(|m| shift.range(*m))
+            .filter(|m| m.rows() > 1 || m.cols() > 1)
+            .collect();
+
+        for formula in &mut self.formulas {
+            match &mut formula.kind {
+                crate::formula::FormulaKind::Array { range } => {
+                    if let Some(moved) = shift.range(*range) {
+                        *range = moved;
+                    }
+                }
+                crate::formula::FormulaKind::Shared { range, .. } => {
+                    if let Some(r) = range {
+                        *range = shift.range(*r);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let sizes = match shift.axis {
+            Axis::Rows => &mut self.row_heights,
+            Axis::Columns => &mut self.column_widths,
+        };
+        *sizes = sizes
+            .iter()
+            .filter_map(|(index, size)| shift.point(*index).map(|moved| (moved, *size)))
+            .collect();
+
+        // The freeze is a boundary line, not content: deleting the rows it sits
+        // in pulls it up to where they were rather than removing it.
+        if let Some(frozen) = self.frozen {
+            let index = shift.axis.index(frozen);
+            let moved = shift.point(index).unwrap_or(shift.at);
+            self.frozen = Some(shift.axis.with(frozen, moved));
+        }
+
+        removed
+    }
+
+    pub fn insert_rows(&mut self, at: u32, count: u32) -> Vec<(CellRef, Cell)> {
+        self.shift(Shift::insert(Axis::Rows, at, count))
+    }
+
+    pub fn delete_rows(&mut self, at: u32, count: u32) -> Vec<(CellRef, Cell)> {
+        self.shift(Shift::delete(Axis::Rows, at, count))
+    }
+
+    pub fn insert_columns(&mut self, at: u32, count: u32) -> Vec<(CellRef, Cell)> {
+        self.shift(Shift::insert(Axis::Columns, at, count))
+    }
+
+    pub fn delete_columns(&mut self, at: u32, count: u32) -> Vec<(CellRef, Cell)> {
+        self.shift(Shift::delete(Axis::Columns, at, count))
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -201,6 +272,13 @@ mod tests {
     use super::*;
     use crate::cell::CellValue;
 
+    fn num(v: f64) -> Cell {
+        Cell {
+            value: CellValue::Number(v),
+            ..Default::default()
+        }
+    }
+
     #[test]
     fn ranges_normalize_whichever_way_the_user_dragged() {
         let a = CellRange::new(CellRef::new(5, 5), CellRef::new(1, 2));
@@ -261,6 +339,73 @@ mod tests {
         assert!(sheet.merge_at(CellRef::new(3, 4)).is_some(), "far corner");
         assert!(sheet.merge_at(CellRef::new(0, 1)).is_none());
         assert!(sheet.merge_at(CellRef::new(4, 4)).is_none());
+    }
+
+    #[test]
+    fn inserting_rows_moves_cells_merges_sizes_and_the_freeze() {
+        let mut sheet = Sheet::new("S");
+        sheet.set(CellRef::new(0, 0), num(1.0));
+        sheet.set(CellRef::new(5, 0), num(2.0));
+        sheet
+            .merges
+            .push(CellRange::new(CellRef::new(5, 0), CellRef::new(5, 3)));
+        sheet.row_heights.insert(5, 33.0);
+        sheet.frozen = Some(CellRef::new(3, 0));
+
+        assert!(
+            sheet.insert_rows(2, 2).is_empty(),
+            "nothing fell off the grid"
+        );
+
+        assert_eq!(
+            sheet.get(CellRef::new(0, 0)).map(|c| c.value),
+            Some(CellValue::Number(1.0))
+        );
+        assert_eq!(
+            sheet.get(CellRef::new(7, 0)).map(|c| c.value),
+            Some(CellValue::Number(2.0))
+        );
+        assert_eq!(sheet.get(CellRef::new(5, 0)), None);
+        assert_eq!(sheet.merges[0].start, CellRef::new(7, 0));
+        assert_eq!(sheet.row_heights.get(&7), Some(&33.0));
+        assert_eq!(sheet.frozen, Some(CellRef::new(5, 0)));
+    }
+
+    #[test]
+    fn deleting_rows_hands_back_what_it_destroyed() {
+        let mut sheet = Sheet::new("S");
+        sheet.set(CellRef::new(1, 0), num(10.0));
+        sheet.set(CellRef::new(2, 0), num(20.0));
+        sheet.set(CellRef::new(9, 0), num(90.0));
+
+        let removed = sheet.delete_rows(1, 2);
+        assert_eq!(removed.len(), 2, "undo has to be able to put them back");
+        assert_eq!(removed[0].0, CellRef::new(1, 0));
+        assert_eq!(
+            sheet.get(CellRef::new(7, 0)).map(|c| c.value),
+            Some(CellValue::Number(90.0))
+        );
+        assert_eq!(sheet.cells.len(), 1);
+    }
+
+    #[test]
+    fn a_merge_that_loses_all_but_one_cell_stops_being_a_merge() {
+        let mut sheet = Sheet::new("S");
+        sheet
+            .merges
+            .push(CellRange::new(CellRef::new(0, 0), CellRef::new(0, 1)));
+        sheet.delete_columns(1, 1);
+        assert!(sheet.merges.is_empty());
+    }
+
+    #[test]
+    fn content_pushed_off_the_bottom_is_reported_not_silently_dropped() {
+        let mut sheet = Sheet::new("S");
+        let last = CellRef::new(crate::cell::MAX_ROWS - 1, 0);
+        sheet.set(last, num(1.0));
+        let removed = sheet.insert_rows(0, 1);
+        assert_eq!(removed.len(), 1);
+        assert_eq!(removed[0].0, last);
     }
 
     #[test]

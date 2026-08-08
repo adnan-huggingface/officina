@@ -91,6 +91,13 @@ pub struct Token {
     pub space_before: bool,
     /// Byte offset of the token's start, for error reporting.
     pub at: usize,
+    /// Byte offset one past the token's last byte.
+    ///
+    /// Rewriting a formula — which is what inserting a row does to every
+    /// formula that points past it — means replacing the reference tokens and
+    /// leaving every other byte of the user's text exactly as they typed it.
+    /// That needs an end as well as a start.
+    pub end: usize,
 }
 
 pub fn tokenize(input: &str) -> Result<Vec<Token>, ParseError> {
@@ -122,6 +129,7 @@ impl<'a> Lexer<'a> {
                 kind,
                 space_before: space,
                 at,
+                end: self.pos,
             });
         }
         Ok(out)
