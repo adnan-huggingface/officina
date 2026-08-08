@@ -8,7 +8,8 @@
 //!
 //! **References are not their contents.** A range stays a `RefSet` until
 //! something asks for values. That is what lets `ROW(A5)` answer without reading
-//! A5, and what will let `OFFSET` work in C7.
+//! A5, and what lets `OFFSET` and `INDEX` hand back an address that can be
+//! summed or used as one end of a range.
 //!
 //! **Arrays broadcast.** Any operator applied to arrays produces an array, with
 //! single rows and columns stretched to fit. Where the shapes genuinely disagree,
@@ -47,6 +48,18 @@ pub trait Context {
     fn resolve_name(&self, sheet: usize, name: &str) -> Option<Operand> {
         let _ = (sheet, name);
         None
+    }
+
+    /// The current moment, as a serial number.
+    ///
+    /// On the trait so `TODAY` and `NOW` are testable — a test that could only
+    /// fail at midnight is not a test. The default is UTC; a host that knows the
+    /// user's time zone should override it, because Excel's `NOW` is local.
+    fn now(&self) -> f64 {
+        let seconds = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0.0, |d| d.as_secs_f64());
+        crate::datetime::UNIX_EPOCH_SERIAL_F64 + seconds / 86_400.0
     }
 }
 
@@ -148,25 +161,54 @@ impl<'a> Evaluator<'a> {
     }
 
     /// Evaluates to a single value, collapsing arrays and references.
-    ///
-    /// Excel would apply implicit intersection here; that is C7. Until then a
-    /// multi-cell operand collapses to its first cell, which agrees with Excel
-    /// whenever the intersection would have hit the first cell and is at least
-    /// deterministic when it would not.
     pub fn eval_scalar(&mut self, expr: &Expr) -> Value {
         let op = self.eval(expr);
         self.collapse(op)
     }
 
+    /// Reduces an operand to the one value a scalar context wants, applying
+    /// **implicit intersection** to a reference.
+    ///
+    /// A range used where a single value is expected does not collapse to its
+    /// first cell — it collapses to the cell in line with the formula.
+    /// `=A1:A10` in C5 is A5, and in C11 it is `#VALUE!`, because the range has
+    /// no row 11 to offer. This is the rule modern Excel spells `@`, and it is
+    /// why a column of `=$B$1:$B$5*2` down five rows gives five different
+    /// answers rather than five copies of the first.
+    ///
+    /// Arrays are not references and do not intersect; they take their first
+    /// value, which is what a literal in scalar position does.
     pub fn collapse(&self, op: Operand) -> Value {
         match op {
             Operand::Value(v) => v,
             Operand::Array(a) => a.first(),
             Operand::Ref(r) => match r.areas.first() {
-                Some(a) => self.ctx.cell(a.sheet, a.range.start),
+                Some(a) => match self.intersect_with_position(a) {
+                    Some(at) => self.ctx.cell(a.sheet, at),
+                    None => Value::Error(CellError::Value),
+                },
                 None => Value::Error(CellError::Ref),
             },
         }
+    }
+
+    /// The single cell an area offers the formula's own row and column, if any.
+    fn intersect_with_position(&self, area: &AreaRef) -> Option<CellRef> {
+        let range = area.range;
+        let (rows, cols) = (range.rows(), range.cols());
+        if rows == 1 && cols == 1 {
+            return Some(range.start);
+        }
+        let here = self.position.at;
+        if rows == 1 && (range.start.col..=range.end.col).contains(&here.col) {
+            return Some(CellRef::new(range.start.row, here.col));
+        }
+        if cols == 1 && (range.start.row..=range.end.row).contains(&here.row) {
+            return Some(CellRef::new(here.row, range.start.col));
+        }
+        // A block, or a line the formula does not sit beside. Excel has nothing
+        // to pick and says so rather than guessing.
+        None
     }
 
     pub fn eval_number(&mut self, expr: &Expr) -> Result<f64, CellError> {

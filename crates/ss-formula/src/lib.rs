@@ -12,6 +12,7 @@
 #![forbid(unsafe_code)]
 
 pub mod ast;
+pub mod datetime;
 pub mod error;
 pub mod eval;
 pub mod functions;

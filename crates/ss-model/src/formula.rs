@@ -1,6 +1,6 @@
 //! Formulas as they are *stored*, not as they are evaluated.
 //!
-//! Evaluation belongs to `ss-formula` (C7). What lives here is only enough to
+//! Evaluation belongs to `ss-formula`. What lives here is only enough to
 //! hold what the file said, so that a workbook we cannot yet compute is still a
 //! workbook we can open and save without damage.
 //!

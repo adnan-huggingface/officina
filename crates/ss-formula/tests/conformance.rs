@@ -96,11 +96,19 @@ fn text(s: &str) -> Value {
 /// Text is quoted so `"1"` and `1` are visibly different — which, given how much
 /// of this suite is about exactly that distinction, is the whole point.
 fn eval_in(book: &Book, formula: &str) -> String {
+    eval_at_cell(book, CellRef::new(0, 0), formula)
+}
+
+/// The same, for a formula sitting somewhere other than A1.
+///
+/// Where the formula lives is not decoration once implicit intersection is in
+/// play: `=A1:A3` is a different number in every row.
+fn eval_at_cell(book: &Book, at: CellRef, formula: &str) -> String {
     let expr = match parse(formula) {
         Ok(e) => e,
         Err(e) => return format!("<parse error: {e}>"),
     };
-    let mut ev = Evaluator::new(book, Position::new(0, CellRef::new(0, 0)));
+    let mut ev = Evaluator::new(book, Position::new(0, at));
     show(&ev.eval(&expr), &ev)
 }
 
@@ -149,9 +157,16 @@ fn check(cases: &[(&str, &str)]) {
 
 #[track_caller]
 fn check_in(book: &Book, cases: &[(&str, &str)]) {
+    check_at(book, "A1", cases);
+}
+
+/// Runs a table with the formula placed in a named cell.
+#[track_caller]
+fn check_at(book: &Book, at: &str, cases: &[(&str, &str)]) {
+    let at = CellRef::from_a1(at).expect("test address");
     let mut failures = Vec::new();
     for (formula, expected) in cases {
-        let got = eval_in(book, formula);
+        let got = eval_at_cell(book, at, formula);
         if got != *expected {
             failures.push(format!(
                 "  ={formula}\n    expected {expected}\n    got      {got}"
@@ -872,4 +887,453 @@ fn rand_stays_inside_its_range_and_is_reproducible() {
             other => panic!("RANDBETWEEN returned {other:?}"),
         }
     }
+}
+
+// --------------------------------------------------------------- dates (C7)
+
+#[test]
+fn dates_are_serials_with_a_leap_day_that_never_happened() {
+    check(&[
+        // The three serials that pin Excel's calendar to Lotus 1-2-3's bug.
+        ("DATE(1900,2,28)", "59"),
+        ("DATE(1900,2,29)", "60"),
+        ("DATE(1900,3,1)", "61"),
+        ("DAY(60)", "29"),
+        ("MONTH(60)", "2"),
+        ("YEAR(60)", "1900"),
+        // Anything after it is an ordinary Gregorian date offset by one day.
+        ("DATE(2024,1,1)", "45292"),
+        ("DATE(2024,3,1)", "45352"),
+        ("DATE(9999,12,31)", "2958465"),
+        // There is no date before 1900 to count from, and written text saying
+        // otherwise is refused rather than shifted into range.
+        ("DATEVALUE(\"1899-12-31\")", "#VALUE!"),
+    ]);
+}
+
+#[test]
+fn date_treats_its_arguments_as_offsets_not_as_a_calendar() {
+    check(&[
+        // A year below 1900 is an offset from 1900, not a year in antiquity —
+        // which is also why `DATE(1899,12,31)` is in the year 3799.
+        ("YEAR(DATE(24,1,1))", "1924"),
+        ("YEAR(DATE(1899,12,31))", "3799"),
+        // Months and days roll over rather than erroring.
+        ("DATE(2024,13,1)-DATE(2025,1,1)", "0"),
+        ("DAY(DATE(2024,3,0))", "29"),
+        ("MONTH(DATE(2024,3,0))", "2"),
+        ("DAY(DATE(2024,1,32))", "1"),
+        ("MONTH(DATE(2024,1,32))", "2"),
+        // Time wraps within the day: there is nowhere to put a 27th hour.
+        ("TIME(27,0,0)", "0.125"),
+        ("HOUR(0.75)", "18"),
+        ("MINUTE(TIME(1,30,0))", "30"),
+        ("TIME(-1,0,0)", "#NUM!"),
+    ]);
+}
+
+#[test]
+fn weekday_and_week_numbers_follow_their_scheme_argument() {
+    check(&[
+        // 1 January 2024 was a Monday.
+        ("WEEKDAY(DATE(2024,1,1))", "2"),
+        ("WEEKDAY(DATE(2024,1,1),2)", "1"),
+        ("WEEKDAY(DATE(2024,1,1),3)", "0"),
+        ("WEEKDAY(DATE(2024,1,1),12)", "7"),
+        ("WEEKDAY(DATE(2024,1,1),8)", "#NUM!"),
+        ("WEEKNUM(DATE(2024,1,1))", "1"),
+        ("ISOWEEKNUM(DATE(2024,1,1))", "1"),
+        // The ISO Thursday rule: 1 January 2021 was a Friday, so it belongs to
+        // the last week of 2020 rather than the first of 2021.
+        ("ISOWEEKNUM(DATE(2021,1,1))", "53"),
+    ]);
+}
+
+#[test]
+fn month_arithmetic_clamps_to_the_length_of_the_target_month() {
+    check(&[
+        // 31 January plus a month is 29 February, not 2 March.
+        ("EDATE(DATE(2024,1,31),1)-DATE(2024,2,29)", "0"),
+        ("EOMONTH(DATE(2024,1,15),0)-DATE(2024,1,31)", "0"),
+        ("EOMONTH(DATE(2024,1,15),-1)-DATE(2023,12,31)", "0"),
+        ("DAYS(DATE(2024,3,1),DATE(2024,2,1))", "29"),
+        // A year of twelve thirty-day months, for bond coupons.
+        ("DAYS360(DATE(2024,1,31),DATE(2024,3,31))", "60"),
+        ("DAYS360(DATE(2024,1,30),DATE(2024,3,31),TRUE)", "60"),
+    ]);
+}
+
+#[test]
+fn datedif_measures_each_component_independently() {
+    check(&[
+        ("DATEDIF(DATE(2020,1,15),DATE(2024,3,10),\"Y\")", "4"),
+        ("DATEDIF(DATE(2020,1,15),DATE(2024,3,10),\"M\")", "49"),
+        ("DATEDIF(DATE(2020,1,15),DATE(2024,3,10),\"D\")", "1516"),
+        // Days ignoring months and years, borrowing from February.
+        ("DATEDIF(DATE(2020,1,15),DATE(2024,3,10),\"MD\")", "24"),
+        ("DATEDIF(DATE(2020,1,15),DATE(2024,3,10),\"YM\")", "1"),
+        ("DATEDIF(DATE(2020,1,15),DATE(2024,3,10),\"YD\")", "55"),
+        // Excel refuses a reversed interval rather than reporting a negative one.
+        ("DATEDIF(DATE(2024,1,1),DATE(2023,1,1),\"D\")", "#NUM!"),
+        ("DATEDIF(DATE(2024,1,1),DATE(2024,1,1),\"Q\")", "#NUM!"),
+    ]);
+}
+
+#[test]
+fn yearfrac_has_five_day_count_bases() {
+    check(&[
+        // 30/360: six months is exactly half a year whatever the calendar says.
+        ("YEARFRAC(DATE(2024,1,1),DATE(2024,7,1),0)", "0.5"),
+        ("YEARFRAC(DATE(2024,1,1),DATE(2024,7,1),4)", "0.5"),
+        // Actual/actual over a leap year.
+        ("YEARFRAC(DATE(2024,1,1),DATE(2025,1,1),1)", "1"),
+        (
+            "YEARFRAC(DATE(2024,1,1),DATE(2024,7,1),2)",
+            "0.505555555555556",
+        ),
+        (
+            "YEARFRAC(DATE(2024,1,1),DATE(2024,7,1),3)",
+            "0.498630136986301",
+        ),
+        ("YEARFRAC(DATE(2024,1,1),DATE(2024,7,1),5)", "#NUM!"),
+        // The arguments in the other order give the same magnitude.
+        ("YEARFRAC(DATE(2024,7,1),DATE(2024,1,1),0)", "0.5"),
+    ]);
+}
+
+#[test]
+fn working_days_skip_weekends_and_the_holidays_given() {
+    check(&[
+        // January 2024 starts on a Monday and has 23 weekdays.
+        ("NETWORKDAYS(DATE(2024,1,1),DATE(2024,1,31))", "23"),
+        (
+            "NETWORKDAYS(DATE(2024,1,1),DATE(2024,1,31),DATE(2024,1,15))",
+            "22",
+        ),
+        // A holiday that falls on a weekend was not going to be counted anyway.
+        (
+            "NETWORKDAYS(DATE(2024,1,1),DATE(2024,1,31),DATE(2024,1,6))",
+            "23",
+        ),
+        // Weekend code 11 is Sunday only.
+        ("NETWORKDAYS.INTL(DATE(2024,1,1),DATE(2024,1,7),11)", "6"),
+        (
+            "NETWORKDAYS.INTL(DATE(2024,1,1),DATE(2024,1,7),\"0000001\")",
+            "6",
+        ),
+        ("NETWORKDAYS.INTL(DATE(2024,1,1),DATE(2024,1,7),8)", "#NUM!"),
+        // Friday plus one working day is Monday.
+        ("DAY(WORKDAY(DATE(2024,1,5),1))", "8"),
+        ("DAY(WORKDAY(DATE(2024,1,8),-1))", "5"),
+    ]);
+}
+
+#[test]
+fn written_dates_are_read_where_a_serial_is_wanted() {
+    check(&[
+        ("DATEVALUE(\"2024-03-01\")", "45352"),
+        ("DATEVALUE(\"3/1/2024\")", "45352"),
+        ("DATEVALUE(\"1-Mar-2024\")", "45352"),
+        ("YEAR(\"2024-03-01\")", "2024"),
+        ("TIMEVALUE(\"12:00\")", "0.5"),
+        ("TIMEVALUE(\"12:00 AM\")", "0"),
+        ("DATEVALUE(\"hello\")", "#VALUE!"),
+        // A boolean is a number everywhere else and not a date here.
+        ("YEAR(TRUE)", "#VALUE!"),
+    ]);
+}
+
+// -------------------------------------------------- implicit intersection (C7)
+
+#[test]
+fn a_range_in_scalar_position_intersects_with_the_formulas_own_row() {
+    let book = Book::default().sheet(
+        "Sheet1",
+        &[
+            ("A1", num(10.0)),
+            ("A2", num(20.0)),
+            ("A3", num(30.0)),
+            ("C1", num(7.0)),
+        ],
+    );
+    // `N` wants one value, so the column A1:A3 offers the one in row 2.
+    check_at(&book, "B2", &[("N(A1:A3)", "20")]);
+    // In B3 it offers row 3 — the same formula, a different answer, which is
+    // the entire point of the rule.
+    check_at(&book, "B3", &[("N(A1:A3)", "30")]);
+    // In B5 the range has no row 5 to offer.
+    check_at(&book, "B5", &[("N(A1:A3)", "#VALUE!")]);
+    // A single row intersects by column instead.
+    check_at(&book, "C9", &[("N(A1:C1)", "7")]);
+    // A block has nothing to offer in either direction.
+    check_at(&book, "B2", &[("N(A1:C3)", "#VALUE!")]);
+    // Aggregation is not scalar position, so nothing intersects there.
+    check_at(&book, "B5", &[("SUM(A1:A3)", "60")]);
+    // Operators broadcast rather than intersecting. That is modern Excel's
+    // rule — a formula like this spills — and it is a deliberate divergence
+    // from the pre-2019 behaviour, which would give 40 here.
+    check_at(&book, "B2", &[("A1:A3*2", "{20;40;60}")]);
+}
+
+// --------------------------------------------------------------- lookup (C7)
+
+fn lookup_book() -> Book {
+    Book::default().sheet(
+        "Sheet1",
+        &[
+            ("A1", num(1.0)),
+            ("A2", num(3.0)),
+            ("A3", num(5.0)),
+            ("A4", num(7.0)),
+            ("A5", num(9.0)),
+            ("B1", text("a")),
+            ("B2", text("b")),
+            ("B3", text("c")),
+            ("B4", text("d")),
+            ("B5", text("e")),
+        ],
+    )
+}
+
+#[test]
+fn vlookup_defaults_to_approximate_which_is_the_wrong_default() {
+    let book = lookup_book();
+    check_in(
+        &book,
+        &[
+            ("VLOOKUP(5,A1:B5,2,FALSE)", "\"c\""),
+            // No fourth argument means approximate: the largest value not
+            // exceeding 6 is 5, and nothing warns that 6 was not found.
+            ("VLOOKUP(6,A1:B5,2)", "\"c\""),
+            ("VLOOKUP(6,A1:B5,2,FALSE)", "#N/A"),
+            // Below everything in the column there is no candidate at all.
+            ("VLOOKUP(0,A1:B5,2)", "#N/A"),
+            ("VLOOKUP(5,A1:B5,3)", "#REF!"),
+            ("VLOOKUP(5,A1:B5,0)", "#VALUE!"),
+            ("HLOOKUP(\"a\",A1:B5,3,FALSE)", "\"c\""),
+        ],
+    );
+}
+
+#[test]
+fn match_and_index_address_by_position() {
+    let book = lookup_book();
+    check_in(
+        &book,
+        &[
+            ("MATCH(5,A1:A5,0)", "3"),
+            ("MATCH(6,A1:A5,1)", "3"),
+            ("MATCH(6,A1:A5,0)", "#N/A"),
+            ("MATCH(\"c\",B1:B5,0)", "3"),
+            // An exact match still honours wildcards.
+            ("MATCH(\"?\",B1:B5,0)", "1"),
+            ("INDEX(A1:B5,2,2)", "\"b\""),
+            ("INDEX(A1:A5,3)", "5"),
+            ("INDEX(A1:A5,9)", "#REF!"),
+            ("INDEX(A1:B5,MATCH(7,A1:A5,0),2)", "\"d\""),
+            // A zero index means the whole line, which is why this sums.
+            ("SUM(INDEX(A1:B5,0,1))", "25"),
+        ],
+    );
+}
+
+#[test]
+fn index_and_offset_return_references_not_values() {
+    let book = lookup_book();
+    check_in(
+        &book,
+        &[
+            // Only a reference can be one end of a range.
+            ("SUM(A1:INDEX(A1:A5,3))", "9"),
+            ("SUM(OFFSET(A1,1,0,2,1))", "8"),
+            ("ROWS(OFFSET(A1,0,0,3,1))", "3"),
+            // Off the edge of the sheet is `#REF!`, not a clamp.
+            ("OFFSET(A1,-1,0)", "#REF!"),
+            ("OFFSET(A1,0,0,0,1)", "#REF!"),
+            ("SUM(INDIRECT(\"A1:A3\"))", "9"),
+            ("INDIRECT(\"A2\")", "3"),
+            ("INDIRECT(\"nonsense\")", "#REF!"),
+            // The R1C1 form has no parser behind it, and a wrong cell would be
+            // worse than an error.
+            ("INDIRECT(\"R1C1\",FALSE)", "#REF!"),
+        ],
+    );
+}
+
+#[test]
+fn lookup_positions_count_from_the_range_the_user_wrote() {
+    // The trap that clipping a whole-column reference sets: the used range
+    // starts at row 3, so a position counted from there would be 2 rather than
+    // 4 — plausible, wrong, and silent.
+    let book = Book::default().sheet("Sheet1", &[("A3", num(5.0)), ("A4", num(7.0))]);
+    check_in(
+        &book,
+        &[
+            ("MATCH(7,A:A,0)", "4"),
+            ("MATCH(5,A:A,0)", "3"),
+            ("INDEX(A:A,4)", "7"),
+        ],
+    );
+}
+
+#[test]
+fn choose_is_lazy_and_the_reference_functions_report_positions() {
+    let book = lookup_book();
+    check_in(
+        &book,
+        &[
+            ("CHOOSE(2,\"x\",\"y\",\"z\")", "\"y\""),
+            // The branch not taken is never evaluated.
+            ("CHOOSE(1,1,1/0)", "1"),
+            ("CHOOSE(4,\"x\",\"y\")", "#VALUE!"),
+            ("ROW(A5)", "5"),
+            ("COLUMN(C1)", "3"),
+            ("SUM(ROW(A1:A5))", "15"),
+            ("ROWS(A1:B5)", "5"),
+            ("COLUMNS(A1:B5)", "2"),
+            ("AREAS((A1:A5,B1:B5))", "2"),
+            ("TRANSPOSE({1,2;3,4})", "{1,3;2,4}"),
+            ("ADDRESS(1,1)", "\"$A$1\""),
+            ("ADDRESS(2,3,4)", "\"C2\""),
+            ("ADDRESS(1,1,1,TRUE,\"Sheet 1\")", "\"'Sheet 1'!$A$1\""),
+        ],
+    );
+}
+
+#[test]
+fn xlookup_carries_its_own_not_found_answer() {
+    let book = lookup_book();
+    check_in(
+        &book,
+        &[
+            ("XLOOKUP(5,A1:A5,B1:B5)", "\"c\""),
+            // The fourth argument is why wrapping this in `IFNA` is unnecessary.
+            ("XLOOKUP(6,A1:A5,B1:B5,\"none\")", "\"none\""),
+            ("XLOOKUP(6,A1:A5,B1:B5)", "#N/A"),
+            // Match mode -1 falls back to the next smaller value, 1 to the next
+            // larger.
+            ("XLOOKUP(6,A1:A5,B1:B5,\"none\",-1)", "\"c\""),
+            ("XLOOKUP(6,A1:A5,B1:B5,\"none\",1)", "\"d\""),
+            ("XMATCH(7,A1:A5)", "4"),
+            ("LOOKUP(6,A1:A5,B1:B5)", "\"c\""),
+            // The array form searches the first column and returns the last.
+            ("LOOKUP(6,A1:B5)", "\"c\""),
+        ],
+    );
+}
+
+// ----------------------------------------------------------- statistics (C7)
+
+fn mixed_book() -> Book {
+    Book::default().sheet(
+        "Sheet1",
+        &[
+            ("A1", num(1.0)),
+            ("A2", num(2.0)),
+            ("A3", text("x")),
+            ("A4", num(4.0)),
+            ("A5", Value::Bool(true)),
+        ],
+    )
+}
+
+#[test]
+fn the_counting_functions_disagree_with_each_other_on_purpose() {
+    let book = mixed_book();
+    check_in(
+        &book,
+        &[
+            ("COUNT(A1:A6)", "3"),
+            ("COUNTA(A1:A6)", "5"),
+            ("COUNTBLANK(A1:A6)", "1"),
+            // A boolean written directly counts; the same boolean in a range
+            // does not, exactly as in `SUM`.
+            ("COUNT(TRUE)", "1"),
+            ("COUNT(\"1\")", "1"),
+            ("COUNT(\"x\")", "0"),
+        ],
+    );
+}
+
+#[test]
+fn average_skips_text_but_averagea_scores_it_zero() {
+    let book = mixed_book();
+    check_in(
+        &book,
+        &[
+            ("AVERAGE(A1:A5)", "2.33333333333333"),
+            ("AVERAGEA(A1:A5)", "1.6"),
+            ("MAX(A1:A5)", "4"),
+            ("MIN(A1:A5)", "1"),
+            ("MINA(A1:A5)", "0"),
+            // An average of nothing is a division by zero; a maximum of nothing
+            // is 0, which makes an empty range and a range of zeros
+            // indistinguishable.
+            ("AVERAGE(A3:A3)", "#DIV/0!"),
+            ("MAX(A3:A3)", "0"),
+        ],
+    );
+}
+
+#[test]
+fn order_statistics_interpolate_between_neighbours() {
+    check(&[
+        ("MEDIAN({1,2,3,4})", "2.5"),
+        ("MEDIAN({1,2,3})", "2"),
+        ("LARGE({1,5,3},1)", "5"),
+        ("SMALL({1,5,3},2)", "3"),
+        ("SMALL({1,5,3},4)", "#NUM!"),
+        ("MODE({1,2,2,3})", "2"),
+        // Nothing repeats, so there is no mode to report.
+        ("MODE({1,2,3})", "#N/A"),
+        ("PERCENTILE({1,2,3,4},0.5)", "2.5"),
+        ("QUARTILE({1,2,3,4},1)", "1.75"),
+        // The exclusive form has no 0th or 100th percentile to give.
+        ("PERCENTILE.EXC({1,2,3,4},0.5)", "2.5"),
+        ("PERCENTILE.EXC({1,2,3,4},0)", "#NUM!"),
+        ("RANK(3,{1,3,3,5})", "2"),
+        ("RANK.AVG(3,{1,3,3,5})", "2.5"),
+        ("RANK(4,{1,3,3,5})", "#N/A"),
+    ]);
+}
+
+#[test]
+fn spread_and_regression_statistics() {
+    check(&[
+        ("STDEV({2,4,4,4,5,5,7,9})", "2.1380899352994"),
+        ("STDEVP({2,4,4,4,5,5,7,9})", "2"),
+        ("VAR.P({2,4,4,4,5,5,7,9})", "4"),
+        // A sample variance needs two observations.
+        ("VAR({1})", "#DIV/0!"),
+        ("AVEDEV({1,2,3,4})", "1"),
+        ("DEVSQ({1,2,3,4})", "5"),
+        ("GEOMEAN({1,4})", "2"),
+        ("HARMEAN({1,4})", "1.6"),
+        ("GEOMEAN({1,-4})", "#NUM!"),
+        ("CORREL({1,2,3},{2,4,6})", "1"),
+        ("SLOPE({2,4,6},{1,2,3})", "2"),
+        ("INTERCEPT({2,4,6},{1,2,3})", "0"),
+        ("FORECAST(4,{2,4,6},{1,2,3})", "8"),
+        ("COVARIANCE.P({1,2,3},{2,4,6})", "1.33333333333333"),
+    ]);
+}
+
+#[test]
+fn the_conditional_aggregates_share_one_criteria_language() {
+    let book = mixed_book();
+    check_in(
+        &book,
+        &[
+            ("COUNTIF(A1:A5,\">1\")", "2"),
+            ("COUNTIF(A1:A5,\"x\")", "1"),
+            ("AVERAGEIF(A1:A5,\">1\")", "3"),
+            ("COUNTIFS(A1:A5,\">1\",A1:A5,\"<4\")", "1"),
+            ("MAXIFS(A1:A5,A1:A5,\">1\")", "4"),
+            ("MINIFS(A1:A5,A1:A5,\">1\")", "2"),
+            // A numeric criterion never matches the text or the boolean, which
+            // is what stops a column heading from being counted.
+            ("COUNTIF(A1:A5,\">0\")", "3"),
+            ("AVERAGEIF(A1:A5,\">100\")", "#DIV/0!"),
+        ],
+    );
 }

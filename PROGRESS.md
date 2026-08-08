@@ -9,7 +9,7 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[-]` deferred
 
 ## Current state
 
-**Chunk:** C7 — function library, batch 2 (C0–C6 all done)
+**Chunk:** C8 — grid UI (C0–C7 all done)
 **Status:** not started
 **Handoff note:**
 
@@ -30,18 +30,27 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[-]` deferred
   as a separate `Event::GeneralRef`, so any text accumulator must handle it or it
   silently drops every `&`, `<`, and `>`. `xml::push_text` is the one place that
   does this; use it rather than matching `Event::Text` directly.
-- `ss-formula` is complete for C5 and C6: 133 tests, of which 37 are the
+- `ss-formula` is complete for C5, C6, and C7: 171 tests, of which 57 are the
   conformance suite in `tests/conformance.rs`. Lexer, Pratt parser, dependency
-  graph, evaluator, and ~110 functions. Workspace total is **265 tests**, all
-  green; `cargo clippy --workspace --all-targets -- -D warnings` and
-  `cargo fmt --all --check` are both clean.
+  graph, evaluator, serial dates, and **199 functions**. Workspace total is
+  **303 tests**, all green; `cargo clippy --workspace --all-targets -- -D warnings`
+  and `cargo fmt --all --check` are both clean.
 - Watch item: whether text becomes a number depends on **how the value reached
   the function**, not on what it is. `SUM(TRUE)` is 1, `SUM({TRUE})` is 0.
   `functions::visit_args` tags each value `Direct` or `Inside` for exactly this;
   never flatten arguments before a function sees them.
-- Watch item: the criteria language (`SUMIF`, and `COUNTIF` in C7) compares
-  *within* a type. Under the `=` operator's rules text sorts above every number,
-  so `SUMIF(A:A,">0")` would otherwise count a column's text header.
+- Watch item: the criteria language (`SUMIF`, `COUNTIF`, and the rest of the
+  `*IF`/`*IFS` family) compares *within* a type. Under the `=` operator's rules
+  text sorts above every number, so `SUMIF(A:A,">0")` would otherwise count a
+  column's text header. All of them go through `criteria::visit_if`/`visit_ifs`.
+- Watch item: **a position in a clipped range is not a position in the range the
+  user wrote.** `MATCH(x,A:A,0)` must count from row 1 even though only the used
+  range is worth reading. C6 hit this in `SUMIF` and C7 hit it again in the
+  lookup family; `lookup::Grid` keeps the declared corner and the visitable
+  window apart so it cannot happen a third time.
+- Watch item: `Context::now()` is **UTC**, and Excel's `NOW` is local. A host
+  that knows the user's time zone should override it. Near midnight `TODAY()`
+  is otherwise off by a day.
 - Watch item: `DependencyGraph::dependents_of` is a linear scan over every
   formula, so `evaluation_order` is O(formulas^2). Fine at corpus scale and for
   the 1,200-cell stress test; it will not survive a 100k-formula workbook. C5
@@ -184,8 +193,7 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[-]` deferred
   - **Criteria are not comparisons.** See the watch item above.
 
   Not implemented, and deliberately: `TEXT`, which needs the number-format
-  engine from C11. Implicit intersection is C7's; until then a multi-cell
-  operand in scalar context collapses to its first cell.
+  engine from C11. Implicit intersection was left to C7, which landed it.
 
   `workbook::recalculate` is the loop that drives all of this over a real
   `Workbook` — parse, build the graph, evaluate in topological order, write
@@ -202,8 +210,40 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[-]` deferred
   by parsing the formula and checking the registry, so a `#NAME?` from a
   function we *do* have still fails.
 
-- [ ] **C7. Function library — batch 2** (lookup/reference, date/time, statistical)
+- [x] **C7. Function library — batch 2** (lookup/reference, date/time, statistical)
   Includes the 1900 leap-year bug and implicit intersection. *Exit: as C6.*
+  — **met: 57 conformance tests, all green.**
+
+  93 more functions, taking the library to 199. `src/datetime.rs` holds the
+  calendar; `functions/{date,lookup,stats}.rs` hold the rest.
+
+  **1900 was not a leap year and Excel thinks it was.** Serial 60 is 29 February
+  1900, a day that never existed — Lotus 1-2-3 had the bug, Excel copied it in
+  1985 for file compatibility, and removing it now would move every date in
+  every existing file. So serials 1–59 and 61-onwards use *different* epochs,
+  and Excel believes 1 January 1900 was a Sunday when it was a Monday. Getting
+  this wrong is invisible: every date after February 1900 shifts by one day,
+  which reads as an off-by-one rather than a calendar bug.
+
+  **Implicit intersection** is in: a range used where one value is expected
+  collapses to the cell in line with the formula, so `=A1:A10` is A5 in row 5
+  and `#VALUE!` in row 11. Operators deliberately do *not* intersect — they
+  broadcast, which is modern Excel's rule, and the pre-2019 behaviour is
+  recorded as a divergence rather than emulated.
+
+  `recalculate` now spills a CSE array formula across the range it covers.
+  Before this, every cell but the anchor kept whatever the file had cached.
+
+  Corpus recalculation: **30 of 30 comparable cells match Excel**, 2 skipped —
+  one naming `TEXT` (C11) and one that relies on legacy implicit intersection
+  for a non-array-entered `TRANSPOSE`. Both are printed by name, and the skip is
+  a stated rule rather than a hard-coded cell.
+
+  Known gaps, deliberate: shared-formula followers are not translated from their
+  master (no corpus file exercises it yet, and an untranslated follower keeps
+  its cached value rather than being wrong); `INDIRECT` and `ADDRESS` are A1-only
+  because the parser is; a cell fed by an array formula's spill is not a node in
+  the dependency graph, so a formula reading one may be ordered before it.
 
 - [ ] **C8. Grid UI**
   Virtualized wgpu grid, selection model, frozen panes, merged ranges, number-format
@@ -226,7 +266,9 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[-]` deferred
 - [ ] **C12. Charts** — read/preserve/render the common types; edit basic properties.
 - [ ] **C13. csv/tsv** — dialect sniffing, encoding detection, large-file streaming.
 - [ ] **C14. Function library — batch 3** (financial, database, dynamic arrays,
-      engineering) + pivot table read/preserve.
+      engineering) + pivot table read/preserve. Dynamic-array spilling belongs
+      here; C7 left the legacy non-CSE behaviour of array-valued functions
+      unmodelled and reported by name in the corpus test.
 - [ ] **C15. .xls reader (legacy)** — CFB container + BIFF8 records, read-only.
 
 ## Phase 3 — Scriva (word processor) core

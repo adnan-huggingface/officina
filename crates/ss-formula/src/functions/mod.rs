@@ -19,9 +19,12 @@ use crate::eval::Evaluator;
 use crate::value::{Array, Operand, Value};
 
 mod criteria;
+mod date;
 mod info;
 mod logical;
+mod lookup;
 mod math;
+mod stats;
 mod text;
 
 pub use criteria::{matches_criteria, wildcard_match, Criterion};
@@ -41,6 +44,9 @@ pub fn lookup(name: &str) -> Option<FnImpl> {
         .or_else(|| logical::lookup(&upper))
         .or_else(|| text::lookup(&upper))
         .or_else(|| info::lookup(&upper))
+        .or_else(|| stats::lookup(&upper))
+        .or_else(|| lookup::lookup(&upper))
+        .or_else(|| date::lookup(&upper))
 }
 
 /// Calls a function, or reports `#NAME?` if we do not have it.

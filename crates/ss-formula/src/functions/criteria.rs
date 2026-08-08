@@ -10,7 +10,12 @@
 
 use std::cmp::Ordering;
 
-use crate::value::{compare, text_to_number, Value};
+use ss_model::{CellError, CellRef};
+
+use crate::ast::Expr;
+use crate::eval::Evaluator;
+use crate::graph::AreaRef;
+use crate::value::{compare, text_to_number, Operand, Value};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Op {
@@ -198,6 +203,145 @@ pub fn wildcard_match(pattern: &str, text: &str) -> bool {
     }
 
     p[pi..].iter().all(|&c| c == '*')
+}
+
+/// The rectangle an argument names.
+///
+/// The `*IF` family works on addresses rather than values: the tested range and
+/// the range values come from have to stay lined up cell by cell, and a
+/// flattened list of values cannot say which cell it came from.
+pub(crate) fn area_of(op: &Operand) -> Option<AreaRef> {
+    match op {
+        Operand::Ref(r) => r.areas.first().copied(),
+        _ => None,
+    }
+}
+
+fn offset(origin: CellRef, dr: u32, dc: u32) -> Option<CellRef> {
+    let at = CellRef::new(origin.row.checked_add(dr)?, origin.col.checked_add(dc)?);
+    at.is_valid().then_some(at)
+}
+
+/// Walks a `SUMIF`-shaped call — `(range, criteria, [value_range])` — handing
+/// every selected value to `f`.
+///
+/// `value_range` is repositioned, not intersected: Excel takes only its
+/// top-left corner and reads a block the same shape as `range` from there, so a
+/// value range of the wrong size is silently resized rather than rejected.
+pub(crate) fn visit_if(
+    ev: &mut Evaluator,
+    args: &[Expr],
+    f: &mut impl FnMut(&Value),
+) -> Result<(), CellError> {
+    let test = ev.eval(&args[0]);
+    let test_area = area_of(&test).ok_or(CellError::Value)?;
+    let criterion = Criterion::parse(&ev.eval_scalar(&args[1]));
+
+    let values_at = match args.get(2) {
+        Some(e) => {
+            let op = ev.eval(e);
+            let area = area_of(&op).ok_or(CellError::Value)?;
+            Some((area.sheet, area.range.start))
+        }
+        None => None,
+    };
+
+    // Offsets into the value range are measured from the range the user
+    // *wrote*, not from the clipped one. For `SUMIF(A:A,">0",B:B)` clipping
+    // moves the start down to the first used row, and measuring from there
+    // would pair every tested cell with the wrong summed one.
+    let full = test_area.range;
+    let window = ev.clip_area(&test_area);
+    for row in window.start.row..=window.end.row {
+        for col in window.start.col..=window.end.col {
+            let at = CellRef::new(row, col);
+            let candidate = ev.context().cell(test_area.sheet, at);
+            if let Value::Error(e) = candidate {
+                // An error in the tested range is not skipped; Excel surfaces it.
+                return Err(e);
+            }
+            if !matches_criteria(&criterion, &candidate) {
+                continue;
+            }
+            match values_at {
+                None => f(&candidate),
+                Some((sheet, origin)) => {
+                    let at = offset(origin, row - full.start.row, col - full.start.col)
+                        .ok_or(CellError::Ref)?;
+                    let v = ev.context().cell(sheet, at);
+                    if let Value::Error(e) = v {
+                        return Err(e);
+                    }
+                    f(&v);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Walks a `SUMIFS`-shaped call: any number of (range, criteria) pairs, with an
+/// optional separate range the values come from.
+///
+/// When `values` is absent — `COUNTIFS` — the first criteria range supplies both
+/// the shape and the values.
+pub(crate) fn visit_ifs(
+    ev: &mut Evaluator,
+    values: Option<&Expr>,
+    pairs: &[Expr],
+    f: &mut impl FnMut(&Value),
+) -> Result<(), CellError> {
+    let mut tests: Vec<(AreaRef, Criterion)> = Vec::new();
+    for pair in pairs.chunks(2) {
+        let op = ev.eval(&pair[0]);
+        let area = area_of(&op).ok_or(CellError::Value)?;
+        tests.push((area, Criterion::parse(&ev.eval_scalar(&pair[1]))));
+    }
+    let shape = match values {
+        Some(e) => {
+            let op = ev.eval(e);
+            area_of(&op).ok_or(CellError::Value)?
+        }
+        None => tests.first().ok_or(CellError::Value)?.0,
+    };
+
+    // Every criteria range must be the shape of the value range; Excel is
+    // strict about this one, unlike `SUMIF`.
+    for (area, _) in &tests {
+        if area.range.rows() != shape.range.rows() || area.range.cols() != shape.range.cols() {
+            return Err(CellError::Value);
+        }
+    }
+
+    // All the ranges are the same shape, so one set of offsets addresses every
+    // one of them. Clipping narrows the *window* of offsets to visit; it must
+    // not move the origin, or the ranges would stop lining up with each other.
+    let full = shape.range;
+    let window = ev.clip_area(&shape);
+    let rows = window.start.row - full.start.row..=window.end.row - full.start.row;
+    let cols = window.start.col - full.start.col..=window.end.col - full.start.col;
+
+    for dr in rows {
+        'cell: for dc in cols.clone() {
+            for (area, criterion) in &tests {
+                let at = offset(area.range.start, dr, dc).ok_or(CellError::Ref)?;
+                let v = ev.context().cell(area.sheet, at);
+                if let Value::Error(e) = v {
+                    return Err(e);
+                }
+                if !matches_criteria(criterion, &v) {
+                    continue 'cell;
+                }
+            }
+            let at = offset(full.start, dr, dc).ok_or(CellError::Ref)?;
+            let v = ev.context().cell(shape.sheet, at);
+            if let Value::Error(e) = v {
+                return Err(e);
+            }
+            f(&v);
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

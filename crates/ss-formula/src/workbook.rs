@@ -72,7 +72,7 @@ impl Context for WorkbookContext<'_> {
     /// re-enter the evaluator with a fresh depth counter and a name defined in
     /// terms of itself would recurse until the stack ran out. Handling those
     /// safely needs the name expansion to go through the same depth-guarded path
-    /// as everything else, which is C7's business.
+    /// as everything else, which nothing here has a way to do yet.
     fn resolve_name(&self, sheet: usize, name: &str) -> Option<Operand> {
         let target = self.book.resolve_name(name, Some(sheet))?;
         let text = target
@@ -182,6 +182,10 @@ pub fn recalculate(book: &mut Workbook) -> Recalculation {
     let names: Vec<String> = book.sheets.iter().map(|s| s.name.clone()).collect();
     let resolve_sheet = |name: &str| names.iter().position(|n| n.eq_ignore_ascii_case(name));
 
+    // Array formulas write to cells that hold no formula of their own, so the
+    // range has to be carried alongside the expression.
+    let mut spills: BTreeMap<Node, CellRange> = BTreeMap::new();
+
     for (index, sheet) in book.sheets.iter().enumerate() {
         for (at, cell) in sheet.cells.iter() {
             let Some(id) = cell.formula else { continue };
@@ -189,6 +193,9 @@ pub fn recalculate(book: &mut Workbook) -> Recalculation {
                 continue;
             };
             let node = Node::new(index, at);
+            if let ss_model::FormulaKind::Array { range } = formula.kind {
+                spills.insert(node, range);
+            }
             match parse(&formula.text) {
                 Ok(expr) => {
                     graph.insert(node, precedents_of(&expr, index, &resolve_sheet));
@@ -208,13 +215,24 @@ pub fn recalculate(book: &mut Workbook) -> Recalculation {
         };
         // Scoped so the immutable borrow ends before the write. Later cells must
         // see this one's new value, so the two cannot be batched.
+        let spill = spills
+            .get(&node)
+            .copied()
+            .filter(|r| r.rows() > 1 || r.cols() > 1);
+        let mut block = None;
         let value = {
             let ctx = WorkbookContext::new(book);
             let mut ev = Evaluator::new(&ctx, Position::new(node.sheet, node.at));
             let out = ev.eval(expr);
+            if spill.is_some() {
+                block = Some(ev.spread(&out));
+            }
             ev.collapse(out)
         };
-        write_back(book, node, &value);
+        match (block, spill) {
+            (Some(array), Some(range)) => write_spill(book, node.sheet, range, &array),
+            _ => write_back(book, node, &value),
+        }
         report.evaluated += 1;
     }
 
@@ -223,6 +241,27 @@ pub fn recalculate(book: &mut Workbook) -> Recalculation {
         report.circular.push(node);
     }
     report
+}
+
+/// Writes an array formula's result across the range it was entered over.
+///
+/// Only the anchor cell holds a formula, so the rest of the block is written
+/// directly. A result smaller than the range is stretched if it is a single row
+/// or column and padded with `#N/A` otherwise — Excel's answer, and the reason a
+/// CSE formula entered over too many cells shows a fringe of `#N/A` rather than
+/// repeating its last value.
+fn write_spill(book: &mut Workbook, sheet: usize, range: CellRange, array: &crate::Array) {
+    for (dr, row) in (range.start.row..=range.end.row).enumerate() {
+        for (dc, col) in (range.start.col..=range.end.col).enumerate() {
+            let r = if array.rows() == 1 { 0 } else { dr };
+            let c = if array.cols() == 1 { 0 } else { dc };
+            let value = array
+                .get(r, c)
+                .cloned()
+                .unwrap_or(Value::Error(CellError::NotAvailable));
+            write_back(book, Node::new(sheet, CellRef::new(row, col)), &value);
+        }
+    }
 }
 
 fn write_back(book: &mut Workbook, node: Node, value: &Value) {
@@ -453,6 +492,57 @@ mod tests {
                 "column {col} of the last row"
             );
         }
+    }
+
+    #[test]
+    fn a_column_of_identical_formulas_intersects_per_row() {
+        // The same text in three cells, three different answers. This is what
+        // implicit intersection is *for*, and it only shows up once formulas
+        // are evaluated at their own positions rather than at A1.
+        let mut book = book_with(&[
+            ("A1", "10"),
+            ("A2", "20"),
+            ("A3", "30"),
+            ("B1", "=A1:A3"),
+            ("B2", "=A1:A3"),
+            ("B3", "=A1:A3"),
+            ("B9", "=A1:A3"),
+        ]);
+        recalculate(&mut book);
+        assert_eq!(value_at(&book, "B1"), Value::Number(10.0));
+        assert_eq!(value_at(&book, "B2"), Value::Number(20.0));
+        assert_eq!(value_at(&book, "B3"), Value::Number(30.0));
+        // Row 9 is not one the range can offer.
+        assert_eq!(value_at(&book, "B9"), Value::Error(CellError::Value));
+    }
+
+    #[test]
+    fn an_array_formula_writes_across_the_range_it_covers() {
+        // Only the anchor holds the formula; the rest of the block has to be
+        // written from the same result, or a CSE formula would leave every cell
+        // but the first showing whatever the file happened to cache.
+        let mut book = book_with(&[("A1", "1"), ("A2", "2"), ("A3", "3")]);
+        let range = CellRange::new(CellRef::new(0, 1), CellRef::new(3, 1));
+        let sheet = book.sheet_mut(0).expect("sheet 0");
+        let id = sheet.push_formula(Formula {
+            text: "A1:A3*2".to_string(),
+            kind: ss_model::FormulaKind::Array { range },
+        });
+        sheet.set(
+            CellRef::new(0, 1),
+            Cell {
+                value: CellValue::Blank,
+                style: StyleId::DEFAULT,
+                formula: Some(id),
+            },
+        );
+        recalculate(&mut book);
+        assert_eq!(value_at(&book, "B1"), Value::Number(2.0));
+        assert_eq!(value_at(&book, "B2"), Value::Number(4.0));
+        assert_eq!(value_at(&book, "B3"), Value::Number(6.0));
+        // Entered over one cell too many, the fringe is `#N/A` rather than a
+        // repeat of the last value.
+        assert_eq!(value_at(&book, "B4"), Value::Error(CellError::NotAvailable));
     }
 
     #[test]

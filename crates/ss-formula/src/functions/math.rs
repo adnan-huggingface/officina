@@ -6,14 +6,13 @@
 //! zero on the *decimal* value, and every domain error is a `#NUM!` rather than
 //! a NaN.
 
-use ss_model::{CellError, CellRef};
+use ss_model::CellError;
 
 use crate::ast::Expr;
 use crate::eval::{finite, power, Evaluator};
-use crate::graph::AreaRef;
 use crate::value::{Operand, Value};
 
-use super::criteria::{matches_criteria, Criterion};
+use super::criteria::{visit_if, visit_ifs};
 use super::{arity, decimal_round, map_number, numeric_args, FnImpl, Rounding};
 
 pub(super) fn lookup(name: &str) -> Option<FnImpl> {
@@ -522,76 +521,20 @@ fn sumproduct(ev: &mut Evaluator, args: &[Expr]) -> Operand {
     Operand::Value(finite(total))
 }
 
-/// The rectangle an argument names, for the `*IF` family.
-fn area_of(op: &Operand) -> Option<AreaRef> {
-    match op {
-        Operand::Ref(r) => r.areas.first().copied(),
-        _ => None,
-    }
-}
-
 /// `SUMIF(range, criteria, [sum_range])`.
-///
-/// `sum_range` is repositioned, not intersected: Excel takes only its top-left
-/// corner and reads a block the same shape as `range` from there. A `sum_range`
-/// of the wrong size is therefore silently resized rather than rejected.
 fn sumif(ev: &mut Evaluator, args: &[Expr]) -> Operand {
     if !arity(args, 2, Some(3)) {
         return Operand::error(CellError::Value);
     }
-    let test = ev.eval(&args[0]);
-    let Some(test_area) = area_of(&test) else {
-        return Operand::error(CellError::Value);
-    };
-    let criterion = Criterion::parse(&ev.eval_scalar(&args[1]));
-
-    let sum_origin = match args.get(2) {
-        Some(e) => {
-            let op = ev.eval(e);
-            match area_of(&op) {
-                Some(a) => Some((a.sheet, a.range.start)),
-                None => return Operand::error(CellError::Value),
-            }
-        }
-        None => None,
-    };
-
-    // The offsets into `sum_range` must be measured from the range the user
-    // *wrote*, not from the clipped one. For `SUMIF(A:A,">0",B:B)` clipping
-    // moves the start down to the first used row, and measuring from there
-    // would pair every tested cell with the wrong summed one.
-    let full = test_area.range;
-    let range = ev.clip_area(&test_area);
     let mut total = 0.0;
-    for row in range.start.row..=range.end.row {
-        for col in range.start.col..=range.end.col {
-            let at = CellRef::new(row, col);
-            let candidate = ev.context().cell(test_area.sheet, at);
-            if let Value::Error(e) = candidate {
-                // An error in the tested range is not skipped; Excel surfaces it.
-                return Operand::error(e);
-            }
-            if !matches_criteria(&criterion, &candidate) {
-                continue;
-            }
-            let target = match sum_origin {
-                None => candidate,
-                Some((sheet, origin)) => {
-                    let Some(at) = offset(origin, row - full.start.row, col - full.start.col)
-                    else {
-                        return Operand::error(CellError::Ref);
-                    };
-                    ev.context().cell(sheet, at)
-                }
-            };
-            match target {
-                Value::Number(n) => total += n,
-                Value::Error(e) => return Operand::error(e),
-                _ => {}
-            }
+    match visit_if(ev, args, &mut |v| {
+        if let Value::Number(n) = v {
+            total += n;
         }
+    }) {
+        Ok(()) => Operand::Value(finite(total)),
+        Err(e) => Operand::error(e),
     }
-    Operand::Value(finite(total))
 }
 
 /// `SUMIFS(sum_range, criteria_range1, criteria1, ...)` — note that the summed
@@ -600,66 +543,13 @@ fn sumifs(ev: &mut Evaluator, args: &[Expr]) -> Operand {
     if args.len() < 3 || !(args.len() - 1).is_multiple_of(2) {
         return Operand::error(CellError::Value);
     }
-    let sum_op = ev.eval(&args[0]);
-    let Some(sum_area) = area_of(&sum_op) else {
-        return Operand::error(CellError::Value);
-    };
-
-    let mut tests: Vec<(AreaRef, Criterion)> = Vec::new();
-    for pair in args[1..].chunks(2) {
-        let op = ev.eval(&pair[0]);
-        let Some(area) = area_of(&op) else {
-            return Operand::error(CellError::Value);
-        };
-        tests.push((area, Criterion::parse(&ev.eval_scalar(&pair[1]))));
-    }
-
-    // Every criteria range must be the shape of the sum range; Excel is strict
-    // about this one, unlike SUMIF.
-    for (area, _) in &tests {
-        if area.range.rows() != sum_area.range.rows() || area.range.cols() != sum_area.range.cols()
-        {
-            return Operand::error(CellError::Value);
-        }
-    }
-
-    // All the ranges are the same shape, so one set of offsets addresses every
-    // one of them. Clipping narrows the *window* of offsets to visit; it must
-    // not move the origin, or the ranges would stop lining up with each other.
-    let full = sum_area.range;
-    let window = ev.clip_area(&sum_area);
-    let rows = window.start.row - full.start.row..=window.end.row - full.start.row;
-    let cols = window.start.col - full.start.col..=window.end.col - full.start.col;
-
     let mut total = 0.0;
-    for dr in rows {
-        'cell: for dc in cols.clone() {
-            for (area, criterion) in &tests {
-                let Some(at) = offset(area.range.start, dr, dc) else {
-                    return Operand::error(CellError::Ref);
-                };
-                let v = ev.context().cell(area.sheet, at);
-                if let Value::Error(e) = v {
-                    return Operand::error(e);
-                }
-                if !matches_criteria(criterion, &v) {
-                    continue 'cell;
-                }
-            }
-            let Some(at) = offset(full.start, dr, dc) else {
-                return Operand::error(CellError::Ref);
-            };
-            match ev.context().cell(sum_area.sheet, at) {
-                Value::Number(n) => total += n,
-                Value::Error(e) => return Operand::error(e),
-                _ => {}
-            }
+    match visit_ifs(ev, Some(&args[0]), &args[1..], &mut |v| {
+        if let Value::Number(n) = v {
+            total += n;
         }
+    }) {
+        Ok(()) => Operand::Value(finite(total)),
+        Err(e) => Operand::error(e),
     }
-    Operand::Value(finite(total))
-}
-
-fn offset(origin: CellRef, dr: u32, dc: u32) -> Option<CellRef> {
-    let at = CellRef::new(origin.row.checked_add(dr)?, origin.col.checked_add(dc)?);
-    at.is_valid().then_some(at)
 }
