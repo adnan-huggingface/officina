@@ -1,0 +1,15 @@
+﻿{
+    "generatedUtc":  "2026-08-08T15:03:52.2493991Z",
+    "machine":  "HP-IBRAHIM",
+    "os":  "Microsoft Windows 11 Home",
+    "office":  {
+                   "Word":  "16.0.20228.20124",
+                   "Excel":  "16.0.20228.20124"
+               },
+    "generated":  [
+                      "pivot-table.xlsx"
+                  ],
+    "skipped":  [
+
+                ]
+}

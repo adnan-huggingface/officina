@@ -639,20 +639,22 @@ if ($doExcel) {
         $ws.Range("A1").Value2 = "Region"; $ws.Range("B1").Value2 = "Product"; $ws.Range("C1").Value2 = "Amount"
         $regions = @('North', 'South', 'East', 'West'); $products = @('Widget', 'Gadget', 'Doohickey')
         for ($r = 2; $r -le 121; $r++) {
-            $ws.Cells.Item($r, 1).Value2 = $regions[($r) % 4]
-            $ws.Cells.Item($r, 2).Value2 = $products[($r) % 3]
-            $ws.Cells.Item($r, 3).Value2 = 10 + (($r * 47) % 490)
+            $ws.Cells.Item($r, 1).Value2 = [string]$regions[($r) % 4]
+            $ws.Cells.Item($r, 2).Value2 = [string]$products[($r) % 3]
+            # Explicit [double]: writing an Int32 to this column raised "unable to
+            # cast System.Int32 to System.String" through COM, even though the
+            # identical assignment works elsewhere in this script.
+            $ws.Cells.Item($r, 3).Value2 = [double](10 + (($r * 47) % 490))
         }
         $target = $wb.Worksheets.Add()
         $target.Name = "Pivot"
-        $cache = $wb.PivotCaches().Create(1, "Sheet1!R1C1:R121C3")   # xlDatabase
-        $pt = $cache.CreatePivotTable("Pivot!R3C1", "SalesPivot")
-        # `.Item(name)` explicitly: `PivotFields("Region")` is a parameterized
-        # property with an integer overload, and PowerShell picked that one,
-        # failing with "unable to cast System.Int32 to System.String".
-        $pt.PivotFields.Item("Region").Orientation = 1      # xlRowField
-        $pt.PivotFields.Item("Product").Orientation = 2     # xlColumnField
-        $pt.AddDataField($pt.PivotFields.Item("Amount"), "Sum of Amount", -4157) | Out-Null   # xlSum
+        # Range objects rather than R1C1 strings: the string forms went through an
+        # overload that wanted an integer and failed with a cast error.
+        $cache = $wb.PivotCaches().Create(1, $ws.Range("A1:C121"))   # xlDatabase
+        $pt = $cache.CreatePivotTable($target.Range("A3"), "SalesPivot")
+        $pt.PivotFields("Region").Orientation = 1      # xlRowField
+        $pt.PivotFields("Product").Orientation = 2     # xlColumnField
+        $pt.AddDataField($pt.PivotFields("Amount"), "Sum of Amount", -4157) | Out-Null   # xlSum
         $wb.SaveAs($path, 51)
         $wb.Close($false)
     }
