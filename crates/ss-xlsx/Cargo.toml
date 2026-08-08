@@ -6,3 +6,11 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+ooxml.workspace = true
+ss-model.workspace = true
+quick-xml = "0.41.0"
+
+[dev-dependencies]
+# Only for building test packages in memory; the reader itself goes through
+# `ooxml::Package` and never touches zip directly.
+zip = { version = "8.6.0", default-features = false, features = ["deflate"] }

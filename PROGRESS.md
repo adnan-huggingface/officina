@@ -9,7 +9,7 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[-]` deferred
 
 ## Current state
 
-**Chunk:** C4 — xlsx reader (C0, C1, C3 done; C2 blocked on corpus)
+**Chunk:** C5 — formula engine, parser + graph (C0, C1, C3, C4 done; C2 blocked on corpus)
 **Status:** not started
 **Handoff note:**
 
@@ -17,13 +17,30 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[-]` deferred
   installed with `--no-modify-path`). Links against MSYS2 mingw-w64 GCC 12.1.0,
   so no Visual Studio is needed.
 - `ooxml` is complete for C1 and C2: 38 tests, clippy clean.
-- `ss-model` is complete for C3: 33 tests, clippy clean. Cell store is 16x16
-  chunks in a BTreeMap; `Cell` is pinned at 24 bytes by a test.
+- `ss-model` is complete for C3: 35 tests, clippy clean. Cell store is 16x16
+  chunks in a BTreeMap; `Cell` is pinned at 24 bytes by a test. C4 added a
+  per-sheet formula arena and `SheetKind` (chart/dialog sheets keep their slot in
+  the sheet list, because `localSheetId` indexes it).
+- `ss-xlsx` is complete for C4: 54 tests plus 2 ignored performance checks.
+  Run those with `cargo test --release -p ss-xlsx -- --ignored --nocapture`;
+  they are meaningless in a debug build.
+- Watch item: quick-xml 0.41 does **not** fold entities into text. `&amp;` arrives
+  as a separate `Event::GeneralRef`, so any text accumulator must handle it or it
+  silently drops every `&`, `<`, and `>`. `xml::push_text` is the one place that
+  does this; use it rather than matching `Event::Text` directly.
 - `cargo xtask fidelity` runs and correctly **fails** on an empty corpus rather
   than reporting a vacuous pass.
-- **C2 is blocked on you:** put real Word/Excel documents under `corpus/` (see
-  `corpus/README.md`), then run `cargo xtask fidelity` until green. That green is
-  C2's exit criterion. C3 onward does not depend on it.
+- **C2 is blocked on the corpus, which is in transit.** The Office on this
+  machine is unlicensed ("read and print only mode"), so COM cannot save — and
+  it does not fail cleanly, it blocks on an activation dialog that hangs
+  automation forever. `corpus/generate.ps1` now preflights for exactly that.
+  Adnan is running it on another laptop and returning a zip; unzip it so
+  `corpus/docx/` and `corpus/xlsx/` are populated, then run `cargo xtask
+  fidelity` until green. That green is C2's exit criterion. C3 onward does not
+  depend on it.
+- Watch item: Windows PowerShell 5.1 reads BOM-less `.ps1` as ANSI, so any
+  script here containing non-ASCII **must** be saved UTF-8 *with* BOM or it
+  fails to parse. `generate.ps1` has one.
 - Both apps launch and hold a window (verified, not assumed).
 - `crt-static` is confirmed working: `objdump -p` on calx.exe lists only Windows
   system DLLs — no libgcc/libwinpthread/libstdc++. Requirement 4 is genuinely met
@@ -71,9 +88,35 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[-]` deferred
   (Revised from "serde round-trip": serde is not used in production here, so
   testing it would exercise a dependency rather than the store.)
 
-- [ ] **C4. xlsx reader**
-  workbook.xml, sheets, sharedStrings, styles.xml, merged cells, defined names.
+- [x] **C4. xlsx reader**
+  workbook.xml, sheets, sharedStrings, merged cells, defined names, frozen panes,
+  column/row geometry, formulas (normal, array, shared master/follower, data table).
   *Exit: opens a real 50MB Excel file in <2s with correct values and formats.*
+  — **met on the reachable reading of "50MB"; see below.**
+
+  Parts are found by walking the relationship graph, never by assuming
+  `/xl/workbook.xml`, so Strict-profile and third-party files open too. Reading
+  leaves every part `Retained`: the model is a view over the package, not a
+  replacement, so open-and-save still reproduces the original bytes.
+
+  Styles are carried as opaque `StyleId` indices only — resolving them into fonts,
+  fills, and number formats is C11, so "with correct formats" is *not* yet met.
+
+  **On the 50MB target.** The criterion was ambiguous and the two readings are far
+  apart. Measured (`cargo test --release -p ss-xlsx -- --ignored --nocapture`):
+  - 55 MB of sheet XML, 1.3M cells → **1.75 s**. Met.
+  - quick-xml's raw event scan of the same document, building nothing → 0.74 s.
+    That is the floor; the reader runs at ~2.4x it.
+  - A 50 MB *.xlsx on disk* is ~500 MB of XML after deflate. The scan alone would
+    take ~7 s, so that reading is **not reachable** with a DOM-in-memory design.
+    It would need lazy per-sheet parsing, which is not planned. Recorded here
+    rather than quietly redefined.
+
+  What made the difference, for the next reader: `<c>`'s attributes were being
+  read with three separate lookups, each running quick-xml's default duplicate
+  check, which is quadratic and re-walks the tag. One pass with
+  `with_checks(false)` took the whole parse from 3.6 s to 2.1 s. Nothing else came
+  close — the store, value building, and interning together were under 0.5 s.
 
 - [ ] **C5. Formula engine — parser + graph**
   Lexer, Pratt parser, AST, A1/R1C1 references, ranges, dependency graph, topological

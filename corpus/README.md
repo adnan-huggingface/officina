@@ -7,6 +7,29 @@ to test against what actually lands in a user's inbox.
 Drop files anywhere under `docx/` or `xlsx/`; the harness walks recursively and
 picks up `.docx`, `.docm`, `.dotx`, `.xlsx`, `.xlsm`, `.xltx`.
 
+## Generating it
+
+`generate.ps1` drives Word and Excel through COM to produce most of the list
+below. It needs a **licensed** Office: an install in "read and print only mode"
+cannot save, and worse, blocks on an activation dialog that COM can neither see
+nor dismiss, so automation hangs indefinitely. The script's preflight catches
+that up front and reports it instead of hanging.
+
+The script is self-contained — copy just that one file to a machine with Office,
+run it, and bring back the zip:
+
+```
+powershell -ExecutionPolicy Bypass -File .\generate.ps1
+```
+
+It writes `corpus-out/` beside itself containing `docx/`, `xlsx/`,
+`manifest.json`, and `corpus.zip`. Unzip that here so `docx/` and `xlsx/` land
+next to this README.
+
+`manifest.json` records the Office version and everything the run could *not*
+produce. Keep it: when a fidelity failure turns out to be a Word-version quirk,
+that file is the only way to tell.
+
 ## What to include
 
 The harness is only as good as the awkwardness of its inputs. A folder of

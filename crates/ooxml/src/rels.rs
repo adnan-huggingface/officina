@@ -44,18 +44,31 @@ impl Relationship {
     ///
     /// Returns `None` for external targets, which have no part.
     pub fn resolve(&self, owner: &PartName) -> Option<Result<PartName>> {
+        self.resolve_against(owner.parent())
+    }
+
+    /// Resolves a target held in the package-level `/_rels/.rels`.
+    ///
+    /// Root relationships have no owning part — they belong to the package — so
+    /// their targets are relative to `/`. Passing `/_rels/.rels` to [`resolve`]
+    /// instead would anchor them at `/_rels`, turning `xl/workbook.xml` into
+    /// `/_rels/xl/workbook.xml` and losing the main document part.
+    ///
+    /// [`resolve`]: Relationship::resolve
+    pub fn resolve_from_root(&self) -> Option<Result<PartName>> {
+        self.resolve_against("/")
+    }
+
+    fn resolve_against(&self, dir: &str) -> Option<Result<PartName>> {
         if self.mode == TargetMode::External {
             return None;
         }
         let raw = if self.target.starts_with('/') {
             self.target.clone()
+        } else if dir == "/" {
+            format!("/{}", self.target)
         } else {
-            let dir = owner.parent();
-            if dir == "/" {
-                format!("/{}", self.target)
-            } else {
-                format!("{dir}/{}", self.target)
-            }
+            format!("{dir}/{}", self.target)
         };
         Some(PartName::new(&normalize_dots(&raw)))
     }
@@ -234,6 +247,37 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(item.as_str(), "/customXml/item1.xml");
+    }
+
+    #[test]
+    fn root_relationships_resolve_against_the_package_root() {
+        // The main document part is reached only through /_rels/.rels. Anchoring
+        // these at /_rels instead of / makes every part of the package
+        // unreachable, which reads as "not a workbook" rather than as a bug.
+        const ROOT: &[u8] = br#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="/docProps/core.xml"/>
+</Relationships>"#;
+        let owner = PartName::new("/_rels/.rels").unwrap();
+        let rels = Relationships::parse(&owner, ROOT).unwrap();
+
+        let wb = rels
+            .get("rId1")
+            .unwrap()
+            .resolve_from_root()
+            .unwrap()
+            .unwrap();
+        assert_eq!(wb.as_str(), "/xl/workbook.xml");
+
+        // An already-absolute target is unaffected by the anchor.
+        let core = rels
+            .get("rId2")
+            .unwrap()
+            .resolve_from_root()
+            .unwrap()
+            .unwrap();
+        assert_eq!(core.as_str(), "/docProps/core.xml");
     }
 
     #[test]

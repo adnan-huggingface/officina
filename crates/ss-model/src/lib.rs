@@ -8,13 +8,15 @@
 #![forbid(unsafe_code)]
 
 pub mod cell;
+pub mod formula;
 pub mod store;
 pub mod strings;
 pub mod style;
 pub mod workbook;
 
 pub use cell::{column_index, column_name, Cell, CellError, CellRef, CellValue, FormulaId};
+pub use formula::{Formula, FormulaKind};
 pub use store::CellStore;
 pub use strings::{StrId, StringTable};
 pub use style::StyleId;
-pub use workbook::{CellRange, DefinedName, Sheet, Workbook};
+pub use workbook::{CellRange, DefinedName, Sheet, SheetKind, Workbook};

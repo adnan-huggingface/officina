@@ -2,7 +2,8 @@
 
 use std::collections::BTreeMap;
 
-use crate::cell::{Cell, CellRef};
+use crate::cell::{Cell, CellRef, FormulaId};
+use crate::formula::Formula;
 use crate::store::CellStore;
 use crate::strings::StringTable;
 
@@ -41,10 +42,39 @@ impl CellRange {
     }
 }
 
+/// What kind of sheet a workbook tab holds.
+///
+/// Chart and dialog sheets have no cell grid, but they *do* occupy a position in
+/// the workbook's sheet list — and `localSheetId` on a defined name is an index
+/// into that list. Dropping them because they have no cells would silently
+/// re-point every sheet-scoped name after them at the wrong sheet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SheetKind {
+    #[default]
+    Worksheet,
+    Chart,
+    Dialog,
+    /// An Excel 4.0 macro sheet. Preserved, never executed.
+    Macro,
+}
+
+impl SheetKind {
+    /// True when this sheet has a cell grid to edit.
+    pub const fn has_grid(self) -> bool {
+        matches!(self, SheetKind::Worksheet | SheetKind::Macro)
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Sheet {
     pub name: String,
+    pub kind: SheetKind,
     pub cells: CellStore,
+    /// Formula arena. `Cell::formula` indexes this, one-based via [`FormulaId`].
+    ///
+    /// Per sheet rather than per workbook because shared-formula group indices
+    /// (`si`) are only unique within a sheet.
+    pub formulas: Vec<Formula>,
     /// Merged regions. The top-left cell holds the value; the rest are covered.
     pub merges: Vec<CellRange>,
     /// Column widths in Excel's character units; absent means the sheet default.
@@ -75,6 +105,22 @@ impl Sheet {
     /// The merge covering `at`, if any.
     pub fn merge_at(&self, at: CellRef) -> Option<&CellRange> {
         self.merges.iter().find(|m| m.contains(at))
+    }
+
+    /// Adds a formula to the arena and returns its handle.
+    pub fn push_formula(&mut self, formula: Formula) -> FormulaId {
+        let id = FormulaId::from_index(self.formulas.len() as u32);
+        self.formulas.push(formula);
+        id
+    }
+
+    pub fn formula(&self, id: FormulaId) -> Option<&Formula> {
+        self.formulas.get(id.index() as usize)
+    }
+
+    /// The formula attached to `at`, if it has one.
+    pub fn formula_at(&self, at: CellRef) -> Option<&Formula> {
+        self.formula(self.get(at)?.formula?)
     }
 }
 
