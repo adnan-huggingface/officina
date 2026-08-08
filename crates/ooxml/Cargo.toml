@@ -6,3 +6,9 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+quick-xml = "0.41.0"
+
+# Deflate only. OOXML packages never use zip's other compression methods, and
+# every codec we enable is additional attack surface on a parser that opens
+# files from email.
+zip = { version = "8.6.0", default-features = false, features = ["deflate"] }

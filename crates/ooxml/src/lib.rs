@@ -8,6 +8,19 @@
 
 #![forbid(unsafe_code)]
 
+pub mod content_types;
+pub mod error;
+pub mod name;
+pub mod package;
+pub mod rels;
+mod xml;
+
+pub use content_types::ContentTypes;
+pub use error::{Error, Result};
+pub use name::PartName;
+pub use package::{Package, Part};
+pub use rels::{Relationship, Relationships, TargetMode};
+
 /// How a part is treated when the package is written back out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PartClass {

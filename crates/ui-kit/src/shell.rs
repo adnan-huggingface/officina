@@ -42,7 +42,10 @@ struct Host<A: DocumentApp> {
 }
 
 impl<A: DocumentApp> eframe::App for Host<A> {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        egui::CentralPanel::default().show(ctx, |ui| self.app.ui(ui));
+    // eframe 0.36 hands the app a `Ui` covering the whole window rather than a
+    // `Context` to open panels on, so the host has nothing to set up here yet.
+    // The ribbon and status bar will attach around this call.
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.app.ui(ui);
     }
 }
