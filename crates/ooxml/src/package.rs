@@ -78,6 +78,26 @@ pub struct Package {
 }
 
 impl Package {
+    /// A package with no parts, ready to be authored into.
+    ///
+    /// The two extension defaults are conventional rather than required, but
+    /// every OPC producer writes them and a package that declares each `.xml`
+    /// part with its own `<Override>` is a package that looks nothing like the
+    /// ones it will sit next to.
+    pub fn empty() -> Self {
+        let mut content_types = ContentTypes::new();
+        content_types.set_default(
+            "rels",
+            "application/vnd.openxmlformats-package.relationships+xml",
+        );
+        content_types.set_default("xml", "application/xml");
+        Package {
+            parts: BTreeMap::new(),
+            content_types,
+            max_order: 0,
+        }
+    }
+
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let bytes = std::fs::read(path.as_ref())?;
         Self::read(Cursor::new(bytes))

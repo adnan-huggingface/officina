@@ -16,6 +16,7 @@
 //! deletion destroyed, the formulas whose text was rewritten, and one small
 //! snapshot of merges, sizes, and the freeze. Nothing here clones a sheet.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use ss_model::{
@@ -306,7 +307,7 @@ pub(crate) fn typed_cell(book: &mut Workbook, sheet: usize, style: StyleId, type
             // A typed date is a number plus the format that makes it read as a
             // date. Without the second half the user sees 45306.
             style: match format {
-                Some(code) if style == StyleId::DEFAULT => book.styles.style_for_format(code),
+                Some(code) if style == StyleId::DEFAULT => book.styles.style_for_format(&code),
                 _ => style,
             },
             formula: None,
@@ -337,7 +338,10 @@ enum Typed {
     Formula(String),
     /// A number, and the format code it should be displayed through if the cell
     /// does not already have one of its own.
-    Number(f64, Option<&'static str>),
+    ///
+    /// Owned rather than `&'static str` because a typed percentage carries as
+    /// many decimal places as the user typed, and there is no fixed set of them.
+    Number(f64, Option<Cow<'static, str>>),
     Bool(bool),
     Error(ss_model::CellError),
     Text(String),
@@ -373,7 +377,7 @@ fn classify(typed: &str) -> Typed {
         return number;
     }
     if let Some((serial, format)) = crate::functions::date::typed_datetime(trimmed) {
-        return Typed::Number(serial, Some(format));
+        return Typed::Number(serial, Some(Cow::Borrowed(format)));
     }
     Typed::Text(typed.to_string())
 }
@@ -381,8 +385,17 @@ fn classify(typed: &str) -> Typed {
 /// Plain numbers, percentages, and grouped thousands.
 fn parse_number(text: &str) -> Option<Typed> {
     if let Some(body) = text.strip_suffix('%') {
-        let value: f64 = degroup(body.trim())?.parse().ok()?;
-        return Some(Typed::Number(value / 100.0, Some("0%")));
+        let body = body.trim();
+        let value: f64 = degroup(body)?.parse().ok()?;
+        // The format has to keep the digits that were typed. `42.5%` under `0%`
+        // displays as `43%`, which is the cell disagreeing with what the user
+        // just put in it.
+        let decimals = body.split_once('.').map_or(0, |(_, d)| d.len());
+        let format = match decimals {
+            0 => "0%".to_string(),
+            n => format!("0.{}%", "0".repeat(n)),
+        };
+        return Some(Typed::Number(value / 100.0, Some(Cow::Owned(format))));
     }
     let value: f64 = degroup(text)?.parse().ok()?;
     // `#,##0` here would be a guess about the user's intent; Excel does apply a
@@ -390,10 +403,12 @@ fn parse_number(text: &str) -> Option<Typed> {
     let grouped = text.contains(',');
     Some(Typed::Number(
         value,
-        grouped.then_some(if text.contains('.') {
-            "#,##0.00"
-        } else {
-            "#,##0"
+        grouped.then(|| {
+            Cow::Borrowed(if text.contains('.') {
+                "#,##0.00"
+            } else {
+                "#,##0"
+            })
         }),
     ))
 }
@@ -455,6 +470,34 @@ mod tests {
             Some(5.0),
             "redo is the undo of undo"
         );
+    }
+
+    #[test]
+    fn a_percentage_keeps_the_decimals_it_was_typed_with() {
+        // Under a plain `0%` the cell would answer `43%` to someone who just
+        // typed `42.5%` — the one number they are certain about.
+        // A cell each: typing into one that already has a format keeps that
+        // format, which is a different rule and is tested by its own name.
+        let mut book = book();
+        for (row, (typed, shown)) in [("42.5%", "42.5%"), ("50%", "50%"), ("1.25%", "1.25%")]
+            .into_iter()
+            .enumerate()
+        {
+            let cell = format!("A{}", row + 1);
+            let change = text_of(&mut book, 0, &cell, typed);
+            apply(&mut book, change);
+            let at = CellRef::new(row as u32, 0);
+            let style = book.sheet(0).unwrap().get(at).unwrap().style;
+            let value = number(&book, 0, &cell).expect("a number");
+            assert_eq!(
+                book.styles
+                    .number_format(style)
+                    .format(ss_model::numfmt::FormatValue::Number(value))
+                    .text,
+                shown,
+                "typing {typed}"
+            );
+        }
     }
 
     #[test]

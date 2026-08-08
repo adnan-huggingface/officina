@@ -7,3 +7,5 @@ publish = false
 
 [dependencies]
 ooxml.workspace = true
+ss-model.workspace = true
+ss-xlsx.workspace = true

@@ -9,7 +9,7 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[-]` deferred
 
 ## Current state
 
-**Chunk:** C10 — xlsx writer (C0–C9 all done)
+**Chunk:** C11 — formatting (C0–C10 all done)
 **Status:** not started
 **Handoff note:**
 
@@ -45,7 +45,11 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[-]` deferred
 - `ss-formula` also owns editing (`edit`) and the clipboard (`clip`). Both sit
   above the model rather than in it because every editing operation has to keep
   formula text consistent, and that needs the lexer.
-- Workspace total is **403 tests**, all green;
+- `ss-xlsx::write` is the writer. It edits the parts it owns rather than
+  reprinting them; `write::splice` is the primitive that makes that possible, and
+  everything else in the module is built on it. `rfd` is Calx's file dialog, on
+  default features so a Linux build needs the XDG portal rather than GTK headers.
+- Workspace total is **435 tests**, all green;
   `cargo clippy --workspace --all-targets -- -D warnings` and
   `cargo fmt --all --check` are both clean.
 - Watch item: whether text becomes a number depends on **how the value reached
@@ -82,7 +86,24 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[-]` deferred
   feel this. On C29's list, along with the graph.
 - Watch item: **`edit::input` and `clip::paste` grow the formula arena even when
   the change is later undone.** The orphaned entries are unreachable and
-  harmless, but a writer must emit only what cells point at.
+  harmless, and the writer only emits what cells point at, so nothing reaches a
+  file — but the arena still only grows.
+- Watch item: **the writer re-reads three parts on every save** — the worksheet
+  it is editing, `sharedStrings.xml`, and `styles.xml` — to compare against
+  rather than trusting what a reader believed some time earlier. Correct, and it
+  makes a save cost a parse. On C29's list with the recalc scan.
+- Watch item: **`spans` is a sixteen-row block hint, not a row hint.** Widen it;
+  never recompute it. See C10.
+- Watch item: **adding or removing a sheet has no writer.** `flush` walks the
+  `<sheet>` entries in the workbook part and rewrites the parts they name, so a
+  sheet the model grew after the package was built has nowhere to be written.
+  Nothing in the UI can add one yet; the moment something can, this is the code
+  that has to know.
+- Watch item: **a `t="s"` cell points at an `<si>`, and an `<si>` can be rich
+  text.** New text is matched into the table by its characters, so typing a
+  string that already exists in bold gives the new cell the bold entry. Excel
+  dedups the same way, but it is a surprise worth remembering when C11 starts
+  reading run properties.
 - Watch item: `DependencyGraph::dependents_of` is a linear scan over every
   formula, so `evaluation_order` is O(formulas^2). Fine at corpus scale and for
   the 1,200-cell stress test; it will not survive a 100k-formula workbook. C5
@@ -346,10 +367,52 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[-]` deferred
   of Excel's, and only then allocates a custom id — the ids a C10 writer has to
   put back.
 
-- [ ] **C10. xlsx writer** — plus a file dialog and Ctrl+S; until then edits
-      cannot leave the process.
+- [x] **C10. xlsx writer** — plus a file dialog and Ctrl+S.
   Serialize from model through the Preservation Vault.
-  *Exit: harness check 2 (edit round-trip) green across the corpus.*
+  *Exit: harness check 2 (edit round-trip) green across the corpus.* — **met:
+  12 of 12 spreadsheets, and check 1 still 27 of 27.**
+
+  **The writer edits the file; it does not reprint it.** A real worksheet holds
+  autofilters, conditional formatting, data validation, hyperlinks, sheet
+  protection, the anchor tying a chart to the grid, page setup, and whatever the
+  current version of Excel puts in `extLst`. Reprinting the part from our model
+  would delete every one of them, so instead the original bytes *are* the
+  document and `write::sheet_out` walks them replacing only `<sheetData>` — and
+  inside it, only the cells whose content actually differs from what the file
+  says. A cell nobody touched goes back byte for byte; a cell that was edited
+  keeps its own start tag, so `cm`, `vm`, and `ca="1"` survive an edit rather
+  than being dropped as things we never modeled.
+
+  `write::splice` is what makes that possible: an XML reader that hands back each
+  event *and the span of source bytes it was parsed from*. Copying the span
+  rather than re-serializing the event keeps the producer's whitespace, its
+  choice of `<c/>` over `<c></c>`, and its entity escaping.
+
+  **The harness now asks two questions instead of one.** A no-edit save proves
+  the bytes we copied survived being copied — which, for a writer built on
+  copying, is nearly a tautology. So spreadsheets also go through
+  `flush_regenerating`, which writes *every* cell out of the model, and the
+  corpus is compared against that too. No save does this; it exists so that a
+  divergence between our idea of a worksheet and Excel's is reported by the
+  harness rather than by the one user whose edit lands on that row. It found
+  three the ordinary pass could not: `ca="1"`, `ref="D1"` rather than `D1:D1` on
+  a single-cell array formula, and `spans`.
+
+  **`spans` is a block hint, not a row hint.** Excel writes the span of the
+  sixteen-row block a row belongs to, so a row holding A and B alone says `1:4`
+  if another row in its block reaches D. Recomputing it would rewrite rows nobody
+  edited for no gain, since the attribute's only requirement is that it *covers*
+  the cells — so an edited row widens the file's value instead of replacing it.
+
+  **A new workbook is authored, not templated.** `write::blank` builds the
+  smallest package Excel will open — and deliberately builds it *empty*:
+  `<sheetData/>`, no shared strings, one style. Everything typed then arrives
+  through the same splice writer that edits a real Excel file, so there is one
+  code path for cells rather than two that can disagree.
+
+  Calx can now open, save, and save-as through a file dialog, with Ctrl+S,
+  Ctrl+Shift+S, Ctrl+O and Ctrl+N, a dot in the title bar for unsaved changes,
+  and a prompt before anything that would discard them.
 
 ## Phase 2 — Calx completeness
 

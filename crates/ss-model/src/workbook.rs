@@ -227,6 +227,10 @@ impl Workbook {
     pub fn blank() -> Self {
         let mut wb = Workbook::new();
         wb.sheets.push(Sheet::new("Sheet1"));
+        // One style, General, at index 0 — the same table a new file from Excel
+        // has. Without it the first format anyone asks for would be allocated
+        // index 0, and every unstyled cell in the workbook points there.
+        wb.styles = crate::style::StyleTable::build(&std::collections::BTreeMap::new(), &[0]);
         wb
     }
 

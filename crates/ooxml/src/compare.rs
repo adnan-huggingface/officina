@@ -110,7 +110,7 @@ pub fn diff(before: &Package, after: &Package) -> Vec<Difference> {
 
         if looks_like_xml(a.data()) && looks_like_xml(b.data()) {
             match (canonicalize(a.data()), canonicalize(b.data())) {
-                (Ok(ca), Ok(cb)) if ca == cb => {}
+                (Ok(ca), Ok(cb)) if equivalent(&ca, &cb) => {}
                 (Ok(ca), Ok(cb)) => out.push(Difference::XmlChanged {
                     part: (*name).clone(),
                     detail: first_divergence(&ca, &cb),
@@ -286,9 +286,39 @@ fn strip_ns(qname: &[u8]) -> &[u8] {
     }
 }
 
+/// Whether two canonical streams say the same thing.
+///
+/// Token-for-token, except that two text nodes holding the same `f64` are the
+/// same text node whatever digits they are spelled with. Excel writes the cached
+/// value of a percentage cell as `0.42709999999999998`; the shortest string that
+/// reads back as that exact double is `0.4271`, and a writer that produces the
+/// short form has changed nothing about the file except its length.
+///
+/// The relaxation is deliberately confined to text. Attribute values are
+/// compared exactly, because an attribute that looks like a number is often an
+/// index or an id, where `007` and `7` are not interchangeable at all.
+fn equivalent(a: &Canonical, b: &Canonical) -> bool {
+    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| same_token(x, y))
+}
+
+fn same_token(a: &str, b: &str) -> bool {
+    if a == b {
+        return true;
+    }
+    match (a.strip_prefix('#'), b.strip_prefix('#')) {
+        (Some(x), Some(y)) => match (x.trim().parse::<f64>(), y.trim().parse::<f64>()) {
+            (Ok(x), Ok(y)) => x == y,
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
 /// Human-readable description of where two token streams first diverge.
 fn first_divergence(a: &Canonical, b: &Canonical) -> String {
-    let at = a.iter().zip(b.iter()).position(|(x, y)| x != y);
+    // The same rule `equivalent` used, so the reported position is a real
+    // disagreement and not one this function invented.
+    let at = a.iter().zip(b.iter()).position(|(x, y)| !same_token(x, y));
     match at {
         Some(i) => format!(
             "diverges at token {i}: {:?} vs {:?}",

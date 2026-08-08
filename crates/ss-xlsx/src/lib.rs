@@ -16,6 +16,7 @@ mod shared_strings;
 mod sheet;
 mod styles;
 mod workbook_part;
+mod write;
 mod xml;
 
 use std::io::{Read, Seek};

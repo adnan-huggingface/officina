@@ -1,28 +1,41 @@
 //! The fidelity harness.
 //!
-//! Check 1 of the three in `DESIGN.md` §7, and the one that protects users' files:
+//! Two of the three checks in `DESIGN.md` §7, and the ones that protect users'
+//! files:
 //!
-//! > Open a real document, save it with no edits, and assert the result is
-//! > semantically identical to the input.
+//! > 1. Open a real document, save it with no edits, and assert the result is
+//! >    semantically identical to the input.
+//! > 2. Open, make a scripted edit, save, reopen, and assert the model matches
+//! >    expectation *and* every untouched part is still byte-identical.
 //!
-//! Any difference is a preservation bug. Checks 2 (edit round-trip) and 3 (render
-//! snapshot) attach here once there is a model to edit and a layout engine to
-//! rasterize.
+//! Any difference is a preservation bug. Check 3 (render snapshot) attaches here
+//! once there is a layout engine to rasterize.
+//!
+//! Check 1 runs at the package level for every format, and *through the model*
+//! for spreadsheets. The distinction matters: before C10 a save re-emitted the
+//! bytes it read, so check 1 could only prove the container was intact. Now the
+//! worksheet, string, and style parts are rebuilt on the way out, and check 1 is
+//! a statement about the serializer.
 
 use std::path::{Path, PathBuf};
 
 use ooxml::compare::{diff, Difference};
-use ooxml::Package;
+use ooxml::{Package, PartName};
+use ss_model::{Cell, CellRef, CellValue, SheetKind};
+use ss_xlsx::XlsxDocument;
 
 pub struct Report {
     pub passed: Vec<PathBuf>,
     pub failed: Vec<(PathBuf, Vec<Difference>)>,
     pub errored: Vec<(PathBuf, String)>,
+    /// Check 2, which only spreadsheets can take yet.
+    pub edited: Vec<PathBuf>,
+    pub edit_failed: Vec<(PathBuf, Vec<String>)>,
 }
 
 impl Report {
     pub fn is_green(&self) -> bool {
-        self.failed.is_empty() && self.errored.is_empty()
+        self.failed.is_empty() && self.errored.is_empty() && self.edit_failed.is_empty()
     }
 
     pub fn total(&self) -> usize {
@@ -30,38 +43,281 @@ impl Report {
     }
 }
 
-/// Runs the no-op round-trip check over every package under `corpus_dir`.
+/// Runs both checks over every package under `corpus_dir`.
 pub fn run(corpus_dir: &Path) -> Result<Report, String> {
     let mut report = Report {
         passed: Vec::new(),
         failed: Vec::new(),
         errored: Vec::new(),
+        edited: Vec::new(),
+        edit_failed: Vec::new(),
     };
 
     for path in collect_packages(corpus_dir)? {
         match round_trip(&path) {
-            Ok(differences) if differences.is_empty() => report.passed.push(path),
-            Ok(differences) => report.failed.push((path, differences)),
-            Err(e) => report.errored.push((path, e)),
+            Ok(differences) if differences.is_empty() => report.passed.push(path.clone()),
+            Ok(differences) => {
+                report.failed.push((path.clone(), differences));
+                continue;
+            }
+            Err(e) => {
+                report.errored.push((path, e));
+                continue;
+            }
+        }
+
+        // Only spreadsheets have a writer to check. A .docx reaching here is
+        // *not* a pass on check 2, and is reported as neither.
+        if !is_spreadsheet(&path) {
+            continue;
+        }
+        match edit_round_trip(&path) {
+            Ok(problems) if problems.is_empty() => report.edited.push(path),
+            Ok(problems) => report.edit_failed.push((path, problems)),
+            Err(e) => report.edit_failed.push((path, vec![e])),
         }
     }
 
     Ok(report)
 }
 
-/// Opens, rewrites, and reopens a package, returning what changed.
+/// An unstyled cell holding `value`.
+fn cell(value: CellValue) -> Cell {
+    Cell {
+        value,
+        style: ss_model::StyleId::DEFAULT,
+        formula: None,
+    }
+}
+
+fn is_spreadsheet(path: &Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|e| e.to_str())
+            .map(str::to_ascii_lowercase)
+            .as_deref(),
+        Some("xlsx") | Some("xlsm") | Some("xltx")
+    )
+}
+
+/// Check 1: open, save with no edits, reopen, and compare.
+///
+/// Spreadsheets are checked twice. Once as a save actually behaves, copying
+/// through every cell nobody edited — and then again with the writer told to
+/// regenerate all of them from the model. The second pass is the one with teeth:
+/// the first can only fail if copying bytes went wrong, while the second fails
+/// the moment our idea of a worksheet diverges from Excel's anywhere in the
+/// file, whether or not an edit ever lands there.
 fn round_trip(path: &Path) -> Result<Vec<Difference>, String> {
     let before = Package::open(path).map_err(|e| format!("open: {e}"))?;
 
-    let mut rewritten = Vec::new();
-    before
-        .write(std::io::Cursor::new(&mut rewritten))
+    if !is_spreadsheet(path) {
+        let mut buf = Vec::new();
+        before
+            .write(std::io::Cursor::new(&mut buf))
+            .map_err(|e| format!("write: {e}"))?;
+        let after = Package::read(std::io::Cursor::new(buf)).map_err(|e| format!("reopen: {e}"))?;
+        return Ok(diff(&before, &after));
+    }
+
+    let mut differences = saved(path, &before, false)?;
+    for mut d in saved(path, &before, true)? {
+        // Same finding from a different pass; say which one saw it.
+        if let Difference::XmlChanged { detail, .. } = &mut d {
+            *detail = format!("{detail} (writing every cell from the model)");
+        }
+        if !differences.contains(&d) {
+            differences.push(d);
+        }
+    }
+    Ok(differences)
+}
+
+fn saved(path: &Path, before: &Package, regenerate: bool) -> Result<Vec<Difference>, String> {
+    let mut doc = XlsxDocument::open(path).map_err(|e| format!("read workbook: {e}"))?;
+    if regenerate {
+        doc.flush_regenerating()
+            .map_err(|e| format!("regenerate: {e}"))?;
+    }
+    let mut buf = Vec::new();
+    doc.write_to(std::io::Cursor::new(&mut buf))
+        .map_err(|e| format!("write: {e}"))?;
+    let after = Package::read(std::io::Cursor::new(buf)).map_err(|e| format!("reopen: {e}"))?;
+    Ok(diff(before, &after))
+}
+
+/// Check 2: open, edit, save, reopen — and account for every byte that moved.
+///
+/// The edit is placed past the used range on purpose. A change that overwrote
+/// existing content would prove the writer can replace a cell, but not the
+/// harder and more important thing: that the cells *around* it came back
+/// untouched, cached values, unknown attributes, and all.
+fn edit_round_trip(path: &Path) -> Result<Vec<String>, String> {
+    let original = Package::open(path).map_err(|e| format!("open: {e}"))?;
+    let mut doc = XlsxDocument::open(path).map_err(|e| format!("read workbook: {e}"))?;
+
+    let Some(index) = doc
+        .workbook
+        .sheets
+        .iter()
+        .position(|s| matches!(s.kind, SheetKind::Worksheet))
+    else {
+        return Ok(Vec::new()); // nothing but chart sheets: no grid to edit
+    };
+
+    let free = {
+        let sheet = &doc.workbook.sheets[index];
+        sheet
+            .cells
+            .used_range()
+            .map(|(_, max)| max.row + 2)
+            .unwrap_or(0)
+    };
+    let number_at = CellRef::new(free, 0);
+    let text_at = CellRef::new(free, 1);
+    let text = "calx fidelity harness";
+    let interned = doc.workbook.strings.intern(text);
+
+    {
+        let sheet = &mut doc.workbook.sheets[index];
+        sheet.set(number_at, cell(CellValue::Number(1234.5)));
+        sheet.set(text_at, cell(CellValue::Text(interned)));
+    }
+
+    let expected = snapshot(&doc);
+
+    let mut buf = Vec::new();
+    doc.write_to(std::io::Cursor::new(&mut buf))
         .map_err(|e| format!("write: {e}"))?;
 
-    let after =
-        Package::read(std::io::Cursor::new(rewritten)).map_err(|e| format!("reopen: {e}"))?;
+    let reopened = XlsxDocument::read(std::io::Cursor::new(buf.clone()))
+        .map_err(|e| format!("reopen workbook: {e}"))?;
+    let saved = Package::read(std::io::Cursor::new(buf)).map_err(|e| format!("reopen: {e}"))?;
 
-    Ok(diff(&before, &after))
+    let mut problems = Vec::new();
+
+    // The edit came back.
+    let sheet = &reopened.workbook.sheets[index];
+    match sheet.get(number_at).map(|c| c.value) {
+        Some(CellValue::Number(1234.5)) => {}
+        other => problems.push(format!("{} reads back as {other:?}", number_at.to_a1())),
+    }
+    match sheet.get(text_at).map(|c| c.value) {
+        Some(CellValue::Text(id)) if reopened.workbook.strings.resolve(id) == text => {}
+        other => problems.push(format!("{} reads back as {other:?}", text_at.to_a1())),
+    }
+
+    // ...and nothing else moved.
+    if let Some(detail) = snapshot(&reopened).diff(&expected) {
+        problems.push(format!("the model changed on the way through: {detail}"));
+    }
+
+    let touched = edited_parts(&original, &saved);
+    for (name, before, after) in changed_parts(&original, &saved) {
+        if touched.contains(&name) {
+            continue;
+        }
+        problems.push(format!(
+            "{name} was rewritten though nothing in it was edited ({before} -> {after} bytes)"
+        ));
+    }
+
+    Ok(problems)
+}
+
+/// The parts a cell edit is allowed to change.
+///
+/// Worksheets, because that is where the cells are, and the shared string table,
+/// because new text has to go somewhere. Everything else in the package —
+/// styles, theme, the drawing, the pivot cache, `docProps` — must come back with
+/// the bytes it went in with.
+fn edited_parts(original: &Package, saved: &Package) -> Vec<PartName> {
+    let _ = saved;
+    original
+        .parts()
+        .filter(|p| {
+            let n = p.name.as_str();
+            n.contains("/worksheets/") || n.ends_with("/sharedStrings.xml")
+        })
+        .map(|p| p.name.clone())
+        .collect()
+}
+
+fn changed_parts(before: &Package, after: &Package) -> Vec<(PartName, usize, usize)> {
+    let mut out = Vec::new();
+    for part in before.parts() {
+        match after.part(&part.name) {
+            Some(other) if other.data() == part.data() => {}
+            Some(other) => out.push((part.name.clone(), part.len(), other.len())),
+            None => out.push((part.name.clone(), part.len(), 0)),
+        }
+    }
+    out
+}
+
+/// Every cell of every sheet, flattened to text.
+///
+/// Comparing whole workbooks needs an equality the model does not define and
+/// should not: a `StrId` is meaningful only inside its own table, and a
+/// `FormulaId` only inside its own sheet. Both are resolved here instead.
+struct Snapshot {
+    sheets: Vec<Vec<String>>,
+}
+
+impl Snapshot {
+    /// The first place two snapshots disagree, or `None`.
+    fn diff(&self, other: &Snapshot) -> Option<String> {
+        if self.sheets.len() != other.sheets.len() {
+            return Some(format!(
+                "{} sheets became {}",
+                other.sheets.len(),
+                self.sheets.len()
+            ));
+        }
+        for (i, (a, b)) in self.sheets.iter().zip(&other.sheets).enumerate() {
+            if a.len() != b.len() {
+                return Some(format!(
+                    "sheet {i} had {} cells and now has {}",
+                    b.len(),
+                    a.len()
+                ));
+            }
+            if let Some((x, y)) = a.iter().zip(b).find(|(x, y)| x != y) {
+                return Some(format!("sheet {i}: expected `{y}`, got `{x}`"));
+            }
+        }
+        None
+    }
+}
+
+fn snapshot(doc: &XlsxDocument) -> Snapshot {
+    let wb = &doc.workbook;
+    Snapshot {
+        sheets: wb
+            .sheets
+            .iter()
+            .map(|sheet| {
+                sheet
+                    .cells
+                    .iter()
+                    .map(|(at, cell)| {
+                        let value = match cell.value {
+                            CellValue::Blank => String::new(),
+                            CellValue::Number(n) => format!("n:{n}"),
+                            CellValue::Text(id) => format!("t:{}", wb.strings.resolve(id)),
+                            CellValue::Bool(b) => format!("b:{b}"),
+                            CellValue::Error(e) => format!("e:{}", e.as_str()),
+                        };
+                        let formula = match cell.formula.and_then(|id| sheet.formula(id)) {
+                            Some(f) => format!(" f:{}/{:?}", f.text, f.kind),
+                            None => String::new(),
+                        };
+                        format!("{} s{} {value}{formula}", at.to_a1(), cell.style.0)
+                    })
+                    .collect()
+            })
+            .collect(),
+    }
 }
 
 /// Every OOXML package under `dir`, recursively, in a stable order.
@@ -102,12 +358,23 @@ fn collect_packages(dir: &Path) -> Result<Vec<PathBuf>, String> {
 /// Prints a report and returns whether it was green.
 pub fn print(report: &Report) -> bool {
     for path in &report.passed {
-        println!("  ok    {}", path.display());
+        let edited = report.edited.contains(path);
+        println!(
+            "  ok    {}{}",
+            path.display(),
+            if edited { " +edit" } else { "" }
+        );
     }
     for (path, differences) in &report.failed {
         println!("  FAIL  {}", path.display());
         for d in differences {
             println!("          {d}");
+        }
+    }
+    for (path, problems) in &report.edit_failed {
+        println!("  EDIT  {}", path.display());
+        for p in problems {
+            println!("          {p}");
         }
     }
     for (path, e) in &report.errored {
@@ -122,10 +389,15 @@ pub fn print(report: &Report) -> bool {
         return false;
     }
     println!(
-        "{} passed, {} failed, {} errored",
+        "check 1: {} passed, {} failed, {} errored",
         report.passed.len(),
         report.failed.len(),
         report.errored.len()
+    );
+    println!(
+        "check 2: {} passed, {} failed",
+        report.edited.len(),
+        report.edit_failed.len()
     );
     report.is_green()
 }
