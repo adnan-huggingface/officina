@@ -9,8 +9,8 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[-]` deferred
 
 ## Current state
 
-**Chunk:** C2 — fidelity harness (C0 and C1 done)
-**Status:** harness built; **blocked on corpus**
+**Chunk:** C3 — spreadsheet model (C0, C1 done; C2 blocked on corpus)
+**Status:** in progress
 **Handoff note:**
 
 - Rust 1.97.1 `x86_64-pc-windows-gnu` installed at `~/.cargo/bin` (not on PATH —
@@ -19,14 +19,17 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[-]` deferred
 - `ooxml` is complete for C1 and C2: 38 tests, clippy clean.
 - `cargo xtask fidelity` runs and correctly **fails** on an empty corpus rather
   than reporting a vacuous pass.
-- **Next action:** put real Word/Excel documents under `corpus/` (see
-  `corpus/README.md`), then `cargo xtask fidelity` until green. That green is
-  C2's exit criterion and the gate for starting C3.
+- **C2 is blocked on you:** put real Word/Excel documents under `corpus/` (see
+  `corpus/README.md`), then run `cargo xtask fidelity` until green. That green is
+  C2's exit criterion. C3 onward does not depend on it.
+- Both apps launch and hold a window (verified, not assumed).
+- `crt-static` is confirmed working: `objdump -p` on calx.exe lists only Windows
+  system DLLs — no libgcc/libwinpthread/libstdc++. Requirement 4 is genuinely met
+  on Windows. Still to verify on Ubuntu.
 - Watch item: `eframe` 0.36 replaced `App::update(ctx)` with `App::ui(&mut Ui)`.
   Any eframe example found online will be for the older API.
-- Watch item: the `crt-static` rustflag in `.cargo/config.toml` is there to make
-  the exe standalone (requirement 4). It has not yet been verified against the
-  wgpu stack — if linking fails, that flag is the first suspect.
+- Watch item: `cargo build 2>&1 | tail` reports *tail's* exit code, not cargo's.
+  Check `${PIPESTATUS[0]}` or the "Finished"/"error" line, not `$?`.
 
 ---
 
@@ -44,7 +47,7 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[-]` deferred
 - [x] **C0. Toolchain + workspace scaffold**
   Rust stable gnu toolchain, cargo workspace, all crates from DESIGN.md §2 stubbed,
   `cargo xtask` runner, CI-equivalent local check script, empty egui+wgpu window for
-  both apps. *Exit: `cargo run -p app-calx` opens a window on Windows.*
+  both apps. *Exit: `cargo run -p app-calx` opens a window on Windows.* — **met**
 
 - [x] **C1. OPC container + Preservation Vault**
   Zip read/write, `[Content_Types].xml`, relationship graph, part classification
@@ -61,7 +64,10 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[-]` deferred
 
 - [ ] **C3. Spreadsheet model**
   Sparse chunked cell store, interned strings, style table, defined names, number
-  formats. *Exit: model round-trips through its own serde with property tests.*
+  formats. *Exit: property tests pin the store's invariants across randomized
+  insert/overwrite/erase sequences, checked against a naive reference map.*
+  (Revised from "serde round-trip": serde is not used in production here, so
+  testing it would exercise a dependency rather than the store.)
 
 - [ ] **C4. xlsx reader**
   workbook.xml, sheets, sharedStrings, styles.xml, merged cells, defined names.
