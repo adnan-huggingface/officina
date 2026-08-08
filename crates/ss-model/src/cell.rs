@@ -129,6 +129,11 @@ pub enum CellError {
     Num,
     NotAvailable,
     GettingData,
+    /// A dynamic array had nowhere to spill into. Excel 2019 and later.
+    Spill,
+    /// A function that cannot be calculated by this version. Excel writes it
+    /// for a formula only a newer build understands.
+    Calc,
     /// Not an Excel error code. Ours, for a cycle with iterative calc disabled.
     Circular,
 }
@@ -144,6 +149,8 @@ impl CellError {
             CellError::Num => "#NUM!",
             CellError::NotAvailable => "#N/A",
             CellError::GettingData => "#GETTING_DATA",
+            CellError::Spill => "#SPILL!",
+            CellError::Calc => "#CALC!",
             CellError::Circular => "#CIRCULAR!",
         }
     }
@@ -160,6 +167,8 @@ impl CellError {
             "#NUM!" => CellError::Num,
             "#N/A" => CellError::NotAvailable,
             "#GETTING_DATA" => CellError::GettingData,
+            "#SPILL!" => CellError::Spill,
+            "#CALC!" => CellError::Calc,
             "#CIRCULAR!" => CellError::Circular,
             _ => return None,
         })

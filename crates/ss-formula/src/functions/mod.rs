@@ -23,7 +23,11 @@ use crate::value::{Array, Operand, Value};
 pub(crate) use ss_model::numfmt::{round_decimal as decimal_round, Rounding};
 
 mod criteria;
+mod database;
 pub(crate) mod date;
+pub(crate) mod dynamic;
+mod engineering;
+mod financial;
 mod info;
 mod logical;
 mod lookup;
@@ -32,6 +36,7 @@ mod stats;
 mod text;
 
 pub use criteria::{matches_criteria, wildcard_match, Criterion};
+pub use dynamic::spills;
 
 /// The signature every built-in shares.
 pub type FnImpl = fn(&mut Evaluator, &[Expr]) -> Operand;
@@ -51,6 +56,10 @@ pub fn lookup(name: &str) -> Option<FnImpl> {
         .or_else(|| stats::lookup(&upper))
         .or_else(|| lookup::lookup(&upper))
         .or_else(|| date::lookup(&upper))
+        .or_else(|| financial::lookup(&upper))
+        .or_else(|| engineering::lookup(&upper))
+        .or_else(|| database::lookup(&upper))
+        .or_else(|| dynamic::lookup(&upper))
 }
 
 /// Calls a function, or reports `#NAME?` if we do not have it.

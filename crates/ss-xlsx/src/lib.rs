@@ -14,6 +14,7 @@ mod chart;
 mod drawing;
 mod error;
 mod parts;
+mod pivot;
 mod shared_strings;
 mod sheet;
 mod styles;
@@ -123,6 +124,7 @@ fn build(package: &Package) -> Result<Workbook> {
                         &mut wb.strings,
                     )?;
                     sheet.charts = read_charts(package, part_name, extras.drawing.as_deref())?;
+                    sheet.pivots = read_pivots(package, part_name)?;
                 }
             }
         }
@@ -192,6 +194,56 @@ fn resolve(package: &Package, from: &ooxml::PartName, rel_id: &str) -> Option<oo
     let rels = package.relationships(from).ok()?;
     let rel = rels.iter().find(|r| r.id == rel_id)?;
     rel.resolve(from)?.ok()
+}
+
+/// Reads whatever pivot tables a worksheet points at.
+///
+/// Found by relationship *type* rather than by a reference in the sheet: unlike
+/// a drawing, a pivot table is not named from inside `sheetData` at all. As
+/// with charts, a part we cannot read is silently skipped — the definition is
+/// preserved either way, and refusing to open the workbook over it would be far
+/// worse than showing the cells without knowing they are a pivot.
+fn read_pivots(
+    package: &Package,
+    sheet_part: &ooxml::PartName,
+) -> Result<Vec<ss_model::PivotTable>> {
+    let Ok(rels) = package.relationships(sheet_part) else {
+        return Ok(Vec::new());
+    };
+    let targets: Vec<ooxml::PartName> = rels
+        .iter()
+        .filter(|rel| rel.rel_type.ends_with("/pivotTable"))
+        .filter_map(|rel| rel.resolve(sheet_part)?.ok())
+        .collect();
+
+    let mut out = Vec::new();
+    for name in targets {
+        let Some(part) = package.part(&name) else {
+            continue;
+        };
+        let layout = pivot::parse_table(name.as_str(), part.data())?;
+        // The cache is one more hop, and it is where the field names live.
+        let cache = package
+            .relationships(&name)
+            .ok()
+            .and_then(|rels| {
+                rels.iter()
+                    .find(|rel| rel.rel_type.ends_with("/pivotCacheDefinition"))
+                    .and_then(|rel| rel.resolve(&name)?.ok())
+            })
+            .and_then(|target| {
+                package
+                    .part(&target)
+                    .map(|part| pivot::parse_cache(target.as_str(), part.data()))
+            })
+            .transpose()?
+            .unwrap_or_default();
+
+        if let Some(table) = pivot::build(name.as_str(), layout, cache) {
+            out.push(table);
+        }
+    }
+    Ok(out)
 }
 
 #[cfg(test)]

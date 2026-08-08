@@ -11,7 +11,7 @@ use ss_model::{Cell, CellError, CellRange, CellRef, CellValue, StringTable, Work
 use crate::ast::Expr;
 use crate::eval::{Context, Evaluator, Position};
 use crate::graph::{precedents_of, AreaRef, DependencyGraph, Node};
-use crate::value::{Operand, RefSet, Value};
+use crate::value::{Array, Operand, RefSet, Value};
 use crate::{parse, Area, Reference, SheetRef};
 
 /// A read-only view of a workbook, shaped for the evaluator.
@@ -156,6 +156,10 @@ impl WorkbookContext<'_> {
 /// What one recalculation pass did.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Recalculation {
+    /// Dynamic-array formulas whose result spilled into neighbouring cells.
+    pub spilled: usize,
+    /// Anchors where a spill had nowhere to go.
+    pub blocked: Vec<Node>,
     /// Formula cells that were evaluated and written back.
     pub evaluated: usize,
     /// Cells left holding `#CIRCULAR!` because they sit in a dependency cycle.
@@ -215,23 +219,50 @@ pub fn recalculate(book: &mut Workbook) -> Recalculation {
         };
         // Scoped so the immutable borrow ends before the write. Later cells must
         // see this one's new value, so the two cannot be batched.
-        let spill = spills
+        let declared = spills
             .get(&node)
             .copied()
             .filter(|r| r.rows() > 1 || r.cols() > 1);
+        // A dynamic-array function decides its own extent, so the block has to
+        // be produced before the range is known.
+        let dynamic = is_dynamic(expr);
         let mut block = None;
         let value = {
             let ctx = WorkbookContext::new(book);
             let mut ev = Evaluator::new(&ctx, Position::new(node.sheet, node.at));
             let out = ev.eval(expr);
-            if spill.is_some() {
+            if declared.is_some() || dynamic {
                 block = Some(ev.spread(&out));
             }
             ev.collapse(out)
         };
-        match (block, spill) {
+
+        match (block, declared) {
             (Some(array), Some(range)) => write_spill(book, node.sheet, range, &array),
-            _ => write_back(book, node, &value),
+            (Some(array), None) if dynamic => {
+                match spill_range(book, node, &array) {
+                    Some(range) => {
+                        clear_previous_spill(book, node);
+                        write_spill(book, node.sheet, range, &array);
+                        if let Some(sheet) = book.sheet_mut(node.sheet) {
+                            sheet.spills.insert(node.at, range);
+                        }
+                        report.spilled += 1;
+                    }
+                    // Something is in the way. Excel reports it on the anchor
+                    // and leaves the obstruction alone, which is the only
+                    // answer that does not destroy the user's data.
+                    None => {
+                        clear_previous_spill(book, node);
+                        write_back(book, node, &Value::Error(CellError::Spill));
+                        report.blocked.push(node);
+                    }
+                }
+            }
+            _ => {
+                clear_previous_spill(book, node);
+                write_back(book, node, &value);
+            }
         }
         report.evaluated += 1;
     }
@@ -293,6 +324,87 @@ pub fn range_values(book: &Workbook, formula: &str) -> Option<Vec<Value>> {
         return None;
     }
     Some(ev.spread(&operand).values().cloned().collect())
+}
+
+/// True when the formula's outermost call is one that spills.
+///
+/// The outermost only: `SUM(UNIQUE(A1:A9))` collapses its argument and produces
+/// one number, so it neither spills nor should.
+fn is_dynamic(expr: &Expr) -> bool {
+    match expr {
+        Expr::Call { name, .. } => crate::functions::spills(name),
+        _ => false,
+    }
+}
+
+/// The rectangle a result would occupy, or `None` if something is in the way.
+///
+/// Occupied means "holds a value or a formula of its own". A cell that only
+/// carries formatting is not an obstruction — shading the area a report spills
+/// into is a perfectly ordinary thing to do — and neither is a cell this same
+/// formula spilled into last time.
+fn spill_range(book: &Workbook, node: Node, array: &Array) -> Option<CellRange> {
+    let end = CellRef::new(
+        node.at.row.checked_add(array.rows().max(1) as u32 - 1)?,
+        node.at.col.checked_add(array.cols().max(1) as u32 - 1)?,
+    );
+    if !end.is_valid() {
+        return None;
+    }
+    let range = CellRange::new(node.at, end);
+    let sheet = book.sheet(node.sheet)?;
+    let previous = sheet.spills.get(&node.at).copied();
+    for row in range.start.row..=range.end.row {
+        for col in range.start.col..=range.end.col {
+            let at = CellRef::new(row, col);
+            if at == node.at {
+                continue;
+            }
+            if previous.is_some_and(|old| old.contains(at)) {
+                continue;
+            }
+            let occupied = sheet
+                .get(at)
+                .is_some_and(|cell| !cell.value.is_blank() || cell.formula.is_some());
+            if occupied {
+                return None;
+            }
+        }
+    }
+    Some(range)
+}
+
+/// Empties whatever this formula spilled into last time.
+///
+/// Only the cells it owns, and only those without a formula of their own: a
+/// user who typed into a spilled cell has already broken the spill, and the
+/// next recalculation reports `#SPILL!` rather than overwriting them.
+fn clear_previous_spill(book: &mut Workbook, node: Node) {
+    let Some(sheet) = book.sheet_mut(node.sheet) else {
+        return;
+    };
+    let Some(range) = sheet.spills.remove(&node.at) else {
+        return;
+    };
+    for row in range.start.row..=range.end.row {
+        for col in range.start.col..=range.end.col {
+            let at = CellRef::new(row, col);
+            if at == node.at {
+                continue;
+            }
+            let clearable = sheet.get(at).is_some_and(|cell| cell.formula.is_none());
+            if clearable {
+                sheet.set(
+                    at,
+                    Cell {
+                        value: CellValue::Blank,
+                        style: sheet.get(at).map(|c| c.style).unwrap_or_default(),
+                        formula: None,
+                    },
+                );
+            }
+        }
+    }
 }
 
 #[cfg(test)]

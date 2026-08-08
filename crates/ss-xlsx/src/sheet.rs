@@ -798,7 +798,7 @@ fn parse_a1_bytes(bytes: &[u8]) -> Option<CellRef> {
 }
 
 /// Parses `A1:D9`, and a bare `A1` as a one-cell range.
-fn parse_range_bytes(bytes: &[u8]) -> Option<CellRange> {
+pub(crate) fn parse_range_bytes(bytes: &[u8]) -> Option<CellRange> {
     match bytes.iter().position(|&b| b == b':') {
         Some(i) => {
             let a = parse_a1_bytes(&bytes[..i])?;

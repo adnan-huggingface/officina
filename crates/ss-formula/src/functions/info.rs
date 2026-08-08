@@ -96,6 +96,8 @@ fn error_type(ev: &mut Evaluator, args: &[Expr]) -> Operand {
         Some(CellError::Num) => 6,
         Some(CellError::NotAvailable) => 7,
         Some(CellError::GettingData) => 8,
+        Some(CellError::Spill) => 9,
+        Some(CellError::Calc) => 14,
         // Ours, not Excel's; report it as the closest thing Excel has.
         Some(CellError::Circular) => 4,
         None => return Operand::error(CellError::NotAvailable),

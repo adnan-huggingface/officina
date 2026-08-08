@@ -96,6 +96,16 @@ pub struct Sheet {
     /// Charts anchored to this sheet. A view over parts kept verbatim, never a
     /// replacement for them.
     pub charts: Vec<crate::chart::Chart>,
+    /// Pivot tables anchored to this sheet, read so that an editor can leave
+    /// their region alone. Preserved verbatim, never written.
+    pub pivots: Vec<crate::pivot::PivotTable>,
+    /// Where each dynamic-array formula last spilled to, by its anchor.
+    ///
+    /// Derived at recalculation and never read from a file: it exists so that a
+    /// result which *shrinks* clears the cells it used to occupy. Without it,
+    /// a `FILTER` that goes from five matches to two leaves three stale rows
+    /// behind, which is worse than showing nothing.
+    pub spills: BTreeMap<CellRef, CellRange>,
 }
 
 impl Sheet {
@@ -139,6 +149,15 @@ impl Sheet {
             .get(&at.col)
             .copied()
             .unwrap_or(crate::StyleId::DEFAULT)
+    }
+
+    /// The pivot table covering a cell, if any.
+    ///
+    /// Typing into one leaves the file self-contradictory — the cells say one
+    /// thing and the definition another, and Excel discards the edit at the
+    /// next refresh — so the application asks before it writes.
+    pub fn pivot_at(&self, at: CellRef) -> Option<&crate::pivot::PivotTable> {
+        self.pivots.iter().find(|p| p.covers(at))
     }
 
     /// The validation rule covering a cell, if any.

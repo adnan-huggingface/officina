@@ -1371,3 +1371,219 @@ fn fixed_and_dollar_round_before_they_group() {
         ("DOLLAR(1234.567,0)", "\"$1,235\""),
     ]);
 }
+
+#[test]
+fn the_annuity_family_agrees_on_which_way_the_money_goes() {
+    // Money paid out is negative. A version without the sign convention hands
+    // the borrower a loan that pays them, and every downstream sum is wrong by
+    // twice the payment.
+    check(&[
+        ("ROUND(PMT(0.05/12,360,200000),2)", "-1073.64"),
+        ("ROUND(PV(0.05/12,360,PMT(0.05/12,360,200000)),2)", "200000"),
+        (
+            "ROUND(FV(0.05/12,360,PMT(0.05/12,360,200000),200000),2)",
+            "0",
+        ),
+        (
+            "ROUND(NPER(0.05/12,PMT(0.05/12,360,200000),200000),2)",
+            "360",
+        ),
+        (
+            "ROUND(RATE(360,PMT(0.05/12,360,200000),200000)*12,4)",
+            "0.05",
+        ),
+        // Paying at the start of the period instead of the end.
+        ("ROUND(PMT(0.05/12,360,200000,0,1),2)", "-1069.19"),
+        ("ROUND(PMT(0,10,1000),2)", "-100"),
+    ]);
+}
+
+#[test]
+fn interest_and_principal_add_back_up_to_the_payment() {
+    check(&[
+        ("ROUND(IPMT(0.05/12,1,360,200000),2)", "-833.33"),
+        ("ROUND(PPMT(0.05/12,1,360,200000),2)", "-240.31"),
+        (
+            "ROUND(IPMT(0.05/12,1,360,200000)+PPMT(0.05/12,1,360,200000),2)",
+            "-1073.64",
+        ),
+        ("ROUND(CUMIPMT(0.05/12,360,200000,1,12,0),2)", "-9932.99"),
+    ]);
+}
+
+#[test]
+fn npv_discounts_the_first_flow_the_way_excel_does_and_not_the_textbook_way() {
+    // Excel's NPV discounts the *first* cash flow by one period, so an initial
+    // outlay has to be added outside the call. Matching the textbook here would
+    // give every existing spreadsheet a different answer.
+    check(&[
+        ("ROUND(NPV(0.1,100,100,100),4)", "248.6852"),
+        ("ROUND(-500+NPV(0.1,100,200,300,400),2)", "254.8"),
+        ("ROUND(IRR({-500,100,200,300,400}),4)", "0.2727"),
+        ("ROUND(MIRR({-500,100,200,300,400},0.1,0.12),4)", "0.2254"),
+    ]);
+}
+
+#[test]
+fn depreciation_rounds_where_excel_rounds() {
+    check(&[
+        ("SLN(10000,1000,5)", "1800"),
+        ("SYD(10000,1000,5,1)", "3000"),
+        ("ROUND(DDB(10000,1000,5,1),2)", "4000"),
+        // DDB never takes the value below the salvage: the last period gets
+        // whatever is left of the depreciable base, not the full 40%.
+        ("ROUND(DDB(10000,1000,5,5),2)", "296"),
+        ("ROUND(DB(10000,1000,5,1),2)", "3690"),
+    ]);
+}
+
+#[test]
+fn base_conversion_writes_negatives_in_twos_complement() {
+    // `DEC2BIN(-1)` is ten ones, not "-1", and reading it back gives -1. A
+    // reader that treats the tenth digit as a value rather than a sign gets 511
+    // for a number that is minus one.
+    check(&[
+        (r#"DEC2BIN(9)"#, "\"1001\""),
+        (r#"DEC2BIN(9,8)"#, "\"00001001\""),
+        (r#"DEC2BIN(-1)"#, "\"1111111111\""),
+        (r#"BIN2DEC("1111111111")"#, "-1"),
+        (r#"BIN2DEC("1001")"#, "9"),
+        (r#"DEC2HEX(255)"#, "\"FF\""),
+        (r#"HEX2DEC("FFFFFFFFFF")"#, "-1"),
+        (r#"DEC2OCT(-8)"#, "\"7777777770\""),
+        (r#"HEX2BIN("F")"#, "\"1111\""),
+        // Out of the ten-digit range.
+        ("DEC2BIN(512)", "#NUM!"),
+    ]);
+}
+
+#[test]
+fn the_bitwise_family_works_over_forty_eight_bit_integers() {
+    check(&[
+        ("BITAND(12,10)", "8"),
+        ("BITOR(12,10)", "14"),
+        ("BITXOR(12,10)", "6"),
+        ("BITLSHIFT(3,2)", "12"),
+        ("BITRSHIFT(12,2)", "3"),
+        // A negative shift goes the other way, which is the documented rule.
+        ("BITLSHIFT(12,-2)", "3"),
+        ("BITAND(-1,1)", "#NUM!"),
+    ]);
+}
+
+#[test]
+fn unit_conversion_refuses_to_cross_dimensions() {
+    check(&[
+        ("ROUND(CONVERT(1,\"lbm\",\"kg\"),4)", "0.4536"),
+        ("ROUND(CONVERT(100,\"C\",\"F\"),2)", "212"),
+        ("ROUND(CONVERT(1,\"mi\",\"km\"),6)", "1.609344"),
+        // Mass into distance has no answer, and #N/A says so.
+        ("CONVERT(1,\"kg\",\"m\")", "#N/A"),
+        ("CONVERT(1,\"kg\",\"stones\")", "#N/A"),
+        ("DELTA(5,5)", "1"),
+        ("GESTEP(5,4)", "1"),
+        ("ROUND(ERF(1),6)", "0.842701"),
+    ]);
+}
+
+#[test]
+fn a_criteria_range_ands_across_and_ors_down() {
+    // The whole language of the database family. Read as one flat list of
+    // conditions, this returns 900 — right by coincidence on simpler data and
+    // wrong here.
+    let book = Book::default().sheet(
+        "Sheet1",
+        &[
+            ("A1", text("Region")),
+            ("B1", text("Sales")),
+            ("A2", text("North")),
+            ("B2", Value::Number(150.0)),
+            ("A3", text("North")),
+            ("B3", Value::Number(50.0)),
+            ("A4", text("South")),
+            ("B4", Value::Number(200.0)),
+            ("A5", text("South")),
+            ("B5", Value::Number(30.0)),
+            // North over 100, or South at all.
+            ("D1", text("Region")),
+            ("E1", text("Sales")),
+            ("D2", text("North")),
+            ("E2", text(">100")),
+            ("D3", text("South")),
+        ],
+    );
+    check_at(
+        &book,
+        "H1",
+        &[
+            ("DSUM(A1:B5,\"Sales\",D1:E3)", "380"),
+            ("DCOUNT(A1:B5,\"Sales\",D1:E3)", "3"),
+            ("DMAX(A1:B5,2,D1:E3)", "200"),
+            ("DMIN(A1:B5,2,D1:E3)", "30"),
+            ("ROUND(DAVERAGE(A1:B5,2,D1:E3),4)", "126.6667"),
+            // DGET insists on exactly one match, and says so two ways.
+            ("DGET(A1:B5,\"Sales\",D1:E2)", "150"),
+            ("DGET(A1:B5,\"Sales\",D1:E3)", "#NUM!"),
+        ],
+    );
+}
+
+#[test]
+fn the_dynamic_array_functions_return_rectangles() {
+    let book = Book::default().sheet(
+        "Sheet1",
+        &[
+            ("A1", Value::Number(3.0)),
+            ("A2", Value::Number(1.0)),
+            ("A3", Value::Number(3.0)),
+            ("A4", Value::Number(2.0)),
+            ("B1", text("c")),
+            ("B2", text("a")),
+            ("B3", text("c")),
+            ("B4", text("b")),
+        ],
+    );
+    check_at(
+        &book,
+        "D1",
+        &[
+            // The first cell of the result, which is what a scalar context sees.
+            ("INDEX(UNIQUE(A1:A4),1)", "3"),
+            ("INDEX(UNIQUE(A1:A4),2)", "1"),
+            ("COUNT(UNIQUE(A1:A4))", "3"),
+            ("INDEX(SORT(A1:A4),1)", "1"),
+            ("INDEX(SORT(A1:A4,1,-1),1)", "3"),
+            ("COUNT(FILTER(A1:A4,A1:A4>1))", "3"),
+            ("SUM(FILTER(A1:A4,A1:A4>1))", "8"),
+            ("SUM(SEQUENCE(3))", "6"),
+            ("SUM(SEQUENCE(2,3,10,10))", "210"),
+            ("XLOOKUP(2,A1:A4,B1:B4)", "\"b\""),
+            ("XLOOKUP(9,A1:A4,B1:B4,\"none\")", "\"none\""),
+            // Nearest smaller rather than "the last one passed": the array is
+            // not sorted, so a scan that assumed it would answer wrongly.
+            ("XLOOKUP(2.5,A1:A4,B1:B4,,-1)", "\"b\""),
+            ("XMATCH(1,A1:A4)", "2"),
+            ("SUM(TAKE(A1:A4,2))", "4"),
+            ("SUM(DROP(A1:A4,2))", "5"),
+            ("SUM(TAKE(A1:A4,-1))", "2"),
+            ("SUM(VSTACK(A1:A4,A1:A4))", "18"),
+        ],
+    );
+}
+
+#[test]
+fn splitting_and_slicing_text() {
+    check(&[
+        (r#"INDEX(TEXTSPLIT("a,b,c",","),1,2)"#, "\"b\""),
+        (r#"TEXTBEFORE("report.final.xlsx",".")"#, "\"report\""),
+        (r#"TEXTAFTER("report.final.xlsx",".")"#, "\"final.xlsx\""),
+        // A negative occurrence counts from the end, which is how the
+        // extension comes off a name with more than one dot in it.
+        (r#"TEXTAFTER("report.final.xlsx",".",-1)"#, "\"xlsx\""),
+        (
+            r#"TEXTBEFORE("report.final.xlsx",".",-1)"#,
+            "\"report.final\"",
+        ),
+        (r#"TEXTAFTER("nothing","!")"#, "#N/A"),
+    ]);
+}

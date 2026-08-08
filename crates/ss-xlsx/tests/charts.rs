@@ -119,3 +119,31 @@ fn a_chart_nobody_retitled_is_not_rewritten() {
         "a save must not normalize a chart it was not asked to change"
     );
 }
+
+#[test]
+fn a_real_workbooks_pivot_table_is_found_with_its_fields() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus/xlsx/pivot-table.xlsx");
+    if !path.exists() {
+        return;
+    }
+    let doc = XlsxDocument::open(&path).expect("opens");
+    let pivots: Vec<_> = doc.workbook.sheets.iter().flat_map(|s| &s.pivots).collect();
+    assert!(
+        !pivots.is_empty(),
+        "the corpus file has a pivot table in it"
+    );
+
+    let pivot = pivots[0];
+    assert!(pivot.location.rows() > 1 && pivot.location.cols() >= 1);
+    assert!(
+        !pivot.fields.is_empty(),
+        "the fields are named from the cache, not from the layout"
+    );
+    // The whole reason the region is read: an editor has to leave it alone.
+    let inside = pivot.location.start;
+    assert!(doc
+        .workbook
+        .sheets
+        .iter()
+        .any(|s| s.pivot_at(inside).is_some()));
+}

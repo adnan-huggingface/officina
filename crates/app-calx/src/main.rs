@@ -501,6 +501,18 @@ impl Calx {
         let sheet = self.grid.sheet_index;
         match action {
             Action::Commit { at, text, advance } => {
+                // A pivot table's cells are written by its definition, and an
+                // edit to one leaves the file self-contradictory: Excel throws
+                // the edit away at the next refresh. Refusing is the only
+                // answer that does not quietly lose the user's typing.
+                if let Some(pivot) = self.doc.workbook.sheet(sheet).and_then(|s| s.pivot_at(at)) {
+                    self.status = format!(
+                        "{} is inside pivot table \"{}\" and cannot be edited here",
+                        at.to_a1(),
+                        pivot.name
+                    );
+                    return;
+                }
                 // Validation runs on what the entry *becomes*, not on the
                 // characters typed: a rule about whole numbers has to see the
                 // number, and a date rule has to see the serial.
