@@ -132,6 +132,11 @@ fn build(package: &Package) -> Result<Workbook> {
         wb.sheets.push(sheet);
     }
 
+    // Clamped rather than trusted: `activeTab` is an index into a list this
+    // file also wrote, and a file that disagrees with itself must not open on
+    // a sheet that is not there.
+    wb.active_sheet = meta.active_tab.min(wb.sheets.len().saturating_sub(1));
+
     Ok(wb)
 }
 

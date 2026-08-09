@@ -70,6 +70,16 @@ impl Selection {
     }
 
     /// The rectangle shift-extension is currently growing.
+    /// How the selection reads to a person: `B4` or `B4:D9`.
+    pub fn active_range_label(&self) -> String {
+        let range = self.active_range();
+        if range.start == range.end {
+            range.start.to_a1()
+        } else {
+            format!("{}:{}", range.start.to_a1(), range.end.to_a1())
+        }
+    }
+
     pub fn active_range(&self) -> CellRange {
         *self.ranges.last().expect("a selection is never empty")
     }

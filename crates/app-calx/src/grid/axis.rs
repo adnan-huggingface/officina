@@ -191,12 +191,17 @@ pub struct Layout {
 }
 
 impl Layout {
-    pub fn for_sheet(sheet: &ss_model::Sheet, scale: f64) -> Self {
+    pub fn for_sheet(book: &ss_model::Workbook, sheet: &ss_model::Sheet, scale: f64) -> Self {
+        let mut heights = auto_row_heights(book, sheet);
+        // A stored height is the user's own answer and overrides the fitted
+        // one — that is exactly what `customHeight="1"` means in the file.
+        heights.extend(sheet.row_heights.iter().map(|(r, h)| (*r, *h)));
+
         Layout {
             rows: Axis::new(
                 row_pixels(DEFAULT_ROW_POINTS, scale),
                 MAX_ROWS,
-                &sheet.row_heights,
+                &heights,
                 |points| row_pixels(points, scale),
             ),
             cols: Axis::new(
@@ -207,11 +212,107 @@ impl Layout {
             ),
             // Wide enough for seven digits, which is one more than the largest
             // row number needs.
-            header_width: 46.0 * scale,
-            header_height: row_pixels(DEFAULT_ROW_POINTS, scale),
+            header_width: if sheet.view.headings {
+                46.0 * scale
+            } else {
+                0.0
+            },
+            header_height: if sheet.view.headings {
+                row_pixels(DEFAULT_ROW_POINTS, scale)
+            } else {
+                0.0
+            },
             zoom: scale,
         }
     }
+}
+
+/// How many points of row a line of text at this font size needs.
+///
+/// Anchored so that the default font gives back exactly the default row: 11 pt
+/// text in a 15 pt row. Anything else scales from there, which is why a row of
+/// 22 pt headings is twice as tall without anybody storing a height.
+fn line_points(font_size: f64) -> f64 {
+    font_size * DEFAULT_ROW_POINTS / ss_model::style::DEFAULT_FONT_SIZE
+}
+
+/// A cell whose text is taller than one line makes its row taller.
+///
+/// Excel recomputes this on every repaint and stores nothing, which is why a
+/// row holding three lines has no `ht` in the file at all. A reader that treats
+/// "no stored height" as "the default height" draws all three lines in the
+/// space of one, and they spill over the rows above and below — legible, if you
+/// squint, as two different rows of the spreadsheet at once.
+///
+/// Only rows that need *more* than the default are returned. Nothing here
+/// shrinks a row, and a merged cell is skipped because Excel does not fit rows
+/// to merges either — the text is allowed to be clipped instead.
+fn auto_row_heights(book: &ss_model::Workbook, sheet: &ss_model::Sheet) -> BTreeMap<u32, f64> {
+    /// Past this a cell is a paragraph in the wrong container, and a row two
+    /// screens tall helps nobody.
+    const MAX_LINES: usize = 12;
+
+    let mut fitted: BTreeMap<u32, f64> = BTreeMap::new();
+    for (at, cell) in sheet.cells.iter() {
+        if sheet.row_heights.contains_key(&at.row) {
+            continue;
+        }
+        let style = sheet.style_at(at);
+        let font = book.styles.font(style);
+        let mut lines = 1usize;
+
+        // Only a string can hold a line break. A number never does, whatever
+        // its format, so its value never has to be rendered to count lines.
+        if let ss_model::CellValue::Text(id) = cell.value {
+            let text = book.strings.resolve(id);
+            lines = text.lines().count().max(1);
+            if book.styles.alignment(style).wrap && sheet.merge_at(at).is_none() {
+                lines = lines.max(wrapped_lines(text, font.size, width_of(sheet, at.col)));
+            }
+        }
+        if lines <= 1 {
+            // A tall font still needs a tall row, even on one line.
+            if font.size <= ss_model::style::DEFAULT_FONT_SIZE {
+                continue;
+            }
+        }
+        let wanted = line_points(font.size) * lines.min(MAX_LINES) as f64;
+        if wanted > DEFAULT_ROW_POINTS {
+            let slot = fitted.entry(at.row).or_insert(DEFAULT_ROW_POINTS);
+            *slot = slot.max(wanted);
+        }
+    }
+    fitted
+}
+
+/// A column's width in pixels at 100%, for estimating where text wraps.
+fn width_of(sheet: &ss_model::Sheet, col: u32) -> f64 {
+    let chars = sheet
+        .column_widths
+        .get(&col)
+        .copied()
+        .unwrap_or(DEFAULT_COLUMN_CHARS);
+    column_pixels(chars, 1.0)
+}
+
+/// How many lines wrapped text takes, estimated from the glyph count.
+///
+/// An estimate rather than a measurement, and it has to be: the real answer
+/// needs a font atlas, and this runs while building the layout, which happens
+/// in tests with no window. Half the font size is close to the average advance
+/// of a proportional face across ordinary prose, and being one line out on a
+/// wrapped paragraph is a much smaller error than being four lines out on a
+/// cell that holds four explicit lines.
+fn wrapped_lines(text: &str, font_size: f64, column_pixels: f64) -> usize {
+    let room = (column_pixels - 6.0).max(8.0);
+    let advance = (font_size * 96.0 / 72.0) * 0.5;
+    text.lines()
+        .map(|line| {
+            let width = line.chars().count() as f64 * advance;
+            (width / room).ceil().max(1.0) as usize
+        })
+        .sum::<usize>()
+        .max(1)
 }
 
 #[cfg(test)]
@@ -287,6 +388,68 @@ mod tests {
         assert_eq!(axis.size(3), 0.0);
         // Row 4 is what is actually drawn at that position.
         assert_eq!(axis.index_at(60.0), 4);
+    }
+
+    #[test]
+    fn a_cell_holding_three_lines_makes_its_row_three_lines_tall() {
+        // The bug this exists for: a workbook stores no height at all for a row
+        // whose cell holds three lines, because Excel measures it at paint
+        // time. Reading that as the default height draws all three lines in the
+        // space of one, and they spill over the rows above and below.
+        let mut book = ss_model::Workbook::blank();
+        let id = book.strings.intern(
+            "first
+second
+third",
+        );
+        let sheet = book.sheet_mut(0).expect("sheet 0");
+        sheet.set(
+            ss_model::CellRef::new(4, 0),
+            ss_model::Cell {
+                value: ss_model::CellValue::Text(id),
+                ..Default::default()
+            },
+        );
+
+        let sheet = book.sheet(0).expect("sheet 0");
+        let layout = Layout::for_sheet(&book, sheet, 1.0);
+        assert_eq!(layout.rows.size(4), row_pixels(45.0, 1.0), "three lines");
+        assert_eq!(layout.rows.size(3), row_pixels(15.0, 1.0), "its neighbour");
+    }
+
+    #[test]
+    fn a_stored_height_wins_over_the_fitted_one() {
+        // `customHeight` is the user saying they have decided; a row they
+        // squashed on purpose must not spring back open.
+        let mut book = ss_model::Workbook::blank();
+        let id = book.strings.intern(
+            "one
+two
+three",
+        );
+        let sheet = book.sheet_mut(0).expect("sheet 0");
+        sheet.set(
+            ss_model::CellRef::new(0, 0),
+            ss_model::Cell {
+                value: ss_model::CellValue::Text(id),
+                ..Default::default()
+            },
+        );
+        sheet.row_heights.insert(0, 12.0);
+
+        let sheet = book.sheet(0).expect("sheet 0");
+        let layout = Layout::for_sheet(&book, sheet, 1.0);
+        assert_eq!(layout.rows.size(0), row_pixels(12.0, 1.0));
+    }
+
+    #[test]
+    fn a_sheet_with_no_headings_gives_their_room_back_to_the_cells() {
+        let mut book = ss_model::Workbook::blank();
+        book.sheet_mut(0).expect("sheet 0").view.headings = false;
+        let sheet = book.sheet(0).expect("sheet 0");
+        let layout = Layout::for_sheet(&book, sheet, 1.0);
+        assert_eq!(layout.header_width, 0.0);
+        assert_eq!(layout.header_height, 0.0);
     }
 
     #[test]

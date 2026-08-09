@@ -91,6 +91,10 @@ pub(crate) fn parse(
     // Conditional formatting and data validation are regions rather than cells,
     // and both are built up across several child elements.
     let mut extras = Extras::default();
+    // Which pane of a frozen sheet was the active one. A frozen sheet writes a
+    // `<selection>` per pane, and taking any but the active one puts the cursor
+    // in the wrong half of the split — usually in the frozen headings.
+    let mut active_pane: Vec<u8> = Vec::new();
     let mut block: Option<ConditionalFormat> = None;
     let mut rule: Option<PartialRule> = None;
     let mut validation: Option<DataValidation> = None;
@@ -173,7 +177,32 @@ pub(crate) fn parse(
                         }
                     }
                     b"col" => read_col_geometry(e, sheet),
-                    b"pane" => read_pane(e, sheet),
+                    b"pane" => {
+                        active_pane = attr_raw(e, b"activePane")
+                            .map(|v| v.into_owned())
+                            .unwrap_or_default();
+                        read_pane(e, sheet);
+                    }
+                    b"sheetView" => read_sheet_view(e, sheet),
+                    b"selection" => {
+                        let pane = attr_raw(e, b"pane").unwrap_or_default();
+                        // An unfrozen sheet has one selection and no pane on it.
+                        let mine = pane.as_ref() == active_pane.as_slice();
+                        if mine || sheet.view.selection.is_none() {
+                            if let Some(at) = attr_raw(e, b"activeCell")
+                                .as_deref()
+                                .and_then(parse_a1_bytes)
+                            {
+                                sheet.view.selection = Some(at);
+                            }
+                        }
+                    }
+                    b"tabColor" => {
+                        let color = crate::styles::read_color(e);
+                        if color != ss_model::Color::Auto {
+                            sheet.view.tab_color = Some(color);
+                        }
+                    }
                     // A worksheet does not name a chart. It names a *drawing*,
                     // by relationship id, and the drawing names the chart.
                     b"drawing" => {
@@ -750,6 +779,37 @@ fn read_col_geometry(e: &BytesStart<'_>, sheet: &mut Sheet) {
 /// explicit widths costs more than the entire rest of a small workbook.
 const MAX_COLS_SPAN_LIMIT: u32 = 1024;
 
+/// `<sheetView>`: the zoom, and what the sheet chooses not to draw.
+///
+/// `showGridLines="0"` is not decoration. A sheet laid out as an invoice or a
+/// dashboard turns the lines off and fills the cells instead; drawing them
+/// anyway puts a grid through the middle of somebody's letterhead.
+fn read_sheet_view(e: &BytesStart<'_>, sheet: &mut Sheet) {
+    // `zoomScaleNormal` is the zoom of the *normal* view, which is the one
+    // being opened; `zoomScale` may belong to page-break preview.
+    if let Some(scale) = attr_u32(e, b"zoomScaleNormal").or_else(|| attr_u32(e, b"zoomScale")) {
+        if (10..=400).contains(&scale) {
+            sheet.view.zoom = f64::from(scale) / 100.0;
+        }
+    }
+    for (name, slot) in [
+        (&b"showGridLines"[..], &mut sheet.view.gridlines),
+        (&b"showRowColHeaders"[..], &mut sheet.view.headings),
+    ] {
+        if let Some(raw) = attr_raw(e, name) {
+            if let Some(on) = parse_bool(&raw) {
+                *slot = on;
+            }
+        }
+    }
+    if let Some(at) = attr_raw(e, b"topLeftCell")
+        .as_deref()
+        .and_then(parse_a1_bytes)
+    {
+        sheet.view.top_left = Some(at);
+    }
+}
+
 fn read_pane(e: &BytesStart<'_>, sheet: &mut Sheet) {
     // Only frozen panes pin content. A `split` pane is a scrolling convenience
     // and its position is in twips, not cells.
@@ -759,6 +819,16 @@ fn read_pane(e: &BytesStart<'_>, sheet: &mut Sheet) {
     );
     if !frozen {
         return;
+    }
+    // On a frozen sheet this is the first cell of the *scrolling* pane, which
+    // is what the scroll offset means here too — the frozen bands are not part
+    // of it. It sits on `<pane>` rather than on `<sheetView>` whenever there is
+    // a pane at all.
+    if let Some(at) = attr_raw(e, b"topLeftCell")
+        .as_deref()
+        .and_then(parse_a1_bytes)
+    {
+        sheet.view.top_left = Some(at);
     }
     let x = attr_u32(e, b"xSplit").unwrap_or(0);
     let y = attr_u32(e, b"ySplit").unwrap_or(0);
@@ -1157,6 +1227,37 @@ mod tests {
         assert_eq!(sheet.merges[0].start, CellRef::new(0, 0));
         assert_eq!(sheet.merges[0].end, CellRef::new(0, 3));
         assert!(sheet.merge_at(CellRef::new(6, 1)).is_some());
+    }
+
+    #[test]
+    fn the_view_is_read_from_the_active_pane_and_not_from_the_first_one() {
+        // A frozen sheet writes one `<selection>` per pane. Taking the first
+        // puts the cursor in the frozen headings rather than where the user
+        // left it, which is what this file does: G1 is the top-right pane's
+        // idea of a selection, and B5 is the real one.
+        let (sheet, _) = read(
+            r#"<worksheet><sheetViews><sheetView zoomScale="90" zoomScaleNormal="90">
+                 <pane xSplit="5" ySplit="3" topLeftCell="F4" activePane="bottomRight" state="frozenSplit"/>
+                 <selection pane="topRight" activeCell="G1" sqref="G1"/>
+                 <selection pane="bottomLeft" activeCell="A9" sqref="A9"/>
+                 <selection pane="bottomRight" activeCell="B5" sqref="B5"/>
+               </sheetView></sheetViews></worksheet>"#,
+        );
+        assert_eq!(sheet.view.selection, Some(CellRef::from_a1("B5").unwrap()));
+        assert_eq!(sheet.view.zoom, 0.9);
+        assert_eq!(sheet.view.top_left, Some(CellRef::from_a1("F4").unwrap()));
+        assert_eq!(sheet.frozen, Some(CellRef::new(3, 5)));
+    }
+
+    #[test]
+    fn a_sheet_that_hides_its_gridlines_says_so() {
+        let (sheet, _) = read(
+            r#"<worksheet><sheetViews>
+                 <sheetView showGridLines="0" workbookViewId="0"/>
+               </sheetViews></worksheet>"#,
+        );
+        assert!(!sheet.view.gridlines);
+        assert!(sheet.view.headings, "headings were not turned off");
     }
 
     #[test]

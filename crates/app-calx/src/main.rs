@@ -10,12 +10,13 @@ use std::path::{Path, PathBuf};
 
 use ss_formula::clip::{self, Clip};
 use ss_formula::cond;
-use ss_formula::edit::{self, Change, Patch};
+use ss_formula::edit::{self, Change, Geometry, Patch};
 use ss_model::style::Underline;
-use ss_model::{Axis, CellRange, Color, Fill, HAlign, Shift, Workbook};
+use ss_model::{Axis, CellRange, CellRef, Color, Fill, HAlign, Shift, Workbook};
 use ui_kit::{egui, paths, AppId, DocumentApp, CALX};
 
 use calx::grid::{self, Action, BorderPreset, Editor, Format, GridView, Mode};
+use calx::icons::{self, Icon};
 
 enum Choice {
     Save,
@@ -79,6 +80,12 @@ struct Calx {
     chart_title: Option<String>,
     /// What the user asked for that unsaved changes are standing in the way of.
     pending: Option<Pending>,
+    /// The name box's buffer. Kept out of the selection because it holds what
+    /// is being *typed*, which is not an address until Enter says so.
+    name_box: String,
+    /// How big the grid was last frame, so that a jump from the name box can
+    /// scroll the target into view without waiting for the next one.
+    last_body: egui::Vec2,
 }
 
 /// An action held up by the "you have unsaved changes" prompt.
@@ -109,6 +116,8 @@ impl Calx {
             edited: false,
             chart_title: None,
             pending: None,
+            name_box: "A1".to_string(),
+            last_body: egui::vec2(800.0, 600.0),
         }
     }
 
@@ -124,6 +133,11 @@ impl Calx {
                 self.status = format!("{} sheet(s), {cells} cells", self.doc.workbook.sheets.len());
                 self.path = Some(path.to_path_buf());
                 self.reset();
+                // The sheet the workbook was saved on, at the zoom it was saved
+                // at. Opening every file on sheet one at 100% is opening a
+                // different document than the one that was closed.
+                let active = self.doc.workbook.active_sheet;
+                self.grid.open_sheet(&self.doc.workbook, active);
             }
             Err(e) => self.status = format!("could not open {}: {e}", path.display()),
         }
@@ -553,6 +567,11 @@ impl Calx {
                 }
             }
             Action::Format(command) => self.format(command),
+            Action::StepSheet(step) => self.step_sheet(step),
+            Action::Merge(join) => self.merge(join),
+            Action::Freeze(on) => self.freeze(on),
+            Action::Visibility { axis, hide } => self.set_visibility(axis, hide),
+            Action::AutoFit(axis) => self.autofit(axis),
             Action::Resized(before) => {
                 // The sheet already has the new sizes; what goes on the stack is
                 // how it looked before, which is the undo.
@@ -567,6 +586,171 @@ impl Calx {
                 self.edited = true;
             }
         }
+    }
+
+    /// The next or previous *visible* sheet, skipping hidden ones and the
+    /// chart sheets that have no grid to show.
+    fn step_sheet(&mut self, step: i32) {
+        let showable: Vec<usize> = (0..self.doc.workbook.sheets.len())
+            .filter(|i| {
+                let sheet = &self.doc.workbook.sheets[*i];
+                sheet.kind.has_grid() && !sheet.hidden
+            })
+            .collect();
+        let Some(at) = showable.iter().position(|i| *i == self.grid.sheet_index) else {
+            return;
+        };
+        let next = (at as i32 + step).clamp(0, showable.len() as i32 - 1) as usize;
+        if showable[next] != self.grid.sheet_index {
+            self.show_sheet(showable[next]);
+        }
+    }
+
+    fn show_sheet(&mut self, index: usize) {
+        self.grid.commit(None);
+        for action in self.grid.take_actions() {
+            self.act_headless(action);
+        }
+        self.grid.open_sheet(&self.doc.workbook, index);
+        self.status = self.doc.workbook.sheets[index].name.clone();
+    }
+
+    /// Merges the selection into one cell, or takes apart the merges under it.
+    ///
+    /// Merging keeps only the top-left value, which is what Excel does and warns
+    /// about. The values it drops go onto the undo stack with the merge itself,
+    /// so one Ctrl+Z brings both the grid and the text back.
+    fn merge(&mut self, join: bool) {
+        let sheet = self.grid.sheet_index;
+        let range = self.grid.selection.active_range();
+        let Some(current) = self.doc.workbook.sheet(sheet) else {
+            return;
+        };
+        let mut geometry = Geometry::of(current);
+        let mut cleared = Vec::new();
+
+        if join {
+            if range.rows() == 1 && range.cols() == 1 {
+                self.status = "Select two or more cells to merge".to_string();
+                return;
+            }
+            geometry.merges.retain(|m| !overlaps(*m, range));
+            geometry.merges.push(range);
+            for (at, _) in current.cells.iter() {
+                if at != range.start && range.contains(at) {
+                    cleared.push((at, None));
+                }
+            }
+        } else {
+            let before = geometry.merges.len();
+            geometry.merges.retain(|m| !overlaps(*m, range));
+            if geometry.merges.len() == before {
+                self.status = "Nothing merged here".to_string();
+                return;
+            }
+        }
+
+        let mut patches = vec![Patch::Geometry { sheet, geometry }];
+        if !cleared.is_empty() {
+            patches.push(Patch::Cells {
+                sheet,
+                cells: cleared,
+            });
+        }
+        let label = if join { "Merge" } else { "Unmerge" };
+        self.perform(Change::new(label, patches));
+        self.grid.invalidate();
+    }
+
+    /// Freezes the rows above and the columns left of the cursor.
+    fn freeze(&mut self, on: bool) {
+        let sheet = self.grid.sheet_index;
+        let Some(current) = self.doc.workbook.sheet(sheet) else {
+            return;
+        };
+        let mut geometry = Geometry::of(current);
+        let cursor = self.grid.selection.cursor();
+        geometry.frozen = on.then_some(cursor).filter(|at| at.row > 0 || at.col > 0);
+        if geometry.frozen == current.frozen {
+            return;
+        }
+        self.perform(Change::new(
+            if on { "Freeze panes" } else { "Unfreeze panes" },
+            vec![Patch::Geometry { sheet, geometry }],
+        ));
+        self.grid.invalidate();
+    }
+
+    /// Hides or shows the selected rows or columns.
+    ///
+    /// Hiding is a size of zero, which is exactly how the file stores it — a
+    /// hidden row is `hidden="1"` with no height, and a height of zero is what
+    /// that means on screen.
+    fn set_visibility(&mut self, axis: Axis, hide: bool) {
+        let sheet = self.grid.sheet_index;
+        let Some(current) = self.doc.workbook.sheet(sheet) else {
+            return;
+        };
+        let mut geometry = Geometry::of(current);
+        let range = self.grid.selection.active_range();
+        let (from, to) = match axis {
+            Axis::Rows => (range.start.row, range.end.row),
+            Axis::Columns => (range.start.col, range.end.col),
+        };
+        // Capped: "hide" over a select-all would otherwise store a million
+        // zeroes, which is a bigger file than the sheet it came from.
+        let to = to.min(from.saturating_add(4096));
+        for index in from..=to {
+            let sizes = match axis {
+                Axis::Rows => &mut geometry.row_heights,
+                Axis::Columns => &mut geometry.column_widths,
+            };
+            if hide {
+                sizes.insert(index, 0.0);
+            } else {
+                sizes.remove(&index);
+            }
+        }
+        self.perform(Change::new(
+            if hide { "Hide" } else { "Unhide" },
+            vec![Patch::Geometry { sheet, geometry }],
+        ));
+        self.grid.invalidate();
+    }
+
+    /// Sizes the selected columns or rows to their contents.
+    fn autofit(&mut self, axis: Axis) {
+        let sheet_index = self.grid.sheet_index;
+        let Some(sheet) = self.doc.workbook.sheet(sheet_index) else {
+            return;
+        };
+        let mut geometry = Geometry::of(sheet);
+        let range = self.grid.selection.active_range();
+        match axis {
+            // Rows fit themselves already — every row with no stored height is
+            // measured at layout time — so fitting one means forgetting
+            // whatever height was stored over it.
+            Axis::Rows => {
+                for row in range.start.row..=range.end.row.min(range.start.row + 4096) {
+                    geometry.row_heights.remove(&row);
+                }
+            }
+            Axis::Columns => {
+                for col in range.start.col..=range.end.col.min(range.start.col + 256) {
+                    if let Some(chars) = fitted_width(&self.doc.workbook, sheet, col) {
+                        geometry.column_widths.insert(col, chars);
+                    }
+                }
+            }
+        }
+        self.perform(Change::new(
+            "Autofit",
+            vec![Patch::Geometry {
+                sheet: sheet_index,
+                geometry,
+            }],
+        ));
+        self.grid.invalidate();
     }
 
     /// Applies a formatting command to the selection.
@@ -643,6 +827,11 @@ impl Calx {
             Format::Indent(by) => {
                 edit::format(&mut self.doc.workbook, sheet, &ranges, label, move |l| {
                     l.alignment.indent = l.alignment.indent.saturating_add_signed(by).min(250)
+                })
+            }
+            Format::FontName(name) => {
+                edit::format(&mut self.doc.workbook, sheet, &ranges, label, move |l| {
+                    l.font.name = name.clone()
                 })
             }
             Format::FontSize(points) => {
@@ -747,185 +936,251 @@ impl Calx {
         self.perform(change);
     }
 
-    /// The toolbar. Everything on it is also a keystroke; the buttons are for
-    /// finding out that the keystroke exists.
+    /// The command surface, in three rows: the document, the selection's
+    /// formatting, and what the cursor is sitting on.
+    ///
+    /// Three rows rather than one because they answer different questions and
+    /// change at different rates. The first row is about the file and is the
+    /// same all day; the second changes with every click; the third is the
+    /// cell. A single row of forty controls makes the user re-scan all forty
+    /// to find the one that moved.
     fn toolbar(&mut self, ui: &mut egui::Ui) {
-        let mut requested = None;
-        let mut title_change = None;
-        let mut file = None;
+        let mut requested: Option<Action> = None;
+        let mut file: Option<Pending> = None;
         let mut save = false;
         let mut save_as = false;
+
         ui.horizontal(|ui| {
-            if ui.button("New").on_hover_text("Ctrl+N").clicked() {
+            if icons::button(ui, Icon::New, false, "New workbook (Ctrl+N)").clicked() {
                 file = Some(Pending::New);
             }
-            if ui.button("Open").on_hover_text("Ctrl+O").clicked() {
+            if icons::button(ui, Icon::Open, false, "Open (Ctrl+O)").clicked() {
                 file = Some(Pending::Browse);
             }
-            save = ui
-                .add_enabled(
-                    self.edited || self.path.is_none(),
-                    egui::Button::new("Save"),
-                )
-                .on_hover_text("Ctrl+S")
-                .clicked();
-            save_as = ui
+            ui.add_enabled_ui(self.edited || self.path.is_none(), |ui| {
+                save = icons::button(ui, Icon::Save, false, "Save (Ctrl+S)").clicked();
+            });
+            if ui
                 .button("Save as…")
                 .on_hover_text("Ctrl+Shift+S")
-                .clicked();
-            ui.separator();
-            if ui
-                .add_enabled(!self.undo.is_empty(), egui::Button::new("↶"))
-                .on_hover_text("Undo (Ctrl+Z)")
                 .clicked()
             {
-                requested = Some(Action::Undo);
+                save_as = true;
             }
-            if ui
-                .add_enabled(!self.redo.is_empty(), egui::Button::new("↷"))
-                .on_hover_text("Redo (Ctrl+Y)")
-                .clicked()
-            {
-                requested = Some(Action::Redo);
-            }
-            ui.separator();
-            for (label, hover, action) in [
-                ("Insert row", "Ctrl++", Action::Insert(Axis::Rows)),
-                ("Delete row", "Ctrl+-", Action::Delete(Axis::Rows)),
-                ("Insert col", "", Action::Insert(Axis::Columns)),
-                ("Delete col", "", Action::Delete(Axis::Columns)),
-            ] {
-                let button = ui.button(label);
-                let button = if hover.is_empty() {
-                    button
-                } else {
-                    button.on_hover_text(hover)
+            separate(ui);
+
+            ui.add_enabled_ui(!self.undo.is_empty(), |ui| {
+                let tip = match self.undo.last() {
+                    Some(change) => format!("Undo {} (Ctrl+Z)", change.label),
+                    None => "Undo (Ctrl+Z)".to_string(),
                 };
-                if button.clicked() {
+                if icons::button(ui, Icon::Undo, false, &tip).clicked() {
+                    requested = Some(Action::Undo);
+                }
+            });
+            ui.add_enabled_ui(!self.redo.is_empty(), |ui| {
+                let tip = match self.redo.last() {
+                    Some(change) => format!("Redo {} (Ctrl+Y)", change.label),
+                    None => "Redo (Ctrl+Y)".to_string(),
+                };
+                if icons::button(ui, Icon::Redo, false, &tip).clicked() {
+                    requested = Some(Action::Redo);
+                }
+            });
+            separate(ui);
+
+            for (icon, tip, action) in [
+                (
+                    Icon::InsertRow,
+                    "Insert rows (Ctrl++)",
+                    Action::Insert(Axis::Rows),
+                ),
+                (
+                    Icon::DeleteRow,
+                    "Delete rows (Ctrl+-)",
+                    Action::Delete(Axis::Rows),
+                ),
+                (
+                    Icon::InsertColumn,
+                    "Insert columns",
+                    Action::Insert(Axis::Columns),
+                ),
+                (
+                    Icon::DeleteColumn,
+                    "Delete columns",
+                    Action::Delete(Axis::Columns),
+                ),
+            ] {
+                if icons::button(ui, icon, false, tip).clicked() {
                     requested = Some(action);
                 }
             }
+            separate(ui);
+
+            let merged = self
+                .doc
+                .workbook
+                .sheet(self.grid.sheet_index)
+                .is_some_and(|s| s.merge_at(self.grid.selection.cursor()).is_some());
+            if icons::button(ui, Icon::Merge, merged, "Merge cells").clicked() {
+                requested = Some(Action::Merge(!merged));
+            }
+            let frozen = self
+                .doc
+                .workbook
+                .sheet(self.grid.sheet_index)
+                .is_some_and(|s| s.frozen.is_some());
+            let tip = if frozen {
+                "Unfreeze panes"
+            } else {
+                "Freeze rows above and columns left of the cursor"
+            };
+            if icons::button(ui, Icon::Freeze, frozen, tip).clicked() {
+                requested = Some(Action::Freeze(!frozen));
+            }
+            if icons::button(ui, Icon::Sum, false, "Sum the cells above").clicked() {
+                self.autosum();
+            }
         });
-        // The formatting row. Second line rather than the first because the
-        // first is about the *document* and this is about the selection.
+
+        // The formatting row.
         ui.horizontal(|ui| {
             let look = self.cursor_look();
-            for (label, hover, on, command) in [
-                ("B", "Bold (Ctrl+B)", look.font.bold, Format::Bold),
-                ("I", "Italic (Ctrl+I)", look.font.italic, Format::Italic),
-                (
-                    "U",
-                    "Underline (Ctrl+U)",
-                    !look.font.underline.is_none(),
-                    Format::Underline,
-                ),
-                (
-                    "S",
-                    "Strikethrough (Ctrl+5)",
-                    look.font.strike,
-                    Format::Strike,
-                ),
-            ] {
-                if ui
-                    .selectable_label(on, label)
-                    .on_hover_text(hover)
-                    .clicked()
-                {
-                    requested = Some(Action::Format(command));
-                }
-            }
-            ui.separator();
-            for (label, hover, align) in [
-                ("⏴", "Align left", HAlign::Left),
-                ("⏷", "Centre", HAlign::Center),
-                ("⏵", "Align right", HAlign::Right),
-            ] {
-                let on = look.alignment.horizontal == align;
-                if ui
-                    .selectable_label(on, label)
-                    .on_hover_text(hover)
-                    .clicked()
-                {
-                    requested = Some(Action::Format(Format::Align(align)));
-                }
-            }
-            if ui
-                .selectable_label(look.alignment.wrap, "⏎")
-                .on_hover_text("Wrap text")
-                .clicked()
-            {
-                requested = Some(Action::Format(Format::Wrap));
-            }
-            for (label, hover, by) in [("→", "Increase indent", 1), ("←", "Decrease indent", -1)]
-            {
-                if ui.button(label).on_hover_text(hover).clicked() {
-                    requested = Some(Action::Format(Format::Indent(by)));
-                }
-            }
-            ui.separator();
 
-            let mut text_rgb = look
-                .font
-                .color
-                .resolve(self.doc.workbook.styles.theme())
-                .unwrap_or([0, 0, 0]);
-            if ui
-                .color_edit_button_srgb(&mut text_rgb)
-                .on_hover_text("Text colour")
-                .changed()
-            {
-                let [r, g, b] = text_rgb;
-                requested = Some(Action::Format(Format::TextColor(Some(Color::rgb(r, g, b)))));
-            }
-            let mut fill_rgb = look
-                .fill
-                .shade(self.doc.workbook.styles.theme())
-                .unwrap_or([255, 255, 255]);
-            if ui
-                .color_edit_button_srgb(&mut fill_rgb)
-                .on_hover_text("Fill colour")
-                .changed()
-            {
-                let [r, g, b] = fill_rgb;
-                requested = Some(Action::Format(Format::Fill(Some(Color::rgb(r, g, b)))));
-            }
-            if ui.button("No fill").clicked() {
-                requested = Some(Action::Format(Format::Fill(None)));
-            }
-            ui.separator();
-
-            egui::ComboBox::from_id_salt("calx-borders")
-                .selected_text("Borders")
-                .width(90.0)
+            let mut name = look.font.name.clone();
+            egui::ComboBox::from_id_salt("calx-font")
+                .selected_text(&name)
+                .width(130.0)
                 .show_ui(ui, |ui| {
-                    for (label, preset) in [
-                        ("All", BorderPreset::All),
-                        ("Outline", BorderPreset::Outline),
-                        ("Thick outline", BorderPreset::Thick),
-                        ("Bottom", BorderPreset::Bottom),
-                        ("Top", BorderPreset::Top),
-                        ("Left", BorderPreset::Left),
-                        ("Right", BorderPreset::Right),
-                        ("None", BorderPreset::None),
-                    ] {
-                        if ui.selectable_label(false, label).clicked() {
-                            requested = Some(Action::Format(Format::Border(preset)));
+                    // The workbook's own font first, so a document set in a
+                    // face nobody offers can still be got back to.
+                    let mut offered: Vec<&str> = FONT_NAMES.to_vec();
+                    if !offered.contains(&name.as_str()) {
+                        offered.insert(0, name.as_str());
+                    }
+                    for choice in offered {
+                        if ui.selectable_label(choice == name, choice).clicked() {
+                            requested = Some(Action::Format(Format::FontName(choice.to_string())));
                         }
                     }
                 });
+            name.clear();
 
             let mut size = look.font.size;
             if ui
                 .add(
                     egui::DragValue::new(&mut size)
                         .speed(0.5)
-                        .range(1.0..=409.0),
+                        .range(1.0..=409.0)
+                        .fixed_decimals(0),
                 )
                 .on_hover_text("Font size")
                 .changed()
             {
                 requested = Some(Action::Format(Format::FontSize(size)));
             }
+            separate(ui);
+
+            for (letter, command) in [
+                (bold_letter("B", look.font.bold), Format::Bold),
+                (italic_letter("I", look.font.italic), Format::Italic),
+                (
+                    icons::Letter {
+                        text: "U",
+                        underline: true,
+                        on: !look.font.underline.is_none(),
+                        tip: "Underline (Ctrl+U)",
+                        ..icons::Letter::plain()
+                    },
+                    Format::Underline,
+                ),
+                (
+                    icons::Letter {
+                        text: "S",
+                        strike: true,
+                        on: look.font.strike,
+                        tip: "Strikethrough (Ctrl+5)",
+                        ..icons::Letter::plain()
+                    },
+                    Format::Strike,
+                ),
+            ] {
+                if icons::letter(ui, letter).clicked() {
+                    requested = Some(Action::Format(command));
+                }
+            }
+            separate(ui);
+
+            let theme = self.doc.workbook.styles.theme();
+            let mut text_rgb = look.font.color.resolve(theme).unwrap_or([0, 0, 0]);
+            ui.horizontal(|ui| {
+                icons::button(ui, Icon::TextColor, false, "Text colour");
+                if ui
+                    .color_edit_button_srgb(&mut text_rgb)
+                    .on_hover_text("Text colour")
+                    .changed()
+                {
+                    let [r, g, b] = text_rgb;
+                    requested = Some(Action::Format(Format::TextColor(Some(Color::rgb(r, g, b)))));
+                }
+            });
+            let mut fill_rgb = look.fill.shade(theme).unwrap_or([255, 255, 255]);
+            ui.horizontal(|ui| {
+                icons::button(ui, Icon::FillColor, false, "Fill colour");
+                if ui
+                    .color_edit_button_srgb(&mut fill_rgb)
+                    .on_hover_text("Fill colour")
+                    .changed()
+                {
+                    let [r, g, b] = fill_rgb;
+                    requested = Some(Action::Format(Format::Fill(Some(Color::rgb(r, g, b)))));
+                }
+            });
+            if ui.small_button("×").on_hover_text("No fill").clicked() {
+                requested = Some(Action::Format(Format::Fill(None)));
+            }
+            separate(ui);
+
+            for (icon, align, tip) in [
+                (Icon::AlignLeft, HAlign::Left, "Align left"),
+                (Icon::AlignCenter, HAlign::Center, "Centre"),
+                (Icon::AlignRight, HAlign::Right, "Align right"),
+            ] {
+                let on = look.alignment.horizontal == align;
+                if icons::button(ui, icon, on, tip).clicked() {
+                    requested = Some(Action::Format(Format::Align(align)));
+                }
+            }
+            if icons::button(ui, Icon::Wrap, look.alignment.wrap, "Wrap text").clicked() {
+                requested = Some(Action::Format(Format::Wrap));
+            }
+            for (icon, by, tip) in [
+                (Icon::IndentLess, -1, "Decrease indent"),
+                (Icon::IndentMore, 1, "Increase indent"),
+            ] {
+                if icons::button(ui, icon, false, tip).clicked() {
+                    requested = Some(Action::Format(Format::Indent(by)));
+                }
+            }
+            separate(ui);
+
+            ui.menu_button("Borders", |ui| {
+                for (label, preset) in [
+                    ("All borders", BorderPreset::All),
+                    ("Outline", BorderPreset::Outline),
+                    ("Thick outline", BorderPreset::Thick),
+                    ("Bottom", BorderPreset::Bottom),
+                    ("Top", BorderPreset::Top),
+                    ("Left", BorderPreset::Left),
+                    ("Right", BorderPreset::Right),
+                    ("No border", BorderPreset::None),
+                ] {
+                    if ui.button(label).clicked() {
+                        requested = Some(Action::Format(Format::Border(preset)));
+                        ui.close();
+                    }
+                }
+            });
 
             egui::ComboBox::from_id_salt("calx-number-format")
                 .selected_text(short_format_name(&look.number_format))
@@ -941,6 +1196,15 @@ impl Calx {
                         }
                     }
                 });
+            for (label, tip, code) in [
+                ("$", "Currency", "\"$\"#,##0.00"),
+                ("%", "Percent", "0.00%"),
+                (",", "Thousands", "#,##0.00"),
+            ] {
+                if ui.small_button(label).on_hover_text(tip).clicked() {
+                    requested = Some(Action::Format(Format::NumberFormat(code.to_string())));
+                }
+            }
             if ui
                 .button("Clear")
                 .on_hover_text("Clear formatting")
@@ -950,45 +1214,12 @@ impl Calx {
             }
         });
 
-        // The chart row appears only when a chart is selected, because that is
-        // the only time it can do anything.
-        if let Some(index) = self.grid.selected_chart {
-            let sheet = self.grid.sheet_index;
-            let existing = self
-                .doc
-                .workbook
-                .sheet(sheet)
-                .and_then(|s| s.charts.get(index))
-                .map(|c| c.title.clone().unwrap_or_default());
-            if let Some(existing) = existing {
-                ui.horizontal(|ui| {
-                    ui.label("Chart title");
-                    if self.chart_title.is_none() {
-                        self.chart_title = Some(existing.clone());
-                    }
-                    let buffer = self.chart_title.get_or_insert_with(String::new);
-                    let response = ui.add(
-                        egui::TextEdit::singleline(buffer)
-                            .desired_width(220.0)
-                            .hint_text("(none)"),
-                    );
-                    // On losing focus rather than on every keystroke: one undo
-                    // entry per title, not one per letter.
-                    if response.lost_focus() && *buffer != existing {
-                        title_change = Some((index, buffer.clone()));
-                    }
-                });
-            }
-        } else {
-            self.chart_title = None;
-        }
+        self.formula_bar(ui);
+        self.chart_bar(ui);
+
         if let Some(action) = requested {
             let ui = &*ui;
             self.act(ui, action);
-        }
-        if let Some((chart, title)) = title_change {
-            let change = edit::chart_title(self.grid.sheet_index, chart, &title);
-            self.perform(change);
         }
         if save {
             self.save();
@@ -1001,22 +1232,93 @@ impl Calx {
         }
     }
 
+    /// The title box, shown only while a chart is selected.
+    fn chart_bar(&mut self, ui: &mut egui::Ui) {
+        let Some(index) = self.grid.selected_chart else {
+            self.chart_title = None;
+            return;
+        };
+        let sheet = self.grid.sheet_index;
+        let Some(existing) = self
+            .doc
+            .workbook
+            .sheet(sheet)
+            .and_then(|s| s.charts.get(index))
+            .map(|c| c.title.clone().unwrap_or_default())
+        else {
+            return;
+        };
+        let mut change = None;
+        ui.horizontal(|ui| {
+            ui.label("Chart title");
+            if self.chart_title.is_none() {
+                self.chart_title = Some(existing.clone());
+            }
+            let buffer = self.chart_title.get_or_insert_with(String::new);
+            let response = ui.add(
+                egui::TextEdit::singleline(buffer)
+                    .desired_width(260.0)
+                    .hint_text("(none)"),
+            );
+            // On losing focus rather than on every keystroke: one undo entry
+            // per title, not one per letter.
+            if response.lost_focus() && *buffer != existing {
+                change = Some(buffer.clone());
+            }
+        });
+        if let Some(title) = change {
+            let change = edit::chart_title(sheet, index, &title);
+            self.perform(change);
+        }
+    }
+
     /// The name box and the formula bar.
+    ///
+    /// The name box is an entry, not a label: typing `H400` into it and pressing
+    /// Enter is how anybody reaches row four hundred of a wide sheet, and a
+    /// spreadsheet without it is one that can only be navigated by scrolling.
     fn formula_bar(&mut self, ui: &mut egui::Ui) {
         let cursor = self.grid.selection.cursor();
         let mut open_editor = false;
         let mut commit = false;
+        let mut cancel = false;
+        let mut go_to = None;
 
         ui.horizontal(|ui| {
-            ui.add_sized(
-                [90.0, 20.0],
-                egui::Label::new(egui::RichText::new(cursor.to_a1()).monospace()),
+            // Reset to the cursor whenever the box is not being typed into, so
+            // it tracks the selection rather than holding a stale address.
+            let id = egui::Id::new("calx-name-box");
+            let focused = ui.memory(|m| m.has_focus(id));
+            if !focused {
+                self.name_box = cursor.to_a1();
+            }
+            let response = ui.add(
+                egui::TextEdit::singleline(&mut self.name_box)
+                    .id(id)
+                    .desired_width(88.0)
+                    .horizontal_align(egui::Align::Center),
             );
+            if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                go_to = Some(self.name_box.clone());
+            }
             ui.separator();
+
+            let editing = self.grid.editor.is_some();
+            // The tick and cross that appear only while an edit is open, which
+            // is the one part of Excel's formula bar that is not a keystroke.
+            ui.add_enabled_ui(editing, |ui| {
+                if ui.small_button("✔").on_hover_text("Enter").clicked() {
+                    commit = true;
+                }
+                if ui.small_button("✖").on_hover_text("Cancel (Esc)").clicked() {
+                    cancel = true;
+                }
+            });
+            ui.label(egui::RichText::new("fx").italics().weak());
 
             let width = ui.available_width();
             match &mut self.grid.editor {
-                Some(editing) => {
+                Some(open) => {
                     let font = egui::FontId::monospace(13.0);
                     let plain = ui.visuals().text_color();
                     let mut layouter = |ui: &egui::Ui, text: &dyn egui::TextBuffer, wrap: f32| {
@@ -1025,15 +1327,15 @@ impl Calx {
                         ui.fonts_mut(|f| f.layout_job(job))
                     };
                     let response = ui.add_sized(
-                        [width, 20.0],
-                        egui::TextEdit::singleline(&mut editing.text)
+                        [width, 22.0],
+                        egui::TextEdit::singleline(&mut open.text)
                             .id(egui::Id::new("calx-formula-bar"))
                             .layouter(&mut layouter),
                     );
                     // Typing here rather than in the cell is still an edit, and
                     // the arrow keys have to stop committing once it starts.
                     if response.changed() {
-                        editing.mode = Mode::Edit;
+                        open.mode = Mode::Edit;
                     }
                     if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                         commit = true;
@@ -1043,7 +1345,7 @@ impl Calx {
                     let source =
                         grid::source_text(&self.doc.workbook, self.grid.sheet_index, cursor);
                     let response = ui.add_sized(
-                        [width, 20.0],
+                        [width, 22.0],
                         egui::Label::new(egui::RichText::new(source).monospace())
                             .truncate()
                             .sense(egui::Sense::click()),
@@ -1062,8 +1364,436 @@ impl Calx {
         if commit {
             self.grid.commit(Some(grid::Direction::Down));
         }
+        if cancel {
+            self.grid.editor = None;
+        }
+        if let Some(target) = go_to {
+            self.go_to(&target);
+        }
+    }
+
+    /// Jumps to an address, a range, or a defined name.
+    fn go_to(&mut self, target: &str) {
+        let text = target.trim();
+        if text.is_empty() {
+            return;
+        }
+        // A defined name first: `Sales` is a name before it is an attempt at a
+        // cell reference, and Excel resolves it the same way round.
+        let resolved = self
+            .doc
+            .workbook
+            .defined_names
+            .iter()
+            .find(|n| n.name.eq_ignore_ascii_case(text))
+            .map(|n| n.refers_to.clone());
+        let text = resolved.as_deref().unwrap_or(text);
+        let cleaned = text.rsplit('!').next().unwrap_or(text).replace('$', "");
+
+        let (from, to) = match cleaned.split_once(':') {
+            Some((a, b)) => (CellRef::from_a1(a), CellRef::from_a1(b)),
+            None => (CellRef::from_a1(&cleaned), None),
+        };
+        let Some(from) = from else {
+            self.status = format!("{target} is not a cell or a name");
+            return;
+        };
+        self.grid.selection = grid::Selection::at(from);
+        if let Some(sheet) = self.doc.workbook.sheet(self.grid.sheet_index) {
+            if let Some(to) = to {
+                self.grid.selection.extend_to(to, sheet);
+            }
+            self.grid
+                .scroll_into_view(from, self.last_body, &self.doc.workbook, sheet);
+        }
+        self.status = format!("Went to {}", from.to_a1());
+    }
+
+    /// Puts a SUM over the run of numbers above the cursor.
+    fn autosum(&mut self) {
+        let sheet_index = self.grid.sheet_index;
+        let at = self.grid.selection.cursor();
+        let Some(sheet) = self.doc.workbook.sheet(sheet_index) else {
+            return;
+        };
+        // Upwards from the cell above, for as long as there are numbers. An
+        // empty cell ends the run, which is what makes this land on the block
+        // under a heading rather than on the whole column.
+        let mut top = at.row;
+        while top > 0 {
+            let above = CellRef::new(top - 1, at.col);
+            let numeric = sheet
+                .get(above)
+                .is_some_and(|c| matches!(c.value, ss_model::CellValue::Number(_)));
+            if !numeric {
+                break;
+            }
+            top -= 1;
+        }
+        if top == at.row {
+            self.status = "Nothing to sum above this cell".to_string();
+            return;
+        }
+        let formula = format!(
+            "=SUM({}:{})",
+            CellRef::new(top, at.col).to_a1(),
+            CellRef::new(at.row - 1, at.col).to_a1()
+        );
+        let change = edit::input(&mut self.doc.workbook, sheet_index, at, &formula);
+        self.perform(change);
+    }
+
+    /// The sheet tabs and the status line.
+    fn status_bar(&mut self, ui: &mut egui::Ui) {
+        let mut switch = None;
+        let mut context: Option<(usize, TabCommand)> = None;
+
+        egui::ScrollArea::horizontal()
+            .id_salt("calx-tabs")
+            .max_height(26.0)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 1.0;
+                    let theme = self.doc.workbook.styles.theme();
+                    for index in 0..self.doc.workbook.sheets.len() {
+                        let sheet = &self.doc.workbook.sheets[index];
+                        if !sheet.kind.has_grid() || sheet.hidden {
+                            continue;
+                        }
+                        let selected = index == self.grid.sheet_index;
+                        let stripe = sheet.view.tab_color.and_then(|c| c.resolve(theme));
+                        let response = tab(ui, &sheet.name, selected, stripe);
+                        if response.clicked() && !selected {
+                            switch = Some(index);
+                        }
+                        response.context_menu(|ui| {
+                            if ui.button("Hide sheet").clicked() {
+                                context = Some((index, TabCommand::Hide));
+                                ui.close();
+                            }
+                            if ui.button("Unhide all sheets").clicked() {
+                                context = Some((index, TabCommand::UnhideAll));
+                                ui.close();
+                            }
+                        });
+                    }
+                    let hidden = self
+                        .doc
+                        .workbook
+                        .sheets
+                        .iter()
+                        .filter(|s| s.hidden && s.kind.has_grid())
+                        .count();
+                    if hidden > 0 {
+                        ui.add_space(6.0);
+                        ui.weak(format!("({hidden} hidden)"));
+                    }
+                });
+            });
+
+        ui.horizontal(|ui| {
+            ui.small(&self.status);
+            if self.edited {
+                ui.small("• edited");
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                // The zoom control, which belongs here rather than in the
+                // toolbar because it is about the view and not the document.
+                let mut zoom = self.grid.zoom * 100.0;
+                if ui
+                    .add(
+                        egui::Slider::new(&mut zoom, 25.0..=400.0)
+                            .show_value(false)
+                            .trailing_fill(false),
+                    )
+                    .on_hover_text("Zoom (Ctrl+scroll)")
+                    .changed()
+                {
+                    self.grid.set_zoom(zoom / 100.0);
+                }
+                if ui
+                    .small_button(format!("{:.0}%", self.grid.zoom * 100.0))
+                    .on_hover_text("Back to 100%")
+                    .clicked()
+                {
+                    self.grid.set_zoom(1.0);
+                }
+                if let Err(e) = &self.config_dir {
+                    ui.colored_label(egui::Color32::RED, format!("config unavailable: {e}"));
+                }
+                ui.separator();
+                for text in summary_labels(&self.grid.summary) {
+                    ui.small(text);
+                    ui.add_space(6.0);
+                }
+            });
+        });
+
+        if let Some(index) = switch {
+            self.show_sheet(index);
+        }
+        if let Some((index, command)) = context {
+            match command {
+                TabCommand::Hide => {
+                    if self.visible_sheets() > 1 {
+                        self.doc.workbook.sheets[index].hidden = true;
+                        self.edited = true;
+                        if self.grid.sheet_index == index {
+                            self.step_sheet(1);
+                            if self.grid.sheet_index == index {
+                                self.step_sheet(-1);
+                            }
+                        }
+                    } else {
+                        self.status = "A workbook needs one visible sheet".to_string();
+                    }
+                }
+                TabCommand::UnhideAll => {
+                    for sheet in &mut self.doc.workbook.sheets {
+                        sheet.hidden = false;
+                    }
+                    self.edited = true;
+                }
+            }
+        }
+    }
+
+    fn visible_sheets(&self) -> usize {
+        self.doc
+            .workbook
+            .sheets
+            .iter()
+            .filter(|s| s.kind.has_grid() && !s.hidden)
+            .count()
+    }
+
+    /// The right-click menu over the grid.
+    fn context_menu(&mut self, ui: &mut egui::Ui) {
+        let mut requested = None;
+        let cursor = self.grid.selection.cursor();
+        ui.label(
+            egui::RichText::new(self.grid.selection.active_range_label())
+                .weak()
+                .small(),
+        );
+        ui.separator();
+        for (label, action) in [
+            ("Cut", Action::Copy { cut: true }),
+            ("Copy", Action::Copy { cut: false }),
+        ] {
+            if ui.button(label).clicked() {
+                requested = Some(action);
+                ui.close();
+            }
+        }
+        if ui.button("Paste").clicked() {
+            requested = Some(Action::Paste(self.clip_text.clone()));
+            ui.close();
+        }
+        ui.separator();
+        for (label, action) in [
+            ("Insert rows", Action::Insert(Axis::Rows)),
+            ("Delete rows", Action::Delete(Axis::Rows)),
+            ("Insert columns", Action::Insert(Axis::Columns)),
+            ("Delete columns", Action::Delete(Axis::Columns)),
+        ] {
+            if ui.button(label).clicked() {
+                requested = Some(action);
+                ui.close();
+            }
+        }
+        ui.separator();
+        for (label, action) in [
+            (
+                "Hide rows",
+                Action::Visibility {
+                    axis: Axis::Rows,
+                    hide: true,
+                },
+            ),
+            (
+                "Unhide rows",
+                Action::Visibility {
+                    axis: Axis::Rows,
+                    hide: false,
+                },
+            ),
+            (
+                "Hide columns",
+                Action::Visibility {
+                    axis: Axis::Columns,
+                    hide: true,
+                },
+            ),
+            (
+                "Unhide columns",
+                Action::Visibility {
+                    axis: Axis::Columns,
+                    hide: false,
+                },
+            ),
+            ("Fit columns to contents", Action::AutoFit(Axis::Columns)),
+            ("Fit rows to contents", Action::AutoFit(Axis::Rows)),
+        ] {
+            if ui.button(label).clicked() {
+                requested = Some(action);
+                ui.close();
+            }
+        }
+        ui.separator();
+        let merged = self
+            .doc
+            .workbook
+            .sheet(self.grid.sheet_index)
+            .is_some_and(|s| s.merge_at(cursor).is_some());
+        if ui
+            .button(if merged { "Unmerge" } else { "Merge cells" })
+            .clicked()
+        {
+            requested = Some(Action::Merge(!merged));
+            ui.close();
+        }
+        if ui.button("Clear contents").clicked() {
+            requested = Some(Action::Clear);
+            ui.close();
+        }
+        if ui.button("Clear formatting").clicked() {
+            requested = Some(Action::Format(Format::Clear));
+            ui.close();
+        }
+
+        if let Some(action) = requested {
+            let ui = &*ui;
+            self.act(ui, action);
+        }
     }
 }
+
+/// What a tab's right-click menu asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TabCommand {
+    Hide,
+    UnhideAll,
+}
+
+/// A vertical rule between groups of toolbar controls.
+fn separate(ui: &mut egui::Ui) {
+    ui.add_space(3.0);
+    ui.separator();
+    ui.add_space(3.0);
+}
+
+/// One sheet tab.
+///
+/// Drawn rather than assembled from a `selectable_label` because the active tab
+/// is not a highlighted label: it is a tab that has come *forward*, joined to
+/// the sheet below it and separated from its neighbours. That is the whole
+/// visual grammar of a tab strip, and it is what tells you at a glance which of
+/// fifteen sheets you are looking at.
+fn tab(ui: &mut egui::Ui, name: &str, selected: bool, stripe: Option<[u8; 3]>) -> egui::Response {
+    let font = egui::FontId::new(
+        13.0,
+        ui_kit::fonts::face(ui_kit::Family::Sans, selected, false),
+    );
+    let galley = ui
+        .painter()
+        .layout_no_wrap(name.to_string(), font, egui::Color32::PLACEHOLDER);
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(galley.size().x + 22.0, 24.0),
+        egui::Sense::click(),
+    );
+    if ui.is_rect_visible(rect) {
+        let hovered = response.hovered();
+        let fill = match (selected, hovered) {
+            (true, _) => egui::Color32::WHITE,
+            (false, true) => egui::Color32::from_gray(0xE6),
+            (false, false) => egui::Color32::from_gray(0xDC),
+        };
+        let painter = ui.painter();
+        painter.rect_filled(
+            rect,
+            egui::CornerRadius {
+                nw: 4,
+                ne: 4,
+                sw: 0,
+                se: 0,
+            },
+            fill,
+        );
+        if !selected {
+            painter.vline(
+                rect.right(),
+                rect.y_range(),
+                egui::Stroke::new(1.0, egui::Color32::from_gray(0xC4)),
+            );
+        }
+        // The colour the workbook gave this tab, as the band along its foot —
+        // full height behind the label when the tab is not the active one,
+        // which is how Excel shows it.
+        if let Some([r, g, b]) = stripe {
+            let color = egui::Color32::from_rgb(r, g, b);
+            let band =
+                egui::Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - 3.0), rect.max);
+            painter.rect_filled(band, 0.0, color);
+            if !selected {
+                painter.rect_filled(
+                    rect.shrink2(egui::vec2(0.0, 1.0)),
+                    0.0,
+                    color.gamma_multiply(0.35),
+                );
+            }
+        }
+        let color = if selected {
+            egui::Color32::from_rgb(0x21, 0x73, 0x46)
+        } else {
+            egui::Color32::from_gray(0x33)
+        };
+        let font = egui::FontId::new(
+            13.0,
+            ui_kit::fonts::face(ui_kit::Family::Sans, selected, false),
+        );
+        painter.text(
+            rect.center() - egui::vec2(0.0, 1.0),
+            egui::Align2::CENTER_CENTER,
+            name,
+            font,
+            color,
+        );
+    }
+    response.on_hover_text(name)
+}
+
+/// What the status bar reports about the selection, Excel's own set.
+///
+/// Nothing at all for a single cell holding one value: the number is already on
+/// screen, and "Sum: 42" beside a cell reading 42 is noise.
+fn summary_labels(summary: &grid::Summary) -> Vec<String> {
+    if summary.count <= 1 {
+        return Vec::new();
+    }
+    let mut out = vec![format!("Count {}", summary.count)];
+    if summary.numeric > 0 {
+        if let Some(average) = summary.average() {
+            out.insert(0, format!("Sum {}", ss_model::format_general(summary.sum)));
+            out.insert(0, format!("Average {}", ss_model::format_general(average)));
+        }
+        out.push(format!("Min {}", ss_model::format_general(summary.min)));
+        out.push(format!("Max {}", ss_model::format_general(summary.max)));
+    }
+    out
+}
+
+/// The font families offered, which are the ones a spreadsheet actually uses.
+const FONT_NAMES: &[&str] = &[
+    "Calibri",
+    "Arial",
+    "Times New Roman",
+    "Courier New",
+    "Consolas",
+    "Georgia",
+    "Verdana",
+    "Segoe UI",
+];
 
 impl DocumentApp for Calx {
     fn id(&self) -> AppId {
@@ -1088,9 +1818,20 @@ impl DocumentApp for Calx {
         false
     }
 
+    fn overlay(&mut self, ctx: &egui::Context) {
+        self.unsaved_prompt(ctx);
+    }
+
+    fn toolbar(&mut self, ui: &mut egui::Ui) {
+        Calx::toolbar(self, ui);
+    }
+
+    fn status(&mut self, ui: &mut egui::Ui) {
+        self.status_bar(ui);
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
-        self.unsaved_prompt(&ctx);
         // While the prompt is up it owns the keyboard: Ctrl+S behind a modal
         // asking about Ctrl+S is not a question anyone can answer.
         if self.pending.is_none() {
@@ -1104,56 +1845,76 @@ impl DocumentApp for Calx {
             self.guard(Pending::Open(path));
         }
 
-        self.toolbar(ui);
-        self.formula_bar(ui);
-        ui.separator();
-
-        // The tabs and status line sit below the grid, so the grid is given
-        // what is left rather than all of it.
-        let bottom = 48.0;
-        let available = ui.available_size();
-        let grid_size = egui::vec2(available.x, (available.y - bottom).max(0.0));
-        let (_, grid_rect) = ui.allocate_space(grid_size);
-        let mut grid_ui = ui.new_child(egui::UiBuilder::new().max_rect(grid_rect));
-        self.grid.show(&mut grid_ui, &mut self.doc.workbook);
+        // The grid fills the panel. It is the only thing in it, which is the
+        // point of the panel: nothing here has to work out how much room the
+        // tabs below need, so nothing here can get that wrong.
+        self.last_body = ui.available_size();
+        let response = self.grid.show(ui, &mut self.doc.workbook);
+        response.context_menu(|ui| self.context_menu(ui));
 
         for action in self.grid.take_actions() {
             self.act(ui, action);
         }
-
-        ui.separator();
-        ui.horizontal(|ui| {
-            for index in 0..self.doc.workbook.sheets.len() {
-                let (name, visible) = {
-                    let sheet = &self.doc.workbook.sheets[index];
-                    (sheet.name.clone(), sheet.kind.has_grid() && !sheet.hidden)
-                };
-                if !visible {
-                    continue;
-                }
-                let selected = index == self.grid.sheet_index;
-                if ui.selectable_label(selected, name).clicked() && !selected {
-                    self.grid.editor = None;
-                    self.grid.sheet_index = index;
-                    self.grid.scroll = grid::Scroll::default();
-                    self.grid.selection = grid::Selection::default();
-                    self.grid.invalidate();
-                }
-            }
-        });
-        ui.horizontal(|ui| {
-            ui.small(&self.status);
-            if self.edited {
-                ui.small("• edited");
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.small(format!("{:.0}%", self.grid.zoom * 100.0));
-                if let Err(e) = &self.config_dir {
-                    ui.colored_label(egui::Color32::RED, format!("config unavailable: {e}"));
-                }
-            });
-        });
     }
+}
+
+/// The bold and italic buttons, which wear the formatting they apply.
+fn bold_letter(text: &'static str, on: bool) -> icons::Letter<'static> {
+    icons::Letter {
+        text,
+        bold: true,
+        on,
+        tip: "Bold (Ctrl+B)",
+        ..icons::Letter::plain()
+    }
+}
+
+fn italic_letter(text: &'static str, on: bool) -> icons::Letter<'static> {
+    icons::Letter {
+        text,
+        italic: true,
+        on,
+        tip: "Italic (Ctrl+I)",
+        ..icons::Letter::plain()
+    }
+}
+
+/// Whether two ranges touch at all.
+fn overlaps(a: CellRange, b: CellRange) -> bool {
+    a.start.row <= b.end.row
+        && b.start.row <= a.end.row
+        && a.start.col <= b.end.col
+        && b.start.col <= a.end.col
+}
+
+/// The width a column would need for its widest entry, in Excel's own units.
+///
+/// Estimated from the glyph count rather than measured, for the same reason the
+/// row fitter estimates: this runs where there is no font atlas to ask. It is
+/// generous by design — a column a little too wide is untidy, and one a little
+/// too narrow shows `####` where a number used to be.
+fn fitted_width(book: &Workbook, sheet: &ss_model::Sheet, col: u32) -> Option<f64> {
+    let mut widest = 0.0f64;
+    for (at, cell) in sheet.cells.iter() {
+        if at.col != col || cell.value.is_blank() {
+            continue;
+        }
+        let style = sheet.style_at(at);
+        let value = match cell.value {
+            ss_model::CellValue::Number(n) => ss_model::FormatValue::Number(n),
+            ss_model::CellValue::Bool(b) => ss_model::FormatValue::Bool(b),
+            ss_model::CellValue::Error(e) => ss_model::FormatValue::Error(e),
+            ss_model::CellValue::Text(id) => ss_model::FormatValue::Text(book.strings.resolve(id)),
+            ss_model::CellValue::Blank => continue,
+        };
+        let text = book.styles.number_format(style).format(value).text;
+        let longest = text.lines().map(|l| l.chars().count()).max().unwrap_or(0);
+        // Widths are counted in digits of the default font, so a bigger font
+        // needs proportionally more of them.
+        let scale = book.styles.font(style).size / ss_model::style::DEFAULT_FONT_SIZE;
+        widest = widest.max(longest as f64 * scale);
+    }
+    (widest > 0.0).then(|| (widest + 1.0).clamp(2.0, 120.0))
 }
 
 /// What the undo stack calls a formatting command.
@@ -1168,6 +1929,7 @@ fn format_label(command: &Format) -> &'static str {
         Format::Wrap => "Wrap text",
         Format::Indent(_) => "Indent",
         Format::FontSize(_) => "Font size",
+        Format::FontName(_) => "Font",
         Format::TextColor(_) => "Text colour",
         Format::Fill(_) => "Fill colour",
         Format::Border(_) => "Borders",

@@ -534,7 +534,7 @@ mod tests {
     #[test]
     fn an_anchor_lands_where_its_cells_are() {
         let sheet = Sheet::new("S");
-        let layout = Layout::for_sheet(&sheet, 1.0);
+        let layout = Layout::for_sheet(&Workbook::blank(), &sheet, 1.0);
         let view = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
         let rect = rect_of(
             &layout,
@@ -553,7 +553,7 @@ mod tests {
         // Half an inch into the column. Snapping to the column edge would move
         // a chart by up to a whole column and put it over its own data.
         let sheet = Sheet::new("S");
-        let layout = Layout::for_sheet(&sheet, 1.0);
+        let layout = Layout::for_sheet(&Workbook::blank(), &sheet, 1.0);
         let view = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
         let anchor = Anchor::OneCell {
             from: AnchorPoint {

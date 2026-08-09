@@ -7,3 +7,4 @@
 #![forbid(unsafe_code)]
 
 pub mod grid;
+pub mod icons;

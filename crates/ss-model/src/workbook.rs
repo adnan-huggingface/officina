@@ -43,6 +43,40 @@ impl CellRange {
     }
 }
 
+/// How a sheet was last being looked at.
+///
+/// Part of the document rather than of the application: it is stored in the
+/// file, and a workbook reopened at a different sheet, a different zoom, and
+/// scrolled back to A1 is not the document that was closed.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SheetView {
+    /// `zoomScale` as a fraction. Excel stores 90 for ninety percent.
+    pub zoom: f64,
+    /// `showGridLines`. A sheet used as a form or a report turns them off, and
+    /// drawing them anyway is the single most visible way to get it wrong.
+    pub gridlines: bool,
+    pub headings: bool,
+    /// The cell that was selected, and the top-left cell that was showing.
+    pub selection: Option<CellRef>,
+    pub top_left: Option<CellRef>,
+    /// The colour of the sheet's tab, which is how a workbook of thirty sheets
+    /// is navigated by people who made it.
+    pub tab_color: Option<crate::Color>,
+}
+
+impl Default for SheetView {
+    fn default() -> Self {
+        SheetView {
+            zoom: 1.0,
+            gridlines: true,
+            headings: true,
+            selection: None,
+            top_left: None,
+            tab_color: None,
+        }
+    }
+}
+
 /// What kind of sheet a workbook tab holds.
 ///
 /// Chart and dialog sheets have no cell grid, but they *do* occupy a position in
@@ -99,6 +133,13 @@ pub struct Sheet {
     /// Pivot tables anchored to this sheet, read so that an editor can leave
     /// their region alone. Preserved verbatim, never written.
     pub pivots: Vec<crate::pivot::PivotTable>,
+    /// How the sheet was last being *looked at*, which is part of the document.
+    ///
+    /// A workbook is saved with a sheet showing, at a zoom, scrolled somewhere,
+    /// with a cell selected. Opening it anywhere else is opening a different
+    /// document than the one that was closed — on the workbook this was built
+    /// against, the sheet that matters is the twelfth and it is 90% zoom.
+    pub view: crate::SheetView,
     /// Where each dynamic-array formula last spilled to, by its anchor.
     ///
     /// Derived at recalculation and never read from a file: it exists so that a
@@ -281,6 +322,8 @@ pub struct Workbook {
     pub defined_names: Vec<DefinedName>,
     /// What a cell's [`StyleId`](crate::StyleId) resolves to.
     pub styles: crate::style::StyleTable,
+    /// The sheet that was showing when the workbook was saved.
+    pub active_sheet: usize,
 }
 
 #[derive(Debug, Clone)]

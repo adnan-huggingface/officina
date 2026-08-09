@@ -23,36 +23,81 @@ use ss_model::style::{BorderStyle, HAlign, VAlign};
 /// Side of the little square at the corner of the selection.
 const FILL_HANDLE: f32 = 6.0;
 
-/// Line and fill colours, resolved from the surrounding egui theme so the grid
-/// follows a light or dark visual style without a second palette.
+/// Thickness of the scrollbars along the right and bottom edges.
+const SCROLLBAR: f32 = 14.0;
+
+/// The shortest a thumb may get. Proportional all the way down means a thumb
+/// one pixel tall on a long sheet, which is not something anyone can grab.
+const MIN_THUMB: f32 = 28.0;
+
+/// Where the scrollbars are and how far they reach.
+///
+/// Recomputed every frame from the layout and kept on the view, because the
+/// input pass runs after the paint pass and needs the same rectangles rather
+/// than a second derivation of them.
+#[derive(Debug, Clone, Copy)]
+pub struct Bars {
+    pub vertical: egui::Rect,
+    pub horizontal: egui::Rect,
+    pub vertical_thumb: egui::Rect,
+    pub horizontal_thumb: egui::Rect,
+    /// The largest scroll offset there is anything to see at.
+    pub extent: egui::Vec2,
+}
+
+impl Default for Bars {
+    fn default() -> Self {
+        // `NOTHING` is the empty rectangle, which every hit test rejects: a
+        // frame that has not drawn the bars yet has no bars to click on.
+        Bars {
+            vertical: egui::Rect::NOTHING,
+            horizontal: egui::Rect::NOTHING,
+            vertical_thumb: egui::Rect::NOTHING,
+            horizontal_thumb: egui::Rect::NOTHING,
+            extent: egui::Vec2::ZERO,
+        }
+    }
+}
+
+/// The grid's own colours.
+///
+/// Fixed rather than taken from the surrounding theme, and that is deliberate:
+/// a cell with no fill is *paper*. The workbook chose black text on white and
+/// nothing else, so tinting the canvas to match a dark application chrome shows
+/// the user a document they did not make — and a themed heading resolved
+/// against Excel's light scheme, drawn on a dark canvas, disappears entirely.
+/// The chrome around the grid follows the theme; the page does not.
 struct Palette {
     grid: egui::Color32,
     text: egui::Color32,
     header_bg: egui::Color32,
+    header_line: egui::Color32,
     header_text: egui::Color32,
     header_active: egui::Color32,
+    header_active_text: egui::Color32,
     selection_fill: egui::Color32,
     selection_edge: egui::Color32,
     background: egui::Color32,
+    scrollbar: egui::Color32,
+    scrollbar_track: egui::Color32,
 }
 
 impl Palette {
-    fn of(ui: &egui::Ui) -> Self {
-        let visuals = ui.visuals();
-        let dark = visuals.dark_mode;
+    fn of(_ui: &egui::Ui) -> Self {
+        let accent = egui::Color32::from_rgb(0x21, 0x73, 0x46);
         Palette {
-            grid: if dark {
-                egui::Color32::from_gray(60)
-            } else {
-                egui::Color32::from_gray(214)
-            },
-            text: visuals.text_color(),
-            header_bg: visuals.faint_bg_color,
-            header_text: visuals.weak_text_color(),
-            header_active: visuals.selection.bg_fill.gamma_multiply(0.35),
-            selection_fill: visuals.selection.bg_fill.gamma_multiply(0.18),
-            selection_edge: visuals.selection.stroke.color,
-            background: visuals.extreme_bg_color,
+            grid: egui::Color32::from_rgb(0xD4, 0xD4, 0xD4),
+            text: egui::Color32::BLACK,
+            header_bg: egui::Color32::from_rgb(0xF5, 0xF5, 0xF5),
+            header_line: egui::Color32::from_rgb(0xC6, 0xC6, 0xC6),
+            header_text: egui::Color32::from_rgb(0x44, 0x44, 0x44),
+            header_active: egui::Color32::from_rgb(0xCB, 0xE1, 0xD4),
+            header_active_text: accent,
+            selection_fill: accent.gamma_multiply(0.10),
+            selection_edge: accent,
+            background: egui::Color32::WHITE,
+            scrollbar: egui::Color32::from_rgb(0xB4, 0xB4, 0xB4),
+            scrollbar_track: egui::Color32::from_rgb(0xF0, 0xF0, 0xF0),
         }
     }
 }
@@ -117,8 +162,9 @@ impl GridView {
 
         // Taken rather than borrowed: the layout lives in `self` and so does
         // everything the input handlers need to change.
-        self.ensure_layout(sheet);
+        self.ensure_layout(book, sheet);
         self.ensure_conditional(book, sheet);
+        self.ensure_summary(book);
         let cached = self.layout.take().expect("just ensured");
         let layout = &cached.2;
         let conditional = self.conditional.take().expect("just ensured");
@@ -126,9 +172,13 @@ impl GridView {
         let palette = Palette::of(ui);
         ui.painter().rect_filled(full, 0.0, palette.background);
 
+        // The scrollbars are part of the widget, along its right and bottom
+        // edges, so everything else is laid out inside what they leave.
+        let content =
+            egui::Rect::from_min_max(full.min, full.max - egui::vec2(SCROLLBAR, SCROLLBAR));
         let body = egui::Rect::from_min_max(
-            full.min + egui::vec2(layout.header_width as f32, layout.header_height as f32),
-            full.max,
+            content.min + egui::vec2(layout.header_width as f32, layout.header_height as f32),
+            content.max,
         );
         let frozen = sheet.frozen.unwrap_or(CellRef::new(0, 0));
         let split = egui::vec2(
@@ -136,13 +186,16 @@ impl GridView {
             layout.rows.offset(frozen.row) as f32,
         );
 
-        self.clamp_scroll(layout, body.size() - split);
+        let viewport = (body.size() - split).max(egui::Vec2::ZERO);
+        self.bars = bars(full, layout, sheet, viewport, self.scroll);
+        self.clamp_scroll(self.bars.extent);
+        self.bars = bars(full, layout, sheet, viewport, self.scroll);
         let panes = split_panes(body, split, self.scroll, layout, frozen);
 
         let frame = Frame {
             layout,
             palette: &palette,
-            full,
+            full: content,
             body,
             panes: &panes,
             conditional: &conditional.2,
@@ -153,24 +206,22 @@ impl GridView {
             }
             self.paint_pane(ui, book, sheet, &frame, pane);
         }
-        self.paint_headers(ui, &frame);
+        if sheet.view.headings {
+            self.paint_headers(ui, &frame);
+        }
+        paint_bars(ui, &self.bars, &palette);
 
-        // The frozen split is the one line that is not a gridline.
+        // The frozen split is the one line that is not a gridline. Grey and
+        // solid rather than the selection colour: it is a property of the
+        // sheet, and it is still there when nothing is selected.
+        let seam = egui::Stroke::new(1.0, egui::Color32::from_gray(0x88));
         if frozen.row > 0 {
-            let y = body.top() + split.y;
-            ui.painter().hline(
-                full.x_range(),
-                y,
-                egui::Stroke::new(1.0, palette.selection_edge),
-            );
+            ui.painter()
+                .hline(content.x_range(), body.top() + split.y, seam);
         }
         if frozen.col > 0 {
-            let x = body.left() + split.x;
-            ui.painter().vline(
-                x,
-                full.y_range(),
-                egui::Stroke::new(1.0, palette.selection_edge),
-            );
+            ui.painter()
+                .vline(body.left() + split.x, content.y_range(), seam);
         }
 
         // Resolved while the layout is still borrowed, painted after it goes
@@ -202,8 +253,44 @@ impl GridView {
         self.conditional = Some(conditional);
         self.paint_editor(ui, editor_rect);
         self.paint_dropdown(ui, book, cursor_rect);
-        self.handle_input(ui, book, &response, full, body);
+        self.handle_input(ui, book, &response, content, body);
         response
+    }
+
+    /// Puts the named thumb's leading edge at a screen position.
+    ///
+    /// The inverse of [`thumb`]: the thumb travels `track - thumb` pixels while
+    /// the sheet travels `extent`, so the ratio between them is the scale.
+    fn scroll_to_thumb(&mut self, axis: Axis, at: f32) {
+        let (track, thumb, extent) = match axis {
+            Axis::Rows => (
+                self.bars.vertical,
+                self.bars.vertical_thumb,
+                self.bars.extent.y,
+            ),
+            Axis::Columns => (
+                self.bars.horizontal,
+                self.bars.horizontal_thumb,
+                self.bars.extent.x,
+            ),
+        };
+        if extent <= 0.0 {
+            return;
+        }
+        let (start, length, size) = match axis {
+            Axis::Rows => (track.top(), track.height(), thumb.height()),
+            Axis::Columns => (track.left(), track.width(), thumb.width()),
+        };
+        let travel = length - size;
+        if travel <= 0.0 {
+            return;
+        }
+        let fraction = ((at - start) / travel).clamp(0.0, 1.0);
+        let moved = f64::from(fraction * extent);
+        match axis {
+            Axis::Rows => self.scroll.y = moved,
+            Axis::Columns => self.scroll.x = moved,
+        }
     }
 
     /// The small square at the bottom-right corner of the selection.
@@ -326,24 +413,25 @@ impl GridView {
         }
     }
 
-    fn ensure_layout(&mut self, sheet: &Sheet) {
+    fn ensure_layout(&mut self, book: &Workbook, sheet: &Sheet) {
         let key = (self.sheet_index, self.generation);
         let stale = match &self.layout {
             Some((index, generation, _)) => (*index, *generation) != key,
             None => true,
         };
         if stale {
-            self.layout = Some((key.0, key.1, Layout::for_sheet(sheet, self.zoom)));
+            self.layout = Some((key.0, key.1, Layout::for_sheet(book, sheet, self.zoom)));
         }
     }
 
-    /// Keeps the scroll offset inside the sheet, allowing one screen of
-    /// overscroll at the end so the last row is reachable.
-    fn clamp_scroll(&mut self, layout: &Layout, body: egui::Vec2) {
-        let max_x = (layout.cols.total() - f64::from(body.x)).max(0.0);
-        let max_y = (layout.rows.total() - f64::from(body.y)).max(0.0);
-        self.scroll.x = self.scroll.x.clamp(0.0, max_x);
-        self.scroll.y = self.scroll.y.clamp(0.0, max_y);
+    /// Keeps the scroll offset inside what there is to look at.
+    ///
+    /// Against the *used* range rather than against the sheet: a sheet is
+    /// twenty million pixels tall and clamping to that lets the wheel take the
+    /// user to row 900,000 of an empty grid with no way back but Ctrl+Home.
+    fn clamp_scroll(&mut self, extent: egui::Vec2) {
+        self.scroll.x = self.scroll.x.clamp(0.0, f64::from(extent.x));
+        self.scroll.y = self.scroll.y.clamp(0.0, f64::from(extent.y));
     }
 
     fn paint_pane(
@@ -366,16 +454,21 @@ impl GridView {
         );
         let stroke = egui::Stroke::new(1.0, palette.grid);
 
-        // Gridlines first, so cell text sits on top of them.
-        for row in drawn.rows.clone() {
-            let y = pane.rect.top()
-                + (layout.rows.offset(row) + layout.rows.size(row) - pane.scroll.y) as f32;
-            painter.hline(pane.rect.x_range(), y.round(), stroke);
-        }
-        for col in drawn.cols.clone() {
-            let x = pane.rect.left()
-                + (layout.cols.offset(col) + layout.cols.size(col) - pane.scroll.x) as f32;
-            painter.vline(x.round(), pane.rect.y_range(), stroke);
+        // Gridlines first, so cell text sits on top of them — and only when the
+        // sheet asks for them. A sheet laid out as an invoice or a dashboard
+        // turns them off and fills the cells instead; drawing them anyway puts
+        // a grid through the middle of somebody's letterhead.
+        if sheet.view.gridlines {
+            for row in drawn.rows.clone() {
+                let y = pane.rect.top()
+                    + (layout.rows.offset(row) + layout.rows.size(row) - pane.scroll.y) as f32;
+                painter.hline(pane.rect.x_range(), y.round(), stroke);
+            }
+            for col in drawn.cols.clone() {
+                let x = pane.rect.left()
+                    + (layout.cols.offset(col) + layout.cols.size(col) - pane.scroll.x) as f32;
+                painter.vline(x.round(), pane.rect.y_range(), stroke);
+            }
         }
 
         // Fills over the gridlines: a shaded cell in Excel has no gridlines
@@ -483,12 +576,7 @@ impl GridView {
                 .map_or(palette.text, |[r, g, b]| egui::Color32::from_rgb(r, g, b));
             let padding = 3.0 + cell.look.indent as f32 * 9.0 * self.zoom as f32;
             let room = cell.rect.width() - padding - 3.0;
-            // Points to logical pixels. The grid's default is 13 px for an 11 pt
-            // font and every other size follows from that, so a 22 pt heading
-            // comes out twice the height of 11 pt body text.
-            let font = egui::FontId::proportional(
-                (cell.look.size * 13.0 / 11.0 * self.zoom as f32).max(1.0),
-            );
+            let font = cell_font(&cell.look, self.zoom as f32);
             let job = text_job(cell, font.clone(), color, room);
             let galley = ui.fonts_mut(|f| f.layout_job(job));
 
@@ -503,7 +591,7 @@ impl GridView {
                     cell.rect.right() - padding - galley.size().x,
                     cell.rect.center().y - galley.size().y / 2.0,
                 );
-                paint_text(&painter, pos, galley, color, cell.look.bold);
+                paint_text(&painter, pos, galley, color);
                 continue;
             }
 
@@ -536,7 +624,16 @@ impl GridView {
 
             let x = match resolved_align(cell) {
                 HAlign::Right => cell.rect.right() - 3.0 - galley.size().x,
-                HAlign::Center | HAlign::CenterContinuous | HAlign::Distributed => {
+                // "Centre across selection": centred over the cell *and the
+                // empty ones it runs into*, which is the whole point of it. In
+                // a narrow column, centring inside the cell alone puts most of
+                // a long label to the left of its own left edge, where it is
+                // clipped away and the cell reads as blank.
+                HAlign::CenterContinuous => {
+                    (cell.rect.left() + cell.rect.right() + cell.overflow) / 2.0
+                        - galley.size().x / 2.0
+                }
+                HAlign::Center | HAlign::Distributed => {
                     cell.rect.center().x - galley.size().x / 2.0
                 }
                 _ => cell.rect.left() + padding,
@@ -546,7 +643,7 @@ impl GridView {
                 VAlign::Bottom => cell.rect.bottom() - 1.0 - galley.size().y,
                 _ => cell.rect.center().y - galley.size().y / 2.0,
             };
-            paint_text(&painter, egui::pos2(x, y), galley, color, cell.look.bold);
+            paint_text(&painter, egui::pos2(x, y), galley, color);
         }
 
         // Charts over everything the cells drew, and under the cursor outline.
@@ -590,6 +687,13 @@ impl GridView {
         }
     }
 
+    /// The row numbers and column letters.
+    ///
+    /// Three states, not two, and the third is the one that matters: a header
+    /// is plain, *within the selection*, or the cursor's own. Excel draws the
+    /// cursor's row and column darker than the rest of the selected band, which
+    /// is how you find where you are in a screen of forty selected rows without
+    /// hunting for the outline.
     fn paint_headers(&self, ui: &egui::Ui, frame: &Frame) {
         let Frame {
             layout,
@@ -600,12 +704,34 @@ impl GridView {
             ..
         } = *frame;
         let painter = ui.painter();
-        let header_font = egui::FontId::proportional((11.0 * self.zoom) as f32);
-        let corner = egui::Rect::from_min_size(full.min, body.min - full.min);
-        painter.rect_filled(corner, 0.0, palette.header_bg);
+        let size = (11.0 * self.zoom).clamp(7.0, 18.0) as f32;
+        let plain = egui::FontId::new(
+            size,
+            ui_kit::fonts::face(ui_kit::Family::Sans, false, false),
+        );
+        let heavy = egui::FontId::new(size, ui_kit::fonts::face(ui_kit::Family::Sans, true, false));
 
-        let selected_cols: Vec<_> = self.selection.ranges().to_vec();
-        let stroke = egui::Stroke::new(1.0, palette.grid);
+        let corner = egui::Rect::from_min_max(full.min, body.min);
+        painter.rect_filled(corner, 0.0, palette.header_bg);
+        // The little triangle in the corner box, which is what says it is a
+        // button rather than a gap between the two headers.
+        let side = (corner.width().min(corner.height()) * 0.42).min(9.0);
+        if side > 3.0 {
+            let tip = corner.right_bottom() - egui::vec2(3.0, 3.0);
+            painter.add(egui::Shape::convex_polygon(
+                vec![
+                    tip,
+                    tip - egui::vec2(side, 0.0),
+                    tip - egui::vec2(0.0, side),
+                ],
+                palette.header_text.gamma_multiply(0.5),
+                egui::Stroke::NONE,
+            ));
+        }
+
+        let ranges = self.selection.ranges().to_vec();
+        let cursor = self.selection.cursor();
+        let line = egui::Stroke::new(1.0, palette.header_line);
 
         for pane in panes {
             // Column letters, above each pane that shows columns.
@@ -613,32 +739,31 @@ impl GridView {
                 egui::pos2(pane.rect.left(), full.top()),
                 egui::pos2(pane.rect.right(), body.top()),
             );
-            if strip.width() > 0.0 && pane.rect.top() <= body.top() + 0.5 {
+            if strip.is_positive() && pane.rect.top() <= body.top() + 0.5 {
                 let p = painter.with_clip_rect(strip);
                 p.rect_filled(strip, 0.0, palette.header_bg);
-                let cols = layout
+                for col in layout
                     .cols
-                    .visible(pane.scroll.x, pane.scroll.x + f64::from(pane.rect.width()));
-                for col in cols {
+                    .visible(pane.scroll.x, pane.scroll.x + f64::from(pane.rect.width()))
+                {
                     let x = pane.rect.left() + (layout.cols.offset(col) - pane.scroll.x) as f32;
-                    let w = layout.cols.size(col) as f32;
                     let cell = egui::Rect::from_min_size(
                         egui::pos2(x, strip.top()),
-                        egui::vec2(w, strip.height()),
+                        egui::vec2(layout.cols.size(col) as f32, strip.height()),
                     );
-                    if selected_cols
+                    let selected = ranges
                         .iter()
-                        .any(|r| r.start.col <= col && col <= r.end.col)
-                    {
-                        p.rect_filled(cell, 0.0, palette.header_active);
-                    }
-                    p.vline(cell.right().round(), strip.y_range(), stroke);
-                    p.text(
-                        cell.center(),
-                        egui::Align2::CENTER_CENTER,
-                        column_name(col),
-                        header_font.clone(),
-                        palette.header_text,
+                        .any(|r| r.start.col <= col && col <= r.end.col);
+                    self.header_cell(
+                        &p,
+                        cell,
+                        &column_name(col),
+                        selected,
+                        col == cursor.col,
+                        palette,
+                        (&plain, &heavy),
+                        Axis::Columns,
+                        line,
                     );
                 }
             }
@@ -648,42 +773,96 @@ impl GridView {
                 egui::pos2(full.left(), pane.rect.top()),
                 egui::pos2(body.left(), pane.rect.bottom()),
             );
-            if gutter.height() > 0.0 && pane.rect.left() <= body.left() + 0.5 {
+            if gutter.is_positive() && pane.rect.left() <= body.left() + 0.5 {
                 let p = painter.with_clip_rect(gutter);
                 p.rect_filled(gutter, 0.0, palette.header_bg);
-                let rows = layout
+                for row in layout
                     .rows
-                    .visible(pane.scroll.y, pane.scroll.y + f64::from(pane.rect.height()));
-                for row in rows {
+                    .visible(pane.scroll.y, pane.scroll.y + f64::from(pane.rect.height()))
+                {
                     let y = pane.rect.top() + (layout.rows.offset(row) - pane.scroll.y) as f32;
-                    let h = layout.rows.size(row) as f32;
                     let cell = egui::Rect::from_min_size(
                         egui::pos2(gutter.left(), y),
-                        egui::vec2(gutter.width(), h),
+                        egui::vec2(gutter.width(), layout.rows.size(row) as f32),
                     );
-                    if selected_cols
+                    let selected = ranges
                         .iter()
-                        .any(|r| r.start.row <= row && row <= r.end.row)
-                    {
-                        p.rect_filled(cell, 0.0, palette.header_active);
-                    }
-                    p.hline(gutter.x_range(), cell.bottom().round(), stroke);
-                    p.text(
-                        cell.center(),
-                        egui::Align2::CENTER_CENTER,
-                        format!("{}", row + 1),
-                        header_font.clone(),
-                        palette.header_text,
+                        .any(|r| r.start.row <= row && row <= r.end.row);
+                    self.header_cell(
+                        &p,
+                        cell,
+                        &format!("{}", row + 1),
+                        selected,
+                        row == cursor.row,
+                        palette,
+                        (&plain, &heavy),
+                        Axis::Rows,
+                        line,
                     );
                 }
             }
         }
-        painter.rect_stroke(
-            corner,
-            0.0,
-            egui::Stroke::new(1.0, palette.grid),
-            egui::StrokeKind::Inside,
+        painter.rect_stroke(corner, 0.0, line, egui::StrokeKind::Inside);
+    }
+
+    /// One row number or column letter.
+    #[allow(clippy::too_many_arguments)]
+    fn header_cell(
+        &self,
+        painter: &egui::Painter,
+        cell: egui::Rect,
+        label: &str,
+        selected: bool,
+        is_cursor: bool,
+        palette: &Palette,
+        fonts: (&egui::FontId, &egui::FontId),
+        axis: Axis,
+        line: egui::Stroke,
+    ) {
+        if selected {
+            painter.rect_filled(cell, 0.0, palette.header_active);
+        }
+        // The separator between headers, and the edge against the grid.
+        match axis {
+            Axis::Columns => {
+                painter.vline(cell.right().round(), cell.y_range(), line);
+            }
+            Axis::Rows => {
+                painter.hline(cell.x_range(), cell.bottom().round(), line);
+            }
+        }
+        // A zero-height row is a hidden one: it has no room for its number, and
+        // drawing it anyway stacks digits on the row below.
+        if cell.height() < 6.0 || cell.width() < 6.0 {
+            return;
+        }
+        let (font, color) = if is_cursor {
+            (fonts.1, palette.header_active_text)
+        } else if selected {
+            (fonts.0, palette.header_active_text)
+        } else {
+            (fonts.0, palette.header_text)
+        };
+        painter.text(
+            cell.center(),
+            egui::Align2::CENTER_CENTER,
+            label,
+            font.clone(),
+            color,
         );
+        // The heavier line under the cursor's own header, which is the marker
+        // Excel uses to point at the active cell from outside the grid.
+        if is_cursor {
+            let mark = egui::Stroke::new(2.0, palette.selection_edge);
+            match axis {
+                Axis::Columns => {
+                    painter.hline(cell.x_range(), cell.bottom() - 1.0, mark);
+                }
+                Axis::Rows => {
+                    painter.vline(cell.right() - 1.0, cell.y_range(), mark);
+                }
+            }
+        }
     }
 
     /// The cell under a screen position, and which pane it belongs to.
@@ -812,6 +991,35 @@ impl GridView {
             panes,
             ..
         } = *frame;
+        // The scrollbars are outside `full`, so they are tested before
+        // anything that assumes the pointer is over a cell.
+        for (axis, track, thumb) in [
+            (Axis::Rows, self.bars.vertical, self.bars.vertical_thumb),
+            (
+                Axis::Columns,
+                self.bars.horizontal,
+                self.bars.horizontal_thumb,
+            ),
+        ] {
+            if !track.contains(pos) {
+                continue;
+            }
+            let (along, thumb_start, thumb_size) = match axis {
+                Axis::Rows => (pos.y, thumb.top(), thumb.height()),
+                Axis::Columns => (pos.x, thumb.left(), thumb.width()),
+            };
+            // A click on the track jumps the thumb to the pointer and then
+            // drags from its middle, which is what every scrollbar does.
+            let grab = if thumb.contains(pos) {
+                along - thumb_start
+            } else {
+                thumb_size / 2.0
+            };
+            self.drag = Some(Drag::ScrollThumb { axis, grab });
+            self.scroll_to_thumb(axis, along - grab);
+            return;
+        }
+
         let in_column_header = pos.y < body.top() && pos.x >= body.left();
         let in_row_header = pos.x < body.left() && pos.y >= body.top();
 
@@ -891,6 +1099,13 @@ impl GridView {
     fn continue_drag(&mut self, drag: Drag, book: &mut Workbook, frame: &Frame, pos: egui::Pos2) {
         let (layout, body, panes) = (frame.layout, frame.body, frame.panes);
         match drag {
+            Drag::ScrollThumb { axis, grab } => {
+                let along = match axis {
+                    Axis::Rows => pos.y,
+                    Axis::Columns => pos.x,
+                };
+                self.scroll_to_thumb(axis, along - grab);
+            }
             Drag::Fill { from } => {
                 let Some(at) = self.cell_at(layout, body, panes, pos) else {
                     return;
@@ -949,7 +1164,9 @@ impl GridView {
                     self.actions.push(Action::Resized(before));
                 }
             }
-            Drag::Select => {}
+            // Scrolling has already happened frame by frame, and it is not an
+            // edit, so there is nothing to report and nothing to undo.
+            Drag::Select | Drag::ScrollThumb { .. } => {}
         }
     }
 
@@ -1010,7 +1227,7 @@ impl GridView {
 
         if moved {
             let cursor = self.selection.cursor();
-            self.scroll_into_view(cursor, body.size(), sheet);
+            self.scroll_into_view(cursor, body.size(), book, sheet);
         }
     }
 
@@ -1143,6 +1360,10 @@ impl GridView {
             egui::Key::Minus if modifiers.ctrl => {
                 self.actions.push(Action::Delete(self.structural_axis()));
             }
+            egui::Key::PageDown | egui::Key::PageUp if modifiers.ctrl => {
+                let step = if key == egui::Key::PageDown { 1 } else { -1 };
+                self.actions.push(Action::StepSheet(step));
+            }
             egui::Key::Home => {
                 let at = if modifiers.ctrl {
                     CellRef::new(0, 0)
@@ -1203,6 +1424,132 @@ impl GridView {
         } else {
             Axis::Rows
         }
+    }
+}
+
+/// Where the scrollbars go, and how far they may travel.
+///
+/// The travel is measured against the *used* range and not against the sheet,
+/// because a sheet is 1,048,576 rows tall and a thumb sized to that is a
+/// two-pixel sliver representing a document that ends on row 354. Excel does
+/// the same thing: its scrollbar covers what you have, and grows as you add.
+fn bars(
+    full: egui::Rect,
+    layout: &Layout,
+    sheet: &Sheet,
+    viewport: egui::Vec2,
+    scroll: Scroll,
+) -> Bars {
+    let (_, last) = sheet
+        .cells
+        .used_range()
+        .unwrap_or((CellRef::new(0, 0), CellRef::new(0, 0)));
+    // A styled-but-empty column counts as content: it is visible, so it must
+    // be reachable.
+    let last_col = last
+        .col
+        .max(sheet.column_styles.keys().copied().max().unwrap_or(0));
+    let last_row = last
+        .row
+        .max(sheet.row_styles.keys().copied().max().unwrap_or(0));
+
+    let content = egui::vec2(
+        layout.cols.offset(last_col.saturating_add(1)) as f32,
+        layout.rows.offset(last_row.saturating_add(1)) as f32,
+    );
+    // `max` against the current scroll so that a cursor driven past the used
+    // range with Ctrl+Down does not leave the scrollbar unable to follow it.
+    let extent = egui::vec2(
+        (content.x - viewport.x).max(scroll.x as f32).max(0.0),
+        (content.y - viewport.y).max(scroll.y as f32).max(0.0),
+    );
+
+    let vertical = egui::Rect::from_min_max(
+        egui::pos2(
+            full.right() - SCROLLBAR,
+            full.top() + layout.header_height as f32,
+        ),
+        egui::pos2(full.right(), full.bottom() - SCROLLBAR),
+    );
+    let horizontal = egui::Rect::from_min_max(
+        egui::pos2(
+            full.left() + layout.header_width as f32,
+            full.bottom() - SCROLLBAR,
+        ),
+        egui::pos2(full.right() - SCROLLBAR, full.bottom()),
+    );
+
+    Bars {
+        vertical,
+        horizontal,
+        vertical_thumb: thumb(vertical, Axis::Rows, viewport.y, extent.y, scroll.y as f32),
+        horizontal_thumb: thumb(
+            horizontal,
+            Axis::Columns,
+            viewport.x,
+            extent.x,
+            scroll.x as f32,
+        ),
+        extent,
+    }
+}
+
+/// The thumb inside one track.
+fn thumb(track: egui::Rect, axis: Axis, viewport: f32, extent: f32, scroll: f32) -> egui::Rect {
+    let length = match axis {
+        Axis::Rows => track.height(),
+        Axis::Columns => track.width(),
+    };
+    if length <= 0.0 {
+        return egui::Rect::NOTHING;
+    }
+    // Nothing to scroll: the thumb fills the track, which is how a scrollbar
+    // says "this is all of it" without disappearing and reflowing the layout.
+    let fraction = if extent <= 0.0 {
+        1.0
+    } else {
+        (viewport / (viewport + extent)).clamp(0.0, 1.0)
+    };
+    let size = (length * fraction).max(MIN_THUMB.min(length));
+    let travel = (length - size).max(0.0);
+    let at = if extent <= 0.0 {
+        0.0
+    } else {
+        travel * (scroll / extent).clamp(0.0, 1.0)
+    };
+    match axis {
+        Axis::Rows => egui::Rect::from_min_size(
+            egui::pos2(track.left() + 2.0, track.top() + at),
+            egui::vec2(track.width() - 4.0, size),
+        ),
+        Axis::Columns => egui::Rect::from_min_size(
+            egui::pos2(track.left() + at, track.top() + 2.0),
+            egui::vec2(size, track.height() - 4.0),
+        ),
+    }
+}
+
+fn paint_bars(ui: &egui::Ui, bars: &Bars, palette: &Palette) {
+    let painter = ui.painter();
+    let hovered = ui.ctx().pointer_latest_pos();
+    for (track, thumb) in [
+        (bars.vertical, bars.vertical_thumb),
+        (bars.horizontal, bars.horizontal_thumb),
+    ] {
+        if !track.is_positive() {
+            continue;
+        }
+        painter.rect_filled(track, 0.0, palette.scrollbar_track);
+        if !thumb.is_positive() {
+            continue;
+        }
+        let lit = hovered.is_some_and(|p| track.contains(p));
+        let color = if lit {
+            palette.scrollbar.gamma_multiply(0.75)
+        } else {
+            palette.scrollbar
+        };
+        painter.rect_filled(thumb, egui::CornerRadius::same(5), color);
     }
 }
 
@@ -1306,7 +1653,9 @@ fn text_job_for(
         egui::TextFormat {
             font_id: font,
             color,
-            italics: cell.look.italic,
+            // `italics` is epaint's shear, and it is not asked for: the italic
+            // face is a different set of letterforms, not the roman leaning
+            // over. The family already carries the slant.
             underline: rule(cell.look.underline),
             strikethrough: rule(cell.look.strike),
             ..Default::default()
@@ -1320,22 +1669,28 @@ fn text_job_for(
     job
 }
 
-/// Draws a galley, faking bold by drawing it twice a fraction of a pixel apart.
+/// Points to logical pixels, at a zoom.
 ///
-/// egui ships one weight of its default font and no way to ask for another, so
-/// bold here is synthetic. At cell sizes it is convincing; what it is *not* is a
-/// real bold face, so a heavy heading reads a little lighter than in Excel.
-/// Italic is genuine — epaint slants the glyphs itself.
+/// The grid's default is 13 px for an 11 pt font and every other size follows
+/// from that, so a 22 pt heading comes out twice the height of 11 pt body text.
+///
+/// The weight and the slant are part of the *family*, not of the drawing. Bold
+/// used to be faked by stamping the glyphs twice half a pixel apart, which
+/// smears at any size worth calling a heading; the four faces are loaded from
+/// the system at startup and asked for by name instead.
+fn cell_font(look: &super::CellLook, zoom: f32) -> egui::FontId {
+    egui::FontId::new(
+        (look.size * 13.0 / 11.0 * zoom).max(1.0),
+        ui_kit::fonts::face(look.family, look.bold, look.italic),
+    )
+}
+
 fn paint_text(
     painter: &egui::Painter,
     pos: egui::Pos2,
     galley: std::sync::Arc<egui::Galley>,
     color: egui::Color32,
-    bold: bool,
 ) {
-    if bold {
-        painter.galley(pos + egui::vec2(0.55, 0.0), galley.clone(), color);
-    }
     painter.galley(pos, galley, color);
 }
 
@@ -1396,6 +1751,22 @@ mod tests {
     use super::*;
     use crate::grid::Selection;
 
+    /// A context with the type faces installed.
+    ///
+    /// Not optional: the grid asks for `sans-bold` by name, and epaint panics
+    /// rather than substituting when a family has never been registered. The
+    /// shell installs them at startup; a test that drives the grid directly
+    /// has to do the same thing.
+    fn context() -> egui::Context {
+        let ctx = egui::Context::default();
+        // Registered with no directories: the *names* are what the grid asks
+        // for, and epaint panics rather than substituting for a family it has
+        // never heard of. Reading a hundred megabytes of type off the disk is
+        // not something a unit test needs to do.
+        ui_kit::fonts::register(&ctx, &[]);
+        ctx
+    }
+
     /// Drives one egui frame with the given events and returns the view.
     fn frame(
         view: &mut GridView,
@@ -1429,7 +1800,7 @@ mod tests {
 
     #[test]
     fn a_click_does_not_leave_a_drag_running() {
-        let ctx = egui::Context::default();
+        let ctx = context();
         let mut book = Workbook::blank();
         let mut view = GridView::default();
         let start = egui::pos2(200.0, 200.0);
@@ -1483,11 +1854,7 @@ mod tests {
 
     /// A grid with the keyboard, ready to be typed at.
     fn typing() -> (egui::Context, Workbook, GridView) {
-        (
-            egui::Context::default(),
-            Workbook::blank(),
-            GridView::default(),
-        )
+        (context(), Workbook::blank(), GridView::default())
     }
 
     #[test]
@@ -1649,7 +2016,7 @@ mod tests {
 
     #[test]
     fn holding_the_button_down_does_extend_the_selection() {
-        let ctx = egui::Context::default();
+        let ctx = context();
         let mut book = Workbook::blank();
         let mut view = GridView::default();
         let start = egui::pos2(200.0, 200.0);

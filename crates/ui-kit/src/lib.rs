@@ -6,10 +6,12 @@
 
 #![forbid(unsafe_code)]
 
+pub mod fonts;
 pub mod paths;
 pub mod shell;
 
 pub use eframe::{self, egui};
+pub use fonts::Family;
 pub use shell::{run, DocumentApp};
 
 /// Identity of a host application, used for window titles and config paths.

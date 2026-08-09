@@ -73,6 +73,8 @@ pub struct CellLook {
     pub strike: bool,
     /// In points, as the file stores it.
     pub size: f32,
+    /// Which of the three installed families the cell's font name resolves to.
+    pub family: ui_kit::Family,
     pub horizontal: HAlign,
     pub vertical: VAlign,
     pub wrap: bool,
@@ -92,6 +94,7 @@ impl Default for CellLook {
             underline: false,
             strike: false,
             size: ss_model::style::DEFAULT_FONT_SIZE as f32,
+            family: ui_kit::Family::Sans,
             horizontal: HAlign::General,
             vertical: VAlign::Bottom,
             wrap: false,
@@ -281,6 +284,7 @@ pub fn look_at(book: &Workbook, sheet: &Sheet, at: CellRef, effect: Option<&Effe
         underline: !font.underline.is_none(),
         strike: font.strike,
         size: font.size as f32,
+        family: ui_kit::Family::of(&font.name),
         horizontal: alignment.horizontal,
         vertical: alignment.vertical,
         wrap: alignment.wrap,
@@ -421,6 +425,19 @@ pub enum Action {
     Resized(Geometry),
     /// Formatting applied to the selection.
     Format(Format),
+    /// Ctrl+PageDown and Ctrl+PageUp: the next or previous visible sheet.
+    StepSheet(i32),
+    /// Merge the selection into one cell, or take a merge apart.
+    Merge(bool),
+    /// Freeze above and left of the cursor, or unfreeze.
+    Freeze(bool),
+    /// Hide or show the selected rows or columns.
+    Visibility {
+        axis: Axis,
+        hide: bool,
+    },
+    /// Size the selected columns to their contents.
+    AutoFit(Axis),
 }
 
 /// A formatting command, as the toolbar and the keyboard both produce it.
@@ -440,6 +457,7 @@ pub enum Format {
     /// Positive to indent, negative to outdent.
     Indent(i32),
     FontSize(f64),
+    FontName(String),
     /// `None` clears back to automatic.
     TextColor(Option<ss_model::Color>),
     Fill(Option<ss_model::Color>),
@@ -523,6 +541,36 @@ pub fn source_text(book: &Workbook, sheet: usize, at: CellRef) -> String {
     }
 }
 
+/// Sum, count, and the rest, over whatever is selected.
+///
+/// Driven from the sheet's *stored* cells rather than from the selected
+/// addresses, because selecting a column selects 1,048,576 of them and only a
+/// few hundred exist. The cost is the size of the sheet, not of the selection.
+pub fn summarize(book: &Workbook, sheet: usize, ranges: &[CellRange]) -> Summary {
+    let mut summary = Summary::default();
+    let Some(sheet) = book.sheet(sheet) else {
+        return summary;
+    };
+    let (mut min, mut max) = (f64::INFINITY, f64::NEG_INFINITY);
+    for (at, cell) in sheet.cells.iter() {
+        if cell.value.is_blank() || !ranges.iter().any(|r| r.contains(at)) {
+            continue;
+        }
+        summary.count += 1;
+        if let CellValue::Number(n) = cell.value {
+            summary.numeric += 1;
+            summary.sum += n;
+            min = min.min(n);
+            max = max.max(n);
+        }
+    }
+    if summary.numeric > 0 {
+        summary.min = min;
+        summary.max = max;
+    }
+    summary
+}
+
 /// The grid widget's own state, kept between frames.
 pub struct GridView {
     pub sheet_index: usize,
@@ -551,6 +599,36 @@ pub struct GridView {
     pub(crate) before_resize: Option<Geometry>,
     /// The rectangle the fill drag currently covers.
     pub(crate) fill_target: Option<CellRange>,
+    /// Where the scrollbars were drawn last frame, and how far they reach.
+    /// Recomputed every frame; kept so input can hit-test them.
+    pub(crate) bars: paint::Bars,
+    /// What the status bar says about the selection, and what it was computed
+    /// from — a whole-column selection is a million addresses, so this is
+    /// recomputed when the selection changes rather than every frame.
+    pub summary: Summary,
+    pub(crate) summarized: Option<(usize, u32, Vec<CellRange>)>,
+}
+
+/// What the status bar says about the selection.
+///
+/// Excel puts this at the bottom right and it is the most-used feature of the
+/// whole status bar: select a column of numbers and the sum is *there*, with no
+/// formula written and nothing changed in the document.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Summary {
+    /// Cells holding anything at all, which is what Excel calls Count.
+    pub count: usize,
+    /// Cells holding a number, which is what the other four are over.
+    pub numeric: usize,
+    pub sum: f64,
+    pub min: f64,
+    pub max: f64,
+}
+
+impl Summary {
+    pub fn average(&self) -> Option<f64> {
+        (self.numeric > 0).then(|| self.sum / self.numeric as f64)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -572,6 +650,13 @@ pub(crate) enum Drag {
     Fill {
         from: CellRange,
     },
+    /// Dragging a scrollbar thumb. The payload is how far into the thumb the
+    /// pointer took hold, so the thumb does not jump to centre itself under
+    /// the cursor the moment it is grabbed.
+    ScrollThumb {
+        axis: Axis,
+        grab: f32,
+    },
 }
 
 impl Default for GridView {
@@ -590,6 +675,9 @@ impl Default for GridView {
             drag: None,
             before_resize: None,
             fill_target: None,
+            bars: paint::Bars::default(),
+            summary: Summary::default(),
+            summarized: None,
         }
     }
 }
@@ -613,6 +701,54 @@ impl GridView {
 
     pub fn invalidate(&mut self) {
         self.generation = self.generation.wrapping_add(1);
+        self.summarized = None;
+    }
+
+    /// Shows a different sheet, the way the file says it should be shown.
+    ///
+    /// A sheet carries its own zoom and its own idea of where it was scrolled
+    /// to, so switching tabs is not just changing an index: coming back to a
+    /// sheet you left at 90% halfway down should not put you at 100% at A1.
+    pub fn open_sheet(&mut self, book: &Workbook, index: usize) {
+        let Some(sheet) = book.sheet(index) else {
+            return;
+        };
+        self.editor = None;
+        self.selected_chart = None;
+        self.sheet_index = index;
+        self.zoom = sheet.view.zoom.clamp(0.25, 4.0);
+        self.selection = Selection::at(sheet.view.selection.unwrap_or(CellRef::new(0, 0)));
+
+        // `topLeftCell` names the first cell of the *scrolling* pane, and the
+        // scroll offset is measured from the frozen split rather than from A1 —
+        // so on a sheet frozen at F4, `topLeftCell="F4"` means "scrolled
+        // nowhere". Not subtracting the split scrolls the sheet by the height
+        // of everything above the freeze, twice over.
+        let layout = Layout::for_sheet(book, sheet, self.zoom);
+        let frozen = sheet.frozen.unwrap_or(CellRef::new(0, 0));
+        self.scroll = match sheet.view.top_left {
+            Some(at) => Scroll {
+                x: layout.cols.offset(at.col) - layout.cols.offset(frozen.col),
+                y: layout.rows.offset(at.row) - layout.rows.offset(frozen.row),
+            },
+            None => Scroll::default(),
+        }
+        .clamped();
+        self.invalidate();
+    }
+
+    /// Keeps [`summary`](Self::summary) in step with the selection.
+    pub(crate) fn ensure_summary(&mut self, book: &Workbook) {
+        let key = (
+            self.sheet_index,
+            self.generation,
+            self.selection.ranges().to_vec(),
+        );
+        if self.summarized.as_ref() == Some(&key) {
+            return;
+        }
+        self.summary = summarize(book, self.sheet_index, self.selection.ranges());
+        self.summarized = Some(key);
     }
 
     pub fn set_zoom(&mut self, zoom: f64) {
@@ -624,8 +760,14 @@ impl GridView {
     }
 
     /// Scrolls the least distance that brings `at` fully into view.
-    pub fn scroll_into_view(&mut self, at: CellRef, body: egui::Vec2, sheet: &Sheet) {
-        let layout = Layout::for_sheet(sheet, self.zoom);
+    pub fn scroll_into_view(
+        &mut self,
+        at: CellRef,
+        body: egui::Vec2,
+        book: &Workbook,
+        sheet: &Sheet,
+    ) {
+        let layout = Layout::for_sheet(book, sheet, self.zoom);
         let (width, height) = (f64::from(body.x), f64::from(body.y));
         let (x, w) = (layout.cols.offset(at.col), layout.cols.size(at.col));
         let (y, h) = (layout.rows.offset(at.row), layout.rows.size(at.row));
@@ -675,7 +817,7 @@ mod tests {
         );
 
         let sheet = book.sheet(0).expect("sheet 0");
-        let layout = Layout::for_sheet(sheet, 1.0);
+        let layout = Layout::for_sheet(&book, sheet, 1.0);
         let plan = plan(
             &book,
             sheet,
@@ -706,7 +848,7 @@ mod tests {
         );
 
         let sheet = book.sheet(0).expect("sheet 0");
-        let layout = Layout::for_sheet(sheet, 1.0);
+        let layout = Layout::for_sheet(&book, sheet, 1.0);
         let plan = plan(
             &book,
             sheet,
@@ -761,7 +903,7 @@ mod tests {
 
         let conditional = Formatting::prepare(&book, 0);
         let sheet = book.sheet(0).expect("sheet 0");
-        let layout = Layout::for_sheet(sheet, 1.0);
+        let layout = Layout::for_sheet(&book, sheet, 1.0);
         let plan = plan(
             &book,
             sheet,
@@ -813,7 +955,7 @@ mod tests {
     fn a_frame_touches_only_the_cells_it_can_see() {
         let book = book_with_million_rows();
         let sheet = book.sheet(0).expect("sheet 0");
-        let layout = Layout::for_sheet(sheet, 1.0);
+        let layout = Layout::for_sheet(&book, sheet, 1.0);
 
         // Scrolled to the very bottom of a million rows.
         let scroll = Scroll {
@@ -842,7 +984,7 @@ mod tests {
         // the second would be thousands of times slower.
         let book = book_with_million_rows();
         let sheet = book.sheet(0).expect("sheet 0");
-        let layout = Layout::for_sheet(sheet, 1.0);
+        let layout = Layout::for_sheet(&book, sheet, 1.0);
 
         let frames = 200;
         let time_at = |first_row: u32| {
@@ -905,7 +1047,7 @@ mod tests {
             },
         );
         let sheet = book.sheet(0).expect("sheet 0");
-        let layout = Layout::for_sheet(sheet, 1.0);
+        let layout = Layout::for_sheet(&book, sheet, 1.0);
         let plan = plan(
             &book,
             sheet,
@@ -947,7 +1089,7 @@ mod tests {
             },
         );
         let sheet = book.sheet(0).expect("sheet 0");
-        let layout = Layout::for_sheet(sheet, 1.0);
+        let layout = Layout::for_sheet(&book, sheet, 1.0);
         let plan = plan(
             &book,
             sheet,
@@ -986,7 +1128,7 @@ mod tests {
             },
         );
         let sheet = book.sheet(0).expect("sheet 0");
-        let layout = Layout::for_sheet(sheet, 1.0);
+        let layout = Layout::for_sheet(&book, sheet, 1.0);
         let plan = plan(
             &book,
             sheet,
@@ -1000,6 +1142,31 @@ mod tests {
     }
 
     #[test]
+    fn opening_a_frozen_sheet_at_its_own_top_left_scrolls_nowhere() {
+        // `topLeftCell` is measured from A1 and the scroll offset from the
+        // frozen split. Taking one for the other opens the sheet scrolled past
+        // everything the freeze was there to keep on screen.
+        let mut book = Workbook::blank();
+        let sheet = book.sheet_mut(0).expect("sheet 0");
+        sheet.frozen = Some(CellRef::new(3, 5));
+        sheet.view.top_left = Some(CellRef::new(3, 5));
+        sheet.view.selection = Some(CellRef::new(4, 1));
+
+        let mut view = GridView::default();
+        view.open_sheet(&book, 0);
+        assert_eq!(view.scroll, Scroll::default());
+        assert_eq!(view.selection.cursor(), CellRef::new(4, 1));
+
+        // And a sheet genuinely scrolled two rows past the split says so.
+        let sheet = book.sheet_mut(0).expect("sheet 0");
+        sheet.view.top_left = Some(CellRef::new(5, 5));
+        view.open_sheet(&book, 0);
+        let layout = Layout::for_sheet(&book, book.sheet(0).expect("sheet 0"), 1.0);
+        assert_eq!(view.scroll.y, layout.rows.size(4) + layout.rows.size(3));
+        assert_eq!(view.scroll.x, 0.0);
+    }
+
+    #[test]
     fn scrolling_into_view_moves_the_least_it_can() {
         let book = book_with_million_rows();
         let sheet = book.sheet(0).expect("sheet 0");
@@ -1007,16 +1174,16 @@ mod tests {
         let body = egui::vec2(600.0, 400.0);
 
         // Already visible: nothing moves.
-        view.scroll_into_view(CellRef::new(1, 1), body, sheet);
+        view.scroll_into_view(CellRef::new(1, 1), body, &book, sheet);
         assert_eq!(view.scroll, Scroll::default());
 
         // Below the fold: scroll just far enough to show it.
-        view.scroll_into_view(CellRef::new(30, 0), body, sheet);
+        view.scroll_into_view(CellRef::new(30, 0), body, &book, sheet);
         assert_eq!(view.scroll.y, 31.0 * 20.0 - 400.0);
         assert_eq!(view.scroll.x, 0.0);
 
         // Back up: the top edge is what moves this time.
-        view.scroll_into_view(CellRef::new(5, 0), body, sheet);
+        view.scroll_into_view(CellRef::new(5, 0), body, &book, sheet);
         assert_eq!(view.scroll.y, 5.0 * 20.0);
     }
 }

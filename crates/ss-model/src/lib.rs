@@ -35,4 +35,4 @@ pub use style::{
     Alignment, Border, BorderStyle, CellFormat, Dxf, Edge, Fill, Font, HAlign, Look, Pattern,
     StyleId, StyleTable, Underline, VAlign,
 };
-pub use workbook::{CellRange, DefinedName, Sheet, SheetKind, Workbook};
+pub use workbook::{CellRange, DefinedName, Sheet, SheetKind, SheetView, Workbook};

@@ -21,6 +21,9 @@ pub(crate) struct SheetEntry {
 pub(crate) struct WorkbookMeta {
     pub sheets: Vec<SheetEntry>,
     pub defined_names: Vec<DefinedName>,
+    /// `<workbookView activeTab="..">` — which tab was showing when it was
+    /// saved. An index into the sheet list including the hidden entries.
+    pub active_tab: usize,
 }
 
 pub(crate) fn parse(part: &str, data: &[u8]) -> Result<WorkbookMeta> {
@@ -42,6 +45,11 @@ pub(crate) fn parse(part: &str, data: &[u8]) -> Result<WorkbookMeta> {
         {
             Event::Start(e) => match local_name(&e) {
                 b"sheet" => meta.sheets.push(read_sheet(&e)),
+                b"workbookView" => {
+                    if let Some(tab) = attr_text(&e, b"activeTab") {
+                        meta.active_tab = tab.trim().parse().unwrap_or(0);
+                    }
+                }
                 b"definedName" => {
                     refers_to.clear();
                     pending = Some(read_defined_name(&e));
@@ -53,6 +61,11 @@ pub(crate) fn parse(part: &str, data: &[u8]) -> Result<WorkbookMeta> {
             Event::Empty(e) => match local_name(&e) {
                 b"sheet" => meta.sheets.push(read_sheet(&e)),
                 b"definedName" => meta.defined_names.push(read_defined_name(&e)),
+                b"workbookView" => {
+                    if let Some(tab) = attr_text(&e, b"activeTab") {
+                        meta.active_tab = tab.trim().parse().unwrap_or(0);
+                    }
+                }
                 _ => {}
             },
             Event::End(e) => {

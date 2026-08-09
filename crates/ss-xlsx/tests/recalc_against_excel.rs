@@ -75,6 +75,19 @@ struct Report {
 const ARRAY_VALUED: [&str; 1] = ["TRANSPOSE"];
 
 /// True when the formula would spill and the cell was not array-entered.
+/// True for a formula naming a function whose value changes with the clock or
+/// with chance.
+fn depends_on_the_clock(book: &ss_model::Workbook, sheet: usize, at: ss_model::CellRef) -> bool {
+    const VOLATILE: [&str; 5] = ["TODAY", "NOW", "RAND", "RANDBETWEEN", "RANDARRAY"];
+    let Some(formula) = book.sheet(sheet).and_then(|s| s.formula_at(at)) else {
+        return false;
+    };
+    let upper = formula.text.to_ascii_uppercase();
+    VOLATILE
+        .iter()
+        .any(|name| upper.contains(&format!("{name}(")))
+}
+
 fn relies_on_legacy_intersection(book: &Workbook, sheet: usize, at: CellRef) -> bool {
     let Some(formula) = book.sheet(sheet).and_then(|s| s.formula_at(at)) else {
         return false;
@@ -148,6 +161,14 @@ fn check_workbook(path: &Path) -> Report {
 
         // A formula Excel had never computed has no cached value to compare to.
         if matches!(excel, Value::Blank) {
+            report.skipped += 1;
+            continue;
+        }
+        // A formula whose answer depends on when it is asked cannot be
+        // compared to a cached one. `TODAY()` agreed with Excel on the day the
+        // corpus was written and disagrees with it every day after, which is a
+        // fault in the comparison and not in the engine.
+        if depends_on_the_clock(&book, sheet, at) {
             report.skipped += 1;
             continue;
         }

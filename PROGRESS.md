@@ -9,7 +9,7 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[-]` deferred
 
 ## Current state
 
-**Chunk:** C15 — the legacy .xls reader (C0–C14 all done)
+**Chunk:** C15 — the legacy .xls reader (C0–C14 done, plus a UX pass)
 **Status:** not started
 **Handoff note:**
 
@@ -49,7 +49,7 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[-]` deferred
   reprinting them; `write::splice` is the primitive that makes that possible, and
   everything else in the module is built on it. `rfd` is Calx's file dialog, on
   default features so a Linux build needs the XDG portal rather than GTK headers.
-- Workspace total is **563 tests**, all green;
+- Workspace total is **571 tests**, all green;
   `cargo clippy --workspace --all-targets -- -D warnings` and
   `cargo fmt --all --check` are both clean.
 - `ss-model` grew four modules across C11–C14: `color` (the four spellings of
@@ -151,6 +151,74 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[-]` deferred
 - Watch item: **typing into a pivot table's region leaves the file
   self-contradictory** — Excel discards the edit at the next refresh. Calx
   refuses; `Sheet::pivot_at` is the check.
+### The UX pass (after C14, before C15)
+
+The application was rebuilt around the complaint that it was unusable on a real
+workbook. The reference was `190A1210.xlsx` — fifteen sheets, 378,608 cells,
+frozen panes, ninety rotated column headings, sixty-five merges per sheet — next
+to a screenshot of the same file in Excel.
+
+- **The shell owns three panels now, not one rectangle.** `ui-kit::shell` puts
+  the toolbar in a top panel, the tabs and status line in a bottom panel, and
+  hands the app what is left. The old arrangement subtracted a hard-coded 48
+  pixels for the tabs and drew them by hand, which is why *they were not on the
+  screen at all*: a fifteen-sheet workbook with no way to reach sheet two.
+  `shell::tests` now asserts the centre cannot overlap the status panel.
+- Watch item: **a window can open bigger than the screen.**
+  `ViewportBuilder::with_maximized` is dropped when an explicit inner size is
+  given beside it, and "1440 x 900" is *logical* — 2160 x 1350 at 150% scaling.
+  The window then hides its own bottom edge behind the taskbar, which is where
+  the sheet tabs live. The shell sends `ViewportCommand::Maximized` for the
+  first few frames instead, because the very first frame is too early.
+- **Type is loaded from the system.** `ui-kit::fonts` registers twelve families
+  — sans, serif, mono × regular, bold, italic, bold-italic — from the machine's
+  own font files, and the grid asks for the one the cell's style names. The
+  synthetic bold (the same glyphs stamped twice, half a pixel apart) is gone.
+  Watch item: **epaint panics rather than substituting for a family that was
+  never registered**, so anything driving the grid without the shell has to call
+  `fonts::register` first; the grid's own tests do.
+- Watch item: **a row with no stored height is not a default-height row.** Excel
+  measures it at paint time, so a cell holding three lines has no `ht` in the
+  file at all. Read as the default, all three lines draw in the space of one and
+  spill over the rows above and below — legible, if you squint, as two different
+  rows of the spreadsheet at once. `axis::auto_row_heights` fits them.
+- **The sheet view is part of the document.** `SheetView` carries the zoom, the
+  gridline and heading switches, the selection, the scrolled-to cell and the tab
+  colour; `Workbook::active_sheet` carries which tab was showing. A workbook now
+  opens where it was closed. Watch item: **a frozen sheet writes one
+  `<selection>` per pane** and only the one matching `activePane` is the real
+  one — the first is usually the frozen headings. Watch item: **`topLeftCell` is
+  measured from A1 while the scroll offset is measured from the frozen split**,
+  so it has to be subtracted or the sheet opens scrolled past everything the
+  freeze existed to keep on screen.
+- **The grid has scrollbars, and they are sized to the used range** rather than
+  to the sheet. A thumb proportional to 1,048,576 rows is a two-pixel sliver
+  representing a document that ends on row 354.
+- Watch item: **the cell canvas is white whatever the chrome does.** A cell with
+  no fill is paper. The workbook chose black on white; tinting the canvas to
+  match a dark application theme shows the user a document they did not make,
+  and a themed heading resolved against Excel's light scheme vanishes on it.
+- Watch item: **toolbar icons are drawn, not typed.** `⏴`, `⏎`, `↶` and the rest
+  live in Unicode blocks that Arial, Segoe UI, and the fonts egui ships all
+  decline to cover, so they render as hollow boxes — silently, with the code
+  compiling and the tests passing. `icons.rs` draws them from lines and
+  rectangles instead. The four that genuinely are letters are drawn in the real
+  bold and italic faces, so the toolbar is its own preview.
+- The status bar reports Excel's own set — average, sum, count, min, max — over
+  the selection, computed from the sheet's *stored* cells rather than from the
+  selected addresses, because selecting a column selects a million of them.
+- Also landed: a name box that navigates (an address, a range, or a defined
+  name), merge, freeze, hide/unhide, fit-to-contents, autosum, a right-click
+  menu over the grid, Ctrl+PageUp/PageDown between sheets, and a font-family
+  control.
+- Watch item: **`recalc_against_excel` skips volatile functions.** A cached
+  `TODAY()` agrees with the engine on the day the corpus was written and
+  disagrees every day after, which is a fault in the comparison.
+- Known limits, stated rather than hidden: icon sets are still not drawn, 3-D
+  charts are drawn flat, stacked text (rotation 255) is drawn upright, and
+  `Group 0`-style outline grouping is read but its collapse controls are not
+  drawn.
+
 - Watch item: **adding or removing a sheet has no writer.** `flush` walks the
   `<sheet>` entries in the workbook part and rewrites the parts they name, so a
   sheet the model grew after the package was built has nowhere to be written.
