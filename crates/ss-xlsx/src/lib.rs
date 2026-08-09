@@ -123,7 +123,9 @@ fn build(package: &Package) -> Result<Workbook> {
                         &sst,
                         &mut wb.strings,
                     )?;
-                    sheet.charts = read_charts(package, part_name, extras.drawing.as_deref())?;
+                    let drawn = read_drawing(package, part_name, extras.drawing.as_deref())?;
+                    sheet.charts = drawn.charts;
+                    sheet.pictures = drawn.pictures;
                     sheet.pivots = read_pivots(package, part_name)?;
                 }
             }
@@ -140,29 +142,40 @@ fn build(package: &Package) -> Result<Workbook> {
     Ok(wb)
 }
 
-/// Follows worksheet -> drawing -> chart and reads whatever is at the end.
+/// Everything one drawing part anchors to a sheet.
+#[derive(Default)]
+struct Drawn {
+    charts: Vec<ss_model::Chart>,
+    pictures: Vec<ss_model::Picture>,
+}
+
+/// Follows worksheet -> drawing -> whatever is at the end, and reads it.
 ///
 /// Two relationship hops, and a failure at any of them is silence rather than
 /// an error: a chart we cannot read is a chart we do not draw, and the part is
 /// preserved either way. Refusing to open the workbook over it would be much
 /// worse than showing it without its charts.
-fn read_charts(
+///
+/// Charts and pictures are read in one pass because they share the drawing:
+/// one `<xdr:wsDr>` holds both, and which is which is settled by the content
+/// type of the part each anchor points at, not by the anchor itself.
+fn read_drawing(
     package: &Package,
     sheet_part: &ooxml::PartName,
     drawing_rel: Option<&str>,
-) -> Result<Vec<ss_model::Chart>> {
+) -> Result<Drawn> {
     let Some(rel_id) = drawing_rel else {
-        return Ok(Vec::new());
+        return Ok(Drawn::default());
     };
     let Some(drawing_name) = resolve(package, sheet_part, rel_id) else {
-        return Ok(Vec::new());
+        return Ok(Drawn::default());
     };
     let Some(drawing_part) = package.part(&drawing_name) else {
-        return Ok(Vec::new());
+        return Ok(Drawn::default());
     };
 
     let anchored = drawing::parse(drawing_name.as_str(), drawing_part.data())?;
-    let mut charts = Vec::new();
+    let mut drawn = Drawn::default();
     for found in anchored {
         let Some(target) = resolve(package, &drawing_name, &found.rel_id) else {
             continue;
@@ -170,8 +183,18 @@ fn read_charts(
         let Some(part) = package.part(&target) else {
             continue;
         };
-        // The relationship may point at a picture or an OLE object just as
-        // easily as at a chart. The content type is what says which.
+        // The relationship may point at a chart, a picture, or an OLE object.
+        // The content type is what says which.
+        if part.content_type.starts_with("image/") {
+            drawn.pictures.push(ss_model::Picture {
+                part: target.as_str().to_string(),
+                name: found.name,
+                anchor: found.anchor,
+                data: std::sync::Arc::from(part.data()),
+                content_type: part.content_type.clone(),
+            });
+            continue;
+        }
         if !part.content_type.contains("chart") {
             continue;
         }
@@ -179,7 +202,7 @@ fn read_charts(
         let Some(kind) = body.kind else {
             continue;
         };
-        charts.push(ss_model::Chart {
+        drawn.charts.push(ss_model::Chart {
             part: target.as_str().to_string(),
             anchor: found.anchor,
             kind,
@@ -191,7 +214,7 @@ fn read_charts(
             series: body.series,
         });
     }
-    Ok(charts)
+    Ok(drawn)
 }
 
 /// A relationship id, resolved against the part that declared it.

@@ -130,6 +130,11 @@ pub struct Sheet {
     /// Charts anchored to this sheet. A view over parts kept verbatim, never a
     /// replacement for them.
     pub charts: Vec<crate::chart::Chart>,
+    /// Pictures anchored to this sheet — logos, diagrams, screenshots.
+    ///
+    /// Kept apart from charts because they are drawn rather than plotted, and
+    /// because a sheet with no chart very often still has a masthead.
+    pub pictures: Vec<crate::picture::Picture>,
     /// Pivot tables anchored to this sheet, read so that an editor can leave
     /// their region alone. Preserved verbatim, never written.
     pub pivots: Vec<crate::pivot::PivotTable>,

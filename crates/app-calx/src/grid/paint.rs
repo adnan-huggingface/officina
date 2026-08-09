@@ -165,6 +165,7 @@ impl GridView {
         self.ensure_layout(book, sheet);
         self.ensure_conditional(book, sheet);
         self.ensure_summary(book);
+        self.textures.ensure(ui.ctx(), &sheet.pictures);
         let cached = self.layout.take().expect("just ensured");
         let layout = &cached.2;
         let conditional = self.conditional.take().expect("just ensured");
@@ -644,6 +645,18 @@ impl GridView {
                 _ => cell.rect.center().y - galley.size().y / 2.0,
             };
             paint_text(&painter, egui::pos2(x, y), galley, color);
+        }
+
+        // Pictures over the cells and under the charts, which is the order
+        // Excel draws them in when a chart is dropped on top of a logo. A
+        // masthead is not decoration to be skipped: on a form sheet it is the
+        // heading, and leaving it out shows a document nobody wrote.
+        for picture in &sheet.pictures {
+            let rect = super::chart::rect_of(layout, &picture.anchor, pane.rect, pane.scroll);
+            if !rect.intersect(pane.rect).is_positive() {
+                continue;
+            }
+            super::picture::draw(&painter, rect, picture, &self.textures, palette.grid);
         }
 
         // Charts over everything the cells drew, and under the cursor outline.

@@ -18,6 +18,7 @@ pub mod axis;
 pub mod chart;
 pub mod editor;
 pub mod paint;
+pub mod picture;
 pub mod selection;
 
 use ss_formula::cond::{Effect, Formatting, Overlay};
@@ -607,6 +608,9 @@ pub struct GridView {
     /// recomputed when the selection changes rather than every frame.
     pub summary: Summary,
     pub(crate) summarized: Option<(usize, u32, Vec<CellRange>)>,
+    /// Pictures decoded and uploaded, by package part. Not part of the
+    /// document: a cache of what the document's bytes mean on this GPU.
+    pub(crate) textures: picture::Textures,
 }
 
 /// What the status bar says about the selection.
@@ -678,6 +682,7 @@ impl Default for GridView {
             bars: paint::Bars::default(),
             summary: Summary::default(),
             summarized: None,
+            textures: picture::Textures::default(),
         }
     }
 }

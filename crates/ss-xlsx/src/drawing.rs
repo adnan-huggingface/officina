@@ -23,6 +23,9 @@ pub(crate) struct Anchored {
     pub anchor: Anchor,
     /// `r:id` on `<c:chart>`, `<a:blip>`, or whatever the frame carries.
     pub rel_id: String,
+    /// `<xdr:cNvPr name>` — "Picture 3", "Chart 1", or whatever it was renamed
+    /// to. The only human-readable name a drawing has.
+    pub name: String,
 }
 
 /// Which corner of an anchor the reader is inside.
@@ -46,6 +49,7 @@ pub(crate) fn parse(part: &str, data: &[u8]) -> Result<Vec<Anchored>> {
     let mut extent = (0i64, 0i64);
     let mut origin = (0i64, 0i64);
     let mut rel_id: Option<String> = None;
+    let mut name = String::new();
     let mut corner = Corner::None;
     let mut field: Option<&'static str> = None;
     let mut text = String::new();
@@ -67,6 +71,14 @@ pub(crate) fn parse(part: &str, data: &[u8]) -> Result<Vec<Anchored>> {
                     extent = (0, 0);
                     origin = (0, 0);
                     rel_id = None;
+                    name.clear();
+                }
+                b"cNvPr" => {
+                    if name.is_empty() {
+                        if let Some(raw) = attr_raw(e, b"name") {
+                            name = String::from_utf8_lossy(&raw).into_owned();
+                        }
+                    }
                 }
                 b"from" => corner = Corner::From,
                 b"to" => corner = Corner::To,
@@ -139,7 +151,11 @@ pub(crate) fn parse(part: &str, data: &[u8]) -> Result<Vec<Anchored>> {
                                 height: extent.1,
                             },
                         };
-                        out.push(Anchored { anchor, rel_id: id });
+                        out.push(Anchored {
+                            anchor,
+                            rel_id: id,
+                            name: std::mem::take(&mut name),
+                        });
                     }
                     kind = None;
                 }
@@ -221,6 +237,12 @@ mod tests {
         // part two.
         let found = parse("drawing1.xml", DRAWING.as_bytes()).expect("parses");
         assert_ne!(found[0].rel_id, "2");
+    }
+
+    #[test]
+    fn a_drawing_keeps_the_name_it_was_given() {
+        let found = parse("drawing1.xml", DRAWING.as_bytes()).expect("parses");
+        assert_eq!(found[0].name, "Chart 1");
     }
 
     #[test]

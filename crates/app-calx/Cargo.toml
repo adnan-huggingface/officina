@@ -21,3 +21,6 @@ ss-xlsx.workspace = true
 ss-csv.workspace = true
 # Default features: the XDG portal on Linux, so a build needs no GTK headers.
 rfd = "0.15"
+# Only the formats Excel actually embeds. The default feature set pulls in a
+# dozen decoders for formats no xlsx has ever contained.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp"] }

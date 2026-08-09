@@ -49,7 +49,7 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[-]` deferred
   reprinting them; `write::splice` is the primitive that makes that possible, and
   everything else in the module is built on it. `rfd` is Calx's file dialog, on
   default features so a Linux build needs the XDG portal rather than GTK headers.
-- Workspace total is **571 tests**, all green;
+- Workspace total is **582 tests**, all green;
   `cargo clippy --workspace --all-targets -- -D warnings` and
   `cargo fmt --all --check` are both clean.
 - `ss-model` grew four modules across C11–C14: `color` (the four spellings of
@@ -214,10 +214,27 @@ to a screenshot of the same file in Excel.
 - Watch item: **`recalc_against_excel` skips volatile functions.** A cached
   `TODAY()` agrees with the engine on the day the corpus was written and
   disagrees every day after, which is a fault in the comparison.
+- **Anchored pictures are drawn.** A worksheet points at a drawing, and that
+  drawing holds pictures as readily as charts — `read_drawing` now follows both
+  branches and settles which is which by the content type of the part at the
+  end. Watch item: **a heading is not always a cell.** The masthead of the
+  reference workbook's first sheet is a PNG anchored over four empty rows, so a
+  reader that skips images shows a form with nothing at the top of it, which
+  reads as a fault in the file rather than in the reader.
+  - The bytes are shared (`Arc<[u8]>`) because a `Workbook` is cloned for undo,
+    and decoded once per *part* rather than per anchor — a logo repeated across
+    fifteen sheets is one texture upload. A part that fails to decode is
+    remembered as a failure, so nothing retries a broken PNG sixty times a
+    second, and a box is drawn where it would have been.
+  - The image is fitted into its anchor rather than stretched to fill it. Excel
+    writes the anchor from the picture's real size, so on a file Excel wrote the
+    two agree; but a two-cell anchor is tied to the columns, and a column we
+    measure a shade differently would otherwise distort a company's logo.
 - Known limits, stated rather than hidden: icon sets are still not drawn, 3-D
-  charts are drawn flat, stacked text (rotation 255) is drawn upright, and
+  charts are drawn flat, stacked text (rotation 255) is drawn upright,
   `Group 0`-style outline grouping is read but its collapse controls are not
-  drawn.
+  drawn, and a picture's own cropping, rotation and effects are ignored — the
+  image is drawn whole and upright.
 
 - Watch item: **adding or removing a sheet has no writer.** `flush` walks the
   `<sheet>` entries in the workbook part and rewrites the parts they name, so a
