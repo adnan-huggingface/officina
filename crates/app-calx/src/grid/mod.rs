@@ -314,12 +314,16 @@ fn plan_cell(
     })
 }
 
-/// Works out what a cell actually looks like: its own style, the style its row
-/// or column carries, and then whatever a conditional format overrides.
+/// Works out what a cell actually looks like: the table it is in, then its own
+/// style, the style its row or column carries, and then whatever a conditional
+/// format overrides.
 ///
-/// The precedence for colour is worth stating because all three can disagree:
+/// The precedence for colour is worth stating because all four can disagree:
 /// a conditional format wins over the number format's own colour (the `[Red]`
-/// in `0.00;[Red]-0.00`), which wins over the font's.
+/// in `0.00;[Red]-0.00`), which wins over the font's, which wins over the
+/// table's. The table is *underneath* everything, which is what makes a table
+/// style visible at all: the cells of a formatted table usually carry no style
+/// of their own, and the ones that do have chosen to differ from it.
 pub fn look_at(book: &Workbook, sheet: &Sheet, at: CellRef, effect: Option<&Effect>) -> CellLook {
     let styles = &book.styles;
     let theme = styles.theme();
@@ -349,6 +353,31 @@ pub fn look_at(book: &Workbook, sheet: &Sheet, at: CellRef, effect: Option<&Effe
             edge(border.bottom, theme),
         ],
     };
+
+    // A table style shows through wherever the cell says nothing. Bold is a
+    // union rather than an override: a heading's own font is very often plain
+    // Arial 10, and letting `bold = false` win would erase the header row.
+    if let Some(table) = table_look(book, sheet, at, theme) {
+        if look.fill.is_none() {
+            look.fill = table.fill.as_ref().and_then(|f| f.shade(theme));
+        }
+        if look.text.is_none() {
+            look.text = table.color.and_then(|c| c.resolve(theme));
+        }
+        look.bold |= table.bold.unwrap_or(false);
+        if let Some(border) = table.border {
+            for (slot, edge_of) in [
+                (LEFT, border.left),
+                (RIGHT, border.right),
+                (TOP, border.top),
+                (BOTTOM, border.bottom),
+            ] {
+                if look.edges[slot].is_none() {
+                    look.edges[slot] = edge(edge_of, theme);
+                }
+            }
+        }
+    }
 
     if let Some(effect) = effect {
         let dxf = &effect.dxf;
@@ -384,6 +413,49 @@ pub fn look_at(book: &Workbook, sheet: &Sheet, at: CellRef, effect: Option<&Effe
         }
     }
     look
+}
+
+/// What the table covering a cell, if any, says it should look like.
+///
+/// The `dxf` the *file* carries for the band wins over the built-in style's
+/// own idea, because it is the one thing here that is not an approximation.
+fn table_look(
+    book: &Workbook,
+    sheet: &Sheet,
+    at: CellRef,
+    theme: &ss_model::Theme,
+) -> Option<ss_model::style::Dxf> {
+    let table = sheet.tables.iter().find(|t| t.contains(at))?;
+    let mut look = table.look(at).unwrap_or_default();
+
+    let id = match table.band_at(at)? {
+        ss_model::Band::Header => table.header_dxf,
+        ss_model::Band::Totals => table.totals_dxf,
+        ss_model::Band::Body { .. } => table.data_dxf,
+    };
+    if let Some(over) = id.and_then(|id| book.styles.dxf(id)) {
+        // A dxf attribute is present or it is absent — but `<color auto="1"/>`
+        // is *present and says nothing*, and so is a fill with no pattern.
+        // Excel writes exactly that on a table's header dxf, and taking it as
+        // an override paints the white headings of a black header row in
+        // "automatic", which is black on black.
+        if over.bold.is_some() {
+            look.bold = over.bold;
+        }
+        if over.italic.is_some() {
+            look.italic = over.italic;
+        }
+        if over.color.is_some_and(|c| c.resolve(theme).is_some()) {
+            look.color = over.color;
+        }
+        if over.fill.as_ref().is_some_and(|f| f.shade(theme).is_some()) {
+            look.fill = over.fill.clone();
+        }
+        if over.border.is_some() {
+            look.border = over.border;
+        }
+    }
+    (!look.is_empty()).then_some(look)
 }
 
 fn edge(edge: Edge, theme: &ss_model::Theme) -> Option<PaintEdge> {
@@ -972,6 +1044,137 @@ mod tests {
             &Formatting::empty(),
         );
         assert!(plan.cells.iter().all(|c| !c.text.starts_with("b0000")));
+    }
+
+    /// The CRC calculator sheet in miniature: a table whose cells carry no
+    /// style at all, and a style name that decides how all of it looks.
+    fn book_with_a_styled_table() -> Workbook {
+        let mut book = Workbook::blank();
+        let heading = book.strings.intern("Fix Nibble");
+        let sheet = book.sheet_mut(0).expect("sheet 0");
+        sheet.set(
+            CellRef::new(6, 4),
+            Cell {
+                value: CellValue::Text(heading),
+                ..Cell::default()
+            },
+        );
+        sheet.set(
+            CellRef::new(7, 4),
+            Cell {
+                value: CellValue::Number(3.0),
+                ..Cell::default()
+            },
+        );
+        sheet.tables.push(ss_model::Table {
+            part: "/xl/tables/table1.xml".into(),
+            name: "Table1".into(),
+            range: CellRange::new(CellRef::new(6, 4), CellRef::new(7, 12)),
+            header_rows: 1,
+            totals_rows: 0,
+            style: ss_model::TableStyle {
+                name: Some("TableStyleMedium15".into()),
+                row_stripes: true,
+                ..ss_model::TableStyle::default()
+            },
+            header_dxf: None,
+            data_dxf: None,
+            totals_dxf: None,
+        });
+        book
+    }
+
+    #[test]
+    fn a_table_style_reaches_cells_that_carry_no_style_at_all() {
+        // Everything visible about this table is a name in tables/table1.xml.
+        // The cells themselves say nothing, so a reader that only looks at
+        // styles.xml draws bare text on white.
+        let book = book_with_a_styled_table();
+        let sheet = book.sheet(0).expect("sheet 0");
+        let look = look_at(&book, sheet, CellRef::new(6, 4), None);
+        assert_eq!(look.fill, Some([0x00, 0x00, 0x00]), "the header is black");
+        assert_eq!(look.text, Some([0xFF, 0xFF, 0xFF]), "and its text white");
+        assert!(look.bold, "a plain Arial heading is still bold in a table");
+
+        let body = look_at(&book, sheet, CellRef::new(7, 4), None);
+        assert_eq!(body.fill, Some([0xD9, 0xD9, 0xD9]));
+        assert!(!body.bold);
+    }
+
+    #[test]
+    fn a_dxf_that_says_automatic_is_not_an_override() {
+        // Excel writes `<dxf><font>…<color auto="1"/>…</font></dxf>` as a
+        // table's header dxf. It is present and it says nothing. Taken as an
+        // override it paints the white headings of a black header row in
+        // "automatic", which on black is nothing at all.
+        let mut book = book_with_a_styled_table();
+        let id = book.styles.add_dxf(ss_model::style::Dxf {
+            color: Some(ss_model::Color::Auto),
+            ..ss_model::style::Dxf::default()
+        });
+        book.sheet_mut(0).expect("sheet 0").tables[0].header_dxf = Some(id);
+
+        let sheet = book.sheet(0).expect("sheet 0");
+        let look = look_at(&book, sheet, CellRef::new(6, 4), None);
+        assert_eq!(look.text, Some([0xFF, 0xFF, 0xFF]));
+    }
+
+    #[test]
+    fn a_dxf_that_does_say_something_wins_over_the_built_in_style() {
+        // The one part of a table's appearance the file itself carries.
+        let mut book = book_with_a_styled_table();
+        let id = book.styles.add_dxf(ss_model::style::Dxf {
+            color: Some(ss_model::Color::rgb(0xFF, 0x00, 0x00)),
+            ..ss_model::style::Dxf::default()
+        });
+        book.sheet_mut(0).expect("sheet 0").tables[0].header_dxf = Some(id);
+
+        let sheet = book.sheet(0).expect("sheet 0");
+        let look = look_at(&book, sheet, CellRef::new(6, 4), None);
+        assert_eq!(look.text, Some([0xFF, 0x00, 0x00]));
+    }
+
+    #[test]
+    fn a_cells_own_style_wins_over_the_table_it_is_in() {
+        let mut book = book_with_a_styled_table();
+        let yellow = book.styles.restyle(StyleId::DEFAULT, |look| {
+            look.fill = ss_model::Fill::solid(ss_model::Color::rgb(0xFF, 0xEB, 0x9C))
+        });
+        let sheet = book.sheet_mut(0).expect("sheet 0");
+        sheet.set(
+            CellRef::new(7, 4),
+            Cell {
+                value: CellValue::Number(3.0),
+                style: yellow,
+                ..Cell::default()
+            },
+        );
+        let sheet = book.sheet(0).expect("sheet 0");
+        let look = look_at(&book, sheet, CellRef::new(7, 4), None);
+        assert_eq!(
+            look.fill,
+            Some([0xFF, 0xEB, 0x9C]),
+            "a cell that has chosen a fill has chosen to differ from the table"
+        );
+    }
+
+    #[test]
+    fn an_empty_cell_inside_a_table_is_still_drawn() {
+        // The nine header cells and nine body cells of the reference table are
+        // mostly empty. Skipping them leaves a shaded band with holes in it.
+        let book = book_with_a_styled_table();
+        let sheet = book.sheet(0).expect("sheet 0");
+        let layout = Layout::for_sheet(&book, sheet, 1.0);
+        let plan = plan(
+            &book,
+            sheet,
+            &layout,
+            viewport(),
+            Scroll::default(),
+            &Formatting::empty(),
+        );
+        let filled = plan.cells.iter().filter(|c| c.look.fill.is_some()).count();
+        assert_eq!(filled, 18, "nine header cells and nine body cells");
     }
 
     #[test]

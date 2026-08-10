@@ -20,6 +20,7 @@ pub mod shift;
 pub mod store;
 pub mod strings;
 pub mod style;
+pub mod table;
 pub mod workbook;
 
 pub use cell::{column_index, column_name, Cell, CellError, CellRef, CellValue, FormulaId};
@@ -37,4 +38,5 @@ pub use style::{
     Alignment, Border, BorderStyle, CellFormat, Dxf, Edge, Fill, Font, HAlign, Look, Pattern,
     StyleId, StyleTable, Underline, VAlign,
 };
+pub use table::{Band, Table, TableStyle};
 pub use workbook::{CellRange, DefinedName, Sheet, SheetKind, SheetView, Workbook};

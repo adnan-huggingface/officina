@@ -18,6 +18,7 @@ mod pivot;
 mod shared_strings;
 mod sheet;
 mod styles;
+mod table;
 mod theme;
 mod workbook_part;
 mod write;
@@ -126,6 +127,7 @@ fn build(package: &Package) -> Result<Workbook> {
                     let drawn = read_drawing(package, part_name, extras.drawing.as_deref())?;
                     sheet.charts = drawn.charts;
                     sheet.pictures = drawn.pictures;
+                    sheet.tables = read_tables(package, part_name)?;
                     sheet.pivots = read_pivots(package, part_name)?;
                 }
             }
@@ -263,6 +265,45 @@ fn resolve(package: &Package, from: &ooxml::PartName, rel_id: &str) -> Option<oo
     let rels = package.relationships(from).ok()?;
     let rel = rels.iter().find(|r| r.id == rel_id)?;
     rel.resolve(from)?.ok()
+}
+
+/// Reads the tables a worksheet points at.
+///
+/// Found by relationship type, like pivots: a worksheet does not name its
+/// tables from inside `sheetData`. A part that will not parse is skipped
+/// silently — it is preserved either way, and a table we cannot read costs the
+/// user its shading, not their file.
+fn read_tables(package: &Package, sheet_part: &ooxml::PartName) -> Result<Vec<ss_model::Table>> {
+    let Ok(rels) = package.relationships(sheet_part) else {
+        return Ok(Vec::new());
+    };
+    let targets: Vec<ooxml::PartName> = rels
+        .iter()
+        .filter(|rel| rel.rel_type.ends_with("/table"))
+        .filter_map(|rel| rel.resolve(sheet_part)?.ok())
+        .collect();
+
+    let mut out = Vec::new();
+    for name in targets {
+        let Some(part) = package.part(&name) else {
+            continue;
+        };
+        let Some(parsed) = table::parse(name.as_str(), part.data())? else {
+            continue;
+        };
+        out.push(ss_model::Table {
+            part: name.as_str().to_string(),
+            name: parsed.name,
+            range: parsed.range,
+            header_rows: parsed.header_rows,
+            totals_rows: parsed.totals_rows,
+            style: parsed.style,
+            header_dxf: parsed.header_dxf,
+            data_dxf: parsed.data_dxf,
+            totals_dxf: parsed.totals_dxf,
+        });
+    }
+    Ok(out)
 }
 
 /// Reads whatever pivot tables a worksheet points at.

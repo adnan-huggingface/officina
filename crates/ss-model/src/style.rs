@@ -726,6 +726,21 @@ impl StyleTable {
         &self.dxfs
     }
 
+    /// Adds a differential format and returns the index that names it.
+    ///
+    /// Deduplicated, because the same override arriving twice — a conditional
+    /// format copied to another range, a table given the style of its
+    /// neighbour — should not grow the table it is written back from.
+    pub fn add_dxf(&mut self, dxf: Dxf) -> u32 {
+        match self.dxfs.iter().position(|existing| *existing == dxf) {
+            Some(index) => index as u32,
+            None => {
+                self.dxfs.push(dxf);
+                self.dxfs.len() as u32 - 1
+            }
+        }
+    }
+
     pub fn named_styles(&self) -> &[NamedStyle] {
         &self.named
     }

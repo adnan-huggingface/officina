@@ -49,7 +49,7 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[-]` deferred
   reprinting them; `write::splice` is the primitive that makes that possible, and
   everything else in the module is built on it. `rfd` is Calx's file dialog, on
   default features so a Linux build needs the XDG portal rather than GTK headers.
-- Workspace total is **604 tests**, all green;
+- Workspace total is **621 tests**, all green;
   `cargo clippy --workspace --all-targets -- -D warnings` and
   `cargo fmt --all --check` are both clean.
 - `ss-model` grew four modules across C11–C14: `color` (the four spellings of
@@ -270,11 +270,39 @@ to a screenshot of the same file in Excel.
   the reference workbook's Message Summary is exactly this, and it read as an
   empty grey band. `plan` now makes a second pass over `sheet.merges` for the
   ones that *reach into* the pane without starting in it.
+- **Table styles are read and drawn.** A table is the one place where a cell's
+  appearance is not in `styles.xml` at all: `<tableStyleInfo
+  name="TableStyleMedium15"/>` names a style that lives *in Excel*, and the
+  cells it covers usually carry no style of their own. The CRC calculator sheet
+  of the reference workbook is entirely this — a black header row with white
+  bold headings over a grey data row — and we drew bare text on white.
+  - What comes from the file is exact: the range, the header and totals row
+    counts, the four emphases, and the `dxf` overrides. What is *not* in the
+    file is the built-in style's palette. Excel's definitions are not published
+    in the package, and Excel on this machine is unlicensed so they could not be
+    measured through COM either — so `ss_model::table` is our rendering of the
+    gallery rather than a copy of it, in the same class of approximation as
+    drawing a 3-D chart flat. `TableStyleMedium15` is the one checked against
+    Excel pixel for pixel, off the user's own screenshot: solid black header,
+    white bold text, stripes in `#D9D9D9`, which is black lightened by 0.85.
+    Colours come back as *theme* colours, so a workbook with its own scheme
+    gets its own palette rather than ours.
+  - Watch item: **`<color auto="1"/>` in a dxf is present and says nothing.**
+    Excel writes exactly that as a table's `headerRowDxfId`. Taken as an
+    override it repaints the white headings of a black header row in
+    "automatic" — black on black, which reads as the text having vanished. A
+    dxf attribute now only overrides when it resolves to something.
+  - The table sits *under* the cell's own style, which is what makes it visible
+    at all: a cell that has chosen a fill has chosen to differ from its table.
+    Bold is the exception and is a union — a heading's own font is very often
+    plain Arial 10, and letting `bold = false` win would erase the header row.
 - Known limits, stated rather than hidden: icon sets are still not drawn, 3-D
   charts are drawn flat, stacked text (rotation 255) is drawn upright,
   `Group 0`-style outline grouping is read but its collapse controls are not
   drawn, and a picture's own cropping, rotation and effects are ignored — the
-  image is drawn whole and upright. A picture cannot yet be *added*, only moved,
+  image is drawn whole and upright, custom table styles defined in the workbook
+  are not read (only the built-in names are recognised) and column stripes are
+  not drawn. A picture cannot yet be *added*, only moved,
   resized and removed: authoring a drawing part, a media part and two
   relationships from nothing is the writer work that has not been done.
 

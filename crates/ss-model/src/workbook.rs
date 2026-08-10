@@ -135,6 +135,12 @@ pub struct Sheet {
     /// Kept apart from charts because they are drawn rather than plotted, and
     /// because a sheet with no chart very often still has a masthead.
     pub pictures: Vec<crate::picture::Picture>,
+    /// Tables (`ListObject`s) on this sheet.
+    ///
+    /// Read because a table style is the one piece of a cell's appearance that
+    /// is not in `styles.xml`: the cells of a formatted table are very often
+    /// unstyled, and everything visible about them comes from a style name.
+    pub tables: Vec<crate::table::Table>,
     /// Pivot tables anchored to this sheet, read so that an editor can leave
     /// their region alone. Preserved verbatim, never written.
     pub pivots: Vec<crate::pivot::PivotTable>,
