@@ -5,4 +5,9 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[features]
+# Builds compound files. For tests only — see `src/fixture.rs`. Enabled as a
+# dev-dependency by the crates that read what this container holds.
+test-support = []
+
 [dependencies]

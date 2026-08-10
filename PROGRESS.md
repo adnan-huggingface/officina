@@ -9,7 +9,7 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[-]` deferred
 
 ## Current state
 
-**Chunk:** C15 — the legacy .xls reader (C0–C14 done, plus a UX pass)
+**Chunk:** C16 — the Word model (C0–C15 done, plus a UX pass)
 **Status:** not started
 **Handoff note:**
 
@@ -49,7 +49,7 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[-]` deferred
   reprinting them; `write::splice` is the primitive that makes that possible, and
   everything else in the module is built on it. `rfd` is Calx's file dialog, on
   default features so a Linux build needs the XDG portal rather than GTK headers.
-- Workspace total is **621 tests**, all green;
+- Workspace total is **675 tests**, all green;
   `cargo clippy --workspace --all-targets -- -D warnings` and
   `cargo fmt --all --check` are both clean.
 - `ss-model` grew four modules across C11–C14: `color` (the four spellings of
@@ -151,6 +151,35 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[-]` deferred
 - Watch item: **typing into a pivot table's region leaves the file
   self-contradictory** — Excel discards the edit at the next refresh. Calx
   refuses; `Sheet::pivot_at` is the check.
+- `cfb-reader` and `ss-xls` are C15: the legacy `.xls` reader, read-only. There
+  is **no `.xls` in this repository** — the corpus is generated locally rather
+  than downloaded — so the unit fixtures are laid out byte by byte from the
+  record layouts by `cfb_reader::fixture` (behind the `test-support` feature)
+  and the crate's own test module. Independent confirmation comes from
+  `C:\Program Files\Microsoft Office\root\Office16\SAMPLES\SOLVSAMP.XLS`, which
+  Office installs: seven sheets, 160 defined names, 129 formulas, all of which
+  recompute to the values Excel cached. Re-run it after touching either crate.
+- Watch item: **`FONT` index 4 does not exist.** The records are numbered
+  0, 1, 2, 3, 5, 6, … so an `XF` saying `ifnt = 7` means the sixth record. Read
+  as a plain index every cell in a workbook with five or more fonts is drawn in
+  the one before the right one, which reads as a rendering bug.
+- Watch item: **a shared formula's column offset is eight bits and its row
+  offset is sixteen.** `FF` in the column field is one column *left*;
+  sign-extended from the fourteen bits the field nominally has it is 255
+  columns *right*, which lands in empty space — so the formula comes back
+  well-formed and pointing at nothing. This is the one thing the hand-built
+  fixtures did not catch and the real file did.
+- Watch item: **the shared string table's `CONTINUE` boundary carries a fresh
+  encoding byte.** A string may be cut in half, and its second half may be
+  wide where its first half was compressed. Join the payloads and parse the
+  result as one buffer and every string past the first split is mojibake, with
+  no error anywhere.
+- Watch item: **an unreadable formula keeps its cached value and loses only its
+  text.** `func::VAR` marks every function whose fixed arity is not certain, and
+  a `ptgFunc` naming one abandons the formula rather than popping a guessed
+  number of operands. A cell showing the right number with nothing behind it is
+  a limitation; a cell showing a formula that is subtly not the one in the file
+  is not.
 ### The UX pass (after C14, before C15)
 
 The application was rebuilt around the complaint that it was unusable on a real
@@ -305,6 +334,16 @@ to a screenshot of the same file in Excel.
   not drawn. A picture cannot yet be *added*, only moved,
   resized and removed: authoring a drawing part, a media part and two
   relationships from nothing is the writer work that has not been done.
+- Known limits of the `.xls` reader, stated rather than hidden: charts,
+  drawings, pictures, comments, conditional formatting, data validation,
+  autofilters, pivot tables, hyperlinks and print settings are all in the
+  format and none of them are read — each is a feature `ss-xlsx` reads from a
+  completely different encoding, and each is its own body of work. A formula
+  containing an array constant (`ptgArray`) or a function outside the built-in
+  table keeps its cached value and loses its text. A reference into another
+  workbook does the same, because the linked file's own name list is not read.
+  Nothing writes BIFF and nothing will: `DESIGN.md` §9 makes save-as-modern the
+  way out, so a legacy file opens with no path and Ctrl+S is Save As.
 
 - Watch item: **adding or removing a sheet has no writer.** `flush` walks the
   `<sheet>` entries in the workbook part and rewrites the parts they name, so a
@@ -711,9 +750,21 @@ to a screenshot of the same file in Excel.
   Pivot tables are read for their *rectangle* — the cells are already in the
   worksheet, so the grid drew them correctly all along; what it needed was to
   know not to let anyone type into them.
-- [ ] **C15. .xls reader (legacy)** — CFB container + BIFF8 records, read-only.
-      `cfb-reader` is still a stub; this is the whole of it plus the BIFF record
-      stream. Read-only by design (see Deferred).
+- [x] **C15. .xls reader (legacy)** — CFB container + BIFF8 records, read-only.
+
+  `cfb-reader` is real: header, DIFAT chain, FAT, the *mini* FAT for streams
+  below 4096 bytes, and the directory tree. `ss-xls` is the BIFF8 reader over
+  it — record stream with `CONTINUE` rejoining, the workbook globals, one
+  substream per sheet, and a `Ptg` decompiler that turns the RPN token stream
+  back into formula text.
+
+  Read-only, and permanently: a legacy file opens with no path, so Ctrl+S is
+  Save As and the format changes on the way out. That is `DESIGN.md` §9's
+  save-as-modern escape hatch, not a gap.
+
+  Verified against `SOLVSAMP.XLS`, which Microsoft ships with Office: **all 129
+  of its formulas recompute to exactly the values Excel cached in the file.**
+  That is the same check the xlsx corpus gets, on a file nobody here wrote.
 
 ## Phase 3 — Scriva (word processor) core
 

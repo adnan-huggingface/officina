@@ -126,6 +126,10 @@ impl Calx {
             self.open_delimited(path);
             return;
         }
+        if is_legacy(path) {
+            self.open_legacy(path);
+            return;
+        }
         match ss_xlsx::XlsxDocument::open(path) {
             Ok(doc) => {
                 self.doc = doc;
@@ -141,6 +145,43 @@ impl Calx {
             }
             Err(e) => self.status = format!("could not open {}: {e}", path.display()),
         }
+    }
+
+    /// Opens a legacy `.xls` workbook, which is read-only.
+    ///
+    /// Like a csv import, the path is deliberately not kept as the document's
+    /// own. Nothing writes BIFF and nothing here ever will, so Ctrl+S has to
+    /// become Save As — and saving as xlsx over the original path would be a
+    /// silent format change with the old extension still on it.
+    fn open_legacy(&mut self, path: &Path) {
+        let doc = match ss_xls::open(path) {
+            Ok(doc) => doc,
+            Err(e) => {
+                self.status = format!("could not open {}: {e}", path.display());
+                return;
+            }
+        };
+        let cells: usize = doc.workbook.sheets.iter().map(|s| s.cells.len()).sum();
+        let sheets = doc.workbook.sheets.len();
+        let active = doc.workbook.active_sheet;
+        self.doc = match ss_xlsx::XlsxDocument::new(doc.workbook) {
+            Ok(doc) => doc,
+            Err(e) => {
+                self.status = format!("could not open {}: {e}", path.display());
+                return;
+            }
+        };
+        self.path = None;
+        self.reset();
+        self.recalculate();
+        // Opened but not saveable in place: the same state a csv import leaves,
+        // so the unsaved-changes guard offers the way out.
+        self.edited = true;
+        self.grid.open_sheet(&self.doc.workbook, active);
+        self.status = format!(
+            "{} — {sheets} sheet(s), {cells} cells, read-only (save as .xlsx to edit)",
+            name_of(path)
+        );
     }
 
     /// Imports a delimited text file into a new workbook.
@@ -392,8 +433,12 @@ impl Calx {
 
     fn browse(&mut self) {
         let mut dialog = rfd::FileDialog::new()
-            .add_filter("Spreadsheets", &["xlsx", "xlsm", "csv", "tsv", "txt"])
+            .add_filter(
+                "Spreadsheets",
+                &["xlsx", "xlsm", "xls", "xlt", "csv", "tsv", "txt"],
+            )
             .add_filter("Excel workbook", &["xlsx", "xlsm"])
+            .add_filter("Excel 97-2003 workbook", &["xls", "xlt"])
             .add_filter("Delimited text", &["csv", "tsv", "txt"]);
         if let Some(current) = self.path.as_ref().and_then(|p| p.parent()) {
             dialog = dialog.set_directory(current);
@@ -2040,6 +2085,17 @@ fn is_delimited(path: &Path) -> bool {
             .map(str::to_ascii_lowercase)
             .as_deref(),
         Some("csv") | Some("tsv") | Some("tab") | Some("txt")
+    )
+}
+
+/// The binary formats Excel 97 to 2003 wrote. Read-only: see `ss_xls`.
+fn is_legacy(path: &Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|e| e.to_str())
+            .map(str::to_ascii_lowercase)
+            .as_deref(),
+        Some("xls") | Some("xlt")
     )
 }
 

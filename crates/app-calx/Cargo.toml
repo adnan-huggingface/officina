@@ -19,6 +19,7 @@ ss-model.workspace = true
 ss-formula.workspace = true
 ss-xlsx.workspace = true
 ss-csv.workspace = true
+ss-xls.workspace = true
 # Default features: the XDG portal on Linux, so a build needs no GTK headers.
 rfd = "0.15"
 # Only the formats Excel actually embeds. The default feature set pulls in a

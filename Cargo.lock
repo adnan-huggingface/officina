@@ -454,6 +454,7 @@ dependencies = [
  "ss-csv",
  "ss-formula",
  "ss-model",
+ "ss-xls",
  "ss-xlsx",
  "ui-kit",
 ]
@@ -2810,6 +2811,14 @@ dependencies = [
 [[package]]
 name = "ss-model"
 version = "0.1.0"
+
+[[package]]
+name = "ss-xls"
+version = "0.1.0"
+dependencies = [
+ "cfb-reader",
+ "ss-model",
+]
 
 [[package]]
 name = "ss-xlsx"

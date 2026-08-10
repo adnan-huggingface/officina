@@ -6,6 +6,7 @@ members = [
     "crates/ss-formula",
     "crates/ss-xlsx",
     "crates/ss-csv",
+    "crates/ss-xls",
     "crates/wp-model",
     "crates/wp-layout",
     "crates/wp-docx",
@@ -29,6 +30,7 @@ ss-model = { path = "crates/ss-model" }
 ss-formula = { path = "crates/ss-formula" }
 ss-xlsx = { path = "crates/ss-xlsx" }
 ss-csv = { path = "crates/ss-csv" }
+ss-xls = { path = "crates/ss-xls" }
 wp-model = { path = "crates/wp-model" }
 wp-layout = { path = "crates/wp-layout" }
 wp-docx = { path = "crates/wp-docx" }
