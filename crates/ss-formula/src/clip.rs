@@ -159,22 +159,101 @@ pub fn copy(book: &Workbook, sheet: usize, range: CellRange) -> Option<Clip> {
     })
 }
 
+/// Which parts of a clip a paste carries across.
+///
+/// Excel's Paste Special list, cut down to the entries that mean something
+/// different from each other. `Values` is the one worth naming: it lands the
+/// *result* a formula produced rather than the formula, which is how a sheet
+/// full of computations gets frozen into the numbers it worked out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PasteKind {
+    #[default]
+    All,
+    /// Contents, formulas included, without disturbing the target's look.
+    Formulas,
+    /// The result, as a literal. No formulas travel.
+    Values,
+    /// The look and nothing else: what is in the cells stays.
+    Formats,
+    ValuesAndFormats,
+}
+
+impl PasteKind {
+    fn contents(self) -> bool {
+        !matches!(self, PasteKind::Formats)
+    }
+    fn formulas(self) -> bool {
+        matches!(self, PasteKind::All | PasteKind::Formulas)
+    }
+    fn formats(self) -> bool {
+        matches!(
+            self,
+            PasteKind::All | PasteKind::Formats | PasteKind::ValuesAndFormats
+        )
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            PasteKind::All => "All",
+            PasteKind::Formulas => "Formulas",
+            PasteKind::Values => "Values",
+            PasteKind::Formats => "Formats",
+            PasteKind::ValuesAndFormats => "Values and formats",
+        }
+    }
+    pub const ALL: [PasteKind; 5] = [
+        PasteKind::All,
+        PasteKind::Formulas,
+        PasteKind::Values,
+        PasteKind::Formats,
+        PasteKind::ValuesAndFormats,
+    ];
+}
+
+/// The whole of a Paste Special answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PasteSpecial {
+    pub kind: PasteKind,
+    /// Rows become columns.
+    pub transpose: bool,
+    /// A blank in the clip leaves whatever is already in the target cell,
+    /// rather than emptying it.
+    pub skip_blanks: bool,
+}
+
 /// Writes a clip at `to`, tiling it if the target is a whole multiple of it.
 ///
 /// Excel tiles: copy one cell, select ten, paste, and all ten are filled. The
 /// rule is the same for blocks, and a target that is not a multiple gets one
 /// copy anchored at its top-left.
 pub fn paste(book: &mut Workbook, sheet: usize, to: CellRange, clip: &Clip) -> Change {
+    paste_special(book, sheet, to, clip, PasteSpecial::default())
+}
+
+/// A paste that carries only some of what it was given.
+pub fn paste_special(
+    book: &mut Workbook,
+    sheet: usize,
+    to: CellRange,
+    clip: &Clip,
+    how: PasteSpecial,
+) -> Change {
     if clip.rows == 0 || clip.cols == 0 {
         return Change::default();
     }
-    let down = if to.rows().is_multiple_of(clip.rows) {
-        to.rows() / clip.rows
+    // Transposing swaps the shape of the block before anything is measured
+    // against the target, so tiling counts the same way either way.
+    let (rows, cols) = if how.transpose {
+        (clip.cols, clip.rows)
+    } else {
+        (clip.rows, clip.cols)
+    };
+    let down = if to.rows().is_multiple_of(rows) {
+        to.rows() / rows
     } else {
         1
     };
-    let across = if to.cols().is_multiple_of(clip.cols) {
-        to.cols() / clip.cols
+    let across = if to.cols().is_multiple_of(cols) {
+        to.cols() / cols
     } else {
         1
     };
@@ -183,23 +262,40 @@ pub fn paste(book: &mut Workbook, sheet: usize, to: CellRange, clip: &Clip) -> C
     for tile_row in 0..down {
         for tile_col in 0..across {
             let anchor = CellRef::new(
-                to.start.row + tile_row * clip.rows,
-                to.start.col + tile_col * clip.cols,
+                to.start.row + tile_row * rows,
+                to.start.col + tile_col * cols,
             );
-            for row in 0..clip.rows {
-                for col in 0..clip.cols {
+            for row in 0..rows {
+                for col in 0..cols {
                     let at = CellRef::new(anchor.row + row, anchor.col + col);
                     if !at.is_valid() {
                         continue;
                     }
-                    let source = CellRef::new(clip.origin.row + row, clip.origin.col + col);
+                    // Under a transpose the cell at (row, col) of the result
+                    // came from (col, row) of the clip, and so did the address
+                    // its formulas were written against.
+                    let (from_row, from_col) = if how.transpose {
+                        (col, row)
+                    } else {
+                        (row, col)
+                    };
+                    let entry = clip.get(from_row, from_col);
+                    if how.skip_blanks && entry.value == ClipValue::Blank && entry.formula.is_none()
+                    {
+                        continue;
+                    }
+                    let source =
+                        CellRef::new(clip.origin.row + from_row, clip.origin.col + from_col);
+                    let existing = book.sheet(sheet).and_then(|s| s.get(at)).copied();
                     let cell = materialize(
                         book,
                         sheet,
-                        clip.get(row, col),
+                        entry,
                         source,
                         at,
                         clip.reinterpret,
+                        how.kind,
+                        existing,
                     );
                     cells.push((at, Some(cell)));
                 }
@@ -210,6 +306,11 @@ pub fn paste(book: &mut Workbook, sheet: usize, to: CellRange, clip: &Clip) -> C
 }
 
 /// Turns one clip cell into a cell of this workbook at `at`.
+///
+/// `existing` is what is already there, which the partial pastes need: Formats
+/// keeps the value and takes the look, and everything else keeps the look
+/// unless it was asked for.
+#[allow(clippy::too_many_arguments)]
 fn materialize(
     book: &mut Workbook,
     sheet: usize,
@@ -217,24 +318,39 @@ fn materialize(
     from: CellRef,
     at: CellRef,
     reinterpret: bool,
+    kind: PasteKind,
+    existing: Option<Cell>,
 ) -> Cell {
+    let existing = existing.unwrap_or_default();
+    let style = if kind.formats() {
+        clip.style
+    } else {
+        existing.style
+    };
+    if !kind.contents() {
+        // Formats only: what the cell holds is none of this paste's business,
+        // formula and all.
+        return Cell { style, ..existing };
+    }
     if reinterpret {
         if let ClipValue::Text(typed) = &clip.value {
-            return crate::edit::typed_cell(book, sheet, clip.style, typed);
+            return crate::edit::typed_cell(book, sheet, style, typed);
         }
     }
-    if let Some(text) = &clip.formula {
-        let rows = i64::from(at.row) - i64::from(from.row);
-        let cols = i64::from(at.col) - i64::from(from.col);
-        let moved = offset(text, rows, cols).unwrap_or_else(|| text.clone());
-        let id = book
-            .sheet_mut(sheet)
-            .map(|s| s.push_formula(Formula::normal(moved)));
-        return Cell {
-            value: CellValue::Blank,
-            style: clip.style,
-            formula: id,
-        };
+    if kind.formulas() {
+        if let Some(text) = &clip.formula {
+            let rows = i64::from(at.row) - i64::from(from.row);
+            let cols = i64::from(at.col) - i64::from(from.col);
+            let moved = offset(text, rows, cols).unwrap_or_else(|| text.clone());
+            let id = book
+                .sheet_mut(sheet)
+                .map(|s| s.push_formula(Formula::normal(moved)));
+            return Cell {
+                value: CellValue::Blank,
+                style,
+                formula: id,
+            };
+        }
     }
     Cell {
         value: match &clip.value {
@@ -244,7 +360,7 @@ fn materialize(
             ClipValue::Error(e) => CellValue::Error(*e),
             ClipValue::Text(t) => CellValue::Text(book.strings.intern(t)),
         },
-        style: clip.style,
+        style,
         formula: None,
     }
 }
@@ -313,9 +429,27 @@ pub fn fill(book: &mut Workbook, sheet: usize, from: CellRange, to: CellRange) -
                         value,
                         ..template.clone()
                     };
-                    materialize(book, sheet, &filled, source_at, at, false)
+                    materialize(
+                        book,
+                        sheet,
+                        &filled,
+                        source_at,
+                        at,
+                        false,
+                        PasteKind::All,
+                        None,
+                    )
                 }
-                None => materialize(book, sheet, template, source_at, at, false),
+                None => materialize(
+                    book,
+                    sheet,
+                    template,
+                    source_at,
+                    at,
+                    false,
+                    PasteKind::All,
+                    None,
+                ),
             };
             cells.push((at, Some(cell)));
         }
@@ -505,6 +639,131 @@ mod tests {
 
     fn formula(book: &Workbook, a1: &str) -> Option<String> {
         Some(book.sheets[0].formula_at(at(a1))?.text.clone())
+    }
+
+    /// A1:A2 hold 3 and 4; A3 is `=A1*A2` with its answer cached.
+    fn with_a_formula() -> Workbook {
+        let mut book = book_with(&[("A1", 3.0), ("A2", 4.0)]);
+        let id = book.sheets[0].push_formula(Formula::normal("A1*A2"));
+        book.sheets[0].set(
+            at("A3"),
+            Cell {
+                value: CellValue::Number(12.0),
+                style: StyleId::DEFAULT,
+                formula: Some(id),
+            },
+        );
+        book
+    }
+
+    #[test]
+    fn pasting_values_lands_the_answer_and_not_the_sum_that_found_it() {
+        // The whole point of Paste Values: a sheet of computations frozen into
+        // the numbers it worked out, with nothing left pointing at the cells
+        // that are about to be deleted.
+        let mut book = with_a_formula();
+        let clip = copy(&book, 0, range("A3", "A3")).expect("copied");
+        let change = paste_special(
+            &mut book,
+            0,
+            range("C1", "C1"),
+            &clip,
+            PasteSpecial {
+                kind: PasteKind::Values,
+                ..Default::default()
+            },
+        );
+        apply(&mut book, change);
+        assert_eq!(formula(&book, "C1"), None, "no formula travelled");
+        assert_eq!(shown(&book, "C1"), "12");
+
+        // And the ordinary paste still carries the formula, re-anchored.
+        let change = paste(&mut book, 0, range("D3", "D3"), &clip);
+        apply(&mut book, change);
+        assert_eq!(formula(&book, "D3").as_deref(), Some("D1*D2"));
+    }
+
+    #[test]
+    fn pasting_formats_leaves_the_contents_where_they_are() {
+        let mut book = book_with(&[("A1", 1.0), ("B1", 2.0)]);
+        // Give A1 a style nobody else has.
+        let look = book.styles.look(StyleId::DEFAULT);
+        let styled = book.styles.restyle(StyleId::DEFAULT, |l| {
+            l.font.bold = true;
+        });
+        assert_ne!(styled, StyleId::DEFAULT, "{look:?}");
+        book.sheets[0].set(
+            at("A1"),
+            Cell {
+                value: CellValue::Number(1.0),
+                style: styled,
+                formula: None,
+            },
+        );
+
+        let clip = copy(&book, 0, range("A1", "A1")).expect("copied");
+        let change = paste_special(
+            &mut book,
+            0,
+            range("B1", "B1"),
+            &clip,
+            PasteSpecial {
+                kind: PasteKind::Formats,
+                ..Default::default()
+            },
+        );
+        apply(&mut book, change);
+        assert_eq!(shown(&book, "B1"), "2", "what was there stayed");
+        assert_eq!(book.sheets[0].get(at("B1")).map(|c| c.style), Some(styled));
+    }
+
+    #[test]
+    fn transposing_turns_the_rows_into_columns_and_moves_the_formulas_with_them() {
+        let mut book = book_with(&[("A1", 1.0), ("B1", 2.0), ("C1", 3.0)]);
+        let clip = copy(&book, 0, range("A1", "C1")).expect("copied");
+        let change = paste_special(
+            &mut book,
+            0,
+            range("A3", "A5"),
+            &clip,
+            PasteSpecial {
+                transpose: true,
+                ..Default::default()
+            },
+        );
+        apply(&mut book, change);
+        assert_eq!(
+            [shown(&book, "A3"), shown(&book, "A4"), shown(&book, "A5")],
+            ["1", "2", "3"]
+        );
+    }
+
+    #[test]
+    fn skipping_blanks_leaves_what_was_already_there() {
+        let mut book = book_with(&[
+            ("A1", 1.0),
+            ("A3", 3.0),
+            ("C1", 9.0),
+            ("C2", 9.0),
+            ("C3", 9.0),
+        ]);
+        let clip = copy(&book, 0, range("A1", "A3")).expect("copied");
+        let change = paste_special(
+            &mut book,
+            0,
+            range("C1", "C3"),
+            &clip,
+            PasteSpecial {
+                skip_blanks: true,
+                ..Default::default()
+            },
+        );
+        apply(&mut book, change);
+        assert_eq!(
+            [shown(&book, "C1"), shown(&book, "C2"), shown(&book, "C3")],
+            ["1", "9", "3"],
+            "A2 was blank, so C2 was left alone"
+        );
     }
 
     #[test]

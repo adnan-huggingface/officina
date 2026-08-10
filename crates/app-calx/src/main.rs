@@ -120,6 +120,10 @@ enum Dialog {
         axis: Axis,
         text: String,
     },
+    /// Excel's Paste Special: which parts of the clipboard to bring across.
+    PasteSpecial {
+        how: ss_formula::clip::PasteSpecial,
+    },
     /// Excel's Find and Replace, which are one window with a row hidden.
     ///
     /// Not modal, in the sense that matters: it keeps its state across Find
@@ -587,6 +591,16 @@ impl Calx {
         });
         if find || replace {
             self.open_find(replace);
+        }
+        if ctx.input_mut(|i| {
+            i.consume_key(
+                egui::Modifiers::COMMAND | egui::Modifiers::ALT,
+                egui::Key::V,
+            )
+        }) {
+            self.dialog = Some(Dialog::PasteSpecial {
+                how: Default::default(),
+            });
         }
     }
 
@@ -1666,6 +1680,10 @@ impl Calx {
     }
 
     fn paste(&mut self, text: String) {
+        self.paste_how(text, clip::PasteSpecial::default());
+    }
+
+    fn paste_how(&mut self, text: String, how: clip::PasteSpecial) {
         let sheet = self.grid.sheet_index;
         let target = self.grid.selection.active_range();
 
@@ -1676,7 +1694,7 @@ impl Calx {
             _ => Clip::from_tsv(&text, target.start),
         };
 
-        let mut change = clip::paste(&mut self.doc.workbook, sheet, target, &source);
+        let mut change = clip::paste_special(&mut self.doc.workbook, sheet, target, &source, how);
         // A cut is a paste that also empties where it came from, and the two
         // have to be one undo step or Ctrl-Z leaves the data in both places.
         if let Some((from_sheet, from_range)) = self.cut_from.take() {
@@ -2693,6 +2711,30 @@ impl Calx {
                 }
             }
 
+            Dialog::PasteSpecial { how } => {
+                let mut go = false;
+                modal(ctx, "Paste special", |ui| {
+                    for kind in ss_formula::clip::PasteKind::ALL {
+                        ui.radio_value(&mut how.kind, kind, kind.label());
+                    }
+                    ui.add_space(6.0);
+                    ui.checkbox(&mut how.transpose, "Transpose");
+                    ui.checkbox(&mut how.skip_blanks, "Skip blanks")
+                        .on_hover_text("A blank in the copy leaves what is already there");
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        go = ui.button("Paste").clicked();
+                        keep &= !ui.button("Cancel").clicked();
+                    });
+                });
+                if go {
+                    let how = *how;
+                    let text = self.clip_text.clone();
+                    self.paste_how(text, how);
+                    keep = false;
+                }
+            }
+
             Dialog::Find {
                 query,
                 with,
@@ -2991,6 +3033,40 @@ impl Calx {
         if ui.button("Paste").clicked() {
             requested = Some(Action::Paste(self.clip_text.clone()));
             ui.close();
+        }
+        // The two people reach for most, straight on the menu; the rest are
+        // one more click away in the dialog.
+        let mut special: Option<Option<ss_formula::clip::PasteKind>> = None;
+        for (label, kind) in [
+            ("Paste values", ss_formula::clip::PasteKind::Values),
+            ("Paste formats", ss_formula::clip::PasteKind::Formats),
+        ] {
+            if ui.button(label).clicked() {
+                special = Some(Some(kind));
+                ui.close();
+            }
+        }
+        if ui.button("Paste special…").clicked() {
+            special = Some(None);
+            ui.close();
+        }
+        match special {
+            Some(Some(kind)) => {
+                let text = self.clip_text.clone();
+                self.paste_how(
+                    text,
+                    ss_formula::clip::PasteSpecial {
+                        kind,
+                        ..Default::default()
+                    },
+                );
+            }
+            Some(None) => {
+                self.dialog = Some(Dialog::PasteSpecial {
+                    how: Default::default(),
+                })
+            }
+            None => {}
         }
         ui.separator();
         for (label, action) in [
