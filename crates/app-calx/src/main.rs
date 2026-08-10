@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use ss_formula::clip::{self, Clip};
 use ss_formula::cond;
 use ss_formula::edit::{self, Change, Geometry, Patch};
-use ss_model::style::Underline;
+use ss_model::style::{BorderStyle, Pattern, Underline, VAlign};
 use ss_model::{Axis, CellRange, CellRef, Color, Fill, HAlign, Shift, Workbook};
 use ui_kit::{egui, paths, AppId, DocumentApp, CALX};
 
@@ -120,6 +120,15 @@ enum Dialog {
         axis: Axis,
         text: String,
     },
+    /// Excel's Format Cells, all five tabs of it.
+    ///
+    /// The look is a working copy of the cursor's, edited in place and applied
+    /// whole on OK — which is what the dialog is, and why pressing OK over a
+    /// mixed selection makes it uniform. Excel does the same.
+    FormatCells {
+        look: Box<ss_model::style::Look>,
+        tab: FormatTab,
+    },
     /// Excel's Paste Special: which parts of the clipboard to bring across.
     PasteSpecial {
         how: ss_formula::clip::PasteSpecial,
@@ -150,6 +159,27 @@ enum Dialog {
         blanks: bool,
         search: String,
     },
+}
+
+/// The tabs of Format Cells, in Excel's order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum FormatTab {
+    #[default]
+    Number,
+    Alignment,
+    Font,
+    Border,
+    Fill,
+}
+
+impl FormatTab {
+    const ALL: [(FormatTab, &'static str); 5] = [
+        (FormatTab::Number, "Number"),
+        (FormatTab::Alignment, "Alignment"),
+        (FormatTab::Font, "Font"),
+        (FormatTab::Border, "Border"),
+        (FormatTab::Fill, "Fill"),
+    ];
 }
 
 /// One row of the sort dialog.
@@ -602,6 +632,22 @@ impl Calx {
                 how: Default::default(),
             });
         }
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Num1)) {
+            self.open_format_cells();
+        }
+    }
+
+    /// Opens Format Cells on a working copy of the cursor's own formatting.
+    ///
+    /// The cursor's rather than the selection's, because a selection can be
+    /// mixed and a dialog has to show one answer per field. Excel picks the
+    /// same cell, and pressing OK is what makes the rest of the selection
+    /// agree with it.
+    fn open_format_cells(&mut self) {
+        self.dialog = Some(Dialog::FormatCells {
+            look: Box::new(self.cursor_look()),
+            tab: FormatTab::default(),
+        });
     }
 
     /// Opens Find, or turns an open one into Replace.
@@ -1627,6 +1673,11 @@ impl Calx {
                     l.number_format = code.clone()
                 })
             }
+            Format::Whole(look) => {
+                edit::format(&mut self.doc.workbook, sheet, &ranges, label, move |l| {
+                    *l = (*look).clone()
+                })
+            }
             Format::Clear => edit::format(&mut self.doc.workbook, sheet, &ranges, label, |l| {
                 *l = ss_model::Look::default()
             }),
@@ -1722,6 +1773,7 @@ impl Calx {
         let mut filter: Option<FilterCommand> = None;
         let mut size: Option<Axis> = None;
         let mut find_dialog = false;
+        let mut format_cells = false;
 
         ui.horizontal(|ui| {
             if icons::button(ui, Icon::New, false, "New workbook (Ctrl+N)").clicked() {
@@ -2106,6 +2158,13 @@ impl Calx {
             {
                 requested = Some(Action::Format(Format::Clear));
             }
+            if ui
+                .button("More…")
+                .on_hover_text("Format cells (Ctrl+1)")
+                .clicked()
+            {
+                format_cells = true;
+            }
         });
 
         self.formula_bar(ui);
@@ -2117,6 +2176,9 @@ impl Calx {
         }
         if find_dialog {
             self.open_find(false);
+        }
+        if format_cells {
+            self.open_format_cells();
         }
         if let Some(axis) = size {
             self.open_size_dialog(axis);
@@ -2711,6 +2773,44 @@ impl Calx {
                 }
             }
 
+            Dialog::FormatCells { look, tab } => {
+                let mut apply = false;
+                // Cloned out before the closure, which borrows `look`: a theme
+                // is a dozen colours, and the alternative is to hand the whole
+                // workbook to a function that wants three of them.
+                let theme = self.doc.workbook.styles.theme().clone();
+                modal(ctx, "Format cells", |ui| {
+                    ui.set_min_width(460.0);
+                    ui.horizontal(|ui| {
+                        for (which, label) in FormatTab::ALL {
+                            if ui.selectable_label(*tab == which, label).clicked() {
+                                *tab = which;
+                            }
+                        }
+                    });
+                    ui.separator();
+                    egui::ScrollArea::vertical()
+                        .max_height(320.0)
+                        .show(ui, |ui| match tab {
+                            FormatTab::Number => number_tab(ui, look),
+                            FormatTab::Alignment => alignment_tab(ui, look),
+                            FormatTab::Font => font_tab(ui, &theme, look),
+                            FormatTab::Border => border_tab(ui, &theme, look),
+                            FormatTab::Fill => fill_tab(ui, &theme, look),
+                        });
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        apply = ui.button("OK").clicked();
+                        keep &= !ui.button("Cancel").clicked();
+                    });
+                });
+                if apply {
+                    let look = look.clone();
+                    self.format(Format::Whole(look));
+                    keep = false;
+                }
+            }
+
             Dialog::PasteSpecial { how } => {
                 let mut go = false;
                 modal(ctx, "Paste special", |ui| {
@@ -3161,6 +3261,14 @@ impl Calx {
             requested = Some(Action::Format(Format::Clear));
             ui.close();
         }
+        let mut format_cells = false;
+        if ui.button("Format cells…").on_hover_text("Ctrl+1").clicked() {
+            format_cells = true;
+            ui.close();
+        }
+        if format_cells {
+            self.open_format_cells();
+        }
         ui.separator();
         let mut deferred: Option<FilterCommand> = None;
         let mut sort: Option<bool> = None;
@@ -3275,6 +3383,449 @@ fn modal(ctx: &egui::Context, title: &str, add: impl FnOnce(&mut egui::Ui)) {
         ui.separator();
         add(ui);
     });
+}
+
+/// Format Cells ▸ Number. A category list and the code behind it.
+///
+/// The code box is not a nicety: `#,##0.00;[Red](#,##0.00)` is the only way to
+/// say some of what a spreadsheet says, and a fixed list of a dozen entries
+/// cannot cover a format language.
+fn number_tab(ui: &mut egui::Ui, look: &mut ss_model::Look) {
+    ui.label("Category");
+    for (label, code) in NUMBER_FORMATS {
+        if ui
+            .selectable_label(look.number_format == *code, *label)
+            .clicked()
+        {
+            look.number_format = code.to_string();
+        }
+    }
+    ui.add_space(6.0);
+    ui.label("Format code");
+    ui.add(
+        egui::TextEdit::singleline(&mut look.number_format)
+            .desired_width(f32::INFINITY)
+            .font(egui::TextStyle::Monospace),
+    );
+    // What the code does to a number, before the dialog is closed over it.
+    let sample = ss_model::numfmt::NumberFormat::parse(&look.number_format)
+        .format(ss_model::numfmt::FormatValue::Number(-1234.567))
+        .text;
+    ui.label(
+        egui::RichText::new(format!("−1234.567 shows as  {sample}"))
+            .weak()
+            .small(),
+    );
+}
+
+/// Format Cells ▸ Alignment.
+fn alignment_tab(ui: &mut egui::Ui, look: &mut ss_model::Look) {
+    egui::Grid::new("calx-align")
+        .num_columns(2)
+        .spacing([10.0, 6.0])
+        .show(ui, |ui| {
+            ui.label("Horizontal");
+            egui::ComboBox::from_id_salt("calx-halign")
+                .selected_text(halign_name(look.alignment.horizontal))
+                .width(160.0)
+                .show_ui(ui, |ui| {
+                    for h in [
+                        HAlign::General,
+                        HAlign::Left,
+                        HAlign::Center,
+                        HAlign::Right,
+                        HAlign::Fill,
+                        HAlign::Justify,
+                        HAlign::CenterContinuous,
+                        HAlign::Distributed,
+                    ] {
+                        ui.selectable_value(&mut look.alignment.horizontal, h, halign_name(h));
+                    }
+                });
+            ui.end_row();
+
+            ui.label("Vertical");
+            egui::ComboBox::from_id_salt("calx-valign")
+                .selected_text(valign_name(look.alignment.vertical))
+                .width(160.0)
+                .show_ui(ui, |ui| {
+                    for v in [
+                        VAlign::Top,
+                        VAlign::Center,
+                        VAlign::Bottom,
+                        VAlign::Justify,
+                        VAlign::Distributed,
+                    ] {
+                        ui.selectable_value(&mut look.alignment.vertical, v, valign_name(v));
+                    }
+                });
+            ui.end_row();
+
+            ui.label("Indent");
+            ui.add(egui::DragValue::new(&mut look.alignment.indent).range(0..=250));
+            ui.end_row();
+
+            // Excel stores 0–90 for anticlockwise and 91–180 for the clockwise
+            // mirror, so the number in the file is not the angle. The dialog
+            // shows the angle and converts, because −45 is what anybody means.
+            ui.label("Rotation");
+            let mut degrees = rotation_degrees(look.alignment.rotation);
+            let stacked = look.alignment.rotation == 255;
+            ui.horizontal(|ui| {
+                ui.add_enabled_ui(!stacked, |ui| {
+                    if ui
+                        .add(
+                            egui::DragValue::new(&mut degrees)
+                                .range(-90..=90)
+                                .suffix("°"),
+                        )
+                        .changed()
+                    {
+                        look.alignment.rotation = rotation_stored(degrees);
+                    }
+                });
+                let mut on = stacked;
+                if ui
+                    .checkbox(&mut on, "Stacked")
+                    .on_hover_text("One character above the next, which is rotation 255")
+                    .changed()
+                {
+                    look.alignment.rotation = if on { 255 } else { 0 };
+                }
+            });
+            ui.end_row();
+        });
+    ui.add_space(4.0);
+    ui.checkbox(&mut look.alignment.wrap, "Wrap text");
+    ui.checkbox(&mut look.alignment.shrink, "Shrink to fit");
+}
+
+fn halign_name(h: HAlign) -> &'static str {
+    match h {
+        HAlign::General => "General",
+        HAlign::Left => "Left",
+        HAlign::Center => "Centre",
+        HAlign::Right => "Right",
+        HAlign::Fill => "Fill",
+        HAlign::Justify => "Justify",
+        HAlign::CenterContinuous => "Centre across selection",
+        HAlign::Distributed => "Distributed",
+    }
+}
+
+fn valign_name(v: VAlign) -> &'static str {
+    match v {
+        VAlign::Top => "Top",
+        VAlign::Center => "Centre",
+        VAlign::Bottom => "Bottom",
+        VAlign::Justify => "Justify",
+        VAlign::Distributed => "Distributed",
+    }
+}
+
+/// The angle a stored rotation means. 91–180 is Excel's spelling of −1 to −90.
+fn rotation_degrees(stored: u32) -> i32 {
+    match stored {
+        255 => 0,
+        r if r > 90 => -((r as i32) - 90),
+        r => r as i32,
+    }
+}
+
+fn rotation_stored(degrees: i32) -> u32 {
+    if degrees >= 0 {
+        degrees.min(90) as u32
+    } else {
+        (90 + degrees.abs().min(90)) as u32
+    }
+}
+
+/// Format Cells ▸ Font.
+fn font_tab(ui: &mut egui::Ui, theme: &ss_model::color::Theme, look: &mut ss_model::Look) {
+    egui::Grid::new("calx-font-tab")
+        .num_columns(2)
+        .spacing([10.0, 6.0])
+        .show(ui, |ui| {
+            ui.label("Font");
+            egui::ComboBox::from_id_salt("calx-font-tab-name")
+                .selected_text(look.font.name.clone())
+                .width(190.0)
+                .show_ui(ui, |ui| {
+                    // The workbook's own face first when nobody offers it, so
+                    // a document set in something exotic can still be got back
+                    // to after the list has been opened.
+                    let mut offered: Vec<String> =
+                        FONT_NAMES.iter().map(|f| f.to_string()).collect();
+                    if !offered.contains(&look.font.name) {
+                        offered.insert(0, look.font.name.clone());
+                    }
+                    for choice in offered {
+                        if ui
+                            .selectable_label(choice == look.font.name, &choice)
+                            .clicked()
+                        {
+                            look.font.name = choice;
+                        }
+                    }
+                });
+            ui.end_row();
+
+            ui.label("Size");
+            ui.add(
+                egui::DragValue::new(&mut look.font.size)
+                    .range(1.0..=409.0)
+                    .speed(0.5),
+            );
+            ui.end_row();
+
+            ui.label("Underline");
+            egui::ComboBox::from_id_salt("calx-underline")
+                .selected_text(underline_name(look.font.underline))
+                .width(190.0)
+                .show_ui(ui, |ui| {
+                    for u in [
+                        Underline::None,
+                        Underline::Single,
+                        Underline::Double,
+                        Underline::SingleAccounting,
+                        Underline::DoubleAccounting,
+                    ] {
+                        ui.selectable_value(&mut look.font.underline, u, underline_name(u));
+                    }
+                });
+            ui.end_row();
+
+            ui.label("Position");
+            egui::ComboBox::from_id_salt("calx-vertalign")
+                .selected_text(match look.font.vert_align {
+                    None => "Normal",
+                    Some(ss_model::style::VertAlign::Superscript) => "Superscript",
+                    Some(ss_model::style::VertAlign::Subscript) => "Subscript",
+                })
+                .width(190.0)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut look.font.vert_align, None, "Normal");
+                    ui.selectable_value(
+                        &mut look.font.vert_align,
+                        Some(ss_model::style::VertAlign::Superscript),
+                        "Superscript",
+                    );
+                    ui.selectable_value(
+                        &mut look.font.vert_align,
+                        Some(ss_model::style::VertAlign::Subscript),
+                        "Subscript",
+                    );
+                });
+            ui.end_row();
+
+            ui.label("Colour");
+            color_row(ui, theme, &mut look.font.color);
+            ui.end_row();
+        });
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.checkbox(&mut look.font.bold, "Bold");
+        ui.checkbox(&mut look.font.italic, "Italic");
+        ui.checkbox(&mut look.font.strike, "Strikethrough");
+    });
+}
+
+fn underline_name(u: Underline) -> &'static str {
+    match u {
+        Underline::None => "None",
+        Underline::Single => "Single",
+        Underline::Double => "Double",
+        Underline::SingleAccounting => "Single, accounting",
+        Underline::DoubleAccounting => "Double, accounting",
+    }
+}
+
+/// A colour, with a way back to "automatic".
+///
+/// Automatic is not a colour and no picker can express it, which is why it
+/// needs a checkbox of its own: without one, a border once given a colour
+/// could never be handed back to the theme.
+fn color_row(ui: &mut egui::Ui, theme: &ss_model::color::Theme, color: &mut Color) {
+    ui.horizontal(|ui| {
+        let mut rgb = color.resolve(theme).unwrap_or([0, 0, 0]);
+        if ui.color_edit_button_srgb(&mut rgb).changed() {
+            let [r, g, b] = rgb;
+            *color = Color::rgb(r, g, b);
+        }
+        let mut automatic = *color == Color::Auto;
+        if ui.checkbox(&mut automatic, "Automatic").changed() {
+            *color = if automatic {
+                Color::Auto
+            } else {
+                let [r, g, b] = rgb;
+                Color::rgb(r, g, b)
+            };
+        }
+    });
+}
+
+/// Format Cells ▸ Border, one edge at a time.
+///
+/// Per edge rather than by preset, because the presets on the toolbar cannot
+/// say "a thick red line under this and a hairline down the side", and that is
+/// the whole reason to open a dialog rather than press a button.
+fn border_tab(ui: &mut egui::Ui, theme: &ss_model::color::Theme, look: &mut ss_model::Look) {
+    let presets = [
+        ("All", BorderPreset::All),
+        ("Outline", BorderPreset::Outline),
+        ("None", BorderPreset::None),
+    ];
+    ui.horizontal(|ui| {
+        ui.label("Quick");
+        for (label, preset) in presets {
+            if ui.button(label).clicked() {
+                preset.apply(&mut look.border);
+            }
+        }
+    });
+    ui.add_space(6.0);
+    egui::Grid::new("calx-border-edges")
+        .num_columns(3)
+        .spacing([10.0, 6.0])
+        .show(ui, |ui| {
+            let edges: [BorderEdge; 5] = [
+                ("Left", |b| &mut b.left),
+                ("Right", |b| &mut b.right),
+                ("Top", |b| &mut b.top),
+                ("Bottom", |b| &mut b.bottom),
+                ("Diagonal", |b| &mut b.diagonal),
+            ];
+            for (name, pick) in edges {
+                let edge = pick(&mut look.border);
+                ui.label(name);
+                egui::ComboBox::from_id_salt(("calx-border", name))
+                    .selected_text(border_style_name(edge.style))
+                    .width(150.0)
+                    .show_ui(ui, |ui| {
+                        for style in BORDER_STYLES {
+                            ui.selectable_value(&mut edge.style, *style, border_style_name(*style));
+                        }
+                    });
+                color_row(ui, theme, &mut edge.color);
+                ui.end_row();
+            }
+        });
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.checkbox(&mut look.border.diagonal_up, "Diagonal up");
+        ui.checkbox(&mut look.border.diagonal_down, "Diagonal down");
+    });
+}
+
+/// One row of the border tab: what to call the edge, and how to reach it.
+type BorderEdge = (
+    &'static str,
+    fn(&mut ss_model::Border) -> &mut ss_model::style::Edge,
+);
+
+const BORDER_STYLES: &[BorderStyle] = &[
+    BorderStyle::None,
+    BorderStyle::Hair,
+    BorderStyle::Thin,
+    BorderStyle::Medium,
+    BorderStyle::Thick,
+    BorderStyle::Double,
+    BorderStyle::Dotted,
+    BorderStyle::Dashed,
+    BorderStyle::DashDot,
+    BorderStyle::DashDotDot,
+    BorderStyle::MediumDashed,
+    BorderStyle::MediumDashDot,
+    BorderStyle::MediumDashDotDot,
+    BorderStyle::SlantDashDot,
+];
+
+fn border_style_name(style: BorderStyle) -> &'static str {
+    match style {
+        BorderStyle::None => "None",
+        BorderStyle::Hair => "Hair",
+        BorderStyle::Thin => "Thin",
+        BorderStyle::Medium => "Medium",
+        BorderStyle::Thick => "Thick",
+        BorderStyle::Double => "Double",
+        BorderStyle::Dotted => "Dotted",
+        BorderStyle::Dashed => "Dashed",
+        BorderStyle::DashDot => "Dash-dot",
+        BorderStyle::DashDotDot => "Dash-dot-dot",
+        BorderStyle::MediumDashed => "Medium dashed",
+        BorderStyle::MediumDashDot => "Medium dash-dot",
+        BorderStyle::MediumDashDotDot => "Medium dash-dot-dot",
+        BorderStyle::SlantDashDot => "Slant dash-dot",
+    }
+}
+
+/// Format Cells ▸ Fill.
+fn fill_tab(ui: &mut egui::Ui, theme: &ss_model::color::Theme, look: &mut ss_model::Look) {
+    // The hatches are kept by name and drawn as a blend, so the list here is
+    // the handful anybody picks; a file's own `lightTrellis` survives being
+    // opened and shown among them because the model never dropped it.
+    let offered: Vec<Pattern> = [
+        Pattern::None,
+        Pattern::Solid,
+        Pattern::Named("gray125".into()),
+        Pattern::Named("gray0625".into()),
+        Pattern::Named("lightGray".into()),
+        Pattern::Named("mediumGray".into()),
+        Pattern::Named("darkGray".into()),
+    ]
+    .into_iter()
+    .chain(
+        (!matches!(look.fill.pattern, Pattern::None | Pattern::Solid))
+            .then(|| look.fill.pattern.clone()),
+    )
+    .collect();
+
+    egui::Grid::new("calx-fill-tab")
+        .num_columns(2)
+        .spacing([10.0, 6.0])
+        .show(ui, |ui| {
+            ui.label("Pattern");
+            egui::ComboBox::from_id_salt("calx-pattern")
+                .selected_text(pattern_name(&look.fill.pattern))
+                .width(190.0)
+                .show_ui(ui, |ui| {
+                    for pattern in &offered {
+                        if ui
+                            .selectable_label(look.fill.pattern == *pattern, pattern_name(pattern))
+                            .clicked()
+                        {
+                            look.fill.pattern = pattern.clone();
+                        }
+                    }
+                });
+            ui.end_row();
+            ui.label("Colour");
+            color_row(ui, theme, &mut look.fill.fg);
+            ui.end_row();
+            ui.label("Pattern colour");
+            color_row(ui, theme, &mut look.fill.bg);
+            ui.end_row();
+        });
+    ui.label(
+        egui::RichText::new("A solid fill uses the first colour; a hatch uses both")
+            .weak()
+            .small(),
+    );
+}
+
+fn pattern_name(p: &Pattern) -> String {
+    match p {
+        Pattern::None => "None".to_string(),
+        Pattern::Solid => "Solid".to_string(),
+        Pattern::Named(name) => match name.as_str() {
+            "gray125" => "12.5% grey".to_string(),
+            "gray0625" => "6.25% grey".to_string(),
+            "lightGray" => "25% grey".to_string(),
+            "mediumGray" => "50% grey".to_string(),
+            "darkGray" => "75% grey".to_string(),
+            other => other.to_string(),
+        },
+    }
 }
 
 /// A typed row height or column width, if it is one.
@@ -3558,6 +4109,7 @@ fn format_label(command: &Format) -> &'static str {
         Format::Fill(_) => "Fill colour",
         Format::Border(_) => "Borders",
         Format::NumberFormat(_) => "Number format",
+        Format::Whole(_) => "Format cells",
         Format::Clear => "Clear formatting",
     }
 }

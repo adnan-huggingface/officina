@@ -615,6 +615,16 @@ pub enum Format {
     Fill(Option<ss_model::Color>),
     Border(BorderPreset),
     NumberFormat(String),
+    /// Everything at once, as the Format Cells dialog answers.
+    ///
+    /// A whole look rather than a list of deltas, because that is what the
+    /// dialog is: five tabs of one cell's formatting, edited together and
+    /// pressed OK. Excel applies all of it to the whole selection too, which
+    /// is why a mixed selection comes out uniform.
+    ///
+    /// Boxed because a `Look` carries five structs and a string, and every
+    /// other command in this enum would otherwise be as large as the largest.
+    Whole(Box<ss_model::style::Look>),
     /// Back to the workbook default, keeping the value.
     Clear,
 }
