@@ -252,28 +252,75 @@ fn auto_row_heights(book: &ss_model::Workbook, sheet: &ss_model::Sheet) -> BTree
     /// screens tall helps nobody.
     const MAX_LINES: usize = 12;
 
+    // Whether a style could ever want more than the default row, answered once
+    // per style rather than once per cell. This runs over every cell in the
+    // sheet on every edit, and on a sheet of a million cells the difference
+    // between a table lookup and three map lookups plus a font is the
+    // difference between a repaint and a pause.
+    let taller: Vec<bool> = (0..book.styles.len())
+        .map(|i| {
+            let id = ss_model::StyleId(i as u32);
+            book.styles.font(id).size > ss_model::style::DEFAULT_FONT_SIZE
+                || book.styles.alignment(id).wrap
+        })
+        .collect();
+
+    // Whether any string in the workbook holds a line break at all. Asked of
+    // the table, where a status column is four strings rather than a million:
+    // when the answer is no, no cell's text has to be looked at, and the loop
+    // below never leaves the style table.
+    let any_break = book.strings.iter().any(|s| s.contains('\n'));
+
     let mut fitted: BTreeMap<u32, f64> = BTreeMap::new();
+    // `iter` is row-major, so a row's own answers are found once and then hold
+    // for the whole row.
+    let mut row = (u32::MAX, false, None);
     for (at, cell) in sheet.cells.iter() {
-        if sheet.row_heights.contains_key(&at.row) {
-            continue;
+        if at.row != row.0 {
+            row = (
+                at.row,
+                sheet.row_heights.contains_key(&at.row),
+                sheet.row_styles.get(&at.row).copied(),
+            );
         }
-        let style = sheet.style_at(at);
-        let font = book.styles.font(style);
-        let mut lines = 1usize;
+        if row.1 {
+            continue; // the user's own height, which overrides any fit
+        }
+
+        let style = if cell.style != ss_model::StyleId::DEFAULT {
+            cell.style
+        } else {
+            row.2.unwrap_or_else(|| {
+                sheet
+                    .column_styles
+                    .get(&at.col)
+                    .copied()
+                    .unwrap_or(ss_model::StyleId::DEFAULT)
+            })
+        };
+        let taller_style = taller.get(style.0 as usize).copied().unwrap_or(false);
 
         // Only a string can hold a line break. A number never does, whatever
         // its format, so its value never has to be rendered to count lines.
-        if let ss_model::CellValue::Text(id) = cell.value {
-            let text = book.strings.resolve(id);
+        let text = match cell.value {
+            ss_model::CellValue::Text(id) if any_break || taller_style => {
+                Some(book.strings.resolve(id))
+            }
+            _ => None,
+        };
+        // The one question left that the style cannot answer, and the one the
+        // overwhelming majority of cells answer "no" to.
+        let broken = text.is_some_and(|t| t.contains('\n'));
+        if !broken && !taller_style {
+            continue;
+        }
+
+        let font = book.styles.font(style);
+        let mut lines = 1usize;
+        if let Some(text) = text {
             lines = text.lines().count().max(1);
             if book.styles.alignment(style).wrap && sheet.merge_at(at).is_none() {
                 lines = lines.max(wrapped_lines(text, font.size, width_of(sheet, at.col)));
-            }
-        }
-        if lines <= 1 {
-            // A tall font still needs a tall row, even on one line.
-            if font.size <= ss_model::style::DEFAULT_FONT_SIZE {
-                continue;
             }
         }
         let wanted = line_points(font.size) * lines.min(MAX_LINES) as f64;

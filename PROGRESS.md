@@ -465,6 +465,50 @@ and what it produced never reached the file.
   409 — on the right-click menu and under a Format menu on the toolbar, which is
   where Excel keeps them and where anybody who has not found the boundary looks.
 
+### Sorting a real workbook (139,868 rows × 10 columns, 1.33M cells)
+
+Measured against `excel_sort_test1.xlsx`, a 6.4 MB export whose sheet part is
+53 MB of XML and whose string table holds 209k distinct values. It took just
+under three quarters of a second to sort and left a hundred megabytes on the
+undo stack. It is now about 120 ms and half a megabyte.
+
+- **A sort is a permutation of rows, and the undo is the inverse permutation.**
+  `Patch::Permute` carries a list of row numbers, not a copy of every cell that
+  moved — the same insight as `Patch::Rearrange`, arrived at from the other
+  direction. Rows whose formulas are rewritten as they travel are genuinely not
+  a permutation of the rows they were, so `sort` looks first (`carries_formulas`,
+  short-circuited by an empty formula arena) and falls back to `Patch::Cells`
+  for those. 404 ms + 127 ms of apply became 68 ms + 38 ms.
+- Watch item: **the inverse is built before anything moves, because building it
+  is the check that the list is a permutation at all.** A list naming a row
+  twice has no inverse, and applying it would scatter cells that undo could
+  never gather up again.
+- **Ten columns of a row live in one chunk, so one map lookup answers for all
+  of them.** `CellStore::read_band` / `write_band` walk a row by chunk band;
+  going through `get` and `set` paid for the lookup ten times over.
+- **Case folding belongs in the decoration, not in the comparator.** `compare`
+  called `to_lowercase` on both sides — two allocations — and a sort of 140k
+  rows asks two million times. Folded once per row it is 182 ms of comparison
+  down to about 20. Two spellings of a word now tie and fall through to the row
+  number, which is also what makes a case-insensitive sort stable the way
+  Excel's is.
+- **`auto_row_heights` runs over every cell in the sheet on every edit.** It
+  asked three map lookups and a font of each of 1.33M cells to find out that
+  none of them wanted a taller row. Whether a *style* can ever want one is
+  decided once per style into a table; whether any *string* in the workbook
+  holds a line break is asked of the string table, where a status column is
+  four strings rather than a million. 130 ms became 40.
+- Watch item: **`looks_like_headers` says no to this file, and Excel says yes.**
+  Every column is text above text, which is the case the guess deliberately
+  refuses — see its doc comment. So a quick A→Z sorts the heading row into the
+  data unless "my data has headers" is ticked in the Sort dialog. Deliberate,
+  and the more conservative of the two wrong answers, but it is a visible
+  difference from Excel on exactly the kind of export people sort.
+- Watch item: **saving this workbook takes 5 s, and it is not the compression.**
+  Deflate level 1 saved 20% of the time for 78% more file, so the cost is
+  authoring 53 MB of `sheetData` in `write::sheet_out`. Untouched, unmeasured
+  in detail, and the next thing to look at if saving becomes the complaint.
+
 
 - Watch item: **a `t="s"` cell points at an `<si>`, and an `<si>` can be rich
   text.** New text is matched into the table by its characters, so typing a

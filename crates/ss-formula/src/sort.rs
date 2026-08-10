@@ -17,6 +17,13 @@
 //! it. The rewritten text goes into a *new* arena entry rather than over the old
 //! one: an entry can be shared, and overwriting a shared master would rewrite a
 //! formula that never moved.
+//!
+//! Which is also why there are two shapes of sort. Rows carrying no formulas
+//! come out of a sort as the same rows in a different order — a permutation —
+//! so the change is a list of row numbers and its undo is the inverse
+//! permutation. Rows whose formulas are rewritten on the way are *not* the rows
+//! they were, so those go through a cell-by-cell change instead. On a hundred
+//! thousand rows the difference is half a megabyte of undo against a hundred.
 
 use std::cmp::Ordering;
 
@@ -35,9 +42,9 @@ pub struct SortKey {
 
 /// The most rows a single sort will move.
 ///
-/// A sort has to materialize every cell it moves, so an accidental select-all
-/// would turn a sparse sheet into a dense one. Excel's own limit is the sheet;
-/// ours is the point past which the operation is certainly a mistake.
+/// Excel's own limit is the sheet; ours is the point past which the operation
+/// is certainly a mistake, and it is cheap insurance against an accidental
+/// select-all asking for a comparison key on a million empty rows.
 pub const MAX_SORT_ROWS: u32 = 1 << 20;
 
 /// Sorts the rows of `range` by `keys`.
@@ -107,6 +114,25 @@ pub fn sort(
         return Ok(Change::default()); // already in this order
     }
 
+    let cols = (range.start.col, range.end.col);
+    let rows = (first, range.end.row);
+
+    // Nothing in the way of treating this as what it is — a reordering of rows
+    // — so say so, and let undo be the inverse permutation rather than a copy
+    // of every cell that moved.
+    if !carries_formulas(model, rows, cols) {
+        let order: Vec<u32> = order.into_iter().map(|(row, _)| row).collect();
+        return Ok(Change::new(
+            "Sort",
+            vec![Patch::Permute {
+                sheet,
+                first,
+                cols,
+                order,
+            }],
+        ));
+    }
+
     // Read every cell that will move before anything is written: the source of
     // one row is the destination of another.
     let taken: Vec<Vec<Option<Cell>>> = order
@@ -131,6 +157,15 @@ pub fn sort(
     }
 
     Ok(Change::new("Sort", vec![Patch::Cells { sheet, cells }]))
+}
+
+/// Whether any row about to move carries a formula.
+///
+/// A sheet with an empty arena cannot, and answering from the arena costs
+/// nothing — which matters, because the rectangle scan behind it is the one
+/// thing here that has to look at every cell whether or not the answer is no.
+fn carries_formulas(sheet: &Sheet, rows: (u32, u32), cols: (u32, u32)) -> bool {
+    sheet.formulas.iter().any(|f| !f.text.is_empty()) && sheet.cells.any_formula(rows, cols)
 }
 
 /// A cell as it should look `delta` rows further down, formula and all.
@@ -196,7 +231,10 @@ fn key_of(sheet: &Sheet, book: &Workbook, at: CellRef) -> Key {
             if text.is_empty() {
                 Key::Blank
             } else {
-                Key::Text(text.to_string())
+                // Folded once here rather than on every comparison. A sort of a
+                // hundred thousand rows asks two million times, and lowercasing
+                // a string inside the comparator is two allocations each time.
+                Key::Text(fold(text))
             }
         }
         Some(CellValue::Bool(b)) => Key::Bool(b),
@@ -204,16 +242,28 @@ fn key_of(sheet: &Sheet, book: &Workbook, at: CellRef) -> Key {
     }
 }
 
+/// A string as it is compared: case folded, since "apple" and "Apple" are the
+/// same word to a person sorting a list.
+///
+/// The ASCII path is not an optimization for its own sake — it is the whole
+/// column, on every spreadsheet anybody sorts by an identifier or a timestamp,
+/// and `str::to_lowercase` walks it through the full Unicode tables regardless.
+fn fold(text: &str) -> String {
+    if text.is_ascii() {
+        text.to_ascii_lowercase()
+    } else {
+        text.to_lowercase()
+    }
+}
+
 fn compare(a: &Key, b: &Key) -> Ordering {
     match (a, b) {
         (Key::Number(a), Key::Number(b)) => a.partial_cmp(b).unwrap_or(Ordering::Equal),
-        // Case-insensitively first, because "apple" and "Apple" are the same
-        // word to a person sorting a list, and by the exact text second so the
-        // result is deterministic rather than dependent on the input order.
-        (Key::Text(a), Key::Text(b)) => a
-            .to_lowercase()
-            .cmp(&b.to_lowercase())
-            .then_with(|| a.cmp(b)),
+        // Already folded. Two spellings of the same word tie here and fall
+        // through to the row number, which is what keeps a case-insensitive
+        // sort stable — Excel leaves "Apple" and "apple" in the order it found
+        // them rather than deciding one of them sorts first.
+        (Key::Text(a), Key::Text(b)) => a.cmp(b),
         (Key::Bool(a), Key::Bool(b)) => a.cmp(b),
         (Key::Error(a), Key::Error(b)) => a.cmp(b),
         _ => a.rank().cmp(&b.rank()),
@@ -499,6 +549,83 @@ mod tests {
             "B1*2",
             "the original arena entry is untouched, in case it was shared"
         );
+    }
+
+    #[test]
+    fn a_sort_of_plain_data_is_a_permutation_and_costs_what_one_costs() {
+        // The point of the permutation patch: undo is the rows read backwards,
+        // not a copy of every cell that moved.
+        let mut book = book();
+        for (row, name) in ["delta", "alpha", "charlie", "bravo"]
+            .into_iter()
+            .enumerate()
+        {
+            text(&mut book, &format!("A{}", row + 1), name);
+            put(
+                &mut book,
+                &format!("B{}", row + 1),
+                CellValue::Number(row as f64),
+            );
+        }
+
+        let change = sort(&mut book, 0, range("A1", "B4"), &ascending(0), false).expect("sortable");
+        match change.patches.as_slice() {
+            [Patch::Permute { order, cols, .. }] => {
+                assert_eq!(order, &[1, 3, 2, 0]);
+                assert_eq!(*cols, (0, 1));
+            }
+            other => panic!("expected one permutation, got {other:?}"),
+        }
+
+        let undo = apply(&mut book, change);
+        let column: Vec<String> = (1..=4).map(|r| shown(&book, &format!("A{r}"))).collect();
+        assert_eq!(column, ["alpha", "bravo", "charlie", "delta"]);
+        assert_eq!(shown(&book, "B1"), "1", "the whole row travelled");
+
+        apply(&mut book, undo);
+        let column: Vec<String> = (1..=4).map(|r| shown(&book, &format!("A{r}"))).collect();
+        assert_eq!(column, ["delta", "alpha", "charlie", "bravo"]);
+        assert_eq!(shown(&book, "B1"), "0");
+    }
+
+    #[test]
+    fn a_sort_that_moves_a_formula_writes_cells_instead() {
+        // A formula is rewritten as it travels, so the rows afterwards are not
+        // the rows from before in a different order, and a permutation would
+        // have no inverse.
+        let mut book = book();
+        put(&mut book, "A1", CellValue::Number(2.0));
+        put(&mut book, "A2", CellValue::Number(1.0));
+        let id = book.sheets[0].push_formula(Formula::normal("A1*2"));
+        book.sheets[0].set(
+            CellRef::from_a1("B1").expect("a1"),
+            Cell {
+                value: CellValue::Number(4.0),
+                style: StyleId::DEFAULT,
+                formula: Some(id),
+            },
+        );
+
+        let change = sort(&mut book, 0, range("A1", "B2"), &ascending(0), false).expect("sortable");
+        assert!(
+            matches!(change.patches.as_slice(), [Patch::Cells { .. }]),
+            "a formula in the band rules the shortcut out"
+        );
+    }
+
+    #[test]
+    fn an_empty_row_inside_the_range_sorts_to_the_bottom_and_takes_nothing_with_it() {
+        // Under a permutation, a blank row is a real row that has to arrive
+        // somewhere: getting this wrong duplicates whatever was in its place.
+        let mut book = book();
+        text(&mut book, "A1", "b");
+        text(&mut book, "A3", "a");
+
+        let change = sort(&mut book, 0, range("A1", "A3"), &ascending(0), false).expect("sortable");
+        apply(&mut book, change);
+        let column: Vec<String> = (1..=3).map(|r| shown(&book, &format!("A{r}"))).collect();
+        assert_eq!(column, ["a", "b", ""]);
+        assert_eq!(book.sheets[0].cells.len(), 2, "nothing was duplicated");
     }
 
     #[test]

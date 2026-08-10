@@ -93,6 +93,22 @@ pub enum Patch {
         sheet: usize,
         rearrange: ss_model::Move,
     },
+    /// Rows of a column band reordered: the row landing at `first + i` is the
+    /// one `order[i]` holds now.
+    ///
+    /// What a sort is, when the rows it moves carry no formulas. A sort is a
+    /// permutation — every row that leaves a position is a row arriving at
+    /// another one — so the undo is the inverse permutation rather than a copy
+    /// of everything that moved. On a hundred thousand rows that is the
+    /// difference between half a megabyte of undo and a hundred megabytes of
+    /// it. Rows whose formulas have to be rewritten as they travel are not a
+    /// permutation of the cells they were, and go through `Cells` instead.
+    Permute {
+        sheet: usize,
+        first: u32,
+        cols: (u32, u32),
+        order: Vec<u32>,
+    },
     /// A chart's title. The rest of a chart is preserved verbatim, so this is
     /// the only thing in one the model can disagree with the file about.
     ChartTitle {
@@ -216,6 +232,43 @@ fn apply_patch(book: &mut Workbook, patch: Patch) -> Vec<Patch> {
             vec![Patch::Cells {
                 sheet,
                 cells: before,
+            }]
+        }
+
+        Patch::Permute {
+            sheet,
+            first,
+            cols,
+            order,
+        } => {
+            let Some(target) = book.sheet_mut(sheet) else {
+                return Vec::new();
+            };
+            // Where each row came from, read backwards: the row that came from
+            // `order[i]` has to go back to `order[i]`, so the inverse asks for
+            // whatever is now at `first + i` when it is that row's turn.
+            //
+            // Built before anything moves, because it is also the check that
+            // this *is* a permutation. A list that names a row twice, or one
+            // outside the band, has no inverse, and applying it would scatter
+            // cells that undo could never gather up again.
+            let mut back = vec![u32::MAX; order.len()];
+            for (i, &from) in order.iter().enumerate() {
+                let Some(slot) = from
+                    .checked_sub(first)
+                    .and_then(|k| back.get_mut(k as usize))
+                    .filter(|slot| **slot == u32::MAX)
+                else {
+                    return Vec::new();
+                };
+                *slot = first + i as u32;
+            }
+            target.cells.permute_rows(first, cols, &order);
+            vec![Patch::Permute {
+                sheet,
+                first,
+                cols,
+                order: back,
             }]
         }
 

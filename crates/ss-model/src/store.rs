@@ -236,6 +236,107 @@ impl CellStore {
         destroyed
     }
 
+    /// Reorders rows within a band of columns: the row landing at `first + i`
+    /// is the one `order[i]` holds now.
+    ///
+    /// A permutation, so nothing is created and nothing is destroyed — every
+    /// source row is also a destination row. That is what lets the whole thing
+    /// be a list of row numbers instead of a copy of every cell, and it is why
+    /// the inverse of a sort is just the inverse permutation.
+    ///
+    /// Reads by *band* rather than by cell. Ten columns of a row live in one
+    /// chunk, so one map lookup answers for all of them; going through
+    /// [`get`](Self::get) would pay for the lookup ten times over.
+    pub fn permute_rows(&mut self, first: u32, cols: (u32, u32), order: &[u32]) {
+        let (c0, c1) = cols;
+        if c1 < c0 || order.is_empty() {
+            return;
+        }
+        let width = (c1 - c0 + 1) as usize;
+
+        // Everything is lifted out before anything is put back: the source of
+        // one row is the destination of another.
+        let mut lifted: Vec<Cell> = Vec::with_capacity(order.len() * width);
+        for &row in order {
+            self.read_band(row, c0, c1, &mut lifted);
+        }
+        for (i, row_cells) in lifted.chunks_exact(width).enumerate() {
+            self.write_band(first + i as u32, c0, row_cells);
+        }
+    }
+
+    /// Appends `[c0..=c1]` of `row` to `out`, vacant cells included.
+    fn read_band(&self, row: u32, c0: u32, c1: u32, out: &mut Vec<Cell>) {
+        let mut col = c0;
+        while col <= c1 {
+            let end = (col | (CHUNK_SIDE - 1)).min(c1);
+            match self.chunks.get(&chunk_key(row, col)) {
+                Some(chunk) => {
+                    let base = (row & (CHUNK_SIDE - 1)) << CHUNK_BITS;
+                    out.extend(
+                        (col..=end).map(|c| chunk.cells[(base | (c & (CHUNK_SIDE - 1))) as usize]),
+                    );
+                }
+                None => out.resize(out.len() + (end - col + 1) as usize, Cell::default()),
+            }
+            col = end + 1;
+        }
+    }
+
+    /// Writes `cells` across `[c0..]` of `row`, vacant entries erasing.
+    fn write_band(&mut self, row: u32, c0: u32, cells: &[Cell]) {
+        let c1 = c0 + cells.len() as u32 - 1;
+        let mut col = c0;
+        while col <= c1 {
+            let end = (col | (CHUNK_SIDE - 1)).min(c1);
+            let key = chunk_key(row, col);
+            let span = &cells[(col - c0) as usize..=(end - c0) as usize];
+
+            // A band of nothing written where there is no chunk stays nothing.
+            // Creating one would be a chunk of 256 vacant cells kept alive by a
+            // sort that moved an empty row.
+            if !self.chunks.contains_key(&key) && span.iter().all(Cell::is_vacant) {
+                col = end + 1;
+                continue;
+            }
+
+            let chunk = self.chunks.entry(key).or_insert_with(Chunk::new);
+            let base = (row & (CHUNK_SIDE - 1)) << CHUNK_BITS;
+            let mut delta: i64 = 0;
+            for (c, cell) in (col..=end).zip(span) {
+                let slot = &mut chunk.cells[(base | (c & (CHUNK_SIDE - 1))) as usize];
+                delta += i64::from(slot.is_vacant()) - i64::from(cell.is_vacant());
+                *slot = *cell;
+            }
+            chunk.occupied = (i64::from(chunk.occupied) + delta) as u16;
+            self.len = (self.len as i64 + delta) as usize;
+            if chunk.occupied == 0 {
+                self.chunks.remove(&key);
+            }
+            col = end + 1;
+        }
+    }
+
+    /// Whether any cell in the rectangle carries a formula.
+    ///
+    /// Asked before a sort, to know whether the rows can simply be permuted or
+    /// whether their formulas have to be rewritten as they travel.
+    pub fn any_formula(&self, rows: (u32, u32), cols: (u32, u32)) -> bool {
+        let (r0, r1) = rows;
+        let (c0, c1) = cols;
+        let mut row = r0;
+        let mut band: Vec<Cell> = Vec::new();
+        while row <= r1 {
+            band.clear();
+            self.read_band(row, c0, c1, &mut band);
+            if band.iter().any(|c| c.formula.is_some()) {
+                return true;
+            }
+            row += 1;
+        }
+        false
+    }
+
     /// Approximate heap footprint, for diagnostics and the performance chunk.
     pub fn memory_bytes(&self) -> usize {
         self.chunks.len() * (CHUNK_CELLS * std::mem::size_of::<Cell>() + 32)
@@ -448,5 +549,91 @@ mod tests {
         let from_reference: Vec<((u32, u32), Cell)> =
             reference.iter().map(|(k, v)| (*k, *v)).collect();
         assert_eq!(from_store, from_reference);
+    }
+
+    #[test]
+    fn permuting_rows_reorders_a_band_and_leaves_its_neighbours_alone() {
+        // Rows 20..=22 of columns 1..=2, with column 3 standing outside the
+        // band to prove the permutation stops where it was told to.
+        let mut store = CellStore::new();
+        for row in 20..=22 {
+            for col in 1..=3 {
+                store.set(CellRef::new(row, col), num(f64::from(row * 10 + col)));
+            }
+        }
+        let before = store.len();
+
+        store.permute_rows(20, (1, 2), &[22, 20, 21]);
+
+        let at = |row, col| store.get(CellRef::new(row, col)).map(|c| c.value);
+        assert_eq!(at(20, 1), Some(CellValue::Number(221.0)));
+        assert_eq!(at(21, 1), Some(CellValue::Number(201.0)));
+        assert_eq!(at(22, 2), Some(CellValue::Number(212.0)));
+        assert_eq!(
+            at(20, 3),
+            Some(CellValue::Number(203.0)),
+            "column 3 is outside the band and does not travel"
+        );
+        assert_eq!(store.len(), before, "a permutation creates nothing");
+    }
+
+    #[test]
+    fn a_row_of_nothing_carries_its_emptiness_with_it() {
+        // The failure this guards against is a permutation implemented as
+        // "write what is there": row 6 has nothing, so row 5 would keep what it
+        // already held and the sheet would gain a duplicate.
+        let mut store = CellStore::new();
+        store.set(CellRef::new(5, 0), num(1.0));
+        store.permute_rows(5, (0, 0), &[6, 5]);
+
+        assert_eq!(store.get(CellRef::new(5, 0)), None);
+        assert_eq!(
+            store.get(CellRef::new(6, 0)).map(|c| c.value),
+            Some(CellValue::Number(1.0))
+        );
+        assert_eq!(store.len(), 1);
+    }
+
+    #[test]
+    fn a_permutation_that_empties_a_chunk_gives_the_memory_back() {
+        let mut store = CellStore::new();
+        store.set(CellRef::new(0, 0), num(1.0));
+        let one_chunk = store.memory_bytes();
+
+        // Rotate rows 0..=31 — two chunk bands — by one, which carries the only
+        // cell out of the first band and into the second.
+        let order: Vec<u32> = (1..32).chain(std::iter::once(0)).collect();
+        store.permute_rows(0, (0, 0), &order);
+
+        assert_eq!(store.get(CellRef::new(0, 0)), None);
+        assert_eq!(
+            store.get(CellRef::new(31, 0)).map(|c| c.value),
+            Some(CellValue::Number(1.0))
+        );
+        assert_eq!(
+            store.memory_bytes(),
+            one_chunk,
+            "the band it left is gone, and the empty rows it crossed made no chunks"
+        );
+    }
+
+    #[test]
+    fn a_band_is_asked_about_formulas_without_being_read_cell_by_cell() {
+        let mut store = CellStore::new();
+        store.set(CellRef::new(4, 4), num(1.0));
+        assert!(!store.any_formula((0, 10), (0, 10)));
+        store.set(
+            CellRef::new(4, 4),
+            Cell {
+                formula: Some(crate::FormulaId::from_index(0)),
+                ..num(1.0)
+            },
+        );
+        assert!(store.any_formula((0, 10), (0, 10)));
+        assert!(
+            !store.any_formula((0, 3), (0, 10)),
+            "a band that stops above it does not see it"
+        );
+        assert!(!store.any_formula((0, 10), (0, 3)));
     }
 }

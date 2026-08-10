@@ -73,6 +73,16 @@ impl StringTable {
         self.get(id).unwrap_or("")
     }
 
+    /// Every distinct string in the table, in id order.
+    ///
+    /// For questions about the text of a whole workbook. A sheet holds far more
+    /// cells than the table holds strings — a million rows of a status column
+    /// are four strings — so asking here rather than cell by cell is both fewer
+    /// answers and no pointer-chasing through the store.
+    pub fn iter(&self) -> impl Iterator<Item = &str> {
+        self.values.iter().map(String::as_str)
+    }
+
     pub fn len(&self) -> usize {
         self.values.len()
     }
