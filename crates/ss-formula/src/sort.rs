@@ -322,34 +322,43 @@ pub fn region(sheet: &Sheet, at: CellRef) -> CellRange {
 
 /// Whether the first row of `range` looks like headings rather than data.
 ///
-/// Excel guesses this and so do we, by the one signal that is actually
-/// reliable: a row of text sitting above a column of numbers is a heading. A
-/// row of text above more text is not distinguishable from data, and guessing
-/// there would silently drop a row out of the sort.
+/// The signal is what is *at the top*, not how it compares to what is below.
+/// A row of text over a column of numbers is the easy case and every guess
+/// gets it right; the case that decides the rule is a text column under a text
+/// heading, which is what most exported data looks like — timestamps, ids,
+/// statuses, all of them strings. There is nothing in the values to tell the
+/// heading apart, and both answers are wrong sometimes:
+///
+/// - Call it data, and a quick A→Z files the word `topic` in among the topics.
+/// - Call it a heading, and a list that genuinely has none loses its first row
+///   from the sort.
+///
+/// Excel takes the second, and so do we, because the two mistakes are not
+/// equally visible: a heading sitting in the middle of the data is obvious
+/// from the screen, and a row quietly left out of the sort is not. The Sort
+/// dialog's checkbox is there for the times the guess is wrong, and a quick
+/// sort says in the status bar when it kept a row back.
+///
+/// A number, a date or a boolean at the top is still data, and vetoes the
+/// whole guess: nobody heads a column with `2024`.
 pub fn looks_like_headers(sheet: &Sheet, range: CellRange) -> bool {
     if range.rows() < 3 {
         return false;
     }
     let kind = |at: CellRef| sheet.get(at).map(|c| c.value);
-    let mut differs = false;
+    let mut any = false;
     for col in range.start.col..=range.end.col {
-        let head = kind(CellRef::new(range.start.row, col));
-        let below = kind(CellRef::new(range.start.row + 1, col));
-        match (head, below) {
-            (Some(CellValue::Text(_)), Some(CellValue::Number(_) | CellValue::Bool(_))) => {
-                differs = true;
-            }
-            (Some(CellValue::Text(_)), _) => {}
-            // A column with nothing at the top *and* nothing under it says
-            // nothing either way — a calculated column with no heading is an
-            // ordinary shape, and letting it veto the guess would mean every
-            // such table sorted its own headings into the data.
-            (None | Some(CellValue::Blank), None | Some(CellValue::Blank)) => {}
-            // Anything else in the first row — a number, a date — is data.
+        match kind(CellRef::new(range.start.row, col)) {
+            Some(CellValue::Text(_)) => any = true,
+            // A column with nothing at the top says nothing either way — a
+            // calculated column with no heading is an ordinary shape, and
+            // letting it veto the guess would mean every such table sorted its
+            // own headings into the data.
+            None | Some(CellValue::Blank) => {}
             _ => return false,
         }
     }
-    differs
+    any
 }
 
 #[cfg(test)]
@@ -671,11 +680,32 @@ mod tests {
         put(&mut book, "C1", CellValue::Number(2024.0));
         assert!(!looks_like_headers(&book.sheets[0], range("A1", "C3")));
 
-        // All text: indistinguishable from data, and guessing would drop a row.
+        // Text over text — what most exported data looks like, and the case
+        // the rule exists to decide. Excel calls it a heading; so do we.
         let mut all_text = book_of_text();
-        assert!(!looks_like_headers(&all_text.sheets[0], range("A1", "A3")));
+        assert!(looks_like_headers(&all_text.sheets[0], range("A1", "A3")));
         put(&mut all_text, "A1", CellValue::Number(1.0));
-        assert!(!looks_like_headers(&all_text.sheets[0], range("A1", "A3")));
+        assert!(
+            !looks_like_headers(&all_text.sheets[0], range("A1", "A3")),
+            "nobody heads a column with a number"
+        );
+    }
+
+    #[test]
+    fn a_column_of_strings_under_a_string_is_a_heading() {
+        // The workbook this came from: 140k rows of an export, every column a
+        // timestamp or an id or a status, all of them text. Guessing "no" here
+        // filed the word `topic` in among the topics.
+        let mut book = book();
+        for (row, value) in ["topic", "beta", "alpha", "gamma"].into_iter().enumerate() {
+            text(&mut book, &format!("A{}", row + 1), value);
+        }
+        assert!(looks_like_headers(&book.sheets[0], range("A1", "A4")));
+
+        let change = sort(&mut book, 0, range("A1", "A4"), &ascending(0), true).expect("sortable");
+        apply(&mut book, change);
+        let column: Vec<String> = (1..=4).map(|r| shown(&book, &format!("A{r}"))).collect();
+        assert_eq!(column, ["topic", "alpha", "beta", "gamma"]);
     }
 
     fn book_of_text() -> Workbook {

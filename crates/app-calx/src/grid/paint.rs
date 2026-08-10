@@ -471,26 +471,36 @@ impl GridView {
             });
         }
 
-        // What the pointer would do if pressed. A resize arrow over a handle
-        // is most of what tells the user the handles are draggable at all —
-        // and a header boundary is a handle nothing else marks out, since the
-        // line between two columns is drawn whether or not it can be dragged.
-        if self.drag.is_none() {
-            if let Some(pos) = ui.ctx().pointer_hover_pos() {
-                let icon = header_edge(layout, content, body, &panes, pos)
+        // What the pointer would do if pressed, or — while a drag is in flight
+        // — what it is doing. A resize arrow over a handle is most of what
+        // tells the user the handles are draggable at all, and a header
+        // boundary is a handle nothing else marks out, since the line between
+        // two columns is drawn whether or not it can be dragged.
+        //
+        // A drag names its own icon rather than asking where the pointer is,
+        // and it has to: the pointer leaves the boundary the moment it starts
+        // dragging it, so hovering would answer "nothing here" and the arrow
+        // would drop back to a plain one halfway through the gesture — which
+        // reads as the drag having been let go.
+        let icon = match self.drag {
+            Some(Drag::ResizeColumn { .. }) => Some(egui::CursorIcon::ResizeHorizontal),
+            Some(Drag::ResizeRow { .. }) => Some(egui::CursorIcon::ResizeVertical),
+            Some(Drag::MoveBand { .. }) => Some(egui::CursorIcon::Grabbing),
+            Some(Drag::MovePicture { .. }) => Some(egui::CursorIcon::Move),
+            Some(Drag::ResizePicture { handle, .. }) => Some(handle.cursor()),
+            Some(_) => None,
+            None => ui.ctx().pointer_hover_pos().and_then(|pos| {
+                header_edge(layout, content, body, &panes, pos)
                     .map(|(axis, _)| match axis {
                         Axis::Columns => egui::CursorIcon::ResizeHorizontal,
                         Axis::Rows => egui::CursorIcon::ResizeVertical,
                     })
                     .or_else(|| self.movable_band(layout, content, body, &panes, pos))
-                    .or_else(|| self.pointer_over(sheet, layout, &panes, pos));
-                if let Some(icon) = icon {
-                    ui.ctx().set_cursor_icon(icon);
-                }
-            }
-        }
-        if matches!(self.drag, Some(Drag::MoveBand { .. })) {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                    .or_else(|| self.pointer_over(sheet, layout, &panes, pos))
+            }),
+        };
+        if let Some(icon) = icon {
+            ui.ctx().set_cursor_icon(icon);
         }
 
         let cursor_rect = cell_rect(layout, &panes, self.selection.cursor());
@@ -1307,16 +1317,27 @@ impl GridView {
         // of the pair started a resize, a drag owns the pointer until it ends,
         // and the second click would never be looked at.
         if response.double_clicked() {
-            let edge = ui
-                .ctx()
-                .pointer_interact_pos()
-                .and_then(|pos| header_edge(layout, full, body, &panes, pos));
+            let pos = ui.ctx().pointer_interact_pos();
+            let edge = pos.and_then(|pos| header_edge(layout, full, body, &panes, pos));
             if let Some((axis, index)) = edge {
                 // The drag it started never moved anything, so it is dropped
                 // rather than reported as a resize of nothing.
                 self.drag = None;
                 self.before_resize = None;
                 self.actions.push(Action::AutoFitAt { axis, index });
+                self.layout = Some(cached);
+                return;
+            }
+            // And on a cell, the same gesture opens it for editing — for the
+            // same reason it has to be resolved up here, and only when the
+            // drag underway is the plain selection sweep the first click
+            // started. A picture being moved or a thumb being dragged is
+            // somebody else's gesture and keeps the pointer.
+            if matches!(self.drag, None | Some(Drag::Select))
+                && pos.is_some_and(|pos| body.contains(pos))
+            {
+                self.drag = None;
+                self.open_editor(book, Mode::Edit);
                 self.layout = Some(cached);
                 return;
             }
@@ -1358,11 +1379,6 @@ impl GridView {
                 self.begin_drag(book, &frame, pos, modifiers);
             }
         }
-        // Anywhere but a boundary, which was dealt with above.
-        if response.double_clicked() {
-            self.open_editor(book, Mode::Edit);
-        }
-
         self.handle_keys(ui, book, body, layout);
         self.layout = Some(cached);
     }
@@ -2405,13 +2421,14 @@ mod tests {
         ctx
     }
 
-    /// Drives one egui frame with the given events and returns the view.
+    /// Drives one egui frame with the given events, giving back the cursor the
+    /// grid asked for while it ran.
     fn frame(
         view: &mut GridView,
         book: &mut Workbook,
         events: Vec<egui::Event>,
         ctx: &egui::Context,
-    ) {
+    ) -> egui::CursorIcon {
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
@@ -2425,6 +2442,7 @@ mod tests {
         });
         // Nobody is going to upload the font atlas to a GPU here.
         out.textures_delta.clear();
+        out.platform_output.cursor_icon
     }
 
     /// A ruled sheet: 64-pixel columns, 20-pixel rows, headers to match.
@@ -2746,6 +2764,79 @@ mod tests {
                 assert_eq!(before.row_heights, book.sheets[0].row_heights);
             }
         }
+    }
+
+    /// The middle of a cell, well clear of any boundary.
+    fn cell_of(view: &GridView, at: CellRef) -> egui::Pos2 {
+        let (_, _, layout) = view.layout.as_ref().expect("laid out");
+        egui::pos2(
+            layout.header_width as f32
+                + (layout.cols.offset(at.col) + layout.cols.size(at.col) / 2.0) as f32,
+            layout.header_height as f32
+                + (layout.rows.offset(at.row) + layout.rows.size(at.row) / 2.0) as f32,
+        )
+    }
+
+    #[test]
+    fn double_clicking_a_cell_opens_it_for_editing() {
+        // The same trap the boundary fit fell into: the second click arrives
+        // while the first one's selection drag still owns the pointer, and the
+        // drag branch returns before anything else is looked at.
+        let ctx = context();
+        let mut book = Workbook::blank();
+        let mut view = GridView::default();
+        frame(&mut view, &mut book, vec![], &ctx);
+
+        let at = CellRef::new(3, 2);
+        let pos = cell_of(&view, at);
+        for _ in 0..2 {
+            frame(&mut view, &mut book, vec![press(pos, true)], &ctx);
+            frame(&mut view, &mut book, vec![press(pos, false)], &ctx);
+        }
+
+        let editor = view.editor.as_ref().expect("the cell opened");
+        assert_eq!(editor.at, at);
+        assert!(view.drag.is_none(), "the sweep does not outlive the pair");
+    }
+
+    #[test]
+    fn double_clicking_a_header_selects_it_rather_than_opening_an_editor() {
+        let ctx = context();
+        let mut book = Workbook::blank();
+        let mut view = GridView::default();
+        frame(&mut view, &mut book, vec![], &ctx);
+
+        let at = header_of(&view, Axis::Columns, 2);
+        for _ in 0..2 {
+            frame(&mut view, &mut book, vec![press(at, true)], &ctx);
+            frame(&mut view, &mut book, vec![press(at, false)], &ctx);
+        }
+        assert!(view.editor.is_none(), "there is no cell up there to edit");
+    }
+
+    #[test]
+    fn the_resize_arrow_stays_put_for_as_long_as_the_drag_does() {
+        // The pointer leaves the boundary the moment it starts dragging it, so
+        // an icon chosen by hovering drops back to a plain arrow halfway
+        // through — which reads as the drag having been let go.
+        let ctx = context();
+        let mut book = Workbook::blank();
+        let mut view = GridView::default();
+        frame(&mut view, &mut book, vec![], &ctx);
+
+        let (_, _, layout) = view.layout.as_ref().expect("laid out");
+        let edge = egui::pos2(46.0 + layout.cols.size(0) as f32, 10.0);
+        frame(&mut view, &mut book, vec![press(edge, true)], &ctx);
+        assert!(matches!(view.drag, Some(Drag::ResizeColumn { .. })));
+
+        let away = edge + egui::vec2(120.0, 300.0);
+        let icon = frame(
+            &mut view,
+            &mut book,
+            vec![egui::Event::PointerMoved(away)],
+            &ctx,
+        );
+        assert_eq!(icon, egui::CursorIcon::ResizeHorizontal);
     }
 
     fn press(pos: egui::Pos2, pressed: bool) -> egui::Event {

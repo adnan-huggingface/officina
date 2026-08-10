@@ -433,6 +433,17 @@ and what it produced never reached the file.
 - **A boundary that can be dragged has to say so.** Nothing marks one out: the
   line between two columns is drawn whether or not it is draggable. The pointer
   turns into a resize arrow over it, which is the whole of the affordance.
+- Watch item: **a drag names its own cursor; hovering cannot answer for it.**
+  The icon was only ever chosen from where the pointer *is*, and the pointer
+  leaves the boundary the moment it starts dragging it — so the arrow dropped
+  back to a plain one halfway through the gesture, which reads as the drag
+  having been let go. Every drag that has an icon now states it.
+- Watch item: **double-clicking a cell to edit it fell into the same trap as
+  double-clicking a boundary**, and for the same reason: the second click lands
+  while the first one's selection sweep still owns the pointer, and the drag
+  branch of `handle_input` returns before anything after it is looked at. It is
+  resolved beside the boundary case now, and only supersedes a plain
+  `Drag::Select` — a picture being moved or a scrollbar thumb keeps the pointer.
 - Watch item: **a double-click on a boundary has to be resolved before the
   drag.** The first press starts a resize, a drag owns the pointer until it
   ends, and `handle_input` returns early while one is in flight — so the second
@@ -498,12 +509,15 @@ undo stack. It is now about 120 ms and half a megabyte.
   decided once per style into a table; whether any *string* in the workbook
   holds a line break is asked of the string table, where a status column is
   four strings rather than a million. 130 ms became 40.
-- Watch item: **`looks_like_headers` says no to this file, and Excel says yes.**
-  Every column is text above text, which is the case the guess deliberately
-  refuses — see its doc comment. So a quick A→Z sorts the heading row into the
-  data unless "my data has headers" is ticked in the Sort dialog. Deliberate,
-  and the more conservative of the two wrong answers, but it is a visible
-  difference from Excel on exactly the kind of export people sort.
+- **`looks_like_headers` now answers on what is at the top, not on how it
+  compares to what is below.** Text over text was called data, on the grounds
+  that guessing wrong would drop a row out of the sort — but that is what most
+  exported data looks like, every column a timestamp or an id or a status, and
+  it filed the word `topic` in among the topics. Both answers are wrong
+  sometimes; Excel takes the other one, and so do we now, because a heading
+  sitting in the middle of the data is obvious from the screen and a row
+  quietly left out of the sort is not. A number or a date at the top still
+  vetoes the guess outright.
 - Watch item: **saving this workbook takes 5 s, and it is not the compression.**
   Deflate level 1 saved 20% of the time for 78% more file, so the cost is
   authoring 53 MB of `sheetData` in `write::sheet_out`. Untouched, unmeasured
