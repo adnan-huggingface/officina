@@ -18,6 +18,7 @@ pub mod edit;
 pub mod error;
 pub mod eval;
 pub mod filter;
+pub mod find;
 pub mod functions;
 pub mod graph;
 pub mod lexer;

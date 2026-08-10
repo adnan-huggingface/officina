@@ -155,7 +155,7 @@ fn holds(
 }
 
 /// A cell as the grid draws it.
-fn shown(book: &Workbook, sheet: usize, at: CellRef, cell: Option<&Cell>) -> String {
+pub(crate) fn shown(book: &Workbook, sheet: usize, at: CellRef, cell: Option<&Cell>) -> String {
     let Some(model) = book.sheet(sheet) else {
         return String::new();
     };
@@ -173,7 +173,7 @@ fn shown(book: &Workbook, sheet: usize, at: CellRef, cell: Option<&Cell>) -> Str
 }
 
 /// `*` for any run and `?` for any one character, over already-lowercased text.
-fn wildcard(text: &str, pattern: &str) -> bool {
+pub(crate) fn wildcard(text: &str, pattern: &str) -> bool {
     let text: Vec<char> = text.chars().collect();
     let pattern: Vec<char> = pattern.chars().collect();
     // The classic two-pointer walk with a remembered star, which is linear

@@ -120,6 +120,21 @@ enum Dialog {
         axis: Axis,
         text: String,
     },
+    /// Excel's Find and Replace, which are one window with a row hidden.
+    ///
+    /// Not modal, in the sense that matters: it keeps its state across Find
+    /// Next, and the selection moves under it. `replacing` is what Ctrl+H
+    /// turns on and Ctrl+F leaves off.
+    Find {
+        query: ss_formula::find::Query,
+        with: String,
+        replacing: bool,
+        /// Every sheet, or just this one.
+        whole_workbook: bool,
+        /// What the last button press did, in words, because "nothing
+        /// happened" and "nothing matched" look identical otherwise.
+        report: String,
+    },
     /// The checkbox list behind one filter arrow.
     Filter {
         /// An offset into the filter's range.
@@ -559,6 +574,35 @@ impl Calx {
         if new {
             self.guard(Pending::New);
         }
+
+        // Find and Replace are one window with a row hidden, so the two keys
+        // open the same dialog and differ only in whether the row is there. A
+        // Ctrl+H over an already-open Find turns it into a Replace rather than
+        // throwing away what has been typed.
+        let (find, replace) = ctx.input_mut(|i| {
+            (
+                i.consume_key(egui::Modifiers::COMMAND, egui::Key::F),
+                i.consume_key(egui::Modifiers::COMMAND, egui::Key::H),
+            )
+        });
+        if find || replace {
+            self.open_find(replace);
+        }
+    }
+
+    /// Opens Find, or turns an open one into Replace.
+    fn open_find(&mut self, replacing: bool) {
+        if let Some(Dialog::Find { replacing: on, .. }) = &mut self.dialog {
+            *on |= replacing;
+            return;
+        }
+        self.dialog = Some(Dialog::Find {
+            query: ss_formula::find::Query::default(),
+            with: String::new(),
+            replacing,
+            whole_workbook: false,
+            report: String::new(),
+        });
     }
 
     /// The prompt shown when something would discard unsaved changes.
@@ -1173,6 +1217,123 @@ impl Calx {
         self.grid.invalidate();
     }
 
+    /// The sheets a search covers, starting at the one being looked at.
+    ///
+    /// Order matters: Find Next from a cell on sheet 3 should reach the rest of
+    /// sheet 3 before it reaches sheet 1, and "reading order" across a workbook
+    /// is therefore a rotation of the sheet list rather than the list.
+    fn search_scope(&self, whole_workbook: bool) -> Vec<usize> {
+        let here = self.grid.sheet_index;
+        if !whole_workbook {
+            return vec![here];
+        }
+        let count = self.doc.workbook.sheets.len();
+        (0..count)
+            .map(|n| (here + n) % count)
+            .filter(|i| {
+                self.doc.workbook.sheets[*i].kind.has_grid() && !self.doc.workbook.sheets[*i].hidden
+            })
+            .collect()
+    }
+
+    /// Moves the cursor to a hit, switching sheets if it is on another one.
+    fn show_hit(&mut self, hit: ss_formula::find::Hit) {
+        if hit.sheet != self.grid.sheet_index {
+            self.show_sheet(hit.sheet);
+        }
+        self.grid.selection = grid::Selection::at(hit.at);
+        let body = self.last_body;
+        if let Some(sheet) = self.doc.workbook.sheet(hit.sheet) {
+            self.grid
+                .scroll_into_view(hit.at, body, &self.doc.workbook, sheet);
+        }
+    }
+
+    /// One press of a Find window button, and what to say about it.
+    fn find_command(
+        &mut self,
+        command: FindCommand,
+        query: &ss_formula::find::Query,
+        with: &str,
+        whole_workbook: bool,
+    ) -> String {
+        use ss_formula::find;
+        let scope = self.search_scope(whole_workbook);
+        if query.needle.is_empty() {
+            return "Type something to look for".to_string();
+        }
+        let here = find::Hit {
+            sheet: self.grid.sheet_index,
+            at: self.grid.selection.cursor(),
+        };
+        match command {
+            FindCommand::Next | FindCommand::Previous => {
+                let back = command == FindCommand::Previous;
+                match find::next(&self.doc.workbook, &scope, here, query, back) {
+                    Some(hit) => {
+                        self.show_hit(hit);
+                        let sheet = self
+                            .doc
+                            .workbook
+                            .sheet(hit.sheet)
+                            .map(|s| s.name.clone())
+                            .unwrap_or_default();
+                        format!("{} on {sheet}", hit.at.to_a1())
+                    }
+                    None => "No match".to_string(),
+                }
+            }
+            FindCommand::ReplaceOne => {
+                // The cell the cursor is on, if it is one of the matches —
+                // Excel replaces where you are standing and then moves on, so
+                // that Replace repeated is Replace All done by hand.
+                let cell = self
+                    .doc
+                    .workbook
+                    .sheet(here.sheet)
+                    .and_then(|s| s.get(here.at))
+                    .is_some();
+                let hits = find::all(&self.doc.workbook, &scope, query);
+                let standing_on = cell && hits.contains(&here);
+                let (change, report) = if standing_on {
+                    find::replace(&mut self.doc.workbook, &[here], query, with)
+                } else {
+                    (Change::default(), find::Replaced::default())
+                };
+                if !change.patches.is_empty() {
+                    self.perform(change);
+                }
+                let moved = find::next(&self.doc.workbook, &scope, here, query, false);
+                if let Some(hit) = moved {
+                    self.show_hit(hit);
+                }
+                match (report.cells, report.skipped) {
+                    (0, 0) if standing_on => "Nothing to replace here".to_string(),
+                    (0, 0) => "Find first, then replace".to_string(),
+                    (0, _) => "That cell is a formula; its value cannot be replaced".to_string(),
+                    (n, _) => format!("Replaced {n}"),
+                }
+            }
+            FindCommand::ReplaceAll => {
+                let hits = find::all(&self.doc.workbook, &scope, query);
+                let (change, report) = find::replace(&mut self.doc.workbook, &hits, query, with);
+                if change.patches.is_empty() {
+                    return "No match".to_string();
+                }
+                // One entry on the undo stack, whatever it touched: undoing a
+                // Replace All in three hundred steps is not undoing it.
+                self.perform(change);
+                match report.skipped {
+                    0 => format!("Replaced {} cells", report.cells),
+                    n => format!(
+                        "Replaced {} cells; {n} left alone, being formulas found by their value",
+                        report.cells
+                    ),
+                }
+            }
+        }
+    }
+
     /// Puts a dragged band of rows or columns down where it was dropped.
     fn move_band(&mut self, axis: Axis, first: u32, last: u32, before: u32) {
         let sheet = self.grid.sheet_index;
@@ -1542,6 +1703,7 @@ impl Calx {
         let mut sort: Option<bool> = None;
         let mut filter: Option<FilterCommand> = None;
         let mut size: Option<Axis> = None;
+        let mut find_dialog = false;
 
         ui.horizontal(|ui| {
             if icons::button(ui, Icon::New, false, "New workbook (Ctrl+N)").clicked() {
@@ -1607,6 +1769,15 @@ impl Calx {
                 if icons::button(ui, icon, false, tip).clicked() {
                     requested = Some(action);
                 }
+            }
+            separate(ui);
+
+            if ui
+                .button("Find…")
+                .on_hover_text("Find and replace (Ctrl+F, Ctrl+H)")
+                .clicked()
+            {
+                find_dialog = true;
             }
             separate(ui);
 
@@ -1925,6 +2096,9 @@ impl Calx {
         if let Some(action) = requested {
             let ui = &*ui;
             self.act(ui, action);
+        }
+        if find_dialog {
+            self.open_find(false);
         }
         if let Some(axis) = size {
             self.open_size_dialog(axis);
@@ -2519,6 +2693,97 @@ impl Calx {
                 }
             }
 
+            Dialog::Find {
+                query,
+                with,
+                replacing,
+                whole_workbook,
+                report,
+            } => {
+                let mut command: Option<FindCommand> = None;
+                let title = if *replacing { "Replace" } else { "Find" };
+                modal(ctx, title, |ui| {
+                    egui::Grid::new("calx-find-fields")
+                        .num_columns(2)
+                        .spacing([8.0, 6.0])
+                        .show(ui, |ui| {
+                            ui.label("Find what");
+                            let field = ui.add(
+                                egui::TextEdit::singleline(&mut query.needle).desired_width(240.0),
+                            );
+                            if query.needle.is_empty() {
+                                field.request_focus();
+                            }
+                            if field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                                command = Some(FindCommand::Next);
+                            }
+                            ui.end_row();
+                            if *replacing {
+                                ui.label("Replace with");
+                                ui.add(
+                                    egui::TextEdit::singleline(with)
+                                        .desired_width(240.0)
+                                        .hint_text("(nothing)"),
+                                );
+                                ui.end_row();
+                            }
+                        });
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        ui.checkbox(&mut query.match_case, "Match case");
+                        ui.checkbox(&mut query.whole_cell, "Whole cell");
+                    });
+                    ui.horizontal(|ui| {
+                        ui.checkbox(whole_workbook, "All sheets");
+                        // Excel calls this Look in, and the choice decides what
+                        // a replacement can reach: only the source of a cell is
+                        // ever rewritten.
+                        ui.label("Look in");
+                        egui::ComboBox::from_id_salt("calx-find-in")
+                            .selected_text(if query.in_formulas {
+                                "Formulas"
+                            } else {
+                                "Values"
+                            })
+                            .width(90.0)
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut query.in_formulas, true, "Formulas");
+                                ui.selectable_value(&mut query.in_formulas, false, "Values");
+                            });
+                    });
+                    ui.label(
+                        egui::RichText::new("* matches any run, ? any one character")
+                            .weak()
+                            .small(),
+                    );
+                    if !report.is_empty() {
+                        ui.label(egui::RichText::new(report.as_str()).small());
+                    }
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Find next").clicked() {
+                            command = Some(FindCommand::Next);
+                        }
+                        if ui.button("Find previous").clicked() {
+                            command = Some(FindCommand::Previous);
+                        }
+                        if *replacing {
+                            if ui.button("Replace").clicked() {
+                                command = Some(FindCommand::ReplaceOne);
+                            }
+                            if ui.button("Replace all").clicked() {
+                                command = Some(FindCommand::ReplaceAll);
+                            }
+                        }
+                        keep &= !ui.button("Close").clicked();
+                    });
+                });
+                if let Some(command) = command {
+                    let outcome = self.find_command(command, query, with, *whole_workbook);
+                    *report = outcome;
+                }
+            }
+
             Dialog::Sort {
                 range,
                 header,
@@ -2808,6 +3073,14 @@ impl Calx {
             requested = Some(Action::Clear);
             ui.close();
         }
+        let mut find_dialog = false;
+        if ui.button("Find and replace…").clicked() {
+            find_dialog = true;
+            ui.close();
+        }
+        if find_dialog {
+            self.open_find(true);
+        }
         if ui.button("Clear formatting").clicked() {
             requested = Some(Action::Format(Format::Clear));
             ui.close();
@@ -2866,6 +3139,15 @@ enum FilterCommand {
     Toggle,
     Clear,
     Reapply,
+}
+
+/// Which of the Find window's four buttons was pressed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FindCommand {
+    Next,
+    Previous,
+    ReplaceOne,
+    ReplaceAll,
 }
 
 /// What a tab's right-click menu asked for.
