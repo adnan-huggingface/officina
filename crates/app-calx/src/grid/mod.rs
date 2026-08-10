@@ -195,72 +195,123 @@ pub fn plan(
         for col in cols.clone() {
             let at = CellRef::new(row, col);
             // A cell covered by a merge is drawn by the merge's anchor.
-            let merge = sheet.merge_at(at);
-            if merge.is_some_and(|m| m.start != at) {
+            if sheet.merge_at(at).is_some_and(|m| m.start != at) {
                 continue;
             }
-            let effect = conditional.effect(book, index, at);
-            let look = look_at(book, sheet, at, effect.as_ref());
-            let cell = sheet.get(at);
-            let blank = cell.is_none_or(|c| c.value.is_blank());
-
-            // A cell with nothing in it is still drawn when it is shaded or
-            // bordered — which is how a whole formatted-but-empty table looks
-            // like a table.
-            if blank && look.is_invisible() && effect.is_none() {
-                continue;
+            if let Some(cell) = plan_cell(book, sheet, layout, view, scroll, conditional, index, at)
+            {
+                cells.push(cell);
             }
-
-            let shown = if blank {
-                ss_model::Formatted::default()
-            } else {
-                let cell = cell.expect("not blank");
-                let value = match cell.value {
-                    CellValue::Blank => FormatValue::Blank,
-                    CellValue::Number(n) => FormatValue::Number(n),
-                    CellValue::Bool(b) => FormatValue::Bool(b),
-                    CellValue::Error(e) => FormatValue::Error(e),
-                    CellValue::Text(id) => FormatValue::Text(book.strings.resolve(id)),
-                };
-                // A conditional format may replace the number format too, not
-                // only the colours.
-                match effect.as_ref().and_then(|e| e.dxf.number_format.as_deref()) {
-                    Some(code) => ss_model::NumberFormat::parse(code).format(value),
-                    None => book.styles.number_format(sheet.style_at(at)).format(value),
-                }
-            };
-            let hidden = effect.as_ref().is_some_and(|e| e.hide_value);
-            let text = if hidden { String::new() } else { shown.text };
-            let overlay = effect.as_ref().and_then(|e| e.overlay);
-            if text.is_empty() && look.is_invisible() && overlay.is_none() {
-                continue;
-            }
-
-            let rect = match merge {
-                Some(m) => rect_of_range(layout, *m, view, scroll),
-                None => rect_of(layout, at, view, scroll),
-            };
-            // Text runs on into empty neighbours; a number never does — it
-            // turns into `####` instead, which the painter decides once it can
-            // measure the glyphs. Wrapped text stays in its own cell too.
-            let overflow = if shown.numeric || merge.is_some() || look.wrap {
-                0.0
-            } else {
-                overflow_width(sheet, at, layout)
-            };
-            let color = look.text.or(shown.color);
-            cells.push(PaintCell {
-                rect,
-                text,
-                color,
-                numeric: shown.numeric,
-                overflow,
-                look,
-                overlay,
-            });
         }
     }
+
+    // A merge whose anchor is off-screen still has to be drawn. Its rectangle
+    // reaches into this pane even though its top-left cell does not, and its
+    // text is centred over the *whole* merge — which is how a banner across a
+    // sheet is written. Left to the loop above, a heading merged from column A
+    // vanishes the moment column A scrolls away, and on a sheet frozen at F4 it
+    // vanishes always: the anchor is in the frozen pane and the centre of the
+    // text is in the scrolling one.
+    for merge in &sheet.merges {
+        let anchored_here = rows.contains(&merge.start.row) && cols.contains(&merge.start.col);
+        let reaches_here = merge.start.row <= *rows.end()
+            && merge.end.row >= *rows.start()
+            && merge.start.col <= *cols.end()
+            && merge.end.col >= *cols.start();
+        if anchored_here || !reaches_here {
+            continue;
+        }
+        if let Some(cell) = plan_cell(
+            book,
+            sheet,
+            layout,
+            view,
+            scroll,
+            conditional,
+            index,
+            merge.start,
+        ) {
+            cells.push(cell);
+        }
+    }
+
     Plan { rows, cols, cells }
+}
+
+/// One cell, resolved to something drawable, or `None` when nothing shows.
+///
+/// `at` must be a merge's anchor or an unmerged cell; a covered cell is drawn
+/// by whatever anchors it.
+#[allow(clippy::too_many_arguments)]
+fn plan_cell(
+    book: &Workbook,
+    sheet: &Sheet,
+    layout: &Layout,
+    view: egui::Rect,
+    scroll: Scroll,
+    conditional: &Formatting,
+    index: usize,
+    at: CellRef,
+) -> Option<PaintCell> {
+    let merge = sheet.merge_at(at);
+    let effect = conditional.effect(book, index, at);
+    let look = look_at(book, sheet, at, effect.as_ref());
+    let cell = sheet.get(at);
+    let blank = cell.is_none_or(|c| c.value.is_blank());
+
+    // A cell with nothing in it is still drawn when it is shaded or bordered —
+    // which is how a whole formatted-but-empty table looks like a table.
+    if blank && look.is_invisible() && effect.is_none() {
+        return None;
+    }
+
+    let shown = if blank {
+        ss_model::Formatted::default()
+    } else {
+        let cell = cell.expect("not blank");
+        let value = match cell.value {
+            CellValue::Blank => FormatValue::Blank,
+            CellValue::Number(n) => FormatValue::Number(n),
+            CellValue::Bool(b) => FormatValue::Bool(b),
+            CellValue::Error(e) => FormatValue::Error(e),
+            CellValue::Text(id) => FormatValue::Text(book.strings.resolve(id)),
+        };
+        // A conditional format may replace the number format too, not only the
+        // colours.
+        match effect.as_ref().and_then(|e| e.dxf.number_format.as_deref()) {
+            Some(code) => ss_model::NumberFormat::parse(code).format(value),
+            None => book.styles.number_format(sheet.style_at(at)).format(value),
+        }
+    };
+    let hidden = effect.as_ref().is_some_and(|e| e.hide_value);
+    let text = if hidden { String::new() } else { shown.text };
+    let overlay = effect.as_ref().and_then(|e| e.overlay);
+    if text.is_empty() && look.is_invisible() && overlay.is_none() {
+        return None;
+    }
+
+    let rect = match merge {
+        Some(m) => rect_of_range(layout, *m, view, scroll),
+        None => rect_of(layout, at, view, scroll),
+    };
+    // Text runs on into empty neighbours; a number never does — it turns into
+    // `####` instead, which the painter decides once it can measure the glyphs.
+    // Wrapped text stays in its own cell too.
+    let overflow = if shown.numeric || merge.is_some() || look.wrap {
+        0.0
+    } else {
+        overflow_width(sheet, at, layout)
+    };
+    let color = look.text.or(shown.color);
+    Some(PaintCell {
+        rect,
+        text,
+        color,
+        numeric: shown.numeric,
+        overflow,
+        look,
+        overlay,
+    })
 }
 
 /// Works out what a cell actually looks like: its own style, the style its row
@@ -823,6 +874,105 @@ impl GridView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A banner merged across the whole width, anchored in column A.
+    fn book_with_a_wide_merge() -> Workbook {
+        let mut book = Workbook::blank();
+        let text = book.strings.intern("b0000 0000 0000 (GROUP 0, 128 msgs)");
+        let sheet = book.sheet_mut(0).expect("sheet 0");
+        sheet.set(
+            CellRef::new(3, 0),
+            Cell {
+                value: CellValue::Text(text),
+                ..Cell::default()
+            },
+        );
+        sheet
+            .merges
+            .push(CellRange::new(CellRef::new(3, 0), CellRef::new(3, 94)));
+        book
+    }
+
+    #[test]
+    fn a_merge_reaching_into_a_pane_is_drawn_there_even_though_it_starts_outside() {
+        // The reference workbook is frozen at F4, so the banner across row 4 is
+        // anchored in the frozen pane while the centre of its text is in the
+        // scrolling one. Drawing it only where its anchor is means drawing it
+        // nowhere: the fill is clipped to five columns and the text, centred
+        // over ninety-five, lands outside the clip entirely.
+        let book = book_with_a_wide_merge();
+        let sheet = book.sheet(0).expect("sheet 0");
+        let layout = Layout::for_sheet(&book, sheet, 1.0);
+
+        // A pane that starts at column F: the anchor is not in it.
+        let scroll = Scroll {
+            x: layout.cols.offset(5),
+            y: 0.0,
+        };
+        let plan = plan(
+            &book,
+            sheet,
+            &layout,
+            viewport(),
+            scroll,
+            &Formatting::empty(),
+        );
+        let banner = plan
+            .cells
+            .iter()
+            .find(|c| c.text.starts_with("b0000"))
+            .expect("the banner is drawn in a pane it reaches into");
+        // And it keeps the whole merge's rectangle, which is what centres the
+        // text where Excel centres it — off to the left of this pane.
+        assert!(banner.rect.left() < viewport().left(), "{:?}", banner.rect);
+        assert!(
+            banner.rect.width() > viewport().width(),
+            "{:?}",
+            banner.rect
+        );
+    }
+
+    #[test]
+    fn a_merge_is_not_drawn_twice_in_the_pane_that_holds_its_anchor() {
+        let book = book_with_a_wide_merge();
+        let sheet = book.sheet(0).expect("sheet 0");
+        let layout = Layout::for_sheet(&book, sheet, 1.0);
+        let plan = plan(
+            &book,
+            sheet,
+            &layout,
+            viewport(),
+            Scroll::default(),
+            &Formatting::empty(),
+        );
+        assert_eq!(
+            plan.cells
+                .iter()
+                .filter(|c| c.text.starts_with("b0000"))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn a_merge_nowhere_near_the_viewport_is_not_drawn() {
+        let book = book_with_a_wide_merge();
+        let sheet = book.sheet(0).expect("sheet 0");
+        let layout = Layout::for_sheet(&book, sheet, 1.0);
+        let scroll = Scroll {
+            x: 0.0,
+            y: layout.rows.offset(400),
+        };
+        let plan = plan(
+            &book,
+            sheet,
+            &layout,
+            viewport(),
+            scroll,
+            &Formatting::empty(),
+        );
+        assert!(plan.cells.iter().all(|c| !c.text.starts_with("b0000")));
+    }
 
     #[test]
     fn a_shaded_empty_cell_is_drawn_and_an_unshaded_one_is_not() {

@@ -49,7 +49,7 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[-]` deferred
   reprinting them; `write::splice` is the primitive that makes that possible, and
   everything else in the module is built on it. `rfd` is Calx's file dialog, on
   default features so a Linux build needs the XDG portal rather than GTK headers.
-- Workspace total is **601 tests**, all green;
+- Workspace total is **604 tests**, all green;
   `cargo clippy --workspace --all-targets -- -D warnings` and
   `cargo fmt --all --check` are both clean.
 - `ss-model` grew four modules across C11–C14: `color` (the four spellings of
@@ -261,6 +261,15 @@ to a screenshot of the same file in Excel.
     A sheet holds a handful of them, not a million, and moving one and deleting
     another are then the same operation with the same inverse. A per-picture
     patch would need indices that stay valid across a deletion.
+- Watch item: **a merge is drawn from its anchor, and its anchor may be
+  off-screen.** `plan` walks the visible rows and columns and draws a merge at
+  its top-left cell, so a banner merged from column A disappeared the moment
+  column A scrolled away — and on a sheet frozen at F4 it disappeared always:
+  the anchor sits in the frozen pane, the fill is clipped to five columns, and
+  the text, centred over ninety-five, lands outside that clip entirely. Row 4 of
+  the reference workbook's Message Summary is exactly this, and it read as an
+  empty grey band. `plan` now makes a second pass over `sheet.merges` for the
+  ones that *reach into* the pane without starting in it.
 - Known limits, stated rather than hidden: icon sets are still not drawn, 3-D
   charts are drawn flat, stacked text (rotation 255) is drawn upright,
   `Group 0`-style outline grouping is read but its collapse controls are not
