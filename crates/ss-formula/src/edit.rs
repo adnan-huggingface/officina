@@ -91,6 +91,17 @@ pub enum Patch {
         chart: usize,
         title: Option<String>,
     },
+    /// Every picture on a sheet, replaced wholesale.
+    ///
+    /// Wholesale because a sheet holds a handful of them, not a million, and
+    /// because moving one and deleting another are then the same operation
+    /// with the same inverse — the list as it was. A per-picture patch would
+    /// need indices that stay valid across a deletion, which is exactly the
+    /// bookkeeping this avoids.
+    Pictures {
+        sheet: usize,
+        pictures: Vec<ss_model::Picture>,
+    },
     /// A style put on whole rows or columns.
     ///
     /// Shading a column is not shading a million cells: Excel stores it once on
@@ -168,6 +179,17 @@ fn apply_patch(book: &mut Workbook, patch: Patch) -> Vec<Patch> {
                 sheet,
                 chart,
                 title: before,
+            }]
+        }
+
+        Patch::Pictures { sheet, pictures } => {
+            let Some(target) = book.sheet_mut(sheet) else {
+                return Vec::new();
+            };
+            let before = std::mem::replace(&mut target.pictures, pictures);
+            vec![Patch::Pictures {
+                sheet,
+                pictures: before,
             }]
         }
 
@@ -639,6 +661,60 @@ mod tests {
 
     fn at(a1: &str) -> CellRef {
         CellRef::from_a1(a1).expect("valid address")
+    }
+
+    fn a_picture(col: u32) -> ss_model::Picture {
+        use ss_model::chart::{Anchor, AnchorPoint};
+        ss_model::Picture {
+            part: "/xl/media/image1.png".into(),
+            drawing_part: "/xl/drawings/drawing1.xml".into(),
+            anchor_index: 0,
+            name: "Picture 3".into(),
+            anchor: Anchor::OneCell {
+                from: AnchorPoint {
+                    col,
+                    col_offset: 0,
+                    row: 0,
+                    row_offset: 0,
+                },
+                width: 100,
+                height: 100,
+            },
+            data: std::sync::Arc::from(Vec::new().into_boxed_slice()),
+            content_type: "image/png".into(),
+        }
+    }
+
+    #[test]
+    fn moving_and_deleting_a_picture_undo_the_same_way() {
+        let mut book = Workbook::blank();
+        book.sheets[0].pictures = vec![a_picture(1)];
+
+        // Moved.
+        let moved = Change::new(
+            "Move picture",
+            vec![Patch::Pictures {
+                sheet: 0,
+                pictures: book.sheets[0].pictures.clone(),
+            }],
+        );
+        book.sheets[0].pictures = vec![a_picture(7)];
+        let redo = apply(&mut book, moved);
+        assert_eq!(book.sheets[0].pictures, vec![a_picture(1)], "undone");
+        apply(&mut book, redo);
+        assert_eq!(book.sheets[0].pictures, vec![a_picture(7)], "redone");
+
+        // Deleted. The same patch, because the list is what is replaced.
+        let deleted = Change::new(
+            "Delete picture",
+            vec![Patch::Pictures {
+                sheet: 0,
+                pictures: book.sheets[0].pictures.clone(),
+            }],
+        );
+        book.sheets[0].pictures.clear();
+        apply(&mut book, deleted);
+        assert_eq!(book.sheets[0].pictures.len(), 1, "it came back");
     }
 
     #[test]

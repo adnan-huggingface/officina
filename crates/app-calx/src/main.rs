@@ -294,6 +294,53 @@ impl Calx {
         self.edited = false;
     }
 
+    /// Records a finished picture drag, or drops it if nothing actually moved.
+    ///
+    /// A plain click on a picture selects it and ends a drag of zero distance.
+    /// Left unchecked that would put an undo entry on the stack for every
+    /// click, so the only thing that decides is whether the geometry actually
+    /// differs from what it was.
+    fn pictures_moved(&mut self, sheet: usize, before: Vec<ss_model::Picture>) {
+        let unchanged = self
+            .doc
+            .workbook
+            .sheet(sheet)
+            .is_some_and(|s| s.pictures == before);
+        if unchanged {
+            return;
+        }
+        self.undo.push(Change::new(
+            "Move picture",
+            vec![Patch::Pictures {
+                sheet,
+                pictures: before,
+            }],
+        ));
+        self.redo.clear();
+        self.edited = true;
+    }
+
+    fn delete_picture(&mut self, sheet: usize, index: usize) {
+        let Some(target) = self.doc.workbook.sheet_mut(sheet) else {
+            return;
+        };
+        if index >= target.pictures.len() {
+            return;
+        }
+        let before = target.pictures.clone();
+        target.pictures.remove(index);
+        self.grid.selected_picture = None;
+        self.undo.push(Change::new(
+            "Delete picture",
+            vec![Patch::Pictures {
+                sheet,
+                pictures: before,
+            }],
+        ));
+        self.redo.clear();
+        self.edited = true;
+    }
+
     /// Writes to the current path, asking for one if there is none.
     fn save(&mut self) {
         match self.path.clone() {
@@ -572,6 +619,8 @@ impl Calx {
             Action::Freeze(on) => self.freeze(on),
             Action::Visibility { axis, hide } => self.set_visibility(axis, hide),
             Action::AutoFit(axis) => self.autofit(axis),
+            Action::PicturesMoved(before) => self.pictures_moved(sheet, before),
+            Action::DeletePicture(index) => self.delete_picture(sheet, index),
             Action::Resized(before) => {
                 // The sheet already has the new sizes; what goes on the stack is
                 // how it looked before, which is the undo.

@@ -188,6 +188,8 @@ fn read_drawing(
         if part.content_type.starts_with("image/") {
             drawn.pictures.push(ss_model::Picture {
                 part: target.as_str().to_string(),
+                drawing_part: drawing_name.as_str().to_string(),
+                anchor_index: found.index,
                 name: found.name,
                 anchor: found.anchor,
                 data: std::sync::Arc::from(part.data()),
@@ -215,6 +217,45 @@ fn read_drawing(
         });
     }
     Ok(drawn)
+}
+
+/// The drawing a worksheet points at, if it points at one.
+///
+/// Found by relationship *type* rather than by the `<drawing r:id>` in the
+/// sheet, because the writer needs it even when nothing in the model still
+/// refers to it — a sheet whose only picture was deleted has no picture left
+/// to name the part.
+pub(crate) fn drawing_of(
+    package: &Package,
+    sheet_part: &ooxml::PartName,
+) -> Option<ooxml::PartName> {
+    let rels = package.relationships(sheet_part).ok()?;
+    let rel = rels.iter().find(|r| r.rel_type.ends_with("/drawing"))?;
+    rel.resolve(sheet_part)?.ok()
+}
+
+/// The anchors in a drawing that hold a picture, and the geometry the *file*
+/// gives them — which is what a changed anchor is compared against.
+pub(crate) fn picture_anchors(
+    package: &Package,
+    drawing_name: &ooxml::PartName,
+) -> Result<std::collections::BTreeMap<usize, ss_model::Anchor>> {
+    let mut out = std::collections::BTreeMap::new();
+    let Some(part) = package.part(drawing_name) else {
+        return Ok(out);
+    };
+    for found in drawing::parse(drawing_name.as_str(), part.data())? {
+        let Some(target) = resolve(package, drawing_name, &found.rel_id) else {
+            continue;
+        };
+        let Some(target_part) = package.part(&target) else {
+            continue;
+        };
+        if target_part.content_type.starts_with("image/") {
+            out.insert(found.index, found.anchor);
+        }
+    }
+    Ok(out)
 }
 
 /// A relationship id, resolved against the part that declared it.

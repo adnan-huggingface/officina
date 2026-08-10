@@ -20,6 +20,10 @@ use crate::xml::{attr_raw, end_local_name, local_name, push_text, strip_prefix};
 /// One anchored graphic, and the relationship id of what it holds.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Anchored {
+    /// Position among *all* anchors in the part, counted from zero. Charts and
+    /// shapes take their place in the count: it is an index into the file, not
+    /// into the pictures we happened to understand.
+    pub index: usize,
     pub anchor: Anchor,
     /// `r:id` on `<c:chart>`, `<a:blip>`, or whatever the frame carries.
     pub rel_id: String,
@@ -51,6 +55,8 @@ pub(crate) fn parse(part: &str, data: &[u8]) -> Result<Vec<Anchored>> {
     let mut rel_id: Option<String> = None;
     let mut name = String::new();
     let mut corner = Corner::None;
+    let mut seen = 0usize;
+    let mut index = 0usize;
     let mut field: Option<&'static str> = None;
     let mut text = String::new();
 
@@ -72,6 +78,8 @@ pub(crate) fn parse(part: &str, data: &[u8]) -> Result<Vec<Anchored>> {
                     origin = (0, 0);
                     rel_id = None;
                     name.clear();
+                    index = seen;
+                    seen += 1;
                 }
                 b"cNvPr" => {
                     if name.is_empty() {
@@ -152,6 +160,7 @@ pub(crate) fn parse(part: &str, data: &[u8]) -> Result<Vec<Anchored>> {
                             },
                         };
                         out.push(Anchored {
+                            index,
                             anchor,
                             rel_id: id,
                             name: std::mem::take(&mut name),
@@ -243,6 +252,13 @@ mod tests {
     fn a_drawing_keeps_the_name_it_was_given() {
         let found = parse("drawing1.xml", DRAWING.as_bytes()).expect("parses");
         assert_eq!(found[0].name, "Chart 1");
+    }
+
+    #[test]
+    fn anchors_are_numbered_by_their_place_in_the_file() {
+        let found = parse("drawing1.xml", DRAWING.as_bytes()).expect("parses");
+        assert_eq!(found[0].index, 0);
+        assert_eq!(found[1].index, 1);
     }
 
     #[test]

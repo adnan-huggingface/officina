@@ -22,6 +22,18 @@ pub struct Picture {
     /// Doubles as the cache key for the decoded texture: two anchors sharing
     /// one image — a logo repeated on every sheet — decode once.
     pub part: String,
+    /// The drawing part the anchor lives in, e.g. `/xl/drawings/drawing1.xml`.
+    ///
+    /// Not the same part as the image, and both are needed: moving a picture
+    /// rewrites the anchor in the drawing and leaves the image alone.
+    pub drawing_part: String,
+    /// Which `<xdr:*Anchor>` this is within that drawing, counted from zero
+    /// over *every* anchor including the ones holding charts.
+    ///
+    /// This is the identity that survives a save. The writer walks the same
+    /// anchors in the same order, so a picture that has been moved is found by
+    /// counting rather than by matching geometry that has deliberately changed.
+    pub anchor_index: usize,
     /// `<xdr:cNvPr name>`. Excel's own "Picture 3" when nobody renamed it.
     pub name: String,
     pub anchor: Anchor,
@@ -44,6 +56,8 @@ mod tests {
     fn a_picture_shares_its_bytes_rather_than_copying_them() {
         let picture = Picture {
             part: "/xl/media/image1.png".into(),
+            drawing_part: "/xl/drawings/drawing1.xml".into(),
+            anchor_index: 0,
             name: "Picture 3".into(),
             anchor: Anchor::OneCell {
                 from: AnchorPoint::default(),

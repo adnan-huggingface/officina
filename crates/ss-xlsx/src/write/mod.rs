@@ -21,6 +21,7 @@
 mod blank;
 mod cells;
 mod chart_out;
+mod drawing_out;
 mod sheet_out;
 mod splice;
 mod strings_out;
@@ -134,7 +135,42 @@ impl XlsxDocument {
                 regenerate,
             };
             let data = sheet_out::rewrite(name.as_str(), part.data(), &mut ctx)?;
-            written.push((name, content_type, data));
+            written.push((name.clone(), content_type, data));
+
+            // Pictures the user moved, resized or deleted. Compared against the
+            // *file*, re-read, rather than against a flag set when the drag
+            // ended: a picture dragged and dragged back has not changed, and a
+            // part we rewrite for nothing is a part we could get wrong for
+            // nothing.
+            if let Some(drawing) = crate::drawing_of(&self.package, &name) {
+                let original = crate::picture_anchors(&self.package, &drawing)?;
+                let current: std::collections::BTreeMap<usize, &ss_model::Anchor> = sheet
+                    .pictures
+                    .iter()
+                    .filter(|p| p.drawing_part == drawing.as_str())
+                    .map(|p| (p.anchor_index, &p.anchor))
+                    .collect();
+
+                let mut wanted = drawing_out::Wanted::new();
+                for (index, was) in &original {
+                    match current.get(index) {
+                        None => {
+                            wanted.insert(*index, None);
+                        }
+                        Some(now) if *now != was => {
+                            wanted.insert(*index, Some((*now).clone()));
+                        }
+                        Some(_) => {}
+                    }
+                }
+                if !wanted.is_empty() {
+                    if let Some(part) = self.package.part(&drawing) {
+                        let content_type = part.content_type.clone();
+                        let data = drawing_out::rewrite(drawing.as_str(), part.data(), &wanted)?;
+                        written.push((drawing, content_type, data));
+                    }
+                }
+            }
         }
 
         // Chart titles. A chart is otherwise entirely preserved, so this is the

@@ -439,6 +439,12 @@ pub enum Action {
     },
     /// Size the selected columns to their contents.
     AutoFit(Axis),
+    /// A picture was moved or resized. The payload is the sheet's pictures as
+    /// they were before the drag: the model already holds the new geometry,
+    /// because a drag has to be shown while it happens.
+    PicturesMoved(Vec<ss_model::Picture>),
+    /// Delete pressed with a picture selected.
+    DeletePicture(usize),
 }
 
 /// A formatting command, as the toolbar and the keyboard both produce it.
@@ -595,6 +601,14 @@ pub struct GridView {
     /// The chart the last click landed on, if any. Charts float above the
     /// cells, so a click on one is not a click on the cell underneath.
     pub selected_chart: Option<usize>,
+    /// The picture the last click landed on. At most one of this and
+    /// `selected_chart` is ever set: they are the same kind of selection, and
+    /// showing handles on two things at once would say the wrong thing about
+    /// what Delete would remove.
+    pub selected_picture: Option<usize>,
+    /// How the sheet's pictures looked before the drag in progress started,
+    /// which is the whole undo entry. Same shape as `before_resize`.
+    pub(crate) before_pictures: Option<Vec<ss_model::Picture>>,
     pub(crate) drag: Option<Drag>,
     /// How the sheet looked before the resize drag in progress started.
     pub(crate) before_resize: Option<Geometry>,
@@ -650,6 +664,20 @@ pub(crate) enum Drag {
         origin: f32,
         start: f32,
     },
+    /// Dragging a selected picture around the sheet. `grab` is where in the
+    /// picture the pointer took hold, so it does not jump to the corner.
+    MovePicture {
+        index: usize,
+        grab: egui::Vec2,
+    },
+    /// Dragging one of a selected picture's eight handles. `start` is the
+    /// picture's rectangle in sheet space when the drag began — the edges this
+    /// handle does not move come from there, unchanged by anything since.
+    ResizePicture {
+        index: usize,
+        handle: picture::Handle,
+        start: egui::Rect,
+    },
     /// Dragging the small square at the corner of the selection.
     Fill {
         from: CellRange,
@@ -676,6 +704,8 @@ impl Default for GridView {
             conditional: None,
             generation: 0,
             selected_chart: None,
+            selected_picture: None,
+            before_pictures: None,
             drag: None,
             before_resize: None,
             fill_target: None,

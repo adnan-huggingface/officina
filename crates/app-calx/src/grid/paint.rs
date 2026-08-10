@@ -234,7 +234,7 @@ impl GridView {
 
         // A chart floats above the cells, so a click on one is not a click on
         // the cell underneath. Resolved here, where the panes are still known.
-        if response.clicked() {
+        if response.clicked() && self.selected_picture.is_none() {
             self.selected_chart = ui.ctx().pointer_interact_pos().and_then(|pos| {
                 panes.iter().find_map(|pane| {
                     if !pane.rect.contains(pos) {
@@ -246,6 +246,16 @@ impl GridView {
                     })
                 })
             });
+        }
+
+        // What the pointer would do if pressed. A resize arrow over a handle
+        // is most of what tells the user the handles are draggable at all.
+        if self.drag.is_none() {
+            if let Some(pos) = ui.ctx().pointer_hover_pos() {
+                if let Some(icon) = self.pointer_over(sheet, layout, &panes, pos) {
+                    ui.ctx().set_cursor_icon(icon);
+                }
+            }
         }
 
         let cursor_rect = cell_rect(layout, &panes, self.selection.cursor());
@@ -501,8 +511,15 @@ impl GridView {
             }
         }
 
-        // Selection under the text.
-        for range in self.selection.ranges() {
+        // Selection under the text — unless a picture owns the selection, in
+        // which case there is nothing selected in the cells at all and saying
+        // otherwise would leave the user guessing what Delete is about to do.
+        for range in self
+            .selection
+            .ranges()
+            .iter()
+            .filter(|_| self.selected_picture.is_none())
+        {
             let rect = super::rect_of_range(layout, *range, pane.rect, pane.scroll);
             let visible = rect.intersect(pane.rect);
             if !visible.is_positive() {
@@ -546,7 +563,7 @@ impl GridView {
                 egui::Stroke::new(1.0, palette.selection_edge),
                 egui::StrokeKind::Inside,
             );
-        } else if self.editor.is_none() {
+        } else if self.editor.is_none() && self.selected_picture.is_none() {
             let handle = self.fill_handle(layout, pane);
             if handle.intersect(pane.rect).is_positive() {
                 painter.rect_filled(handle, 1.0, palette.selection_edge);
@@ -683,6 +700,22 @@ impl GridView {
             );
         }
 
+        // A selected picture wears Excel's chrome: an outline and eight
+        // handles. Drawn after the charts so nothing covers it.
+        if let Some(picture) = self.selected_picture.and_then(|i| sheet.pictures.get(i)) {
+            let rect = super::chart::rect_of(layout, &picture.anchor, pane.rect, pane.scroll);
+            if rect.intersect(pane.rect).is_positive() {
+                super::picture::draw_selection(&painter, rect);
+            }
+        }
+
+        // The cell cursor is not drawn while a picture is selected: two
+        // selections on screen at once would leave the user guessing which one
+        // Delete is about to act on.
+        if self.selected_picture.is_some() {
+            return;
+        }
+
         // The active cell's heavier outline, drawn last so nothing covers it.
         let cursor = self.selection.cursor();
         let anchor = sheet.merge_at(cursor).map_or(cursor, |m| m.start);
@@ -742,8 +775,14 @@ impl GridView {
             ));
         }
 
-        let ranges = self.selection.ranges().to_vec();
+        // Empty while a picture is selected: the headers are how you find
+        // where the cell cursor is, and it is not anywhere just now.
+        let ranges = match self.selected_picture {
+            Some(_) => Vec::new(),
+            None => self.selection.ranges().to_vec(),
+        };
         let cursor = self.selection.cursor();
+        let show_cursor = self.selected_picture.is_none();
         let line = egui::Stroke::new(1.0, palette.header_line);
 
         for pane in panes {
@@ -772,7 +811,7 @@ impl GridView {
                         cell,
                         &column_name(col),
                         selected,
-                        col == cursor.col,
+                        show_cursor && col == cursor.col,
                         palette,
                         (&plain, &heavy),
                         Axis::Columns,
@@ -806,7 +845,7 @@ impl GridView {
                         cell,
                         &format!("{}", row + 1),
                         selected,
-                        row == cursor.row,
+                        show_cursor && row == cursor.row,
                         palette,
                         (&plain, &heavy),
                         Axis::Rows,
@@ -1033,6 +1072,14 @@ impl GridView {
             return;
         }
 
+        // A picture floats above the cells, so a press on one is not a press on
+        // the cell underneath — and it is the start of a move, not of a
+        // selection sweep. Anything else deselects it, including a press on a
+        // header, which is why this is tested before them.
+        if self.begin_picture_drag(sheet, layout, panes, pos) {
+            return;
+        }
+
         let in_column_header = pos.y < body.top() && pos.x >= body.left();
         let in_row_header = pos.x < body.left() && pos.y >= body.top();
 
@@ -1109,6 +1156,102 @@ impl GridView {
         self.drag = Some(Drag::Select);
     }
 
+    /// The cursor a picture would put under the pointer, if any.
+    fn pointer_over(
+        &self,
+        sheet: &Sheet,
+        layout: &Layout,
+        panes: &[Pane],
+        pos: egui::Pos2,
+    ) -> Option<egui::CursorIcon> {
+        let pane = panes.iter().find(|p| p.rect.contains(pos))?;
+        if let Some(picture) = self.selected_picture.and_then(|i| sheet.pictures.get(i)) {
+            let rect = super::chart::rect_of(layout, &picture.anchor, pane.rect, pane.scroll);
+            if let Some(handle) = super::picture::handle_at(rect, pos) {
+                return Some(handle.cursor());
+            }
+        }
+        sheet
+            .pictures
+            .iter()
+            .any(|p| super::chart::rect_of(layout, &p.anchor, pane.rect, pane.scroll).contains(pos))
+            .then_some(egui::CursorIcon::Move)
+    }
+
+    /// Selects, moves or resizes a picture. True when the press was claimed.
+    fn begin_picture_drag(
+        &mut self,
+        sheet: &Sheet,
+        layout: &Layout,
+        panes: &[Pane],
+        pos: egui::Pos2,
+    ) -> bool {
+        // Handles first, and only on the selected picture: they sit *outside*
+        // its edges, so a corner handle overlaps whatever is behind it.
+        if let Some((index, picture)) = self
+            .selected_picture
+            .and_then(|i| sheet.pictures.get(i).map(|p| (i, p)))
+        {
+            for pane in panes {
+                if !pane.rect.contains(pos) {
+                    continue;
+                }
+                let rect = super::chart::rect_of(layout, &picture.anchor, pane.rect, pane.scroll);
+                if let Some(handle) = super::picture::handle_at(rect, pos) {
+                    self.before_pictures = Some(sheet.pictures.clone());
+                    self.drag = Some(Drag::ResizePicture {
+                        index,
+                        handle,
+                        start: super::picture::sheet_rect(layout, &picture.anchor),
+                    });
+                    return true;
+                }
+            }
+        }
+
+        // Then the body of the topmost picture under the pointer. Last in the
+        // list is topmost, because that is the order they are drawn in.
+        for pane in panes {
+            if !pane.rect.contains(pos) {
+                continue;
+            }
+            let hit = sheet.pictures.iter().enumerate().rev().find(|(_, p)| {
+                super::chart::rect_of(layout, &p.anchor, pane.rect, pane.scroll).contains(pos)
+            });
+            if let Some((index, picture)) = hit {
+                self.selected_picture = Some(index);
+                self.selected_chart = None;
+                let rect = super::picture::sheet_rect(layout, &picture.anchor);
+                self.before_pictures = Some(sheet.pictures.clone());
+                self.drag = Some(Drag::MovePicture {
+                    index,
+                    grab: sheet_space(pane, pos) - rect.min,
+                });
+                return true;
+            }
+        }
+
+        self.selected_picture = None;
+        false
+    }
+
+    /// Writes a picture's new rectangle back as an anchor of its own kind.
+    fn set_picture_rect(
+        &mut self,
+        book: &mut Workbook,
+        layout: &Layout,
+        index: usize,
+        rect: egui::Rect,
+    ) {
+        let Some(sheet) = book.sheet_mut(self.sheet_index) else {
+            return;
+        };
+        let Some(current) = sheet.pictures.get(index).map(|p| p.anchor.clone()) else {
+            return;
+        };
+        sheet.pictures[index].anchor = super::picture::anchor_of(layout, rect, &current);
+    }
+
     fn continue_drag(&mut self, drag: Drag, book: &mut Workbook, frame: &Frame, pos: egui::Pos2) {
         let (layout, body, panes) = (frame.layout, frame.body, frame.panes);
         match drag {
@@ -1118,6 +1261,37 @@ impl GridView {
                     Axis::Columns => pos.x,
                 };
                 self.scroll_to_thumb(axis, along - grab);
+            }
+            Drag::MovePicture { index, grab } => {
+                let Some(pane) = pane_at(panes, pos) else {
+                    return;
+                };
+                let Some(size) = book
+                    .sheet(self.sheet_index)
+                    .and_then(|s| s.pictures.get(index))
+                    .map(|p| super::picture::sheet_rect(layout, &p.anchor).size())
+                else {
+                    return;
+                };
+                // Clamped at the top-left corner: an anchor cannot name a cell
+                // before A1, so a picture dragged off that edge would otherwise
+                // come back somewhere it was never put.
+                let at = sheet_space(pane, pos) - grab;
+                let rect =
+                    egui::Rect::from_min_size(egui::pos2(at.x.max(0.0), at.y.max(0.0)), size);
+                self.set_picture_rect(book, layout, index, rect);
+            }
+            Drag::ResizePicture {
+                index,
+                handle,
+                start,
+            } => {
+                let Some(pane) = pane_at(panes, pos) else {
+                    return;
+                };
+                let to = sheet_space(pane, pos);
+                let rect = handle.resize(start, egui::pos2(to.x.max(0.0), to.y.max(0.0)));
+                self.set_picture_rect(book, layout, index, rect);
             }
             Drag::Fill { from } => {
                 let Some(at) = self.cell_at(layout, body, panes, pos) else {
@@ -1175,6 +1349,14 @@ impl GridView {
             Drag::ResizeColumn { .. } | Drag::ResizeRow { .. } => {
                 if let Some(before) = self.before_resize.take() {
                     self.actions.push(Action::Resized(before));
+                }
+            }
+            // The model already holds the new geometry. What goes out is how it
+            // looked before, and the application drops it if nothing moved —
+            // clicking a picture to select it must not fill the undo stack.
+            Drag::MovePicture { .. } | Drag::ResizePicture { .. } => {
+                if let Some(before) = self.before_pictures.take() {
+                    self.actions.push(Action::PicturesMoved(before));
                 }
             }
             // Scrolling has already happened frame by frame, and it is not an
@@ -1300,6 +1482,24 @@ impl GridView {
         body: egui::Rect,
         layout: &Layout,
     ) -> bool {
+        // A selected picture takes the two keys that are about *it* rather than
+        // about the cells. Everything else — arrows, typing — deselects it,
+        // because the cell cursor is what those keys move.
+        if let Some(index) = self.selected_picture {
+            match key {
+                egui::Key::Delete | egui::Key::Backspace => {
+                    self.actions.push(Action::DeletePicture(index));
+                    self.selected_picture = None;
+                    return false;
+                }
+                egui::Key::Escape => {
+                    self.selected_picture = None;
+                    return false;
+                }
+                _ => self.selected_picture = None,
+            }
+        }
+
         let direction = match key {
             egui::Key::ArrowUp => Some(Direction::Up),
             egui::Key::ArrowDown => Some(Direction::Down),
@@ -1566,6 +1766,26 @@ fn paint_bars(ui: &egui::Ui, bars: &Bars, palette: &Palette) {
     }
 }
 
+/// A screen position in sheet space: pixels from the top-left of A1.
+///
+/// The frame of reference a drag has to be measured in. Screen coordinates move
+/// when the sheet scrolls under the pointer; these do not.
+fn sheet_space(pane: &Pane, pos: egui::Pos2) -> egui::Pos2 {
+    egui::pos2(
+        pane.scroll.x as f32 + (pos.x - pane.rect.left()),
+        pane.scroll.y as f32 + (pos.y - pane.rect.top()),
+    )
+}
+
+/// The pane a position is over, or the last one — which is the scrolling pane,
+/// and the right answer for a drag that has wandered off the edge.
+fn pane_at(panes: &[Pane], pos: egui::Pos2) -> Option<&Pane> {
+    panes
+        .iter()
+        .find(|p| p.rect.contains(pos))
+        .or_else(|| panes.last())
+}
+
 /// The up-to-four views a frozen sheet is drawn as.
 fn split_panes(
     body: egui::Rect,
@@ -1809,6 +2029,157 @@ mod tests {
             pressed,
             modifiers: egui::Modifiers::default(),
         }
+    }
+
+    /// A workbook with one picture anchored over B2:D5, near enough.
+    fn with_picture() -> Workbook {
+        use ss_model::chart::{Anchor, AnchorPoint};
+        let mut book = Workbook::blank();
+        let sheet = book.sheet_mut(0).expect("a sheet");
+        sheet.pictures.push(ss_model::Picture {
+            part: "/xl/media/image1.png".into(),
+            drawing_part: "/xl/drawings/drawing1.xml".into(),
+            anchor_index: 0,
+            name: "Picture 3".into(),
+            anchor: Anchor::TwoCell {
+                from: AnchorPoint {
+                    col: 1,
+                    col_offset: 0,
+                    row: 1,
+                    row_offset: 0,
+                },
+                to: AnchorPoint {
+                    col: 4,
+                    col_offset: 0,
+                    row: 5,
+                    row_offset: 0,
+                },
+            },
+            data: std::sync::Arc::from(Vec::new().into_boxed_slice()),
+            content_type: "image/png".into(),
+        });
+        book
+    }
+
+    /// Where a picture is on screen, given the same layout the view uses.
+    fn picture_rect(view: &GridView, book: &Workbook) -> egui::Rect {
+        let sheet = book.sheet(0).expect("a sheet");
+        let layout = Layout::for_sheet(book, sheet, view.zoom);
+        let origin = egui::pos2(layout.header_width as f32, layout.header_height as f32);
+        let rect = crate::grid::picture::sheet_rect(&layout, &sheet.pictures[0].anchor);
+        rect.translate(origin.to_vec2())
+    }
+
+    #[test]
+    fn clicking_a_picture_selects_it_rather_than_the_cell_under_it() {
+        let ctx = context();
+        let mut book = with_picture();
+        let mut view = GridView::default();
+        // A first frame so the view has a layout; the rect is the same either way.
+        frame(&mut view, &mut book, Vec::new(), &ctx);
+        let middle = picture_rect(&view, &book).center();
+
+        frame(&mut view, &mut book, vec![press(middle, true)], &ctx);
+        frame(&mut view, &mut book, vec![press(middle, false)], &ctx);
+
+        assert_eq!(view.selected_picture, Some(0));
+        // And a click away from it puts the selection back on the cells.
+        let away = egui::pos2(700.0, 600.0);
+        frame(&mut view, &mut book, vec![press(away, true)], &ctx);
+        frame(&mut view, &mut book, vec![press(away, false)], &ctx);
+        assert_eq!(view.selected_picture, None);
+    }
+
+    #[test]
+    fn dragging_a_picture_moves_it_and_reports_where_it_was() {
+        let ctx = context();
+        let mut book = with_picture();
+        let mut view = GridView::default();
+        frame(&mut view, &mut book, Vec::new(), &ctx);
+        let before = book.sheet(0).expect("a sheet").pictures[0].anchor.clone();
+        let middle = picture_rect(&view, &book).center();
+
+        frame(&mut view, &mut book, vec![press(middle, true)], &ctx);
+        frame(
+            &mut view,
+            &mut book,
+            vec![egui::Event::PointerMoved(middle + egui::vec2(60.0, 40.0))],
+            &ctx,
+        );
+        frame(
+            &mut view,
+            &mut book,
+            vec![press(middle + egui::vec2(60.0, 40.0), false)],
+            &ctx,
+        );
+
+        let after = &book.sheet(0).expect("a sheet").pictures[0].anchor;
+        assert_ne!(after, &before, "the drag moved it");
+        assert!(
+            view.actions
+                .iter()
+                .any(|a| matches!(a, Action::PicturesMoved(_))),
+            "{:?}",
+            view.actions
+        );
+    }
+
+    #[test]
+    fn dragging_the_east_handle_stretches_without_moving_the_left_edge() {
+        let ctx = context();
+        let mut book = with_picture();
+        let mut view = GridView::default();
+        frame(&mut view, &mut book, Vec::new(), &ctx);
+        let rect = picture_rect(&view, &book);
+        let middle = rect.center();
+
+        // Select first: handles only exist on a selected picture.
+        frame(&mut view, &mut book, vec![press(middle, true)], &ctx);
+        frame(&mut view, &mut book, vec![press(middle, false)], &ctx);
+
+        let handle = crate::grid::picture::Handle::East.at(rect);
+        let pulled = handle + egui::vec2(80.0, 0.0);
+        frame(&mut view, &mut book, vec![press(handle, true)], &ctx);
+        frame(
+            &mut view,
+            &mut book,
+            vec![egui::Event::PointerMoved(pulled)],
+            &ctx,
+        );
+        frame(&mut view, &mut book, vec![press(pulled, false)], &ctx);
+
+        let after = picture_rect(&view, &book);
+        assert!((after.left() - rect.left()).abs() < 0.5, "{after:?}");
+        assert!((after.top() - rect.top()).abs() < 0.5, "{after:?}");
+        assert!((after.bottom() - rect.bottom()).abs() < 0.5, "{after:?}");
+        assert!(after.right() > rect.right() + 60.0, "{after:?}");
+    }
+
+    #[test]
+    fn delete_with_a_picture_selected_removes_the_picture_not_the_cells() {
+        let ctx = context();
+        let mut book = with_picture();
+        let mut view = GridView::default();
+        frame(&mut view, &mut book, Vec::new(), &ctx);
+        let middle = picture_rect(&view, &book).center();
+        frame(&mut view, &mut book, vec![press(middle, true)], &ctx);
+        frame(&mut view, &mut book, vec![press(middle, false)], &ctx);
+        view.actions.clear();
+
+        frame(&mut view, &mut book, vec![plain(egui::Key::Delete)], &ctx);
+
+        assert_eq!(view.actions, vec![Action::DeletePicture(0)]);
+        assert_eq!(view.selected_picture, None);
+    }
+
+    #[test]
+    fn delete_with_nothing_but_cells_selected_still_clears_cells() {
+        let ctx = context();
+        let mut book = with_picture();
+        let mut view = GridView::default();
+        frame(&mut view, &mut book, Vec::new(), &ctx);
+        frame(&mut view, &mut book, vec![plain(egui::Key::Delete)], &ctx);
+        assert_eq!(view.actions, vec![Action::Clear]);
     }
 
     #[test]

@@ -49,7 +49,7 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[-]` deferred
   reprinting them; `write::splice` is the primitive that makes that possible, and
   everything else in the module is built on it. `rfd` is Calx's file dialog, on
   default features so a Linux build needs the XDG portal rather than GTK headers.
-- Workspace total is **582 tests**, all green;
+- Workspace total is **601 tests**, all green;
   `cargo clippy --workspace --all-targets -- -D warnings` and
   `cargo fmt --all --check` are both clean.
 - `ss-model` grew four modules across C11–C14: `color` (the four spellings of
@@ -226,15 +226,48 @@ to a screenshot of the same file in Excel.
     fifteen sheets is one texture upload. A part that fails to decode is
     remembered as a failure, so nothing retries a broken PNG sixty times a
     second, and a box is drawn where it would have been.
-  - The image is fitted into its anchor rather than stretched to fill it. Excel
-    writes the anchor from the picture's real size, so on a file Excel wrote the
-    two agree; but a two-cell anchor is tied to the columns, and a column we
-    measure a shade differently would otherwise distort a company's logo.
+  - The image fills its anchor rather than being fitted inside it, which is
+    what Excel does and what the handles promise: pull the middle handle out
+    and the picture has to stretch, not float at its own proportions in a wider
+    box.
+- **A picture is a thing you can take hold of.** Click it and it wears Excel's
+  own chrome — a thin outline and eight round handles — and can be dragged,
+  stretched from any edge or corner, and deleted. The cell cursor and the header
+  highlight go away while it is selected, because two selections on screen at
+  once leaves the user guessing which one Delete is about to act on.
+  - Geometry is done in **sheet space**: pixels from the top-left of A1, before
+    scrolling. It is the only frame of reference a drag can be measured in that
+    does not move underneath it, and it is what `Drag::ResizePicture` stores so
+    the edges a handle *does not* move stay exactly where they were.
+  - `write::drawing_out` splices the anchor in place, the way cells are spliced.
+    Anchors are matched **by position in the file**, counted over every anchor
+    including the ones holding charts, because geometry cannot be the identity
+    when changing the geometry is the whole point of the edit. Moving the logo
+    in the fifteen-sheet reference workbook and saving changes `drawing1.xml`
+    by one byte and loses nothing: the `a16:creationId`, the `cstate="print"`,
+    the `prstDash` all come back untouched.
+  - Watch item: **a picture also carries a cached `<a:xfrm>` inside its
+    `spPr`, and the writer leaves it alone.** The anchor is what Excel positions
+    from — it has to be, or a picture would not move when a column is widened —
+    so the cache is stale in the same way it is stale in Excel's own files
+    between edits. Rewriting it would mean converting our column measurements
+    into absolute EMUs and asserting they match Excel's, which is a much larger
+    claim than this edit needs to make.
+  - Deleting a picture removes its anchor and **leaves the image part and its
+    relationship in place**. An orphaned part is untidy; a dangling relationship
+    is a file Excel refuses to open, and pruning the graph is a much bigger
+    claim than "the user deleted a picture" justifies.
+  - Undo is one patch, `Patch::Pictures`, which replaces a sheet's whole list.
+    A sheet holds a handful of them, not a million, and moving one and deleting
+    another are then the same operation with the same inverse. A per-picture
+    patch would need indices that stay valid across a deletion.
 - Known limits, stated rather than hidden: icon sets are still not drawn, 3-D
   charts are drawn flat, stacked text (rotation 255) is drawn upright,
   `Group 0`-style outline grouping is read but its collapse controls are not
   drawn, and a picture's own cropping, rotation and effects are ignored — the
-  image is drawn whole and upright.
+  image is drawn whole and upright. A picture cannot yet be *added*, only moved,
+  resized and removed: authoring a drawing part, a media part and two
+  relationships from nothing is the writer work that has not been done.
 
 - Watch item: **adding or removing a sheet has no writer.** `flush` walks the
   `<sheet>` entries in the workbook part and rewrites the parts they name, so a

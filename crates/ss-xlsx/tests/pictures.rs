@@ -166,3 +166,98 @@ fn saving_puts_the_image_part_back_untouched() {
     assert_eq!(&*picture.data, PNG);
     assert_eq!(picture.name, "Picture 3");
 }
+
+/// Moving a picture and saving: the anchor changes and nothing else does.
+#[test]
+fn a_moved_picture_saves_its_new_anchor() {
+    let mut doc = ss_xlsx::XlsxDocument::read(Cursor::new(build_package())).expect("opens");
+    doc.workbook.sheets[0].pictures[0].anchor = ss_model::Anchor::TwoCell {
+        from: ss_model::chart::AnchorPoint {
+            col: 1,
+            col_offset: 12_700,
+            row: 5,
+            row_offset: 0,
+        },
+        to: ss_model::chart::AnchorPoint {
+            col: 4,
+            col_offset: 0,
+            row: 9,
+            row_offset: 25_400,
+        },
+    };
+
+    let mut bytes = Vec::new();
+    doc.write_to(Cursor::new(&mut bytes)).expect("writes");
+    let reopened = ss_xlsx::XlsxDocument::read(Cursor::new(bytes)).expect("reads back");
+
+    let picture = &reopened.workbook.sheets[0].pictures[0];
+    match &picture.anchor {
+        ss_model::Anchor::TwoCell { from, to } => {
+            assert_eq!((from.col, from.col_offset, from.row), (1, 12_700, 5));
+            assert_eq!((to.col, to.row, to.row_offset), (4, 9, 25_400));
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(&*picture.data, PNG, "the image itself is not rewritten");
+    assert_eq!(picture.name, "Picture 3");
+}
+
+#[test]
+fn a_deleted_picture_stays_deleted_and_takes_nothing_else_with_it() {
+    let mut doc = ss_xlsx::XlsxDocument::read(Cursor::new(build_package())).expect("opens");
+    let before: Vec<String> = doc
+        .package
+        .parts()
+        .map(|p| p.name.as_str().to_string())
+        .collect();
+    doc.workbook.sheets[0].pictures.clear();
+
+    let mut bytes = Vec::new();
+    doc.write_to(Cursor::new(&mut bytes)).expect("writes");
+    let reopened = ss_xlsx::XlsxDocument::read(Cursor::new(bytes)).expect("reads back");
+
+    assert!(reopened.workbook.sheets[0].pictures.is_empty());
+    // The cells are still there — a deleted drawing is not a deleted sheet.
+    assert!(reopened.workbook.sheets[0]
+        .get(ss_model::CellRef::from_a1("A6").expect("A6"))
+        .is_some());
+
+    // The image part and its relationship are left alone. An orphaned part is
+    // untidy; a dangling relationship is a file Excel refuses to open, and
+    // pruning the graph is a much larger claim than "the user deleted a
+    // picture" justifies.
+    let after: Vec<String> = reopened
+        .package
+        .parts()
+        .map(|p| p.name.as_str().to_string())
+        .collect();
+    assert_eq!(before, after);
+}
+
+#[test]
+fn a_picture_left_alone_leaves_its_drawing_byte_for_byte() {
+    let mut doc = ss_xlsx::XlsxDocument::read(Cursor::new(build_package())).expect("opens");
+    let name = ooxml::PartName::new("/xl/drawings/drawing1.xml").expect("a part name");
+    let before = doc
+        .package
+        .part(&name)
+        .expect("the drawing")
+        .data()
+        .to_vec();
+
+    // An edit somewhere else entirely.
+    let change = ss_formula::edit::input(
+        &mut doc.workbook,
+        0,
+        ss_model::CellRef::from_a1("B2").expect("B2"),
+        "unrelated",
+    );
+    ss_formula::edit::apply(&mut doc.workbook, change);
+    doc.flush().expect("flushes");
+
+    assert_eq!(
+        doc.package.part(&name).expect("the drawing").data(),
+        &before[..],
+        "an untouched anchor is not worth rewriting, and rewriting it is a          chance to get it wrong"
+    );
+}
