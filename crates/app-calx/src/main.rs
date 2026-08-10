@@ -114,6 +114,12 @@ enum Dialog {
         /// not a level.
         levels: [SortLevel; 3],
     },
+    /// Excel's Column Width and Row Height boxes: an exact size, in the units
+    /// the file itself stores, applied to whatever is selected.
+    Size {
+        axis: Axis,
+        text: String,
+    },
     /// The checkbox list behind one filter arrow.
     Filter {
         /// An offset into the filter's range.
@@ -712,10 +718,21 @@ impl Calx {
             Action::Freeze(on) => self.freeze(on),
             Action::Visibility { axis, hide } => self.set_visibility(axis, hide),
             Action::AutoFit(axis) => self.autofit(axis),
+            Action::AutoFitAt { axis, index } => self.autofit_span(axis, index, index),
             Action::PicturesMoved(before) => self.pictures_moved(sheet, before),
             Action::DeletePicture(index) => self.delete_picture(sheet, index),
             Action::FilterMenu(col) => self.open_filter_menu(col),
             Action::Resized(before) => {
+                // A press on a boundary that never moved is not an edit. It
+                // happens on every double-click to autofit, which presses
+                // twice before the gesture is recognised, and an undo stack
+                // with two do-nothing entries on top of the fit is worse than
+                // useless.
+                if self.doc.workbook.sheet(sheet).is_some_and(|s| {
+                    s.column_widths == before.column_widths && s.row_heights == before.row_heights
+                }) {
+                    return;
+                }
                 // The sheet already has the new sizes; what goes on the stack is
                 // how it looked before, which is the undo.
                 self.undo.push(Change::new(
@@ -1189,23 +1206,32 @@ impl Calx {
 
     /// Sizes the selected columns or rows to their contents.
     fn autofit(&mut self, axis: Axis) {
+        let range = self.grid.selection.active_range();
+        let (from, to) = match axis {
+            Axis::Rows => (range.start.row, range.end.row),
+            Axis::Columns => (range.start.col, range.end.col),
+        };
+        self.autofit_span(axis, from, to);
+    }
+
+    /// Sizes one run of rows or columns to their contents.
+    fn autofit_span(&mut self, axis: Axis, from: u32, to: u32) {
         let sheet_index = self.grid.sheet_index;
         let Some(sheet) = self.doc.workbook.sheet(sheet_index) else {
             return;
         };
         let mut geometry = Geometry::of(sheet);
-        let range = self.grid.selection.active_range();
         match axis {
             // Rows fit themselves already — every row with no stored height is
             // measured at layout time — so fitting one means forgetting
             // whatever height was stored over it.
             Axis::Rows => {
-                for row in range.start.row..=range.end.row.min(range.start.row + 4096) {
+                for row in from..=to.min(from.saturating_add(4096)) {
                     geometry.row_heights.remove(&row);
                 }
             }
             Axis::Columns => {
-                for col in range.start.col..=range.end.col.min(range.start.col + 256) {
+                for col in from..=to.min(from.saturating_add(256)) {
                     if let Some(chars) = fitted_width(&self.doc.workbook, sheet, col) {
                         geometry.column_widths.insert(col, chars);
                     }
@@ -1214,6 +1240,61 @@ impl Calx {
         }
         self.perform(Change::new(
             "Autofit",
+            vec![Patch::Geometry {
+                sheet: sheet_index,
+                geometry,
+            }],
+        ));
+        self.grid.invalidate();
+    }
+
+    /// Opens the Column Width or Row Height box, filled in with what the
+    /// selection is now — the cursor's own row or column, since a selection
+    /// spanning several sizes has no one number to show.
+    fn open_size_dialog(&mut self, axis: Axis) {
+        let cursor = self.grid.selection.cursor();
+        let sheet = self.doc.workbook.sheet(self.grid.sheet_index);
+        let current = sheet.and_then(|s| match axis {
+            Axis::Rows => s.row_heights.get(&cursor.row).copied(),
+            Axis::Columns => s.column_widths.get(&cursor.col).copied(),
+        });
+        let size = current.unwrap_or(match axis {
+            Axis::Rows => grid::axis::DEFAULT_ROW_POINTS,
+            Axis::Columns => grid::axis::DEFAULT_COLUMN_CHARS,
+        });
+        self.dialog = Some(Dialog::Size {
+            axis,
+            // Trimmed, so a width of 8.43 does not appear as 8.4300000000001.
+            text: format!("{:.2}", size)
+                .trim_end_matches('0')
+                .trim_end_matches('.')
+                .to_string(),
+        });
+    }
+
+    /// Applies an exact size, in the file's own units, to the selection.
+    fn resize_selection(&mut self, axis: Axis, size: f64) {
+        let sheet_index = self.grid.sheet_index;
+        let Some(sheet) = self.doc.workbook.sheet(sheet_index) else {
+            return;
+        };
+        let mut geometry = Geometry::of(sheet);
+        let range = self.grid.selection.active_range();
+        let (from, to) = match axis {
+            Axis::Rows => (range.start.row, range.end.row),
+            Axis::Columns => (range.start.col, range.end.col),
+        };
+        // Capped the same way hiding is: a size typed over a select-all would
+        // otherwise store a million identical numbers.
+        let to = to.min(from.saturating_add(4096));
+        for index in from..=to {
+            match axis {
+                Axis::Rows => geometry.row_heights.insert(index, size),
+                Axis::Columns => geometry.column_widths.insert(index, size),
+            };
+        }
+        self.perform(Change::new(
+            "Resize",
             vec![Patch::Geometry {
                 sheet: sheet_index,
                 geometry,
@@ -1420,6 +1501,7 @@ impl Calx {
         let mut save_as = false;
         let mut sort: Option<bool> = None;
         let mut filter: Option<FilterCommand> = None;
+        let mut size: Option<Axis> = None;
 
         ui.horizontal(|ui| {
             if icons::button(ui, Icon::New, false, "New workbook (Ctrl+N)").clicked() {
@@ -1486,6 +1568,58 @@ impl Calx {
                     requested = Some(action);
                 }
             }
+            separate(ui);
+
+            // Excel's Home ▸ Cells ▸ Format, which is where anybody who has
+            // not found the draggable boundary goes looking.
+            ui.menu_button("Format", |ui| {
+                for (label, action) in [
+                    ("Fit column to contents", Action::AutoFit(Axis::Columns)),
+                    ("Fit row to contents", Action::AutoFit(Axis::Rows)),
+                    (
+                        "Hide columns",
+                        Action::Visibility {
+                            axis: Axis::Columns,
+                            hide: true,
+                        },
+                    ),
+                    (
+                        "Hide rows",
+                        Action::Visibility {
+                            axis: Axis::Rows,
+                            hide: true,
+                        },
+                    ),
+                    (
+                        "Unhide columns",
+                        Action::Visibility {
+                            axis: Axis::Columns,
+                            hide: false,
+                        },
+                    ),
+                    (
+                        "Unhide rows",
+                        Action::Visibility {
+                            axis: Axis::Rows,
+                            hide: false,
+                        },
+                    ),
+                ] {
+                    if ui.button(label).clicked() {
+                        requested = Some(action);
+                        ui.close();
+                    }
+                }
+                ui.separator();
+                if ui.button("Column width…").clicked() {
+                    size = Some(Axis::Columns);
+                    ui.close();
+                }
+                if ui.button("Row height…").clicked() {
+                    size = Some(Axis::Rows);
+                    ui.close();
+                }
+            });
             separate(ui);
 
             let merged = self
@@ -1751,6 +1885,9 @@ impl Calx {
         if let Some(action) = requested {
             let ui = &*ui;
             self.act(ui, action);
+        }
+        if let Some(axis) = size {
+            self.open_size_dialog(axis);
         }
         if let Some(descending) = sort {
             self.sort_quick(descending);
@@ -2293,6 +2430,55 @@ impl Calx {
                 }
             }
 
+            Dialog::Size { axis, text } => {
+                let axis = *axis;
+                let (title, unit, default, ceiling) = match axis {
+                    Axis::Columns => (
+                        "Column width",
+                        "characters",
+                        grid::axis::DEFAULT_COLUMN_CHARS,
+                        255,
+                    ),
+                    Axis::Rows => ("Row height", "points", grid::axis::DEFAULT_ROW_POINTS, 409),
+                };
+                let mut accept = false;
+                modal(ctx, title, |ui| {
+                    ui.horizontal(|ui| {
+                        let field = ui.add(egui::TextEdit::singleline(text).desired_width(90.0));
+                        field.request_focus();
+                        if field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                            accept = true;
+                        }
+                        ui.label(unit);
+                    });
+                    // The units are the file's, not the screen's, so the number
+                    // typed here is the number the next reader will see. Saying
+                    // what the default is turns "8.43" from an odd number into
+                    // the one everything else on the sheet already is.
+                    ui.label(
+                        egui::RichText::new(format!("Default {default}"))
+                            .weak()
+                            .small(),
+                    );
+                    if parse_size(text, axis).is_none() {
+                        ui.colored_label(
+                            egui::Color32::from_rgb(0xB0, 0x30, 0x20),
+                            format!("A number from 0 to {ceiling}. Zero hides."),
+                        );
+                    }
+                    ui.horizontal(|ui| {
+                        accept |= ui.button("OK").clicked();
+                        keep &= !ui.button("Cancel").clicked();
+                    });
+                });
+                if accept {
+                    if let Some(size) = parse_size(text, axis) {
+                        self.resize_selection(axis, size);
+                        keep = false;
+                    }
+                }
+            }
+
             Dialog::Sort {
                 range,
                 header,
@@ -2551,6 +2737,20 @@ impl Calx {
                 ui.close();
             }
         }
+        // Not an `Action`: the dialog belongs to the application, and nothing
+        // has happened to the document yet for the grid to be told about.
+        let mut size: Option<Axis> = None;
+        if ui.button("Column width…").clicked() {
+            size = Some(Axis::Columns);
+            ui.close();
+        }
+        if ui.button("Row height…").clicked() {
+            size = Some(Axis::Rows);
+            ui.close();
+        }
+        if let Some(axis) = size {
+            self.open_size_dialog(axis);
+        }
         ui.separator();
         let merged = self
             .doc
@@ -2677,6 +2877,20 @@ fn modal(ctx: &egui::Context, title: &str, add: impl FnOnce(&mut egui::Ui)) {
         ui.separator();
         add(ui);
     });
+}
+
+/// A typed row height or column width, if it is one.
+///
+/// The ceilings are Excel's: 409 points of row, 255 characters of column. Zero
+/// is allowed, and it hides — which is not a special case here but exactly what
+/// a zero in the file has always meant.
+fn parse_size(text: &str, axis: Axis) -> Option<f64> {
+    let ceiling = match axis {
+        Axis::Rows => 409.0,
+        Axis::Columns => 255.0,
+    };
+    let size: f64 = text.trim().parse().ok()?;
+    (size.is_finite() && (0.0..=ceiling).contains(&size)).then_some(size)
 }
 
 /// A range as a user would name it: `A1:D9`, or `A1` for one cell.
@@ -3024,5 +3238,26 @@ fn delimiter_name(byte: u8) -> &'static str {
         b';' => "semicolon-separated",
         b'|' => "pipe-separated",
         _ => "comma-separated",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_typed_size_is_taken_only_where_the_file_could_hold_it() {
+        assert_eq!(parse_size("12.5", Axis::Columns), Some(12.5));
+        assert_eq!(parse_size("  30 ", Axis::Rows), Some(30.0));
+        // Zero is a size, and it is how the file spells "hidden".
+        assert_eq!(parse_size("0", Axis::Rows), Some(0.0));
+        assert_eq!(parse_size("-1", Axis::Rows), None);
+        assert_eq!(parse_size("wide", Axis::Columns), None);
+        assert_eq!(parse_size("", Axis::Columns), None);
+        // Excel's own ceilings, and they differ by axis.
+        assert_eq!(parse_size("409", Axis::Rows), Some(409.0));
+        assert_eq!(parse_size("409", Axis::Columns), None);
+        assert_eq!(parse_size("255", Axis::Columns), Some(255.0));
+        assert_eq!(parse_size("inf", Axis::Rows), None);
     }
 }

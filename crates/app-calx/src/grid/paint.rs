@@ -177,6 +177,64 @@ fn fill_target(from: CellRange, to: CellRef) -> CellRange {
     }
 }
 
+/// The row or column boundary the pointer is close enough to grab, if any.
+///
+/// Both sides of the line count. Excel's grab zone straddles the boundary, and
+/// one that existed only to the left of it would be four pixels wide in a
+/// header sixty-four across — findable by somebody who already knew it was
+/// there, which is the same as not being there at all.
+///
+/// The boundary returned is named by the row or column *before* it, because
+/// that is the one a drag resizes. Where that one is hidden, dragging pulls it
+/// back open, which is how it was shut in the first place.
+fn header_edge(
+    layout: &Layout,
+    content: egui::Rect,
+    body: egui::Rect,
+    panes: &[Pane],
+    pos: egui::Pos2,
+) -> Option<(Axis, u32)> {
+    if panes.is_empty() || !content.contains(pos) {
+        return None;
+    }
+    let grab = f64::from(RESIZE_GRAB);
+    if pos.y < body.top() && pos.x >= body.left() {
+        let pane = panes
+            .iter()
+            .find(|p| p.rect.x_range().contains(pos.x))
+            .unwrap_or(&panes[0]);
+        let local = f64::from(pos.x - pane.rect.left());
+        let col = layout.cols.index_at(pane.scroll.x + local);
+        let after = layout.cols.offset(col) + layout.cols.size(col) - pane.scroll.x;
+        if (local - after).abs() < grab {
+            return Some((Axis::Columns, col));
+        }
+        let before = layout.cols.offset(col) - pane.scroll.x;
+        if col > 0 && (local - before).abs() < grab {
+            return Some((Axis::Columns, col - 1));
+        }
+        return None;
+    }
+    if pos.x < body.left() && pos.y >= body.top() {
+        let pane = panes
+            .iter()
+            .find(|p| p.rect.y_range().contains(pos.y))
+            .unwrap_or(&panes[0]);
+        let local = f64::from(pos.y - pane.rect.top());
+        let row = layout.rows.index_at(pane.scroll.y + local);
+        let after = layout.rows.offset(row) + layout.rows.size(row) - pane.scroll.y;
+        if (local - after).abs() < grab {
+            return Some((Axis::Rows, row));
+        }
+        let before = layout.rows.offset(row) - pane.scroll.y;
+        if row > 0 && (local - before).abs() < grab {
+            return Some((Axis::Rows, row - 1));
+        }
+        return None;
+    }
+    None
+}
+
 /// One of the up-to-four views a frozen sheet is drawn as.
 struct Pane {
     rect: egui::Rect,
@@ -296,10 +354,18 @@ impl GridView {
         }
 
         // What the pointer would do if pressed. A resize arrow over a handle
-        // is most of what tells the user the handles are draggable at all.
+        // is most of what tells the user the handles are draggable at all —
+        // and a header boundary is a handle nothing else marks out, since the
+        // line between two columns is drawn whether or not it can be dragged.
         if self.drag.is_none() {
             if let Some(pos) = ui.ctx().pointer_hover_pos() {
-                if let Some(icon) = self.pointer_over(sheet, layout, &panes, pos) {
+                let icon = header_edge(layout, content, body, &panes, pos)
+                    .map(|(axis, _)| match axis {
+                        Axis::Columns => egui::CursorIcon::ResizeHorizontal,
+                        Axis::Rows => egui::CursorIcon::ResizeVertical,
+                    })
+                    .or_else(|| self.pointer_over(sheet, layout, &panes, pos));
+                if let Some(icon) = icon {
                     ui.ctx().set_cursor_icon(icon);
                 }
             }
@@ -1110,6 +1176,30 @@ impl GridView {
             }
         }
 
+        // Double-clicking a boundary fits what is on the other side of it,
+        // which is the gesture everybody reaches for before they find the
+        // menu. It fits that one row or column and not the selection: the
+        // pointer named it, and nothing else was asked about.
+        //
+        // Resolved *before* the drag below, and it has to be: the first press
+        // of the pair started a resize, a drag owns the pointer until it ends,
+        // and the second click would never be looked at.
+        if response.double_clicked() {
+            let edge = ui
+                .ctx()
+                .pointer_interact_pos()
+                .and_then(|pos| header_edge(layout, full, body, &panes, pos));
+            if let Some((axis, index)) = edge {
+                // The drag it started never moved anything, so it is dropped
+                // rather than reported as a resize of nothing.
+                self.drag = None;
+                self.before_resize = None;
+                self.actions.push(Action::AutoFitAt { axis, index });
+                self.layout = Some(cached);
+                return;
+            }
+        }
+
         // A drag in progress owns the pointer until the button comes back up.
         // The end condition is "no button is down", not "a release arrived this
         // frame": a release delivered while the pointer is outside the window,
@@ -1146,6 +1236,7 @@ impl GridView {
                 self.begin_drag(book, &frame, pos, modifiers);
             }
         }
+        // Anywhere but a boundary, which was dealt with above.
         if response.double_clicked() {
             self.open_editor(book, Mode::Edit);
         }
@@ -1211,26 +1302,42 @@ impl GridView {
         let in_column_header = pos.y < body.top() && pos.x >= body.left();
         let in_row_header = pos.x < body.left() && pos.y >= body.top();
 
+        // Within a few pixels of a boundary the drag resizes instead of
+        // selecting, on whichever header the pointer is over.
+        match header_edge(layout, full, body, panes, pos) {
+            Some((Axis::Columns, index)) => {
+                self.before_resize = Some(Geometry::of(sheet));
+                self.drag = Some(Drag::ResizeColumn {
+                    index,
+                    origin: pos.x,
+                    start: layout.cols.size(index) as f32,
+                });
+                return;
+            }
+            Some((Axis::Rows, index)) => {
+                self.before_resize = Some(Geometry::of(sheet));
+                self.drag = Some(Drag::ResizeRow {
+                    index,
+                    origin: pos.y,
+                    start: layout.rows.size(index) as f32,
+                });
+                return;
+            }
+            None => {}
+        }
+
         if in_column_header {
             let pane = panes
                 .iter()
                 .find(|p| p.rect.x_range().contains(pos.x))
                 .unwrap_or(&panes[0]);
             let x = pane.scroll.x + f64::from(pos.x - pane.rect.left());
-            let col = layout.cols.index_at(x);
-            let edge = layout.cols.offset(col) + layout.cols.size(col) - pane.scroll.x;
-            // Within a few pixels of the edge, the drag resizes instead.
-            if (f64::from(pos.x - pane.rect.left()) - edge).abs() < f64::from(RESIZE_GRAB) {
-                self.before_resize = Some(Geometry::of(sheet));
-                self.drag = Some(Drag::ResizeColumn {
-                    index: col,
-                    origin: pos.x,
-                    start: layout.cols.size(col) as f32,
-                });
-            } else {
-                self.selection.select_columns(col, col, modifiers.ctrl);
-                self.drag = Some(Drag::Select);
-            }
+            self.selection.select_columns(
+                layout.cols.index_at(x),
+                layout.cols.index_at(x),
+                modifiers.ctrl,
+            );
+            self.drag = Some(Drag::Select);
             return;
         }
         if in_row_header {
@@ -1239,19 +1346,12 @@ impl GridView {
                 .find(|p| p.rect.y_range().contains(pos.y))
                 .unwrap_or(&panes[0]);
             let y = pane.scroll.y + f64::from(pos.y - pane.rect.top());
-            let row = layout.rows.index_at(y);
-            let edge = layout.rows.offset(row) + layout.rows.size(row) - pane.scroll.y;
-            if (f64::from(pos.y - pane.rect.top()) - edge).abs() < f64::from(RESIZE_GRAB) {
-                self.before_resize = Some(Geometry::of(sheet));
-                self.drag = Some(Drag::ResizeRow {
-                    index: row,
-                    origin: pos.y,
-                    start: layout.rows.size(row) as f32,
-                });
-            } else {
-                self.selection.select_rows(row, row, modifiers.ctrl);
-                self.drag = Some(Drag::Select);
-            }
+            self.selection.select_rows(
+                layout.rows.index_at(y),
+                layout.rows.index_at(y),
+                modifiers.ctrl,
+            );
+            self.drag = Some(Drag::Select);
             return;
         }
         // The corner box selects everything.
@@ -2148,6 +2248,139 @@ mod tests {
         });
         // Nobody is going to upload the font atlas to a GPU here.
         out.textures_delta.clear();
+    }
+
+    /// A ruled sheet: 64-pixel columns, 20-pixel rows, headers to match.
+    ///
+    /// Built by hand rather than from a workbook so the numbers in the
+    /// assertions are the numbers in the fixture, and a boundary is where
+    /// arithmetic says it is.
+    fn ruled() -> (Layout, Vec<Pane>, egui::Rect, egui::Rect) {
+        let layout = Layout {
+            rows: super::super::axis::Axis::uniform(20.0, 1000),
+            cols: super::super::axis::Axis::uniform(64.0, 100),
+            header_width: 46.0,
+            header_height: 20.0,
+            zoom: 1.0,
+        };
+        let content = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600.0, 400.0));
+        let body = egui::Rect::from_min_max(content.min + egui::vec2(46.0, 20.0), content.max);
+        let panes = vec![Pane {
+            rect: body,
+            scroll: Scroll::default(),
+        }];
+        (layout, panes, content, body)
+    }
+
+    #[test]
+    fn a_boundary_can_be_grabbed_from_either_side_of_it() {
+        // The bug this exists for: the grab zone used to be four pixels wide
+        // and all of them to the left of the line, so half of every attempt to
+        // drag a column landed on "select this column" instead.
+        let (layout, panes, content, body) = ruled();
+        let edge = |x: f32, y: f32| header_edge(&layout, content, body, &panes, egui::pos2(x, y));
+
+        // Column A ends 64 pixels into the body, which is x = 110 on screen.
+        assert_eq!(edge(110.0, 10.0), Some((Axis::Columns, 0)));
+        assert_eq!(edge(108.0, 10.0), Some((Axis::Columns, 0)), "left of it");
+        assert_eq!(edge(112.0, 10.0), Some((Axis::Columns, 0)), "right of it");
+        assert_eq!(edge(140.0, 10.0), None, "the middle of column B");
+
+        // Row 1 ends 20 pixels down, which is y = 40.
+        assert_eq!(edge(20.0, 40.0), Some((Axis::Rows, 0)));
+        assert_eq!(edge(20.0, 42.0), Some((Axis::Rows, 0)), "below it");
+        assert_eq!(edge(20.0, 55.0), None, "the middle of row 2");
+    }
+
+    #[test]
+    fn the_far_edge_of_the_first_header_resizes_nothing() {
+        // There is no column before A and no row before 1, so the left edge of
+        // one and the top edge of the other are lines with nothing behind them.
+        // A drag there used to be possible and resized whatever came next.
+        let (layout, panes, content, body) = ruled();
+        let edge = |x: f32, y: f32| header_edge(&layout, content, body, &panes, egui::pos2(x, y));
+        assert_eq!(edge(46.0, 10.0), None);
+        assert_eq!(edge(20.0, 20.0), None);
+        // And the corner box between the two headers is neither.
+        assert_eq!(edge(20.0, 10.0), None);
+        // Nor is anything outside the widget, which is what stops a pointer
+        // over the toolbar from picking up a resize cursor.
+        assert_eq!(edge(110.0, 900.0), None);
+    }
+
+    #[test]
+    fn dragging_a_column_edge_writes_a_width_and_reports_it_once() {
+        let ctx = context();
+        let mut book = Workbook::blank();
+        let mut view = GridView::default();
+        frame(&mut view, &mut book, vec![], &ctx);
+
+        // Where the boundary after column A actually is this frame, rather
+        // than where the fixture above says it would be.
+        let (_, _, layout) = view.layout.as_ref().expect("laid out");
+        let x = 46.0 + layout.cols.size(0) as f32;
+        let (from, to) = (egui::pos2(x, 10.0), egui::pos2(x + 40.0, 10.0));
+        frame(&mut view, &mut book, vec![press(from, true)], &ctx);
+        frame(
+            &mut view,
+            &mut book,
+            vec![egui::Event::PointerMoved(to)],
+            &ctx,
+        );
+        frame(&mut view, &mut book, vec![press(to, false)], &ctx);
+
+        let width = book.sheets[0].column_widths.get(&0).copied();
+        assert!(
+            width.is_some_and(|w| w > super::super::axis::DEFAULT_COLUMN_CHARS),
+            "column A got wider: {width:?}"
+        );
+        assert_eq!(
+            view.actions
+                .iter()
+                .filter(|a| matches!(a, Action::Resized(_)))
+                .count(),
+            1,
+            "one undo entry for the whole drag, not one per frame"
+        );
+        assert!(
+            book.sheets[0].column_widths.len() == 1,
+            "only the column that was dragged"
+        );
+    }
+
+    #[test]
+    fn double_clicking_a_boundary_asks_for_that_one_column_to_be_fitted() {
+        let ctx = context();
+        let mut book = Workbook::blank();
+        let mut view = GridView::default();
+        frame(&mut view, &mut book, vec![], &ctx);
+
+        let (_, _, layout) = view.layout.as_ref().expect("laid out");
+        let at = egui::pos2(46.0 + layout.cols.size(0) as f32, 10.0);
+        for _ in 0..2 {
+            frame(&mut view, &mut book, vec![press(at, true)], &ctx);
+            frame(&mut view, &mut book, vec![press(at, false)], &ctx);
+        }
+
+        assert!(
+            view.actions.contains(&Action::AutoFitAt {
+                axis: Axis::Columns,
+                index: 0,
+            }),
+            "the column the pointer named: {:?}",
+            view.actions
+        );
+        // The first click of the pair still opened and closed a resize — a
+        // press on a boundary cannot know a second one is coming. What matters
+        // is that it moved nothing, so what it reports is the geometry the
+        // sheet still has and the application drops it rather than stacking
+        // two do-nothing entries on top of the fit.
+        for action in &view.actions {
+            if let Action::Resized(before) = action {
+                assert_eq!(before.column_widths, book.sheets[0].column_widths);
+                assert_eq!(before.row_heights, book.sheets[0].row_heights);
+            }
+        }
     }
 
     fn press(pos: egui::Pos2, pressed: bool) -> egui::Event {

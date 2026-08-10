@@ -754,7 +754,19 @@ fn read_col_geometry(e: &BytesStart<'_>, sheet: &mut Sheet) {
     };
     // A `<col>` may carry a style without a width — that is how a whole column
     // gets shaded, and it is the only record of it anywhere in the file.
-    let width = attr_f64(e, b"width");
+    //
+    // `hidden` reads as a width of nothing, the same way a hidden row reads as
+    // a height of nothing. Without this a column Excel hid comes back visible,
+    // because `hidden="1"` is all Excel writes and the width beside it is the
+    // one the column will have again when somebody unhides it.
+    let hidden = attr_raw(e, b"hidden")
+        .and_then(|raw| parse_bool(&raw))
+        .unwrap_or(false);
+    let width = if hidden {
+        Some(0.0)
+    } else {
+        attr_f64(e, b"width")
+    };
     let style = attr_u32(e, b"style")
         .map(StyleId)
         .filter(|s| *s != StyleId::DEFAULT);

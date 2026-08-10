@@ -50,8 +50,12 @@ pub(crate) fn rewrite(part: &str, data: &[u8], ctx: &mut Context<'_>) -> Result<
     // has to be dealt with before it is passed.
     let mut wrote_cols = false;
     let mut in_cols = false;
-    // Which columns the file's own `<col>` elements already speak for.
-    let mut covered: std::collections::BTreeSet<u32> = Default::default();
+    // The columns the model has an opinion about that the file's own `<col>`
+    // elements do not speak for. Worked out ahead of the rewrite, because a
+    // `<col>` that has to be added belongs *in* the sequence and there is no
+    // way to know where until every span in the file has been seen.
+    let missing = missing_columns(ctx.sheet, &file_columns(part, data)?);
+    let mut next_missing = 0usize;
     // The autofilter, which sits between `</sheetData>` and `<mergeCells>` and
     // may have to be inserted into a file that never had one.
     //
@@ -175,31 +179,29 @@ pub(crate) fn rewrite(part: &str, data: &[u8], ctx: &mut Context<'_>) -> Result<
                     out.extend_from_slice(splicer.bytes(span));
                 } else {
                     // An empty `<cols/>` grows a body when the model has
-                    // column styles to put in it.
-                    let extra = missing_columns(ctx.sheet, &Default::default());
-                    if extra.is_empty() {
+                    // columns to put in it.
+                    if missing.is_empty() {
                         out.extend_from_slice(splicer.bytes(span));
                     } else {
                         out.extend_from_slice(&retag(e, &[], false));
-                        write_columns(&mut out, &prefix, &extra);
+                        write_columns(&mut out, &prefix, &missing, &mut next_missing, u32::MAX);
                         close(&mut out, &prefix, b"cols");
                     }
                     wrote_cols = true;
                 }
-                covered.clear();
             }
             Event::Start(e) | Event::Empty(e) if in_cols && local_name(e) == b"col" => {
-                write_col(
-                    &mut out,
-                    splicer.bytes(span.clone()),
-                    e,
-                    ctx.sheet,
-                    &mut covered,
-                );
+                // Ahead of this element, not after the whole block: `<col>`
+                // elements out of numerical order are legal and readers cope,
+                // but no spreadsheet has ever written them that way.
+                let min = raw_attr(e, b"min")
+                    .and_then(|a| parse_u32(&a.value))
+                    .unwrap_or(u32::MAX);
+                write_columns(&mut out, &prefix, &missing, &mut next_missing, min);
+                write_col(&mut out, splicer.bytes(span.clone()), e, ctx.sheet);
             }
             Event::End(e) if end_local_name(e) == b"cols" => {
-                let extra = missing_columns(ctx.sheet, &covered);
-                write_columns(&mut out, &prefix, &extra);
+                write_columns(&mut out, &prefix, &missing, &mut next_missing, u32::MAX);
                 out.extend_from_slice(splicer.bytes(span));
                 in_cols = false;
                 wrote_cols = true;
@@ -210,10 +212,9 @@ pub(crate) fn rewrite(part: &str, data: &[u8], ctx: &mut Context<'_>) -> Result<
                 // The schema fixes `<cols>` immediately before `<sheetData>`,
                 // so this is the last chance to add one the file left out.
                 if !wrote_cols {
-                    let extra = missing_columns(ctx.sheet, &covered);
-                    if !extra.is_empty() {
+                    if !missing.is_empty() {
                         open(&mut out, &prefix, b"cols", &[], false);
-                        write_columns(&mut out, &prefix, &extra);
+                        write_columns(&mut out, &prefix, &missing, &mut next_missing, u32::MAX);
                         close(&mut out, &prefix, b"cols");
                     }
                     wrote_cols = true;
@@ -226,10 +227,9 @@ pub(crate) fn rewrite(part: &str, data: &[u8], ctx: &mut Context<'_>) -> Result<
             Event::Empty(e) if local_name(e) == b"sheetData" => {
                 prefix = prefix_of(e);
                 if !wrote_cols {
-                    let extra = missing_columns(ctx.sheet, &covered);
-                    if !extra.is_empty() {
+                    if !missing.is_empty() {
                         open(&mut out, &prefix, b"cols", &[], false);
-                        write_columns(&mut out, &prefix, &extra);
+                        write_columns(&mut out, &prefix, &missing, &mut next_missing, u32::MAX);
                         close(&mut out, &prefix, b"cols");
                     }
                     wrote_cols = true;
@@ -1106,48 +1106,115 @@ fn push_inline(out: &mut Vec<u8>, text: &str, prefix: &[u8]) {
     close(out, prefix, b"is");
 }
 
-/// A `<col>` from the file, re-emitted so its span carries the model's styles.
+/// Everything a `<col>` says about one column that the model also holds.
+///
+/// Style and width travel together because they are written together: they are
+/// two attributes of one element, and a run of columns can only be spelled as
+/// one `<col>` when they agree about both.
+#[derive(Clone, Copy, PartialEq)]
+struct ColumnLook {
+    style: u32,
+    /// `None` where the column has no width of its own — which is what a
+    /// `<col>` carrying nothing but a style means, and it is not the same as a
+    /// width that happens to equal the default.
+    width: Option<f64>,
+}
+
+impl ColumnLook {
+    fn of(sheet: &Sheet, column: u32) -> Self {
+        ColumnLook {
+            style: sheet
+                .column_styles
+                .get(&column)
+                .map(|s| s.0)
+                .unwrap_or_default(),
+            width: sheet.column_widths.get(&column).copied(),
+        }
+    }
+
+    fn is_default(self) -> bool {
+        self.style == 0 && self.width.is_none()
+    }
+
+    /// The look a `<col>` element itself states.
+    ///
+    /// `hidden` reads back as a width of zero, which is how the reader records
+    /// it and how a hidden *row* is already modelled. Keeping the two spellings
+    /// apart here would make an untouched hidden column compare unequal to
+    /// itself, and the writer would rebuild every one of them on every save.
+    fn stated(e: &BytesStart<'_>) -> Self {
+        let hidden = raw_attr(e, b"hidden")
+            .and_then(|a| parse_bool(&a.value))
+            .unwrap_or(false);
+        ColumnLook {
+            style: raw_attr(e, b"style")
+                .and_then(|a| parse_u32(&a.value))
+                .unwrap_or(0),
+            width: if hidden {
+                Some(0.0)
+            } else {
+                raw_attr(e, b"width").and_then(|a| parse_f64(&a.value))
+            },
+        }
+    }
+
+    /// The attributes it takes to say this, over whatever the element holds.
+    ///
+    /// `customWidth` rides with the width because the pair is what Excel reads
+    /// as "somebody chose this": a bare `width` is a producer's own measurement
+    /// and Excel is free to re-fit it, which would quietly undo the drag that
+    /// put it there.
+    ///
+    /// A hidden column writes `hidden` and leaves `width` alone, exactly as a
+    /// hidden row writes `hidden` and leaves `ht` alone. `width="0"` would hide
+    /// it just as well on screen and would restore it to nothing when somebody
+    /// unhid it, which is not what unhiding is for.
+    fn sets(self) -> Vec<Set<'static>> {
+        let mut sets = vec![Set::maybe(
+            b"style",
+            (self.style != 0).then(|| self.style.to_string()),
+        )];
+        match self.width {
+            Some(0.0) => sets.push(Set::to(b"hidden", "1")),
+            Some(width) => {
+                sets.push(Set::to(b"width", ss_model::format_general(width)));
+                sets.push(Set::to(b"customWidth", "1"));
+                sets.push(Set::off(b"hidden"));
+            }
+            // `width` is deliberately left alone rather than removed. The only
+            // thing that takes a width out of the model is *unhiding* a
+            // column — hiding overwrote it with a zero and nothing remembers
+            // what it was — and the width still sitting in the file is exactly
+            // the size the column should come back at.
+            None => sets.push(Set::off(b"hidden")),
+        }
+        sets
+    }
+}
+
+/// The default column width, which is what Excel writes when it has to write
+/// something. A `<col>` with no width at all is repaired on open.
+const DEFAULT_WIDTH: f64 = 8.43;
+
+/// A `<col>` from the file, re-emitted so its span carries the model's widths
+/// and styles.
 ///
 /// A span whose columns no longer agree is *split* rather than replaced: each
 /// piece is a retag of the original element, so every attribute nobody here
 /// models — `outlineLevel`, `collapsed`, `bestFit`, `phonetic` — goes back
 /// unchanged on each piece.
-fn write_col(
-    out: &mut Vec<u8>,
-    original: &[u8],
-    e: &BytesStart<'_>,
-    sheet: &Sheet,
-    covered: &mut std::collections::BTreeSet<u32>,
-) {
-    let (Some(min), Some(max)) = (
-        raw_attr(e, b"min").and_then(|a| parse_u32(&a.value)),
-        raw_attr(e, b"max").and_then(|a| parse_u32(&a.value)),
-    ) else {
+fn write_col(out: &mut Vec<u8>, original: &[u8], e: &BytesStart<'_>, sheet: &Sheet) {
+    let Some((min, max)) = col_span(e) else {
         out.extend_from_slice(original);
         return;
     };
-    if min == 0 || min > max {
-        out.extend_from_slice(original);
-        return;
-    }
-    let file_style = raw_attr(e, b"style")
-        .and_then(|a| parse_u32(&a.value))
-        .unwrap_or(0);
+    let file = ColumnLook::stated(e);
     // Beyond the limit the reader materializes, the model knows nothing and the
     // file's own value is the only truth there is.
-    let horizon = max.min(min.saturating_add(1024));
-    for column in min..=horizon {
-        covered.insert(column - 1);
-    }
+    let horizon = max.min(min.saturating_add(COLS_SPAN_LIMIT));
 
-    let wanted = |column: u32| {
-        sheet
-            .column_styles
-            .get(&(column - 1))
-            .map(|s| s.0)
-            .unwrap_or(0)
-    };
-    if (min..=horizon).all(|c| wanted(c) == file_style) && horizon == max {
+    let wanted = |column: u32| ColumnLook::of(sheet, column - 1);
+    if (min..=horizon).all(|c| wanted(c) == file) && horizon == max {
         out.extend_from_slice(original);
         return;
     }
@@ -1155,77 +1222,138 @@ fn write_col(
     // Split into runs that agree.
     let mut start = min;
     while start <= max {
-        let style = if start <= horizon {
+        let look = if start <= horizon {
             wanted(start)
         } else {
-            file_style
+            file
         };
         let mut end = start;
         while end < max {
             let next = end + 1;
-            let next_style = if next <= horizon {
-                wanted(next)
-            } else {
-                file_style
-            };
-            if next_style != style {
+            let next_look = if next <= horizon { wanted(next) } else { file };
+            if next_look != look {
                 break;
             }
             end = next;
         }
-        let sets = [
+        let mut sets = vec![
             Set::to(b"min", start.to_string()),
             Set::to(b"max", end.to_string()),
-            Set::maybe(b"style", (style != 0).then(|| style.to_string())),
         ];
+        sets.extend(look.sets());
         out.extend_from_slice(&retag(e, &sets, true));
         start = end + 1;
     }
 }
 
-/// Column styles the model has that no `<col>` in the file speaks for,
-/// gathered into runs of `(first, last, style)`.
+/// `min` and `max` off a `<col>`, if it states a span that makes sense.
+fn col_span(e: &BytesStart<'_>) -> Option<(u32, u32)> {
+    let min = raw_attr(e, b"min").and_then(|a| parse_u32(&a.value))?;
+    let max = raw_attr(e, b"max").and_then(|a| parse_u32(&a.value))?;
+    (min > 0 && min <= max).then_some((min, max))
+}
+
+/// How far into a `<col>` span the reader materializes columns.
+///
+/// The same number the reader uses, and it has to be: past it the model holds
+/// nothing, so the file's own value is the only truth there is.
+const COLS_SPAN_LIMIT: u32 = 1024;
+
+/// The columns the file's own `<col>` elements speak for, in one pass ahead of
+/// the rewrite.
+fn file_columns(part: &str, data: &[u8]) -> Result<std::collections::BTreeSet<u32>> {
+    let mut covered = std::collections::BTreeSet::new();
+    let mut splicer = Splicer::new(part, data);
+    while let Some((event, _)) = splicer.next()? {
+        match &event {
+            Event::Start(e) | Event::Empty(e) if local_name(e) == b"col" => {
+                if let Some((min, max)) = col_span(e) {
+                    for column in min..=max.min(min.saturating_add(COLS_SPAN_LIMIT)) {
+                        covered.insert(column - 1);
+                    }
+                }
+            }
+            // The schema puts `<cols>` immediately before `<sheetData>`, so a
+            // `<col>` after this point belongs to something else.
+            Event::Start(e) | Event::Empty(e) if local_name(e) == b"sheetData" => break,
+            _ => {}
+        }
+    }
+    Ok(covered)
+}
+
+/// Columns the model has an opinion about that no `<col>` in the file speaks
+/// for, gathered into runs that agree.
 fn missing_columns(
     sheet: &Sheet,
     covered: &std::collections::BTreeSet<u32>,
-) -> Vec<(u32, u32, u32)> {
-    let mut runs: Vec<(u32, u32, u32)> = Vec::new();
-    for (column, style) in sheet
+) -> Vec<(u32, u32, ColumnLook)> {
+    let mut runs: Vec<(u32, u32, ColumnLook)> = Vec::new();
+    // Both maps, because a column may have a width and no style or a style and
+    // no width, and either on its own is worth a `<col>`. A BTreeSet walks them
+    // in order, so a run only ever grows at its end.
+    let named: std::collections::BTreeSet<u32> = sheet
         .column_styles
-        .iter()
-        .filter(|(c, s)| !covered.contains(c) && **s != ss_model::StyleId::DEFAULT)
-        .map(|(c, s)| (*c, s.0))
-    {
+        .keys()
+        .chain(sheet.column_widths.keys())
+        .copied()
+        .collect();
+    for column in named {
+        if covered.contains(&column) {
+            continue;
+        }
+        let look = ColumnLook::of(sheet, column);
+        if look.is_default() {
+            continue;
+        }
         match runs.last_mut() {
-            // `column_styles` is a BTreeMap, so this walks in order and a run
-            // only ever grows at its end.
-            Some((_, last, existing)) if *last + 1 == column && *existing == style => {
-                *last = column
-            }
-            _ => runs.push((column, column, style)),
+            Some((_, last, existing)) if *last + 1 == column && *existing == look => *last = column,
+            _ => runs.push((column, column, look)),
         }
     }
     runs
 }
 
-/// Emits the `<col>` elements for the runs `missing_columns` found.
-fn write_columns(out: &mut Vec<u8>, prefix: &[u8], runs: &[(u32, u32, u32)]) {
-    for (first, last, style) in runs {
-        open(
-            out,
-            prefix,
-            b"col",
-            &[
-                // `min` and `max` are one-based and inclusive at both ends.
-                Set::to(b"min", (first + 1).to_string()),
-                Set::to(b"max", (last + 1).to_string()),
-                Set::to(b"style", style.to_string()),
-                // Excel repairs a `<col>` with no width, so the workbook
-                // default goes out with it.
-                Set::to(b"width", "8.43"),
-            ],
-            true,
-        );
+/// Emits the runs `missing_columns` found that come before `before`.
+///
+/// `next` is where the last call stopped, so the runs go out in order and each
+/// one goes out once. `u32::MAX` means "whatever is left".
+fn write_columns(
+    out: &mut Vec<u8>,
+    prefix: &[u8],
+    runs: &[(u32, u32, ColumnLook)],
+    next: &mut usize,
+    before: u32,
+) {
+    while let Some((first, last, look)) = runs.get(*next) {
+        // `min` and `max` are one-based; `first` and `last` are not.
+        if first + 1 >= before {
+            return;
+        }
+        *next += 1;
+        let mut sets = vec![
+            Set::to(b"min", (first + 1).to_string()),
+            Set::to(b"max", (last + 1).to_string()),
+        ];
+        if look.style != 0 {
+            sets.push(Set::to(b"style", look.style.to_string()));
+        }
+        // Written out in full rather than through `ColumnLook::sets`, because
+        // that one edits an element that exists and this one builds one that
+        // does not: there is no `width` here to leave alone. Excel repairs a
+        // `<col>` with none at all, so every branch carries one.
+        match look.width {
+            Some(0.0) => {
+                sets.push(Set::to(b"width", ss_model::format_general(DEFAULT_WIDTH)));
+                sets.push(Set::to(b"hidden", "1"));
+            }
+            Some(width) => {
+                sets.push(Set::to(b"width", ss_model::format_general(width)));
+                sets.push(Set::to(b"customWidth", "1"));
+            }
+            None => sets.push(Set::to(b"width", ss_model::format_general(DEFAULT_WIDTH))),
+        }
+        open(out, prefix, b"col", &sets, true);
     }
 }
 
@@ -1356,6 +1484,7 @@ mod tests {
         // writer does not model either and must not drop them.
         let mut sheet = Sheet::new("Data");
         set(&mut sheet, "A1", CellValue::Number(1.0), 0);
+        with_cols_widths(&mut sheet);
         sheet.column_styles.insert(1, StyleId(4));
 
         let out = written_from(WITH_COLS, &sheet);
@@ -1370,11 +1499,140 @@ mod tests {
         assert_eq!(out.matches("width=\"12.5\"").count(), 3, "{out}");
     }
 
+    /// The widths `WITH_COLS` states, as the reader would have left them.
+    ///
+    /// A model with no width against a file that has one is not a sheet nobody
+    /// touched — it is a sheet whose widths were just cleared, and the writer
+    /// is right to take them out. So a fixture standing in for an untouched
+    /// sheet has to say what the file says.
+    fn with_cols_widths(sheet: &mut Sheet) {
+        for column in 0..3 {
+            sheet.column_widths.insert(column, 12.5);
+        }
+    }
+
     #[test]
     fn a_column_nobody_restyled_comes_back_byte_for_byte() {
         let mut sheet = Sheet::new("Data");
         set(&mut sheet, "A1", CellValue::Number(1.0), 0);
+        with_cols_widths(&mut sheet);
         assert_eq!(written_from(WITH_COLS, &sheet), WITH_COLS);
+    }
+
+    #[test]
+    fn a_dragged_column_edge_reaches_the_file() {
+        // The bug this exists for: `<cols>` had a writer for styles and none
+        // for widths, so dragging a column wider showed on screen, survived
+        // undo, and was gone the moment the file was read back.
+        let mut sheet = Sheet::new("Data");
+        set(&mut sheet, "A1", CellValue::Number(1.0), 0);
+        with_cols_widths(&mut sheet);
+        sheet.column_widths.insert(1, 30.0);
+
+        let out = written_from(WITH_COLS, &sheet);
+        assert_eq!(out.matches("<col ").count(), 3, "B split out: {out}");
+        assert!(
+            out.contains(r#"min="2" max="2" width="30" customWidth="1""#),
+            "{out}"
+        );
+        assert_eq!(out.matches(r#"width="12.5""#).count(), 2, "A and C: {out}");
+    }
+
+    #[test]
+    fn a_width_on_a_column_the_file_never_mentioned_grows_a_col_element() {
+        let mut sheet = Sheet::new("Data");
+        set(&mut sheet, "A1", CellValue::Number(1.0), 0);
+        sheet.column_widths.insert(4, 22.0);
+
+        let out = written_from(
+            r#"<worksheet><sheetData><row r="1"><c r="A1"><v>1</v></c></row></sheetData></worksheet>"#,
+            &sheet,
+        );
+        assert!(
+            out.contains(r#"<cols><col min="5" max="5" width="22" customWidth="1"/></cols>"#),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn a_column_narrowed_to_nothing_is_hidden_and_keeps_the_width_it_had() {
+        // Zero is how the model spells hidden, and `hidden` is the attribute
+        // Excel's own Unhide looks for. The width beside it is left alone on
+        // purpose: it is the size the column comes back at, and `width="0"`
+        // would bring it back to nothing.
+        let mut sheet = Sheet::new("Data");
+        set(&mut sheet, "A1", CellValue::Number(1.0), 0);
+        with_cols_widths(&mut sheet);
+        sheet.column_widths.insert(0, 0.0);
+
+        let out = written_from(WITH_COLS, &sheet);
+        assert!(
+            out.contains(
+                r#"<col min="1" max="1" width="12.5" customWidth="1" outlineLevel="1" hidden="1"/>"#
+            ),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn a_column_excel_hid_reads_as_hidden_and_writes_back_unchanged() {
+        // `hidden="1"` with no width is all Excel writes. Read as "no width at
+        // all" it comes back visible; read as a width of zero — which is what
+        // a hidden row already does — it round-trips.
+        const HIDDEN: &str = concat!(
+            r#"<?xml version="1.0"?><worksheet xmlns="http://x">"#,
+            r#"<cols><col min="2" max="2" width="9.14" hidden="1"/></cols>"#,
+            r#"<sheetData><row r="1"><c r="A1"><v>1</v></c></row></sheetData></worksheet>"#,
+        );
+        let mut sheet = Sheet::new("Data");
+        set(&mut sheet, "A1", CellValue::Number(1.0), 0);
+        sheet.column_widths.insert(1, 0.0);
+        assert_eq!(written_from(HIDDEN, &sheet), HIDDEN);
+
+        // And unhiding it takes the attribute back off and leaves the width,
+        // which is the size the column comes back at. Nothing in the model
+        // remembers that width — hiding overwrote it with a zero — so taking
+        // the file's word for it is the only way the column returns to the
+        // size it was rather than to the default.
+        sheet.column_widths.remove(&1);
+        let out = written_from(HIDDEN, &sheet);
+        assert!(!out.contains("hidden"), "{out}");
+        assert!(out.contains(r#"width="9.14""#), "{out}");
+    }
+
+    #[test]
+    fn an_added_column_goes_in_where_it_belongs_rather_than_at_the_end() {
+        // `<col>` elements out of numerical order are legal, and no spreadsheet
+        // has ever written them that way. The file speaks for B and C; A and D
+        // have to be threaded either side of it.
+        let mut sheet = Sheet::new("Data");
+        set(&mut sheet, "A1", CellValue::Number(1.0), 0);
+        sheet.column_widths.insert(0, 20.0);
+        sheet.column_widths.insert(1, 9.14);
+        sheet.column_widths.insert(2, 9.14);
+        sheet.column_widths.insert(3, 30.0);
+
+        let out = written_from(
+            concat!(
+                r#"<worksheet><cols><col min="2" max="3" width="9.14" customWidth="1"/></cols>"#,
+                r#"<sheetData><row r="1"><c r="A1"><v>1</v></c></row></sheetData></worksheet>"#,
+            ),
+            &sheet,
+        );
+        let order: Vec<&str> = out
+            .match_indices("min=")
+            .map(|(i, _)| &out[i..i + 7])
+            .collect();
+        assert_eq!(
+            order,
+            vec![r#"min="1""#, r#"min="2""#, r#"min="4""#],
+            "{out}"
+        );
+        // The file's own span is untouched in passing.
+        assert!(
+            out.contains(r#"<col min="2" max="3" width="9.14" customWidth="1"/>"#),
+            "{out}"
+        );
     }
 
     #[test]

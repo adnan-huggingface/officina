@@ -9,8 +9,8 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[-]` deferred
 
 ## Current state
 
-**Chunk:** C16 — the Word model (C0–C15 done, plus a UX pass and a sheets /
-sort / filter pass)
+**Chunk:** C16 — the Word model (C0–C15 done, plus a UX pass, a sheets /
+sort / filter pass, and a row-and-column resizing pass)
 **Status:** not started
 **Handoff note:**
 
@@ -50,7 +50,7 @@ sort / filter pass)
   reprinting them; `write::splice` is the primitive that makes that possible, and
   everything else in the module is built on it. `rfd` is Calx's file dialog, on
   default features so a Linux build needs the XDG portal rather than GTK headers.
-- Workspace total is **734 tests**, all green;
+- Workspace total is **744 tests**, all green;
   `cargo clippy --workspace --all-targets -- -D warnings` and
   `cargo fmt --all --check` are both clean.
 - `ss-model` grew four modules across C11–C14: `color` (the four spellings of
@@ -418,6 +418,52 @@ Calx — the sheet tab's right-click menu, and the ribbon's Sort & Filter group.
   concept — and the filter offers a value list and Excel's two-comparison
   custom filter, but not top-10, above-average, colour or date-group filters.
   Those are read and preserved, and shown as an unconstrained column.
+
+### Resizing rows and columns (after the sheets pass)
+
+Dragging a header boundary had worked since the UX pass. Nobody could find it,
+and what it produced never reached the file.
+
+- **A grab zone on one side of a line is not a grab zone.** It was four pixels
+  wide and all four to the *left* of the boundary, so half of every attempt to
+  drag landed on "select this column" instead. `paint::header_edge` now answers
+  from either side, names the row or column *before* the line — the one a drag
+  resizes — and is the single place the press, the hover cursor and the
+  double-click all ask.
+- **A boundary that can be dragged has to say so.** Nothing marks one out: the
+  line between two columns is drawn whether or not it is draggable. The pointer
+  turns into a resize arrow over it, which is the whole of the affordance.
+- Watch item: **a double-click on a boundary has to be resolved before the
+  drag.** The first press starts a resize, a drag owns the pointer until it
+  ends, and `handle_input` returns early while one is in flight — so the second
+  click was never looked at. It is checked ahead of that branch now. The first
+  click still opens and closes a resize that moves nothing, which is why
+  `Action::Resized` carrying the geometry the sheet already has is dropped
+  rather than pushed: without that, every autofit landed on two do-nothing undo
+  entries.
+- **`<cols>` had a writer for styles and none for widths.** A dragged column
+  showed on screen, survived undo, and was gone the moment the file was read
+  back. `ColumnLook` carries style and width together, because they are two
+  attributes of one element and a run can only be spelled as one `<col>` when
+  it agrees about both. `customWidth` rides with the width: a bare `width` is a
+  producer's own measurement and Excel may re-fit it, which would quietly undo
+  the drag.
+- Watch item: **a hidden column is `hidden="1"`, not `width="0"`.** Both hide it
+  on screen; only the first is what Excel's Unhide looks for, and the width
+  beside it is the size the column comes back at. The model spells hidden as a
+  width of zero — the same way a hidden row is already a height of zero — so the
+  reader turns `hidden` into a zero and the writer turns a zero back into
+  `hidden`, leaving the file's own `width` alone. Reading it any other way
+  brought every column Excel had hidden back visible.
+- Watch item: **a `<col>` the model needs and the file lacks belongs *in* the
+  sequence.** Appending it after the file's own spans is legal and every reader
+  copes, but no spreadsheet has ever written `<col>` elements out of numerical
+  order. `file_columns` finds the file's spans in one pass ahead of the rewrite
+  so the new ones can be threaded between them.
+- Excel's exact-size boxes are there too — Column width in characters, Row
+  height in points, the file's own units, with Excel's own ceilings of 255 and
+  409 — on the right-click menu and under a Format menu on the toolbar, which is
+  where Excel keeps them and where anybody who has not found the boundary looks.
 
 
 - Watch item: **a `t="s"` cell points at an `<si>`, and an `<si>` can be rich

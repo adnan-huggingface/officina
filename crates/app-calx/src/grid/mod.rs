@@ -562,6 +562,12 @@ pub enum Action {
     },
     /// Size the selected columns to their contents.
     AutoFit(Axis),
+    /// A header boundary was double-clicked: fit the one row or column before
+    /// it, whatever happens to be selected elsewhere.
+    AutoFitAt {
+        axis: Axis,
+        index: u32,
+    },
     /// A picture was moved or resized. The payload is the sheet's pictures as
     /// they were before the drag: the model already holds the new geometry,
     /// because a drag has to be shown while it happens.
