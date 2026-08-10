@@ -533,6 +533,59 @@ impl Workbook {
             .iter()
             .find(|d| d.scope.is_none() && d.name.eq_ignore_ascii_case(name))
     }
+
+    /// Why this defined name cannot be used, or `None` if it can.
+    ///
+    /// `editing` is the entry being renamed, so that a name is not reported as
+    /// clashing with itself.
+    pub fn defined_name_refusal(
+        &self,
+        name: &str,
+        scope: Option<usize>,
+        editing: Option<usize>,
+    ) -> Option<String> {
+        if let Some(problem) = defined_name_problem(name) {
+            return Some(problem.to_string());
+        }
+        let taken = self.defined_names.iter().enumerate().any(|(i, d)| {
+            Some(i) != editing && d.scope == scope && d.name.eq_ignore_ascii_case(name)
+        });
+        taken.then(|| format!("There is already a name called {name} in that scope"))
+    }
+}
+
+/// Why a defined name is not a legal one.
+///
+/// The rules are not arbitrary. A name is written into formulas unquoted, so it
+/// has to be something the lexer cannot read as anything else: not a cell
+/// address, not a number, not something with an operator in it. Excel's own
+/// list, and the reason for each is the same reason.
+fn defined_name_problem(name: &str) -> Option<&'static str> {
+    if name.is_empty() {
+        return Some("A name cannot be empty");
+    }
+    if name.chars().count() > 255 {
+        return Some("A name is at most 255 characters");
+    }
+    let first = name.chars().next().expect("not empty");
+    if !(first.is_alphabetic() || first == '_' || first == '\\') {
+        return Some("A name starts with a letter, an underscore or a backslash");
+    }
+    if name
+        .chars()
+        .any(|c| !(c.is_alphanumeric() || c == '_' || c == '.' || c == '\\'))
+    {
+        return Some("A name may hold only letters, digits, full stops and underscores");
+    }
+    // `C`, `R`, `c` and `r` are Excel's R1C1 shorthands and it refuses them
+    // even in A1 mode, because the file can be read either way.
+    if matches!(name.to_ascii_uppercase().as_str(), "C" | "R") {
+        return Some("C and R are reserved");
+    }
+    if crate::CellRef::from_a1(name).is_some() {
+        return Some("That is a cell address, so a formula could not tell them apart");
+    }
+    None
 }
 
 /// The characters Excel refuses in a sheet name.
@@ -579,6 +632,32 @@ mod tests {
             value: CellValue::Number(v),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn a_defined_name_has_to_be_something_a_formula_can_tell_apart() {
+        let mut book = Workbook::blank();
+        book.defined_names.push(DefinedName {
+            name: "Sales".into(),
+            refers_to: "Sheet1!$A$1".into(),
+            scope: None,
+        });
+        let refuse = |name: &str| book.defined_name_refusal(name, None, None);
+
+        assert_eq!(refuse("Total"), None);
+        assert_eq!(refuse("_hidden"), None);
+        assert_eq!(refuse("Q1.Sales"), None);
+        assert!(refuse("").is_some());
+        assert!(refuse("1st").is_some(), "cannot start with a digit");
+        assert!(refuse("my name").is_some(), "no spaces");
+        assert!(refuse("A1").is_some(), "that is a cell");
+        assert!(refuse("XFD1048576").is_some(), "so is that");
+        assert!(refuse("C").is_some(), "R1C1 shorthand");
+        assert!(refuse("Sales").is_some(), "already taken");
+        // The same name is free on a sheet, because scopes are separate, and
+        // the entry being edited does not clash with itself.
+        assert_eq!(book.defined_name_refusal("Sales", Some(0), None), None);
+        assert_eq!(book.defined_name_refusal("Sales", None, Some(0)), None);
     }
 
     #[test]

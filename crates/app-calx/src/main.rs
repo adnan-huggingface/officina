@@ -120,6 +120,17 @@ enum Dialog {
         axis: Axis,
         text: String,
     },
+    /// Excel's Name Manager: the workbook's defined names, all of them at once.
+    ///
+    /// A working copy rather than the workbook's own list, because the whole
+    /// list is what one undo entry replaces — a sheet-scoped name carries an
+    /// *index* into the sheet list, so the entries are not independent of each
+    /// other and editing them one at a time would be a lie.
+    Names {
+        names: Vec<ss_model::DefinedName>,
+        /// Which row is open for editing, if any.
+        editing: Option<usize>,
+    },
     /// Excel's Format Cells, all five tabs of it.
     ///
     /// The look is a working copy of the cursor's, edited in place and applied
@@ -635,6 +646,18 @@ impl Calx {
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Num1)) {
             self.open_format_cells();
         }
+        // Excel's Ctrl+F3, and it is worth having: a workbook full of names
+        // nobody can see is a workbook full of formulas nobody can read.
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::F3)) {
+            self.open_names();
+        }
+    }
+
+    fn open_names(&mut self) {
+        self.dialog = Some(Dialog::Names {
+            names: self.doc.workbook.defined_names.clone(),
+            editing: None,
+        });
     }
 
     /// Opens Format Cells on a working copy of the cursor's own formatting.
@@ -1774,6 +1797,7 @@ impl Calx {
         let mut size: Option<Axis> = None;
         let mut find_dialog = false;
         let mut format_cells = false;
+        let mut names_dialog = false;
 
         ui.horizontal(|ui| {
             if icons::button(ui, Icon::New, false, "New workbook (Ctrl+N)").clicked() {
@@ -1848,6 +1872,13 @@ impl Calx {
                 .clicked()
             {
                 find_dialog = true;
+            }
+            if ui
+                .button("Names…")
+                .on_hover_text("Defined names (Ctrl+F3)")
+                .clicked()
+            {
+                names_dialog = true;
             }
             separate(ui);
 
@@ -2179,6 +2210,9 @@ impl Calx {
         }
         if format_cells {
             self.open_format_cells();
+        }
+        if names_dialog {
+            self.open_names();
         }
         if let Some(axis) = size {
             self.open_size_dialog(axis);
@@ -2770,6 +2804,163 @@ impl Calx {
                         self.resize_selection(axis, size);
                         keep = false;
                     }
+                }
+            }
+
+            Dialog::Names { names, editing } => {
+                let sheet_names: Vec<String> = self
+                    .doc
+                    .workbook
+                    .sheets
+                    .iter()
+                    .map(|s| s.name.clone())
+                    .collect();
+                let here = self.grid.sheet_index;
+                let selection = format!(
+                    "{}!{}",
+                    ss_formula::translate::quote_sheet(
+                        &sheet_names[here.min(sheet_names.len() - 1)]
+                    ),
+                    absolute(self.grid.selection.active_range())
+                );
+                let mut save = false;
+                let mut remove: Option<usize> = None;
+                modal(ctx, "Names", |ui| {
+                    ui.set_min_width(560.0);
+                    egui::ScrollArea::vertical()
+                        .max_height(300.0)
+                        .show(ui, |ui| {
+                            egui::Grid::new("calx-names")
+                                .num_columns(5)
+                                .spacing([8.0, 6.0])
+                                .striped(true)
+                                .show(ui, |ui| {
+                                    ui.label(egui::RichText::new("Name").strong());
+                                    ui.label(egui::RichText::new("Refers to").strong());
+                                    ui.label(egui::RichText::new("Scope").strong());
+                                    ui.label("");
+                                    ui.end_row();
+                                    for (index, entry) in names.iter_mut().enumerate() {
+                                        let open = *editing == Some(index);
+                                        if open {
+                                            ui.add(
+                                                egui::TextEdit::singleline(&mut entry.name)
+                                                    .desired_width(120.0),
+                                            );
+                                            ui.add(
+                                                egui::TextEdit::singleline(&mut entry.refers_to)
+                                                    .desired_width(220.0)
+                                                    .font(egui::TextStyle::Monospace),
+                                            );
+                                            egui::ComboBox::from_id_salt((
+                                                "calx-name-scope",
+                                                index,
+                                            ))
+                                            .selected_text(match entry.scope {
+                                                None => "Workbook".to_string(),
+                                                Some(i) => sheet_names
+                                                    .get(i)
+                                                    .cloned()
+                                                    .unwrap_or_else(|| "?".into()),
+                                            })
+                                            .width(110.0)
+                                            .show_ui(
+                                                ui,
+                                                |ui| {
+                                                    ui.selectable_value(
+                                                        &mut entry.scope,
+                                                        None,
+                                                        "Workbook",
+                                                    );
+                                                    for (i, name) in sheet_names.iter().enumerate()
+                                                    {
+                                                        ui.selectable_value(
+                                                            &mut entry.scope,
+                                                            Some(i),
+                                                            name,
+                                                        );
+                                                    }
+                                                },
+                                            );
+                                            if ui.button("Done").clicked() {
+                                                *editing = None;
+                                            }
+                                        } else {
+                                            ui.label(&entry.name);
+                                            ui.label(
+                                                egui::RichText::new(&entry.refers_to).monospace(),
+                                            );
+                                            ui.label(match entry.scope {
+                                                None => "Workbook".to_string(),
+                                                Some(i) => sheet_names
+                                                    .get(i)
+                                                    .cloned()
+                                                    .unwrap_or_else(|| "?".into()),
+                                            });
+                                            ui.horizontal(|ui| {
+                                                if ui.button("Edit").clicked() {
+                                                    *editing = Some(index);
+                                                }
+                                                if ui.button("Delete").clicked() {
+                                                    remove = Some(index);
+                                                }
+                                            });
+                                        }
+                                        ui.end_row();
+                                    }
+                                });
+                        });
+                    if names.is_empty() {
+                        ui.label(
+                            egui::RichText::new("This workbook has no names yet")
+                                .weak()
+                                .small(),
+                        );
+                    }
+                    ui.add_space(6.0);
+                    // Told about a clash while it is being typed rather than on
+                    // submit, which is the only moment the answer is useful.
+                    for (index, entry) in names.iter().enumerate() {
+                        if let Some(why) = self.doc.workbook.defined_name_refusal(
+                            entry.name.trim(),
+                            entry.scope,
+                            Some(index),
+                        ) {
+                            ui.colored_label(
+                                egui::Color32::from_rgb(0xB0, 0x30, 0x20),
+                                format!("{}: {why}", entry.name),
+                            );
+                        }
+                    }
+                    ui.horizontal(|ui| {
+                        if ui
+                            .button("New")
+                            .on_hover_text(format!("Refers to {selection}"))
+                            .clicked()
+                        {
+                            names.push(ss_model::DefinedName {
+                                name: unused_name(names),
+                                refers_to: selection.clone(),
+                                scope: None,
+                            });
+                            *editing = Some(names.len() - 1);
+                        }
+                        save = ui.button("Save").clicked();
+                        keep &= !ui.button("Cancel").clicked();
+                    });
+                });
+                if let Some(index) = remove {
+                    names.remove(index);
+                    *editing = None;
+                }
+                if save {
+                    let names: Vec<ss_model::DefinedName> = names
+                        .iter()
+                        .filter(|n| !n.name.trim().is_empty())
+                        .cloned()
+                        .collect();
+                    self.perform(Change::new("Names", vec![Patch::DefinedNames { names }]));
+                    keep = false;
                 }
             }
 
@@ -3826,6 +4017,35 @@ fn pattern_name(p: &Pattern) -> String {
             other => other.to_string(),
         },
     }
+}
+
+/// A range with dollars on it, which is how a defined name refers to one.
+///
+/// Anchored because a name is not copied and so has nothing to be relative
+/// *to*: Excel writes `$A$1:$D$9` for every one it creates, and a relative
+/// name means something quite different — it shifts with whatever cell is
+/// looking at it.
+fn absolute(range: CellRange) -> String {
+    let cell = |at: CellRef| format!("${}${}", ss_model::column_name(at.col), at.row + 1);
+    if range.start == range.end {
+        cell(range.start)
+    } else {
+        format!("{}:{}", cell(range.start), cell(range.end))
+    }
+}
+
+/// `Name1`, or the first number after it that nobody is using.
+fn unused_name(names: &[ss_model::DefinedName]) -> String {
+    for n in 1.. {
+        let candidate = format!("Name{n}");
+        if !names
+            .iter()
+            .any(|d| d.name.eq_ignore_ascii_case(&candidate))
+        {
+            return candidate;
+        }
+    }
+    unreachable!("the loop is unbounded")
 }
 
 /// A typed row height or column width, if it is one.
