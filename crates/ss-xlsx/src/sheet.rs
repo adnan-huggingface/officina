@@ -100,6 +100,11 @@ pub(crate) fn parse(
     let mut validation: Option<DataValidation> = None;
     let mut side = String::new();
 
+    // The autofilter gets its own scan, guarded by a substring test. The writer
+    // has to read it out of the file's own bytes to know whether the user
+    // changed it, and one implementation of that reading is better than two.
+    sheet.filter = crate::autofilter::parse(part, data)?;
+
     loop {
         let ev = reader
             .read_event_into(&mut buf)
@@ -340,6 +345,7 @@ pub(crate) fn parse(
                         push_validation(sheet, dv);
                     }
                 }
+
                 _ => {}
             },
 
@@ -865,6 +871,11 @@ fn parse_a1_bytes(bytes: &[u8]) -> Option<CellRef> {
         return None;
     }
     Some(CellRef::new(row_one_based - 1, col - 1))
+}
+
+/// The same, for a value that has already been through entity decoding.
+pub(crate) fn parse_range_str(text: &str) -> Option<CellRange> {
+    parse_range_bytes(text.as_bytes())
 }
 
 /// Parses `A1:D9`, and a bare `A1` as a one-cell range.

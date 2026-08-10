@@ -255,6 +255,114 @@ fn shift_range(a: A1, b: A1, shift: Shift) -> Option<String> {
     (after != before).then_some(after)
 }
 
+/// Rewrites every qualifier naming `from` so that it names `to`.
+///
+/// Renaming a sheet has to reach every formula in the workbook, because a
+/// qualifier is the sheet's *name* and nothing else — there is no id behind it
+/// to keep the link alive. A formula left saying `Data!A1` after Data became
+/// Sales does not point somewhere wrong; it points nowhere, and comes back
+/// `#NAME?`.
+///
+/// Only qualifiers are touched. `Data` appearing as a defined name, inside a
+/// string, or as part of a longer word is a different thing with the same
+/// spelling, and the token stream is what tells them apart.
+pub fn rename_sheet(text: &str, from: &str, to: &str) -> Option<String> {
+    let tokens = tokenize(text).ok()?;
+    let mut out = String::new();
+    let mut copied = 0usize;
+
+    for token in &tokens {
+        let Tok::Sheet(name) = &token.kind else {
+            continue;
+        };
+        if !name.eq_ignore_ascii_case(from) {
+            continue;
+        }
+        out.push_str(&text[copied..token.at]);
+        out.push_str(&quote_sheet(to));
+        out.push('!');
+        copied = token.end;
+    }
+
+    if copied == 0 {
+        return None;
+    }
+    out.push_str(&text[copied..]);
+    Some(out)
+}
+
+/// Replaces every reference into `sheet` with `#REF!`.
+///
+/// The whole reference goes, qualifier and address together. Excel writes
+/// `#REF!A1` — it keeps the address so you can see what was lost — but that is
+/// not a formula any engine can evaluate: `#REF!` is an error literal, and an
+/// address cannot follow one. Ours evaluates, and evaluating to `#REF!` is
+/// exactly what the cell should say.
+pub fn drop_sheet(text: &str, sheet: &str) -> Option<String> {
+    let tokens = tokenize(text).ok()?;
+    let mut out = String::new();
+    let mut copied = 0usize;
+    let mut i = 0;
+
+    while i < tokens.len() {
+        let Tok::Sheet(name) = &tokens[i].kind else {
+            i += 1;
+            continue;
+        };
+        if !name.eq_ignore_ascii_case(sheet) {
+            i += 1;
+            continue;
+        }
+        // The qualifier plus whatever it qualifies: a cell, a range's three
+        // tokens, or a whole-column span. A qualifier with nothing after it is
+        // not something the lexer produces, but the arithmetic must not assume
+        // that.
+        let mut span = 1;
+        if matches!(
+            tokens.get(i + 1).map(|t| &t.kind),
+            Some(Tok::Cell(_) | Tok::ColSpan { .. } | Tok::RowSpan { .. })
+        ) {
+            span = 2;
+            if matches!(tokens.get(i + 1).map(|t| &t.kind), Some(Tok::Cell(_)))
+                && matches!(tokens.get(i + 2).map(|t| &t.kind), Some(Tok::Colon))
+                && matches!(tokens.get(i + 3).map(|t| &t.kind), Some(Tok::Cell(_)))
+            {
+                span = 4;
+            }
+        }
+        out.push_str(&text[copied..tokens[i].at]);
+        out.push_str(REF_ERROR);
+        copied = tokens[i + span - 1].end;
+        i += span;
+    }
+
+    if copied == 0 {
+        return None;
+    }
+    out.push_str(&text[copied..]);
+    Some(out)
+}
+
+/// A sheet name as a formula would have to spell it.
+///
+/// Anything that is not a plain identifier gets quoted, and an apostrophe
+/// inside a quoted name is doubled — the same escape the lexer already undoes.
+pub fn quote_sheet(name: &str) -> String {
+    let plain = !name.is_empty()
+        && !name.starts_with(|c: char| c.is_ascii_digit())
+        && name
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '_' || c == '.');
+    // A name that reads as a cell address has to be quoted even though it is a
+    // plain identifier, or `A1!B2` becomes ambiguous to a human even where the
+    // lexer copes.
+    let address_shaped = ss_model::CellRef::from_a1(name).is_some();
+    if plain && !address_shaped {
+        return name.to_string();
+    }
+    format!("'{}'", name.replace('\'', "''"))
+}
+
 const REF_ERROR: &str = "#REF!";
 
 fn write_cell(cell: &A1) -> String {
@@ -397,6 +505,66 @@ mod tests {
             offset("IF(A1>0,\"stay A1\",SUM(B:B))", 1, 0).unwrap(),
             "IF(A2>0,\"stay A1\",SUM(B:B))"
         );
+    }
+
+    #[test]
+    fn renaming_a_sheet_follows_every_qualifier_and_nothing_else() {
+        assert_eq!(
+            rename_sheet("Data!A1+Data!B2*2", "Data", "Sales").unwrap(),
+            "Sales!A1+Sales!B2*2"
+        );
+        assert_eq!(
+            rename_sheet("'Old Name'!A1", "Old Name", "New").unwrap(),
+            "New!A1"
+        );
+        assert_eq!(
+            rename_sheet("Data!A1", "Data", "Q1 Results").unwrap(),
+            "'Q1 Results'!A1",
+            "a name with a space has to be quoted on the way in"
+        );
+        assert_eq!(
+            rename_sheet("Data!A1", "Data", "Bob's").unwrap(),
+            "'Bob''s'!A1",
+            "and an apostrophe doubled"
+        );
+        assert_eq!(
+            rename_sheet("data!A1", "DATA", "X").unwrap(),
+            "X!A1",
+            "sheet names compare case-insensitively"
+        );
+        assert_eq!(
+            rename_sheet("Data+\"Data!A1\"+Datastore!A1", "Data", "X"),
+            None,
+            "a defined name, a string, and a longer name are not qualifiers"
+        );
+    }
+
+    #[test]
+    fn a_name_shaped_like_a_cell_is_quoted() {
+        // `Q1!A5` is legal and the lexer reads it, but `'Q1'!A5` is what Excel
+        // writes and is the only spelling a reader cannot misread.
+        assert_eq!(quote_sheet("Q1"), "'Q1'");
+        assert_eq!(quote_sheet("Sheet1"), "Sheet1");
+        assert_eq!(quote_sheet("Q1 Results"), "'Q1 Results'");
+    }
+
+    #[test]
+    fn deleting_a_sheet_takes_the_whole_reference_with_it() {
+        assert_eq!(drop_sheet("Data!A1+1", "Data").unwrap(), "#REF!+1");
+        assert_eq!(
+            drop_sheet("SUM(Data!A1:B9)", "Data").unwrap(),
+            "SUM(#REF!)",
+            "one #REF! for the range, not one per corner"
+        );
+        assert_eq!(drop_sheet("SUM(Data!A:A)", "Data").unwrap(), "SUM(#REF!)");
+        assert_eq!(
+            drop_sheet("Data!A1+Other!A1", "Data").unwrap(),
+            "#REF!+Other!A1",
+            "only the sheet that went"
+        );
+        assert_eq!(drop_sheet("A1+B2", "Data"), None);
+        // What is left has to be a formula the engine can actually evaluate.
+        assert!(tokenize(&drop_sheet("Data!A1+1", "Data").unwrap()).is_ok());
     }
 
     #[test]

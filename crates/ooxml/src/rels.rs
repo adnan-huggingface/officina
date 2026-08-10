@@ -130,9 +130,29 @@ impl Relationships {
         self.items.insert(rel.id.clone(), rel);
     }
 
+    /// Drops a relationship by id, reporting whether there was one.
+    ///
+    /// Ids are never reused afterwards — [`next_id`](Self::next_id) counts past
+    /// the highest in use rather than filling gaps — because a stale `r:id`
+    /// elsewhere in the package would then resolve to the wrong part instead of
+    /// to nothing.
+    pub fn remove(&mut self, id: &str) -> bool {
+        self.items.remove(id).is_some()
+    }
+
     /// Allocates an unused `rIdN`.
+    /// Counted past the *highest* number in use rather than past the count, so
+    /// that removing a relationship cannot make its id available again. A stale
+    /// `r:id` in some other part would otherwise resolve to whatever took its
+    /// place, which is worse than resolving to nothing.
     pub fn next_id(&self) -> String {
-        let mut n = self.items.len() + 1;
+        let highest = self
+            .items
+            .keys()
+            .filter_map(|id| id.strip_prefix("rId")?.parse::<usize>().ok())
+            .max()
+            .unwrap_or(0);
+        let mut n = highest.max(self.items.len()) + 1;
         loop {
             let candidate = format!("rId{n}");
             if !self.items.contains_key(&candidate) {

@@ -12,6 +12,7 @@ pub mod chart;
 pub mod color;
 pub mod cond;
 pub mod datetime;
+pub mod filter;
 pub mod formula;
 pub mod numfmt;
 pub mod picture;
@@ -27,6 +28,7 @@ pub use cell::{column_index, column_name, Cell, CellError, CellRef, CellValue, F
 pub use chart::{Anchor, Chart, ChartKind, Series};
 pub use color::{Color, Theme};
 pub use cond::{ConditionalFormat, DataValidation};
+pub use filter::{AutoFilter, Compare, Criterion, FilterColumn, FilterKind};
 pub use formula::{Formula, FormulaKind};
 pub use numfmt::{format_general, FormatValue, Formatted, NumberFormat};
 pub use picture::Picture;

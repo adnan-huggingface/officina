@@ -23,7 +23,7 @@ const CHUNK_CELLS: usize = (CHUNK_SIDE * CHUNK_SIDE) as usize; // 256
 const CHUNK_COL_BITS: u32 = 10; // MAX_COLS / 16 = 1024 chunk columns
 
 /// A 16×16 block of cells, stored densely.
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 struct Chunk {
     cells: Box<[Cell; CHUNK_CELLS]>,
     /// Number of non-vacant cells, so the chunk can be dropped when it empties.
@@ -57,7 +57,7 @@ fn chunk_origin(key: u32) -> (u32, u32) {
     )
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, PartialEq)]
 pub struct CellStore {
     chunks: BTreeMap<u32, Chunk>,
     len: usize,

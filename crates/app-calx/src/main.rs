@@ -86,6 +86,53 @@ struct Calx {
     /// How big the grid was last frame, so that a jump from the name box can
     /// scroll the target into view without waiting for the next one.
     last_body: egui::Vec2,
+    /// The one modal window that may be open.
+    ///
+    /// One rather than a flag each: they are mutually exclusive by construction
+    /// — a modal is modal — and a single `Option` makes that true rather than
+    /// merely intended.
+    dialog: Option<Dialog>,
+}
+
+/// A window that takes over until it is answered.
+enum Dialog {
+    RenameSheet {
+        index: usize,
+        text: String,
+    },
+    /// Excel's Move or Copy: where the tab goes, and whether the original stays.
+    MoveSheet {
+        index: usize,
+        /// The tab it goes *before*, or the sheet count for "move to end".
+        before: usize,
+        copy: bool,
+    },
+    Sort {
+        range: CellRange,
+        header: bool,
+        /// Three levels, as Excel's dialog offers. A level with no column is
+        /// not a level.
+        levels: [SortLevel; 3],
+    },
+    /// The checkbox list behind one filter arrow.
+    Filter {
+        /// An offset into the filter's range.
+        col: u32,
+        /// Every distinct value in the column, and whether it has blanks.
+        offered: Vec<String>,
+        has_blanks: bool,
+        ticked: std::collections::BTreeSet<String>,
+        blanks: bool,
+        search: String,
+    },
+}
+
+/// One row of the sort dialog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct SortLevel {
+    /// `None` for "none", else an absolute sheet column.
+    col: Option<u32>,
+    descending: bool,
 }
 
 /// An action held up by the "you have unsaved changes" prompt.
@@ -118,6 +165,7 @@ impl Calx {
             pending: None,
             name_box: "A1".to_string(),
             last_body: egui::vec2(800.0, 600.0),
+            dialog: None,
         }
     }
 
@@ -666,6 +714,7 @@ impl Calx {
             Action::AutoFit(axis) => self.autofit(axis),
             Action::PicturesMoved(before) => self.pictures_moved(sheet, before),
             Action::DeletePicture(index) => self.delete_picture(sheet, index),
+            Action::FilterMenu(col) => self.open_filter_menu(col),
             Action::Resized(before) => {
                 // The sheet already has the new sizes; what goes on the stack is
                 // how it looked before, which is the undo.
@@ -707,6 +756,332 @@ impl Calx {
         }
         self.grid.open_sheet(&self.doc.workbook, index);
         self.status = self.doc.workbook.sheets[index].name.clone();
+    }
+
+    // ---- Sheets -----------------------------------------------------------
+
+    /// A new empty sheet after the one showing, and switches to it.
+    fn add_sheet(&mut self) {
+        let at = self.grid.sheet_index + 1;
+        let name = self.doc.workbook.next_sheet_name();
+        let change = ss_formula::sheets::insert(&self.doc.workbook, at, &name);
+        self.perform(change);
+        self.show_sheet(at);
+        self.status = format!("Added {name}");
+    }
+
+    /// Deletes a sheet, refusing to leave the workbook with nothing to show.
+    ///
+    /// No confirmation, because there is a full undo behind it and the data
+    /// comes back with the tab. Excel asks because *its* delete is permanent.
+    fn delete_sheet(&mut self, index: usize) {
+        if self.visible_sheets() <= 1 && !self.doc.workbook.sheets[index].hidden {
+            self.status = "A workbook needs one visible sheet".to_string();
+            return;
+        }
+        let name = self.doc.workbook.sheets[index].name.clone();
+        let change = ss_formula::sheets::remove(&self.doc.workbook, index);
+        self.perform(change);
+        let showing = self
+            .grid
+            .sheet_index
+            .min(self.doc.workbook.sheets.len() - 1);
+        self.show_sheet(showing);
+        self.status = format!("Deleted {name} — Ctrl+Z brings it back");
+    }
+
+    fn rename_sheet(&mut self, index: usize, to: &str) {
+        let to = to.trim();
+        if let Some(refusal) = self.doc.workbook.sheet_name_refusal(to, Some(index)) {
+            self.status = refusal;
+            return;
+        }
+        let change = ss_formula::sheets::rename(&self.doc.workbook, index, to);
+        self.perform(change);
+        self.status = format!("Renamed to {to}");
+    }
+
+    /// Moves a tab, or drops a copy of it, before position `before`.
+    fn move_sheet(&mut self, index: usize, before: usize, copy: bool) {
+        let landing = if copy || before <= index {
+            before
+        } else {
+            // Removing the tab first shifts everything after it down one, so
+            // "before the fifth" is position four once the fourth has gone.
+            before - 1
+        };
+        let change = if copy {
+            let base = self.doc.workbook.sheets[index].name.clone();
+            let name = self.doc.workbook.unique_sheet_name(&base);
+            ss_formula::sheets::duplicate(&self.doc.workbook, index, landing, &name)
+        } else {
+            ss_formula::sheets::reorder(&self.doc.workbook, index, landing)
+        };
+        if change.is_empty() {
+            return;
+        }
+        self.perform(change);
+        self.show_sheet(landing.min(self.doc.workbook.sheets.len() - 1));
+    }
+
+    fn set_tab_color(&mut self, index: usize, color: Option<Color>) {
+        let change = ss_formula::sheets::set_tab_color(index, color);
+        self.perform(change);
+    }
+
+    // ---- Sort and filter --------------------------------------------------
+
+    /// The range a sort or a filter is about.
+    ///
+    /// A dragged selection means itself. A single cell means the block it is
+    /// standing in, which is what Excel does and what makes A→Z a one-click
+    /// operation on a table rather than a way to scramble one column against
+    /// its neighbours.
+    fn data_range(&self) -> Option<CellRange> {
+        let sheet = self.doc.workbook.sheet(self.grid.sheet_index)?;
+        let selected = self.grid.selection.active_range();
+        if selected.rows() > 1 || selected.cols() > 1 {
+            return Some(selected);
+        }
+        Some(ss_formula::sort::region(
+            sheet,
+            self.grid.selection.cursor(),
+        ))
+    }
+
+    /// A→Z or Z→A on the cursor's column.
+    fn sort_quick(&mut self, descending: bool) {
+        let Some(range) = self.data_range() else {
+            return;
+        };
+        let sheet_index = self.grid.sheet_index;
+        let col = self
+            .grid
+            .selection
+            .cursor()
+            .col
+            .clamp(range.start.col, range.end.col);
+        let header = self
+            .doc
+            .workbook
+            .sheet(sheet_index)
+            .is_some_and(|s| ss_formula::sort::looks_like_headers(s, range));
+        let keys = [ss_formula::sort::SortKey { col, descending }];
+        match ss_formula::sort::sort(&mut self.doc.workbook, sheet_index, range, &keys, header) {
+            Ok(change) if change.is_empty() => {
+                self.status = "Already in that order".to_string();
+            }
+            Ok(change) => {
+                self.perform(change);
+                self.grid.invalidate();
+                self.status = format!(
+                    "Sorted {} by column {}{}",
+                    range_label(range),
+                    ss_model::column_name(col),
+                    if header {
+                        " (first row kept as headings)"
+                    } else {
+                        ""
+                    }
+                );
+            }
+            Err(why) => self.status = why,
+        }
+    }
+
+    /// Opens the multi-level sort dialog over the range the cursor is in.
+    fn open_sort_dialog(&mut self) {
+        let Some(range) = self.data_range() else {
+            return;
+        };
+        let header = self
+            .doc
+            .workbook
+            .sheet(self.grid.sheet_index)
+            .is_some_and(|s| ss_formula::sort::looks_like_headers(s, range));
+        let mut levels = [SortLevel::default(); 3];
+        levels[0].col = Some(
+            self.grid
+                .selection
+                .cursor()
+                .col
+                .clamp(range.start.col, range.end.col),
+        );
+        self.dialog = Some(Dialog::Sort {
+            range,
+            header,
+            levels,
+        });
+    }
+
+    /// Runs what the sort dialog was left holding.
+    fn sort_by(&mut self, range: CellRange, header: bool, levels: &[SortLevel]) {
+        let keys: Vec<ss_formula::sort::SortKey> = levels
+            .iter()
+            .filter_map(|level| {
+                Some(ss_formula::sort::SortKey {
+                    col: level.col?,
+                    descending: level.descending,
+                })
+            })
+            .collect();
+        if keys.is_empty() {
+            self.status = "Choose a column to sort by".to_string();
+            return;
+        }
+        let sheet = self.grid.sheet_index;
+        match ss_formula::sort::sort(&mut self.doc.workbook, sheet, range, &keys, header) {
+            Ok(change) if change.is_empty() => self.status = "Already in that order".to_string(),
+            Ok(change) => {
+                self.perform(change);
+                self.grid.invalidate();
+                self.status = format!("Sorted {} by {} column(s)", range_label(range), keys.len());
+            }
+            Err(why) => self.status = why,
+        }
+    }
+
+    /// Puts arrows on the current block, or takes them off.
+    fn toggle_filter(&mut self) {
+        let sheet = self.grid.sheet_index;
+        let has = self
+            .doc
+            .workbook
+            .sheet(sheet)
+            .is_some_and(|s| s.filter.is_some());
+        if has {
+            let change = ss_formula::filter::remove(&self.doc.workbook, sheet);
+            self.perform(change);
+            self.grid.invalidate();
+            self.status = "Filter removed".to_string();
+            return;
+        }
+        let Some(range) = self.data_range() else {
+            return;
+        };
+        if range.rows() < 2 {
+            self.status = "A filter needs a heading row and at least one row under it".to_string();
+            return;
+        }
+        let change = Change::new(
+            "Filter",
+            vec![Patch::Filter {
+                sheet,
+                filter: Some(ss_model::AutoFilter::over(range)),
+            }],
+        );
+        self.perform(change);
+        self.grid.invalidate();
+        self.status = format!("Filter over {}", range_label(range));
+    }
+
+    /// Opens the value list behind one arrow.
+    fn open_filter_menu(&mut self, col: u32) {
+        let sheet = self.grid.sheet_index;
+        let (offered, has_blanks) = ss_formula::filter::distinct(&self.doc.workbook, sheet, col);
+        let existing = self
+            .doc
+            .workbook
+            .sheet(sheet)
+            .and_then(|s| s.filter.as_ref())
+            .and_then(|f| f.column(col))
+            .map(|c| c.kind.clone());
+        // A column with no constraint starts with everything ticked, which is
+        // what "showing everything" looks like as a checkbox list.
+        let (ticked, blanks) = match existing {
+            Some(ss_model::FilterKind::Values { values, blanks }) => (values, blanks),
+            _ => (offered.clone(), has_blanks),
+        };
+        self.dialog = Some(Dialog::Filter {
+            col,
+            offered: offered.into_iter().collect(),
+            has_blanks,
+            ticked,
+            blanks,
+            search: String::new(),
+        });
+    }
+
+    /// Applies one column's tick list and re-runs the whole filter.
+    fn set_filter_column(
+        &mut self,
+        col: u32,
+        ticked: std::collections::BTreeSet<String>,
+        blanks: bool,
+        offered: &[String],
+        has_blanks: bool,
+    ) {
+        let sheet = self.grid.sheet_index;
+        let Some(mut filter) = self
+            .doc
+            .workbook
+            .sheet(sheet)
+            .and_then(|s| s.filter.clone())
+        else {
+            return;
+        };
+        // Everything ticked is no constraint at all, and writing one would
+        // leave the column wearing a funnel that hides nothing.
+        let everything = ticked.len() == offered.len() && blanks == has_blanks;
+        filter.set(
+            col,
+            (!everything).then_some(ss_model::FilterKind::Values {
+                values: ticked,
+                blanks,
+            }),
+        );
+        let change = Change::new(
+            "Filter",
+            vec![Patch::Filter {
+                sheet,
+                filter: Some(filter),
+            }],
+        );
+        self.perform(change);
+        self.reapply_filter();
+    }
+
+    /// Recomputes which rows the filter hides.
+    fn reapply_filter(&mut self) {
+        let sheet = self.grid.sheet_index;
+        let change = ss_formula::filter::apply(&self.doc.workbook, sheet);
+        if !change.is_empty() {
+            self.perform(change);
+        }
+        self.grid.invalidate();
+        let showing = self
+            .doc
+            .workbook
+            .sheet(sheet)
+            .and_then(|s| s.filter.as_ref())
+            .map(|f| {
+                let total = f.range.end.row - f.first_data_row() + 1;
+                let hidden = self
+                    .doc
+                    .workbook
+                    .sheet(sheet)
+                    .map(|s| {
+                        (f.first_data_row()..=f.range.end.row)
+                            .filter(|r| s.row_heights.get(r) == Some(&0.0))
+                            .count()
+                    })
+                    .unwrap_or(0);
+                (total as usize - hidden, total as usize)
+            });
+        if let Some((shown, total)) = showing {
+            self.status = format!("{shown} of {total} rows");
+        }
+    }
+
+    /// Clears every column's criteria, keeping the arrows.
+    fn clear_filter(&mut self) {
+        let change = ss_formula::filter::clear(&self.doc.workbook, self.grid.sheet_index);
+        if change.is_empty() {
+            return;
+        }
+        self.perform(change);
+        self.grid.invalidate();
+        self.status = "Filter cleared".to_string();
     }
 
     /// Merges the selection into one cell, or takes apart the merges under it.
@@ -1043,6 +1418,8 @@ impl Calx {
         let mut file: Option<Pending> = None;
         let mut save = false;
         let mut save_as = false;
+        let mut sort: Option<bool> = None;
+        let mut filter: Option<FilterCommand> = None;
 
         ui.horizontal(|ui| {
             if icons::button(ui, Icon::New, false, "New workbook (Ctrl+N)").clicked() {
@@ -1135,6 +1512,66 @@ impl Calx {
             if icons::button(ui, Icon::Sum, false, "Sum the cells above").clicked() {
                 self.autosum();
             }
+            separate(ui);
+
+            // Sort & Filter. `sort` and `filter` are deferred rather than run
+            // inside the closure because both need `self` mutably and the
+            // toolbar has it borrowed for the layout.
+            for (icon, tip, descending) in [
+                (Icon::SortAscending, "Sort A to Z (smallest first)", false),
+                (Icon::SortDescending, "Sort Z to A (largest first)", true),
+            ] {
+                if icons::button(ui, icon, false, tip).clicked() {
+                    sort = Some(descending);
+                }
+            }
+            if ui
+                .button("Sort…")
+                .on_hover_text("Sort by up to three columns")
+                .clicked()
+            {
+                filter = Some(FilterCommand::SortDialog);
+            }
+            let filtering = self
+                .doc
+                .workbook
+                .sheet(self.grid.sheet_index)
+                .and_then(|s| s.filter.as_ref());
+            let has_filter = filtering.is_some();
+            let constrained = filtering.is_some_and(|f| f.is_filtering());
+            if icons::button(
+                ui,
+                Icon::Filter,
+                has_filter,
+                if has_filter {
+                    "Remove the filter arrows"
+                } else {
+                    "Filter (arrows on the heading row)"
+                },
+            )
+            .clicked()
+            {
+                filter = Some(FilterCommand::Toggle);
+            }
+            ui.add_enabled_ui(constrained, |ui| {
+                if ui
+                    .button("Clear")
+                    .on_hover_text("Show every row, keeping the arrows")
+                    .on_disabled_hover_text("Nothing is being filtered out")
+                    .clicked()
+                {
+                    filter = Some(FilterCommand::Clear);
+                }
+            });
+            ui.add_enabled_ui(has_filter, |ui| {
+                if ui
+                    .button("Reapply")
+                    .on_hover_text("Re-run the filter over the data as it is now")
+                    .clicked()
+                {
+                    filter = Some(FilterCommand::Reapply);
+                }
+            });
         });
 
         // The formatting row.
@@ -1314,6 +1751,16 @@ impl Calx {
         if let Some(action) = requested {
             let ui = &*ui;
             self.act(ui, action);
+        }
+        if let Some(descending) = sort {
+            self.sort_quick(descending);
+        }
+        match filter {
+            Some(FilterCommand::SortDialog) => self.open_sort_dialog(),
+            Some(FilterCommand::Toggle) => self.toggle_filter(),
+            Some(FilterCommand::Clear) => self.clear_filter(),
+            Some(FilterCommand::Reapply) => self.reapply_filter(),
+            None => {}
         }
         if save {
             self.save();
@@ -1541,6 +1988,13 @@ impl Calx {
     fn status_bar(&mut self, ui: &mut egui::Ui) {
         let mut switch = None;
         let mut context: Option<(usize, TabCommand)> = None;
+        let hidden_count = self
+            .doc
+            .workbook
+            .sheets
+            .iter()
+            .filter(|s| s.hidden && s.kind.has_grid())
+            .count();
 
         egui::ScrollArea::horizontal()
             .id_salt("calx-tabs")
@@ -1561,26 +2015,74 @@ impl Calx {
                             switch = Some(index);
                         }
                         response.context_menu(|ui| {
-                            if ui.button("Hide sheet").clicked() {
-                                context = Some((index, TabCommand::Hide));
+                            let mut chose = |command| context = Some((index, command));
+                            if ui.button("Insert…").clicked() {
+                                chose(TabCommand::Insert);
                                 ui.close();
                             }
-                            if ui.button("Unhide all sheets").clicked() {
-                                context = Some((index, TabCommand::UnhideAll));
+                            if ui.button("Delete").clicked() {
+                                chose(TabCommand::Delete);
+                                ui.close();
+                            }
+                            if ui.button("Rename…").clicked() {
+                                chose(TabCommand::Rename);
+                                ui.close();
+                            }
+                            if ui.button("Move or Copy…").clicked() {
+                                chose(TabCommand::MoveOrCopy);
+                                ui.close();
+                            }
+                            ui.separator();
+                            ui.menu_button("Tab Colour", |ui| {
+                                // Excel's own standard row, plus the way back.
+                                for (label, rgb) in TAB_COLORS {
+                                    let [r, g, b] = *rgb;
+                                    if color_swatch(ui, label, [r, g, b]).clicked() {
+                                        chose(TabCommand::Color(Some(Color::rgb(r, g, b))));
+                                        ui.close();
+                                    }
+                                }
+                                if ui.button("No colour").clicked() {
+                                    chose(TabCommand::Color(None));
+                                    ui.close();
+                                }
+                            });
+                            ui.separator();
+                            if ui.button("Hide").clicked() {
+                                chose(TabCommand::Hide);
+                                ui.close();
+                            }
+                            ui.add_enabled_ui(hidden_count > 0, |ui| {
+                                if ui
+                                    .button("Unhide…")
+                                    .on_disabled_hover_text("No sheets are hidden")
+                                    .clicked()
+                                {
+                                    chose(TabCommand::UnhideAll);
+                                    ui.close();
+                                }
+                            });
+                            ui.separator();
+                            if ui.button("Select All Sheets").clicked() {
+                                chose(TabCommand::SelectAll);
                                 ui.close();
                             }
                         });
                     }
-                    let hidden = self
-                        .doc
-                        .workbook
-                        .sheets
-                        .iter()
-                        .filter(|s| s.hidden && s.kind.has_grid())
-                        .count();
-                    if hidden > 0 {
+
+                    // The `+` at the end of the strip, which is how a sheet
+                    // gets added without anyone having to find a menu.
+                    ui.add_space(4.0);
+                    if ui
+                        .add(egui::Button::new("+").min_size(egui::vec2(24.0, 22.0)))
+                        .on_hover_text("New sheet")
+                        .clicked()
+                    {
+                        context = Some((self.grid.sheet_index, TabCommand::Insert));
+                    }
+                    if hidden_count > 0 {
                         ui.add_space(6.0);
-                        ui.weak(format!("({hidden} hidden)"));
+                        ui.weak(format!("({hidden_count} hidden)"));
                     }
                 });
             });
@@ -1627,27 +2129,71 @@ impl Calx {
             self.show_sheet(index);
         }
         if let Some((index, command)) = context {
-            match command {
-                TabCommand::Hide => {
-                    if self.visible_sheets() > 1 {
-                        self.doc.workbook.sheets[index].hidden = true;
-                        self.edited = true;
+            self.tab_command(index, command);
+        }
+    }
+
+    fn tab_command(&mut self, index: usize, command: TabCommand) {
+        match command {
+            TabCommand::Insert => self.add_sheet(),
+            TabCommand::Delete => self.delete_sheet(index),
+            TabCommand::Rename => {
+                self.dialog = Some(Dialog::RenameSheet {
+                    index,
+                    text: self.doc.workbook.sheets[index].name.clone(),
+                });
+            }
+            TabCommand::MoveOrCopy => {
+                self.dialog = Some(Dialog::MoveSheet {
+                    index,
+                    before: index,
+                    copy: false,
+                });
+            }
+            TabCommand::Color(color) => self.set_tab_color(index, color),
+            TabCommand::Hide => {
+                if self.visible_sheets() > 1 {
+                    self.perform(ss_formula::sheets::set_hidden(index, true));
+                    if self.grid.sheet_index == index {
+                        self.step_sheet(1);
                         if self.grid.sheet_index == index {
-                            self.step_sheet(1);
-                            if self.grid.sheet_index == index {
-                                self.step_sheet(-1);
-                            }
+                            self.step_sheet(-1);
                         }
-                    } else {
-                        self.status = "A workbook needs one visible sheet".to_string();
                     }
+                } else {
+                    self.status = "A workbook needs one visible sheet".to_string();
                 }
-                TabCommand::UnhideAll => {
-                    for sheet in &mut self.doc.workbook.sheets {
-                        sheet.hidden = false;
-                    }
-                    self.edited = true;
+            }
+            TabCommand::UnhideAll => {
+                // One change, not one per sheet, so a single Ctrl+Z puts them
+                // all back the way they were.
+                let patches: Vec<Patch> = self
+                    .doc
+                    .workbook
+                    .sheets
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, s)| s.hidden)
+                    .map(|(index, _)| Patch::SheetHidden {
+                        index,
+                        hidden: false,
+                    })
+                    .collect();
+                if patches.is_empty() {
+                    return;
                 }
+                self.perform(Change::new("Unhide sheets", patches));
+            }
+            TabCommand::SelectAll => {
+                // Excel's "Select All Sheets" groups them so that typing lands
+                // on every one at once. That is a mode with real consequences
+                // — a stray keystroke edits fifteen sheets — and nothing else
+                // in Calx has the concept yet, so this reports rather than
+                // pretends.
+                self.status = format!(
+                    "{} sheets — grouped editing is not implemented, so this selects nothing",
+                    self.visible_sheets()
+                );
             }
         }
     }
@@ -1659,6 +2205,277 @@ impl Calx {
             .iter()
             .filter(|s| s.kind.has_grid() && !s.hidden)
             .count()
+    }
+
+    /// Whichever modal is open, drawn and answered.
+    ///
+    /// The dialog is taken out of `self` for the duration so that its own state
+    /// can be edited while the application is borrowed to act on it, and put
+    /// back unless something closed it.
+    fn dialogs(&mut self, ctx: &egui::Context) {
+        let Some(mut dialog) = self.dialog.take() else {
+            return;
+        };
+        let mut keep = true;
+        match &mut dialog {
+            Dialog::RenameSheet { index, text } => {
+                let index = *index;
+                let mut accept = false;
+                modal(ctx, "Rename sheet", |ui| {
+                    let field = ui.text_edit_singleline(text);
+                    field.request_focus();
+                    if field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        accept = true;
+                    }
+                    ui.add_space(4.0);
+                    // Told *before* pressing OK rather than after: the refusal
+                    // is about the name being typed, and finding out on submit
+                    // means retyping it.
+                    if let Some(why) = self
+                        .doc
+                        .workbook
+                        .sheet_name_refusal(text.trim(), Some(index))
+                    {
+                        ui.colored_label(egui::Color32::from_rgb(0xB0, 0x30, 0x20), why);
+                    }
+                    ui.horizontal(|ui| {
+                        accept |= ui.button("Rename").clicked();
+                        keep &= !ui.button("Cancel").clicked();
+                    });
+                });
+                if accept {
+                    let name = text.clone();
+                    self.rename_sheet(index, &name);
+                    keep = false;
+                }
+            }
+
+            Dialog::MoveSheet {
+                index,
+                before,
+                copy,
+            } => {
+                let (index, mut go) = (*index, false);
+                let names: Vec<String> = self
+                    .doc
+                    .workbook
+                    .sheets
+                    .iter()
+                    .map(|s| s.name.clone())
+                    .collect();
+                modal(ctx, "Move or copy sheet", |ui| {
+                    ui.label("Before sheet:");
+                    egui::ScrollArea::vertical()
+                        .max_height(180.0)
+                        .show(ui, |ui| {
+                            for (i, name) in names.iter().enumerate() {
+                                if ui.selectable_label(*before == i, name).clicked() {
+                                    *before = i;
+                                }
+                            }
+                            if ui
+                                .selectable_label(*before >= names.len(), "(move to end)")
+                                .clicked()
+                            {
+                                *before = names.len();
+                            }
+                        });
+                    ui.checkbox(copy, "Create a copy");
+                    ui.horizontal(|ui| {
+                        go = ui.button("OK").clicked();
+                        keep &= !ui.button("Cancel").clicked();
+                    });
+                });
+                if go {
+                    let (before, copy) = (*before, *copy);
+                    self.move_sheet(index, before, copy);
+                    keep = false;
+                }
+            }
+
+            Dialog::Sort {
+                range,
+                header,
+                levels,
+            } => {
+                let (range, mut go) = (*range, false);
+                let columns: Vec<u32> = (range.start.col..=range.end.col).collect();
+                let names: Vec<String> = columns
+                    .iter()
+                    .map(|col| self.column_label(range, *header, *col))
+                    .collect();
+                modal(ctx, "Sort", |ui| {
+                    ui.label(format!("Range {}", range_label(range)));
+                    ui.checkbox(header, "My data has headers");
+                    ui.add_space(6.0);
+                    egui::Grid::new("calx-sort-levels")
+                        .num_columns(3)
+                        .spacing([8.0, 6.0])
+                        .show(ui, |ui| {
+                            for (n, level) in levels.iter_mut().enumerate() {
+                                ui.label(if n == 0 { "Sort by" } else { "Then by" });
+                                let selected = match level.col {
+                                    Some(col) => columns
+                                        .iter()
+                                        .position(|c| *c == col)
+                                        .map_or("(none)".to_string(), |i| names[i].clone()),
+                                    None => "(none)".to_string(),
+                                };
+                                egui::ComboBox::from_id_salt(("calx-sort-col", n))
+                                    .selected_text(selected)
+                                    .width(180.0)
+                                    .show_ui(ui, |ui| {
+                                        if ui
+                                            .selectable_label(level.col.is_none(), "(none)")
+                                            .clicked()
+                                        {
+                                            level.col = None;
+                                        }
+                                        for (col, name) in columns.iter().zip(&names) {
+                                            if ui
+                                                .selectable_label(level.col == Some(*col), name)
+                                                .clicked()
+                                            {
+                                                level.col = Some(*col);
+                                            }
+                                        }
+                                    });
+                                egui::ComboBox::from_id_salt(("calx-sort-dir", n))
+                                    .selected_text(if level.descending {
+                                        "Z to A"
+                                    } else {
+                                        "A to Z"
+                                    })
+                                    .width(90.0)
+                                    .show_ui(ui, |ui| {
+                                        if ui
+                                            .selectable_label(!level.descending, "A to Z")
+                                            .clicked()
+                                        {
+                                            level.descending = false;
+                                        }
+                                        if ui.selectable_label(level.descending, "Z to A").clicked()
+                                        {
+                                            level.descending = true;
+                                        }
+                                    });
+                                ui.end_row();
+                            }
+                        });
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        go = ui.button("Sort").clicked();
+                        keep &= !ui.button("Cancel").clicked();
+                    });
+                });
+                if go {
+                    let (header, levels) = (*header, *levels);
+                    self.sort_by(range, header, &levels);
+                    keep = false;
+                }
+            }
+
+            Dialog::Filter {
+                col,
+                offered,
+                has_blanks,
+                ticked,
+                blanks,
+                search,
+            } => {
+                let (col, has_blanks) = (*col, *has_blanks);
+                let mut go = false;
+                let mut clear = false;
+                modal(ctx, "Filter", |ui| {
+                    ui.text_edit_singleline(search)
+                        .on_hover_text("Narrows the list below; it does not filter by itself");
+                    let needle = search.to_lowercase();
+                    let visible: Vec<&String> = offered
+                        .iter()
+                        .filter(|v| needle.is_empty() || v.to_lowercase().contains(&needle))
+                        .collect();
+
+                    ui.horizontal(|ui| {
+                        if ui.small_button("Select all").clicked() {
+                            for value in &visible {
+                                ticked.insert((*value).clone());
+                            }
+                            *blanks = has_blanks;
+                        }
+                        if ui.small_button("Select none").clicked() {
+                            for value in &visible {
+                                ticked.remove(*value);
+                            }
+                            *blanks = false;
+                        }
+                    });
+                    ui.separator();
+
+                    egui::ScrollArea::vertical()
+                        .max_height(260.0)
+                        .show(ui, |ui| {
+                            for value in visible {
+                                let mut on = ticked.contains(value);
+                                if ui.checkbox(&mut on, value).changed() {
+                                    if on {
+                                        ticked.insert(value.clone());
+                                    } else {
+                                        ticked.remove(value);
+                                    }
+                                }
+                            }
+                            if has_blanks && needle.is_empty() {
+                                ui.checkbox(blanks, "(Blanks)");
+                            }
+                        });
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        go = ui.button("OK").clicked();
+                        clear = ui.button("Clear this column").clicked();
+                        keep &= !ui.button("Cancel").clicked();
+                    });
+                });
+                if go || clear {
+                    let (ticked, blanks) = if clear {
+                        (offered.iter().cloned().collect(), has_blanks)
+                    } else {
+                        (ticked.clone(), *blanks)
+                    };
+                    let offered = offered.clone();
+                    self.set_filter_column(col, ticked, blanks, &offered, has_blanks);
+                    keep = false;
+                }
+            }
+        }
+        if keep {
+            self.dialog = Some(dialog);
+        }
+    }
+
+    /// What to call a column in the sort dialog: its heading if the range has
+    /// one, else the column letter.
+    fn column_label(&self, range: CellRange, header: bool, col: u32) -> String {
+        let letter = ss_model::column_name(col);
+        if !header {
+            return format!("Column {letter}");
+        }
+        let text = self
+            .doc
+            .workbook
+            .sheet(self.grid.sheet_index)
+            .and_then(|s| s.get(CellRef::new(range.start.row, col)))
+            .and_then(|c| match c.value {
+                ss_model::CellValue::Text(id) => {
+                    Some(self.doc.workbook.strings.resolve(id).to_string())
+                }
+                ss_model::CellValue::Number(n) => Some(ss_model::format_general(n)),
+                _ => None,
+            })
+            .filter(|t| !t.trim().is_empty());
+        match text {
+            Some(text) => format!("{text} ({letter})"),
+            None => format!("Column {letter}"),
+        }
     }
 
     /// The right-click menu over the grid.
@@ -1755,19 +2572,119 @@ impl Calx {
             requested = Some(Action::Format(Format::Clear));
             ui.close();
         }
+        ui.separator();
+        let mut deferred: Option<FilterCommand> = None;
+        let mut sort: Option<bool> = None;
+        ui.menu_button("Sort", |ui| {
+            if ui.button("A to Z").clicked() {
+                sort = Some(false);
+                ui.close();
+            }
+            if ui.button("Z to A").clicked() {
+                sort = Some(true);
+                ui.close();
+            }
+            if ui.button("Custom sort…").clicked() {
+                deferred = Some(FilterCommand::SortDialog);
+                ui.close();
+            }
+        });
+        let filtered = self
+            .doc
+            .workbook
+            .sheet(self.grid.sheet_index)
+            .is_some_and(|s| s.filter.is_some());
+        if ui
+            .button(if filtered { "Remove filter" } else { "Filter" })
+            .clicked()
+        {
+            deferred = Some(FilterCommand::Toggle);
+            ui.close();
+        }
 
         if let Some(action) = requested {
             let ui = &*ui;
             self.act(ui, action);
         }
+        if let Some(descending) = sort {
+            self.sort_quick(descending);
+        }
+        match deferred {
+            Some(FilterCommand::SortDialog) => self.open_sort_dialog(),
+            Some(FilterCommand::Toggle) => self.toggle_filter(),
+            Some(FilterCommand::Clear) => self.clear_filter(),
+            Some(FilterCommand::Reapply) => self.reapply_filter(),
+            None => {}
+        }
     }
 }
 
-/// What a tab's right-click menu asked for.
+/// What the Sort & Filter group asked for, deferred out of the layout closure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FilterCommand {
+    SortDialog,
+    Toggle,
+    Clear,
+    Reapply,
+}
+
+/// What a tab's right-click menu asked for.
+#[derive(Debug, Clone, Copy, PartialEq)]
 enum TabCommand {
+    Insert,
+    Delete,
+    Rename,
+    MoveOrCopy,
+    Color(Option<Color>),
     Hide,
     UnhideAll,
+    SelectAll,
+}
+
+/// Excel's standard tab colours, which is the palette people recognise.
+const TAB_COLORS: &[(&str, [u8; 3])] = &[
+    ("Red", [0xC0, 0x00, 0x00]),
+    ("Orange", [0xE3, 0x6C, 0x0A]),
+    ("Yellow", [0xFF, 0xC0, 0x00]),
+    ("Green", [0x00, 0xB0, 0x50]),
+    ("Blue", [0x00, 0x70, 0xC0]),
+    ("Purple", [0x70, 0x30, 0xA0]),
+    ("Grey", [0x80, 0x80, 0x80]),
+];
+
+/// A menu entry showing the colour it names.
+fn color_swatch(ui: &mut egui::Ui, label: &str, [r, g, b]: [u8; 3]) -> egui::Response {
+    let response = ui.button(format!("      {label}"));
+    let box_ = egui::Rect::from_min_size(
+        response.rect.min + egui::vec2(6.0, 4.0),
+        egui::vec2(12.0, response.rect.height() - 8.0),
+    );
+    ui.painter().rect(
+        box_,
+        egui::CornerRadius::same(2),
+        egui::Color32::from_rgb(r, g, b),
+        egui::Stroke::new(1.0, egui::Color32::from_gray(0x66)),
+        egui::StrokeKind::Inside,
+    );
+    response
+}
+
+/// A modal window: centred, not resizable, and blocking the rest of the app.
+fn modal(ctx: &egui::Context, title: &str, add: impl FnOnce(&mut egui::Ui)) {
+    egui::Modal::new(egui::Id::new(("calx-modal", title))).show(ctx, |ui| {
+        ui.set_min_width(320.0);
+        ui.heading(title);
+        ui.separator();
+        add(ui);
+    });
+}
+
+/// A range as a user would name it: `A1:D9`, or `A1` for one cell.
+fn range_label(range: CellRange) -> String {
+    if range.start == range.end {
+        return range.start.to_a1();
+    }
+    format!("{}:{}", range.start.to_a1(), range.end.to_a1())
 }
 
 /// A vertical rule between groups of toolbar controls.
@@ -1914,6 +2831,7 @@ impl DocumentApp for Calx {
 
     fn overlay(&mut self, ctx: &egui::Context) {
         self.unsaved_prompt(ctx);
+        self.dialogs(ctx);
     }
 
     fn toolbar(&mut self, ui: &mut egui::Ui) {

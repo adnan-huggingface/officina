@@ -100,10 +100,19 @@ impl SheetKind {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Sheet {
     pub name: String,
     pub kind: SheetKind,
+    /// The package part this sheet was read from, for a sheet that came out of
+    /// a file.
+    ///
+    /// `None` means the sheet has never been written — a new tab, or a whole
+    /// workbook that has never been saved — and it is what tells the writer to
+    /// *author* a part rather than edit one. It is also the only durable
+    /// identity a sheet has: the model reorders and deletes sheets, so a
+    /// position in the file's list goes stale the moment anyone drags a tab.
+    pub part: Option<String>,
     pub cells: CellStore,
     /// Formula arena. `Cell::formula` indexes this, one-based via [`FormulaId`].
     ///
@@ -151,6 +160,8 @@ pub struct Sheet {
     /// document than the one that was closed — on the workbook this was built
     /// against, the sheet that matters is the twelfth and it is 90% zoom.
     pub view: crate::SheetView,
+    /// The sheet's autofilter, if it has one.
+    pub filter: Option<crate::filter::AutoFilter>,
     /// Where each dynamic-array formula last spilled to, by its anchor.
     ///
     /// Derived at recalculation and never read from a file: it exists so that a
@@ -337,7 +348,7 @@ pub struct Workbook {
     pub active_sheet: usize,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct DefinedName {
     pub name: String,
     /// The formula text the name expands to, stored unparsed.
@@ -382,6 +393,51 @@ impl Workbook {
             .find(|(_, s)| s.name.eq_ignore_ascii_case(name))
     }
 
+    /// Why `name` is not a usable sheet name here, in words a user can act on.
+    ///
+    /// Both halves matter and they are different kinds of rule. The character
+    /// and length rules are Excel's, and a file breaking them is a file Excel
+    /// will not open. The uniqueness rule is this workbook's, and it is checked
+    /// case-insensitively because a formula saying `data!A1` has to resolve to
+    /// exactly one sheet.
+    pub fn sheet_name_refusal(&self, name: &str, allowing: Option<usize>) -> Option<String> {
+        if let Some(problem) = sheet_name_problem(name) {
+            return Some(problem.to_string());
+        }
+        let taken = self
+            .sheets
+            .iter()
+            .enumerate()
+            .any(|(i, s)| Some(i) != allowing && s.name.eq_ignore_ascii_case(name));
+        taken.then(|| format!("There is already a sheet called {name}"))
+    }
+
+    /// `base`, or `base (2)`, or whichever suffix is free.
+    pub fn unique_sheet_name(&self, base: &str) -> String {
+        if self.sheet_by_name(base).is_none() {
+            return base.to_string();
+        }
+        for n in 2.. {
+            let candidate = format!("{base} ({n})");
+            if self.sheet_by_name(&candidate).is_none() {
+                return candidate;
+            }
+        }
+        unreachable!("the loop is unbounded")
+    }
+
+    /// What Excel would call the next new sheet: `Sheet4` when `Sheet1` to
+    /// `Sheet3` are taken, regardless of what the sheets are actually called.
+    pub fn next_sheet_name(&self) -> String {
+        for n in 1.. {
+            let candidate = format!("Sheet{n}");
+            if self.sheet_by_name(&candidate).is_none() {
+                return candidate;
+            }
+        }
+        unreachable!("the loop is unbounded")
+    }
+
     /// Resolves a name in `scope`, falling back to workbook scope.
     ///
     /// Sheet-scoped names shadow workbook-scoped ones of the same name, which is
@@ -400,6 +456,40 @@ impl Workbook {
             .iter()
             .find(|d| d.scope.is_none() && d.name.eq_ignore_ascii_case(name))
     }
+}
+
+/// The characters Excel refuses in a sheet name.
+///
+/// Every one of them means something in a formula — `:` builds a range, `\` and
+/// `/` are path separators in an external reference, `[` and `]` bracket the
+/// workbook, `?` and `*` are wildcards — so a name containing one could not be
+/// written into a reference and read back as itself.
+const FORBIDDEN: [char; 7] = [':', '\\', '/', '?', '*', '[', ']'];
+
+/// Excel's own limit. Thirty-one characters, and the file records it as such.
+pub const MAX_SHEET_NAME: usize = 31;
+
+fn sheet_name_problem(name: &str) -> Option<&'static str> {
+    if name.trim().is_empty() {
+        return Some("A sheet name cannot be empty");
+    }
+    if name.chars().count() > MAX_SHEET_NAME {
+        return Some("A sheet name is at most 31 characters");
+    }
+    if name.contains(FORBIDDEN) {
+        return Some("A sheet name cannot contain : \\ / ? * [ or ]");
+    }
+    // A leading or trailing apostrophe collides with the quoting a qualified
+    // reference uses, so Excel refuses it even though the character is legal
+    // in the middle of a name.
+    if name.starts_with('\'') || name.ends_with('\'') {
+        return Some("A sheet name cannot start or end with an apostrophe");
+    }
+    // Reserved by Excel for the change-tracking sheet it writes itself.
+    if name.eq_ignore_ascii_case("History") {
+        return Some("\"History\" is reserved by Excel");
+    }
+    None
 }
 
 #[cfg(test)]
@@ -440,6 +530,50 @@ mod tests {
         assert!(wb.sheet_by_name("summary").is_some());
         assert!(wb.sheet_by_name("SUMMARY").is_some());
         assert!(wb.sheet_by_name("Summar").is_none());
+    }
+
+    #[test]
+    fn a_sheet_name_is_refused_for_the_reason_a_user_can_act_on() {
+        let mut wb = Workbook::blank();
+        wb.sheets.push(Sheet::new("Data"));
+
+        assert!(wb.sheet_name_refusal("Fine", None).is_none());
+        assert!(wb.sheet_name_refusal("", None).is_some(), "empty");
+        assert!(wb.sheet_name_refusal("   ", None).is_some(), "just spaces");
+        assert!(wb.sheet_name_refusal(&"x".repeat(32), None).is_some());
+        assert!(wb.sheet_name_refusal(&"x".repeat(31), None).is_none());
+        for bad in ["a:b", "a\\b", "a/b", "a?b", "a*b", "a[b", "a]b"] {
+            assert!(wb.sheet_name_refusal(bad, None).is_some(), "{bad}");
+        }
+        assert!(wb.sheet_name_refusal("'quoted'", None).is_some());
+        assert!(
+            wb.sheet_name_refusal("Bob's Data", None).is_none(),
+            "an apostrophe inside is fine; only the ends collide with quoting"
+        );
+        assert!(wb.sheet_name_refusal("history", None).is_some());
+
+        // Uniqueness is case-insensitive, because `data!A1` has to resolve to
+        // exactly one sheet.
+        assert!(wb.sheet_name_refusal("DATA", None).is_some());
+        assert!(
+            wb.sheet_name_refusal("DATA", Some(1)).is_none(),
+            "renaming a sheet to what it is already called is not a clash"
+        );
+    }
+
+    #[test]
+    fn a_new_sheet_takes_the_first_free_number() {
+        let mut wb = Workbook::blank();
+        assert_eq!(wb.next_sheet_name(), "Sheet2", "Sheet1 exists");
+        wb.sheets.push(Sheet::new("Sheet2"));
+        wb.sheets.push(Sheet::new("Sheet4"));
+        assert_eq!(wb.next_sheet_name(), "Sheet3", "the gap is used");
+
+        assert_eq!(wb.unique_sheet_name("Data"), "Data");
+        wb.sheets.push(Sheet::new("Data"));
+        assert_eq!(wb.unique_sheet_name("Data"), "Data (2)");
+        wb.sheets.push(Sheet::new("Data (2)"));
+        assert_eq!(wb.unique_sheet_name("Data"), "Data (3)");
     }
 
     #[test]

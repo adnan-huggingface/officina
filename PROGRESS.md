@@ -9,7 +9,8 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[-]` deferred
 
 ## Current state
 
-**Chunk:** C16 — the Word model (C0–C15 done, plus a UX pass)
+**Chunk:** C16 — the Word model (C0–C15 done, plus a UX pass and a sheets /
+sort / filter pass)
 **Status:** not started
 **Handoff note:**
 
@@ -49,7 +50,7 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[-]` deferred
   reprinting them; `write::splice` is the primitive that makes that possible, and
   everything else in the module is built on it. `rfd` is Calx's file dialog, on
   default features so a Linux build needs the XDG portal rather than GTK headers.
-- Workspace total is **675 tests**, all green;
+- Workspace total is **734 tests**, all green;
   `cargo clippy --workspace --all-targets -- -D warnings` and
   `cargo fmt --all --check` are both clean.
 - `ss-model` grew four modules across C11–C14: `color` (the four spellings of
@@ -345,11 +346,80 @@ to a screenshot of the same file in Excel.
   Nothing writes BIFF and nothing will: `DESIGN.md` §9 makes save-as-modern the
   way out, so a legacy file opens with no path and Ctrl+S is Save As.
 
-- Watch item: **adding or removing a sheet has no writer.** `flush` walks the
-  `<sheet>` entries in the workbook part and rewrites the parts they name, so a
-  sheet the model grew after the package was built has nowhere to be written.
-  Nothing in the UI can add one yet; the moment something can, this is the code
-  that has to know.
+### Sheets, sort and filter (after C15)
+
+Two things a spreadsheet obviously has and this one did not: managing sheets,
+and sorting and filtering data. Both came from screenshots of Excel put next to
+Calx — the sheet tab's right-click menu, and the ribbon's Sort & Filter group.
+
+- **A sheet is named by its *name* in every formula and by its *index* in every
+  sheet-scoped defined name**, and both change under an operation that looks
+  local. `ss_formula::sheets` does all four at once: rename respells every
+  qualifier (`translate::rename_sheet`), delete turns every reference into
+  `#REF!` (`translate::drop_sheet`) and drops names scoped to it, and insert,
+  move and delete all re-point `localSheetId` on the names after them. Doing
+  any one without the others leaves a workbook that opens and is quietly wrong.
+- Watch item: **deleting a sheet leaves `#REF!` where Excel leaves `#REF!A1`.**
+  Excel keeps the address so you can see what was lost, but `#REF!A1` is not a
+  formula any engine can evaluate — `#REF!` is an error literal and an address
+  cannot follow one. Ours drops the whole reference so the cell evaluates, and
+  evaluating to `#REF!` is what it should say.
+- **`Sheet::part` is a sheet's durable identity.** The writer pairs model
+  sheets to file parts by it, never by position, because a dragged tab is the
+  same sheet somewhere else and pairing by index would write its cells into its
+  neighbour. `None` means "never written", which is what tells the writer to
+  author a part; `blank::package_for` fills it in for a new workbook so the
+  first save is not mistaken for a workbook full of unknown sheets.
+- **`write::workbook_out`** is the writer that was missing — `<sheets>` and
+  `<definedNames>` spliced, everything else in `workbook.xml` byte for byte —
+  together with `reconcile_sheets` in `write::mod`, which authors a worksheet
+  part for a new sheet, removes the part, relationship and content-type
+  override for a deleted one, and **does nothing at all when nothing
+  structural differs**. That last part is what keeps the no-edit fidelity check
+  honest rather than merely passing.
+- Watch item: **`Relationships::next_id` counts past the highest id in use, not
+  past the count.** Otherwise removing two relationships makes a removed id
+  available again, and a stale `r:id` elsewhere in the package resolves to
+  whatever took its place instead of to nothing.
+- Watch item: **removing a part must take its `.rels` companion and its
+  content-type override with it.** An override naming a part that is not there
+  is an invalid package, and Excel reports it as damage rather than as a
+  missing sheet. `Package::remove_part` does the three together and
+  deliberately does *not* follow the removed part's own relationships — an
+  orphaned drawing is untidy and opens; a part another sheet still needs is not.
+- **Sorting orders kinds before values.** Excel puts every number before every
+  piece of text, then `FALSE`, `TRUE`, errors, and blanks — and blanks last *in
+  both directions*, because a blank is the absence of a value rather than a
+  small one. Coercing text to number would file `"10"` next to `10`; coercing
+  the other way would sort 2 after 10.
+- Watch item: **a formula that moves in a sort is rewritten like a copied one.**
+  `=B5*2` landing in row 8 becomes `=B8*2`, via `translate::offset`, dollar
+  signs and all. The new text goes into a *new* arena entry rather than over the
+  old one, because an entry can be shared and overwriting a shared master would
+  rewrite a formula that never moved.
+- **A filter is a rule and a result, and they are stored separately.** The rule
+  is `<autoFilter>`; the result is nothing more than the ordinary hidden-row
+  state, so a workbook filtered here shows the right rows in a program that has
+  never heard of filters. `ss_formula::filter::apply` turns one into the other.
+- Watch item: **the filter matches displayed text, not the stored value** —
+  that is what `<filter val="…">` holds and what the user ticked. A number
+  comparison is the exception and compares numerically, or `>10` would exclude
+  everything from 2 to 9 as text.
+- Watch item: **`ss_xlsx::autofilter` is parsed by the writer as well as the
+  reader.** A `<filterColumn>` can hold a `<top10>`, a `<dynamicFilter>`, a
+  colour or icon filter or a date grouping, none of which this crate models, so
+  the writer reads the file's own element back and returns the *original bytes*
+  when the model agrees with it. Only a filter the user changed is
+  rebuilt. The same shape governs `<tabColor>`, so a themed tab colour is not
+  flattened to the rgb it happens to resolve to.
+- Known limits, stated rather than hidden: a tab cannot be dragged (Move or
+  Copy does it), "Select All Sheets" reports rather than groups — grouped
+  editing is a mode with real consequences and nothing else in Calx has the
+  concept — and the filter offers a value list and Excel's two-comparison
+  custom filter, but not top-10, above-average, colour or date-group filters.
+  Those are read and preserved, and shown as an unconstrained column.
+
+
 - Watch item: **a `t="s"` cell points at an `<si>`, and an `<si>` can be rich
   text.** New text is matched into the table by its characters, so typing a
   string that already exists in bold gives the new cell the bold entry. Excel

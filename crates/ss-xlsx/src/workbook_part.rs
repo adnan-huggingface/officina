@@ -15,6 +15,11 @@ pub(crate) struct SheetEntry {
     /// The `r:id` tying this entry to a part. Absent only in malformed files.
     pub rel_id: Option<String>,
     pub hidden: bool,
+    /// `sheetId`, which is *not* the relationship id and *not* the position.
+    ///
+    /// Kept because other parts in the package refer to a sheet by it, so a
+    /// rewritten list has to give each surviving sheet the number it had.
+    pub sheet_id: u32,
 }
 
 #[derive(Debug, Default)]
@@ -99,6 +104,9 @@ fn read_sheet(e: &BytesStart<'_>) -> SheetEntry {
         // and an unrelated numbering; it is deliberately not used to find parts.
         rel_id: attr_text(e, b"id"),
         hidden,
+        sheet_id: attr_text(e, b"sheetId")
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or(0),
     }
 }
 
@@ -143,6 +151,7 @@ mod tests {
             r#"<workbook><sheets><sheet name="S" sheetId="7" r:id="rId3"/></sheets></workbook>"#,
         );
         assert_eq!(m.sheets[0].rel_id.as_deref(), Some("rId3"));
+        assert_eq!(m.sheets[0].sheet_id, 7, "and both are kept");
     }
 
     #[test]

@@ -10,6 +10,7 @@
 
 #![forbid(unsafe_code)]
 
+mod autofilter;
 mod chart;
 mod drawing;
 mod error;
@@ -109,6 +110,10 @@ fn build(package: &Package) -> Result<Workbook> {
             .and_then(|id| located.sheet_target(id));
 
         if let Some((kind, part_name)) = target {
+            // Remembered so that a sheet the user later moves or deletes can
+            // still be matched to its part. Position in the file's list is not
+            // an identity once tabs can be dragged.
+            sheet.part = Some(part_name.as_str().to_string());
             sheet.kind = match kind {
                 "chartsheet" => SheetKind::Chart,
                 "dialogsheet" => SheetKind::Dialog,

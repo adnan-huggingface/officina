@@ -41,6 +41,9 @@ pub enum Icon {
     New,
     Sum,
     Filter,
+    /// A to Z with a downward arrow, and its opposite.
+    SortAscending,
+    SortDescending,
 }
 
 /// A toolbar button carrying a drawn icon.
@@ -402,6 +405,39 @@ fn draw(painter: &egui::Painter, icon: Icon, rect: egui::Rect, color: egui::Colo
                 ),
                 color,
             );
+        }
+        Icon::SortAscending | Icon::SortDescending => {
+            // Excel's own: the two letters stacked in reading order, with an
+            // arrow beside them pointing the way the sort runs. Drawn rather
+            // than typed because the arrow glyphs are in a Unicode block the
+            // system sans faces do not cover.
+            let up = matches!(icon, Icon::SortAscending);
+            let font =
+                egui::FontId::new(8.0, ui_kit::fonts::face(ui_kit::Family::Sans, false, false));
+            let x = l + 3.0;
+            for (i, letter) in ["A", "Z"].iter().enumerate() {
+                let letter = if up { *letter } else { ["Z", "A"][i] };
+                painter.text(
+                    egui::pos2(x, t + 2.0 + i as f32 * (h * 0.45)),
+                    egui::Align2::LEFT_TOP,
+                    letter,
+                    font.clone(),
+                    color,
+                );
+            }
+            // The arrow always points down: it is the reading direction of the
+            // letters beside it, not the direction of the comparison.
+            let ax = r - 3.0;
+            painter.vline(ax, t + 2.0..=b - 2.0, stroke);
+            painter.add(egui::Shape::convex_polygon(
+                vec![
+                    egui::pos2(ax - 2.5, b - 5.0),
+                    egui::pos2(ax + 2.5, b - 5.0),
+                    egui::pos2(ax, b - 1.0),
+                ],
+                color,
+                egui::Stroke::NONE,
+            ));
         }
         Icon::Filter => {
             // A funnel.

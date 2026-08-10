@@ -33,7 +33,12 @@ const SST_TYPE: &str =
 const DECL: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\r\n";
 
 /// Builds a package holding `workbook`'s structure but none of its contents.
-pub fn package_for(workbook: &Workbook) -> Result<Package> {
+///
+/// Takes the workbook mutably to record which part each sheet was given. That
+/// is the same identity a sheet read from a file carries, and without it the
+/// very first save of a new workbook would look to the writer like a workbook
+/// full of sheets it had never written.
+pub fn package_for(workbook: &mut Workbook) -> Result<Package> {
     let mut package = Package::empty();
 
     let mut root = Relationships::new();
@@ -47,11 +52,11 @@ pub fn package_for(workbook: &Workbook) -> Result<Package> {
 
     let mut rels = Relationships::new();
     let mut sheets = String::new();
-    for (index, sheet) in workbook.sheets.iter().enumerate() {
+    for index in 0..workbook.sheets.len() {
         // A chart or dialog sheet has no grid to write and no part we could
         // invent for it, but it still occupies a slot: `localSheetId` on a
         // defined name counts every `<sheet>`, present part or not.
-        if !matches!(sheet.kind, SheetKind::Worksheet) {
+        if !matches!(workbook.sheets[index].kind, SheetKind::Worksheet) {
             continue;
         }
         let n = index + 1;
@@ -65,19 +70,16 @@ pub fn package_for(workbook: &Workbook) -> Result<Package> {
         });
         sheets.push_str(&format!(
             "<sheet name=\"{}\" sheetId=\"{n}\" r:id=\"{id}\"{}/>",
-            escape_value(&sheet.name),
-            if sheet.hidden {
+            escape_value(&workbook.sheets[index].name),
+            if workbook.sheets[index].hidden {
                 " state=\"hidden\""
             } else {
                 ""
             },
         ));
-        put(
-            &mut package,
-            &format!("/xl/{target}"),
-            WORKSHEET_TYPE,
-            worksheet(),
-        )?;
+        let part = format!("/xl/{target}");
+        put(&mut package, &part, WORKSHEET_TYPE, worksheet())?;
+        workbook.sheets[index].part = Some(part);
     }
 
     let styles_id = rels.next_id();

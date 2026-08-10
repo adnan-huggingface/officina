@@ -51,6 +51,15 @@ impl ContentTypes {
         self.overrides.insert(part, content_type.to_string());
     }
 
+    /// Forgets a part's override, if it had one.
+    ///
+    /// Only the override: an extension default is shared with every other part
+    /// of that type, and dropping it because one part went would leave the
+    /// rest undeclared.
+    pub fn remove_override(&mut self, part: &PartName) {
+        self.overrides.remove(part);
+    }
+
     pub fn defaults(&self) -> impl Iterator<Item = (&str, &str)> {
         self.defaults.iter().map(|(k, v)| (k.as_str(), v.as_str()))
     }

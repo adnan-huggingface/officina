@@ -568,6 +568,9 @@ pub enum Action {
     PicturesMoved(Vec<ss_model::Picture>),
     /// Delete pressed with a picture selected.
     DeletePicture(usize),
+    /// A filter arrow on the header row was clicked. The payload is the column
+    /// as an offset into the filter's range, which is what `colId` means.
+    FilterMenu(u32),
 }
 
 /// A formatting command, as the toolbar and the keyboard both produce it.

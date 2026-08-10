@@ -26,23 +26,29 @@ mod sheet_out;
 mod splice;
 mod strings_out;
 mod styles_out;
+mod workbook_out;
 
+use std::collections::BTreeMap;
 use std::io::{Seek, Write};
 use std::path::Path;
 
-use ooxml::PartName;
+use ooxml::{PartName, Relationship, TargetMode};
 use ss_model::{SheetKind, Workbook};
 
 use crate::error::Result;
 use crate::{parts, workbook_part, XlsxDocument};
+
+const REL_BASE: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+const WORKSHEET_TYPE: &str =
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml";
 
 impl XlsxDocument {
     /// A document for a workbook that has never been in a file.
     ///
     /// The package is authored here rather than copied from a template, so
     /// every byte in it is one this crate is answerable for.
-    pub fn new(workbook: Workbook) -> Result<Self> {
-        let package = blank::package_for(&workbook)?;
+    pub fn new(mut workbook: Workbook) -> Result<Self> {
+        let package = blank::package_for(&mut workbook)?;
         Ok(XlsxDocument { workbook, package })
     }
 
@@ -108,20 +114,21 @@ impl XlsxDocument {
             workbook_part::parse(located.workbook.as_str(), part.data())?
         };
 
+        // The sheet list, reconciled against the model: sheets added, removed,
+        // renamed, hidden or reordered all land here, and every one of them has
+        // to be settled before the cells are written, because this is what
+        // decides which part each sheet's cells go into.
+        let targets = self.reconcile_sheets(&located, &meta)?;
+
         let mut written: Vec<(PartName, String, Vec<u8>)> = Vec::new();
-        for (index, entry) in meta.sheets.iter().enumerate() {
+        for (index, name) in targets.iter().enumerate() {
             let Some(sheet) = self.workbook.sheet(index) else {
                 continue;
             };
             if !matches!(sheet.kind, SheetKind::Worksheet) {
                 continue;
             }
-            let Some(name) = entry
-                .rel_id
-                .as_deref()
-                .and_then(|id| located.sheet_target(id))
-                .map(|(_, name)| name.clone())
-            else {
+            let Some(name) = name.clone() else {
                 continue;
             };
             let Some(part) = self.package.part(&name) else {
@@ -217,5 +224,191 @@ impl XlsxDocument {
             self.package.put_part(name, &content_type, data);
         }
         Ok(())
+    }
+
+    /// Brings the file's `<sheets>` list in line with the model's, and returns
+    /// the part each model sheet's cells belong in.
+    ///
+    /// The correspondence is by **part**, never by position: a sheet the user
+    /// dragged is the same sheet in a different place, and pairing by index
+    /// would write its cells into its neighbour. `Sheet::part` is what carries
+    /// that identity, and a sheet without one has never been written.
+    ///
+    /// Nothing is rewritten unless something actually differs. A save with no
+    /// structural change must leave `workbook.xml` and the relationship part
+    /// exactly as they were — the no-edit fidelity check is precisely that
+    /// question, and the cheapest way to keep passing it honestly is not to
+    /// touch what has not changed.
+    fn reconcile_sheets(
+        &mut self,
+        located: &parts::WorkbookParts,
+        meta: &crate::workbook_part::WorkbookMeta,
+    ) -> Result<Vec<Option<PartName>>> {
+        // What the file says today: part name -> its entry.
+        let mut by_part: BTreeMap<String, &crate::workbook_part::SheetEntry> = BTreeMap::new();
+        for entry in &meta.sheets {
+            let Some(name) = entry
+                .rel_id
+                .as_deref()
+                .and_then(|id| located.sheet_target(id))
+                .map(|(_, name)| name.as_str().to_string())
+            else {
+                continue;
+            };
+            by_part.insert(name, entry);
+        }
+
+        let mut rels = self.package.relationships(&located.workbook)?;
+        let mut next_sheet_id = meta.sheets.iter().map(|e| e.sheet_id).max().unwrap_or(0) + 1;
+        let existing_parts: Vec<PartName> = self.package.parts().map(|p| p.name.clone()).collect();
+        let directory = by_part
+            .keys()
+            .next()
+            .and_then(|p| PartName::new(p).ok())
+            .map_or_else(
+                || format!("{}/worksheets", trim_root(located.workbook.parent())),
+                |p| p.parent().to_string(),
+            );
+
+        let mut entries: Vec<workbook_out::Entry> = Vec::new();
+        let mut targets: Vec<Option<PartName>> = Vec::new();
+        let mut claimed: Vec<String> = Vec::new();
+        let mut authored: Vec<(PartName, Vec<u8>)> = Vec::new();
+        let mut taken = existing_parts.clone();
+
+        for index in 0..self.workbook.sheets.len() {
+            let known = self.workbook.sheets[index]
+                .part
+                .as_deref()
+                .and_then(|p| by_part.get(p).map(|e| (p.to_string(), *e)));
+
+            match known {
+                Some((part, entry)) => {
+                    entries.push(workbook_out::Entry {
+                        name: self.workbook.sheets[index].name.clone(),
+                        rel_id: entry.rel_id.clone().unwrap_or_default(),
+                        sheet_id: if entry.sheet_id == 0 {
+                            next_sheet_id
+                        } else {
+                            entry.sheet_id
+                        },
+                        hidden: self.workbook.sheets[index].hidden,
+                    });
+                    if entry.sheet_id == 0 {
+                        next_sheet_id += 1;
+                    }
+                    targets.push(PartName::new(&part).ok());
+                    claimed.push(part);
+                }
+                // A sheet the file has never seen. It gets a part of its own,
+                // authored empty; the cells go in through the same splice
+                // writer that edits a worksheet Excel wrote.
+                None => {
+                    let name = workbook_out::free_part_name(&taken, &directory)?;
+                    taken.push(name.clone());
+                    let rel_id = rels.next_id();
+                    rels.insert(Relationship {
+                        id: rel_id.clone(),
+                        rel_type: format!("{REL_BASE}/worksheet"),
+                        target: relative_to(&located.workbook, &name),
+                        mode: TargetMode::Internal,
+                    });
+                    entries.push(workbook_out::Entry {
+                        name: self.workbook.sheets[index].name.clone(),
+                        rel_id,
+                        sheet_id: next_sheet_id,
+                        hidden: self.workbook.sheets[index].hidden,
+                    });
+                    next_sheet_id += 1;
+                    authored.push((name.clone(), workbook_out::empty_worksheet()));
+                    self.workbook.sheets[index].part = Some(name.as_str().to_string());
+                    claimed.push(name.as_str().to_string());
+                    targets.push(Some(name));
+                }
+            }
+        }
+
+        // Whatever the file still lists and the model no longer holds.
+        let dropped: Vec<(String, Option<String>)> = by_part
+            .iter()
+            .filter(|(part, _)| !claimed.contains(part))
+            .map(|(part, entry)| (part.clone(), entry.rel_id.clone()))
+            .collect();
+
+        let unchanged = authored.is_empty()
+            && dropped.is_empty()
+            && entries.len() == meta.sheets.len()
+            && entries.iter().zip(&meta.sheets).all(|(now, was)| {
+                now.name == was.name
+                    && now.hidden == was.hidden
+                    && now.rel_id.as_str() == was.rel_id.as_deref().unwrap_or("")
+            })
+            && self.workbook.defined_names == meta.defined_names;
+        if unchanged {
+            return Ok(targets);
+        }
+
+        for (part, rel_id) in dropped {
+            if let Some(id) = rel_id {
+                rels.remove(&id);
+            }
+            if let Ok(name) = PartName::new(&part) {
+                self.package.remove_part(&name);
+            }
+        }
+        for (name, data) in authored {
+            self.package.put_part(name, WORKSHEET_TYPE, data);
+        }
+
+        let rels_name = located.workbook.rels_part();
+        let rels_type = self
+            .package
+            .part(&rels_name)
+            .map(|p| p.content_type.clone())
+            .unwrap_or_else(|| {
+                "application/vnd.openxmlformats-package.relationships+xml".to_string()
+            });
+        self.package.put_part(rels_name, &rels_type, rels.to_xml());
+
+        if let Some(part) = self.package.part(&located.workbook) {
+            let content_type = part.content_type.clone();
+            let data = workbook_out::rewrite(
+                located.workbook.as_str(),
+                part.data(),
+                &entries,
+                &self.workbook,
+            )?;
+            self.package
+                .put_part(located.workbook.clone(), &content_type, data);
+        }
+
+        Ok(targets)
+    }
+}
+
+/// A part name as a relationship target relative to `from`.
+///
+/// Relative where it can be, because that is what Excel writes and what keeps a
+/// package movable; absolute otherwise, which is equally legal and is what a
+/// part outside the owner's directory needs.
+fn relative_to(from: &PartName, target: &PartName) -> String {
+    let dir = from.parent();
+    let prefix = if dir == "/" {
+        "/".to_string()
+    } else {
+        format!("{dir}/")
+    };
+    match target.as_str().strip_prefix(&prefix) {
+        Some(rest) if !rest.contains("../") => rest.to_string(),
+        _ => target.as_str().to_string(),
+    }
+}
+
+/// `/` becomes the empty string so a directory can be built by concatenation.
+fn trim_root(dir: &str) -> &str {
+    if dir == "/" {
+        ""
+    } else {
+        dir
     }
 }

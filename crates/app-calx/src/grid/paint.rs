@@ -102,6 +102,53 @@ impl Palette {
     }
 }
 
+/// One filter arrow: where it is, which column it speaks for, and whether that
+/// column is currently hiding anything.
+struct Arrow {
+    rect: egui::Rect,
+    /// An offset into the filter's range, which is what `colId` means.
+    col: u32,
+    filtering: bool,
+}
+
+/// The arrows for whichever of the filter's columns are on screen.
+///
+/// Capped: a filter over a whole row is legal, and a million arrows would be a
+/// million rect tests per frame for a header that is at most a few dozen
+/// columns wide on any screen.
+fn filter_arrows(sheet: &Sheet, layout: &Layout, panes: &[Pane]) -> Vec<Arrow> {
+    const MAX_COLUMNS: u32 = 4096;
+    let Some(filter) = &sheet.filter else {
+        return Vec::new();
+    };
+    let row = filter.header_row();
+    let last = filter
+        .range
+        .end
+        .col
+        .min(filter.range.start.col + MAX_COLUMNS);
+    (filter.range.start.col..=last)
+        .filter_map(|col| {
+            let cell = cell_rect(layout, panes, CellRef::new(row, col))?;
+            // Inside the cell at its right edge, the way Excel draws it, and
+            // never wider than the cell — a narrow column gets a small arrow
+            // rather than one that overhangs its neighbour.
+            let size = 15.0_f32.min(cell.width() - 1.0).min(cell.height() - 1.0);
+            if size < 6.0 {
+                return None;
+            }
+            Some(Arrow {
+                rect: egui::Rect::from_min_size(
+                    egui::pos2(cell.right() - size - 1.0, cell.center().y - size / 2.0),
+                    egui::vec2(size, size),
+                ),
+                col: col - filter.range.start.col,
+                filtering: filter.column(col - filter.range.start.col).is_some(),
+            })
+        })
+        .collect()
+}
+
 /// Where a cell sits on screen, across whichever pane holds it.
 fn cell_rect(layout: &Layout, panes: &[Pane], at: CellRef) -> Option<egui::Rect> {
     panes.iter().find_map(|pane| {
@@ -260,8 +307,14 @@ impl GridView {
 
         let cursor_rect = cell_rect(layout, &panes, self.selection.cursor());
 
+        // The filter arrows, resolved while the panes are still known. Drawn
+        // before the layout goes back into `self` because they need it, and
+        // after the cells because they sit on top of the heading text.
+        let arrows = filter_arrows(sheet, layout, &panes);
+
         self.layout = Some(cached);
         self.conditional = Some(conditional);
+        self.paint_arrows(ui, &arrows, &response);
         self.paint_editor(ui, editor_rect);
         self.paint_dropdown(ui, book, cursor_rect);
         self.handle_input(ui, book, &response, content, body);
@@ -355,6 +408,81 @@ impl GridView {
                 .set_char_range(Some(egui::text::CCursorRange::one(end)));
             state.store(ui.ctx(), id);
             open.fresh = false;
+        }
+    }
+
+    /// Draws the filter arrows and turns a click on one into an action.
+    ///
+    /// Drawn rather than made of widgets: a widget per column would take the
+    /// click before the grid's own handler saw it, and clicking a heading has
+    /// to keep selecting the cell as well as opening the menu when it lands on
+    /// the arrow itself.
+    fn paint_arrows(&mut self, ui: &mut egui::Ui, arrows: &[Arrow], response: &egui::Response) {
+        let painter = ui.painter();
+        let hover = ui.ctx().pointer_hover_pos();
+        for arrow in arrows {
+            let hovered = hover.is_some_and(|p| arrow.rect.contains(p));
+            let (fill, ink) = if arrow.filtering {
+                (
+                    egui::Color32::from_rgb(0x21, 0x73, 0x46),
+                    egui::Color32::WHITE,
+                )
+            } else if hovered {
+                (
+                    egui::Color32::from_gray(0xC8),
+                    egui::Color32::from_gray(0x22),
+                )
+            } else {
+                (
+                    egui::Color32::from_gray(0xEE),
+                    egui::Color32::from_gray(0x44),
+                )
+            };
+            painter.rect(
+                arrow.rect,
+                egui::CornerRadius::same(2),
+                fill,
+                egui::Stroke::new(1.0, egui::Color32::from_gray(0x99)),
+                egui::StrokeKind::Inside,
+            );
+            let c = arrow.rect.center();
+            // A funnel when the column is filtering, a plain chevron when it is
+            // not — the same distinction Excel draws, and the only thing that
+            // says *which* column is hiding the missing rows.
+            if arrow.filtering {
+                painter.add(egui::Shape::convex_polygon(
+                    vec![
+                        egui::pos2(c.x - 4.0, c.y - 3.5),
+                        egui::pos2(c.x + 4.0, c.y - 3.5),
+                        egui::pos2(c.x + 1.0, c.y + 0.5),
+                        egui::pos2(c.x + 1.0, c.y + 4.0),
+                        egui::pos2(c.x - 1.0, c.y + 2.5),
+                        egui::pos2(c.x - 1.0, c.y + 0.5),
+                    ],
+                    ink,
+                    egui::Stroke::NONE,
+                ));
+            } else {
+                painter.add(egui::Shape::convex_polygon(
+                    vec![
+                        egui::pos2(c.x - 4.0, c.y - 2.0),
+                        egui::pos2(c.x + 4.0, c.y - 2.0),
+                        egui::pos2(c.x, c.y + 3.0),
+                    ],
+                    ink,
+                    egui::Stroke::NONE,
+                ));
+            }
+        }
+
+        if !response.clicked() {
+            return;
+        }
+        let Some(pos) = ui.ctx().pointer_interact_pos() else {
+            return;
+        };
+        if let Some(arrow) = arrows.iter().find(|a| a.rect.contains(pos)) {
+            self.actions.push(Action::FilterMenu(arrow.col));
         }
     }
 

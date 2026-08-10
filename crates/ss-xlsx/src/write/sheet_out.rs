@@ -52,8 +52,121 @@ pub(crate) fn rewrite(part: &str, data: &[u8], ctx: &mut Context<'_>) -> Result<
     let mut in_cols = false;
     // Which columns the file's own `<col>` elements already speak for.
     let mut covered: std::collections::BTreeSet<u32> = Default::default();
+    // The autofilter, which sits between `</sheetData>` and `<mergeCells>` and
+    // may have to be inserted into a file that never had one.
+    //
+    // `untouched` is the whole reason this is not simply "replace the element":
+    // a `<filterColumn>` can hold a `<top10>`, a `<dynamicFilter>`, a colour or
+    // icon filter, or a date grouping, none of which this crate models. If the
+    // model's filter is what the file already says, the file's own bytes go
+    // back and every one of those survives. Only a filter the user actually
+    // changed is rewritten from the model, and losing what we cannot represent
+    // is then a consequence of the edit rather than of the save.
+    let untouched = crate::autofilter::present(data)
+        && crate::autofilter::parse(part, data)? == ctx.sheet.filter;
+    let mut wrote_filter = false;
+    let mut skip_filter = 0usize;
+
+    // The tab colour, which lives in `<sheetPr>` — the first child of
+    // `<worksheet>` — and had no writer until a menu could set it. Same rule as
+    // the filter: if the model agrees with the file, nothing is touched, so a
+    // themed colour spelled `theme="4" tint="-0.2"` is not silently flattened
+    // to the rgb it happens to resolve to on this workbook's palette.
+    let tab_wanted = ctx.sheet.view.tab_color;
+    let tab_settled = file_tab_color(part, data)? == tab_wanted;
+    let mut tab_done = tab_settled;
+    let mut in_sheet_pr = false;
 
     while let Some((event, span)) = splicer.next()? {
+        if !tab_settled {
+            match &event {
+                Event::Start(e) if local_name(e) == b"sheetPr" => {
+                    out.extend_from_slice(splicer.bytes(span));
+                    write_tab_color(&mut out, &prefix_of(e), tab_wanted);
+                    tab_done = true;
+                    in_sheet_pr = true;
+                    continue;
+                }
+                Event::Empty(e) if local_name(e) == b"sheetPr" => {
+                    if tab_wanted.is_some() {
+                        // The element has to grow a body to hold the colour.
+                        let prefix = prefix_of(e);
+                        out.extend_from_slice(&retag(e, &[], false));
+                        write_tab_color(&mut out, &prefix, tab_wanted);
+                        close(&mut out, &prefix, b"sheetPr");
+                    } else {
+                        out.extend_from_slice(splicer.bytes(span));
+                    }
+                    tab_done = true;
+                    continue;
+                }
+                Event::End(e) if end_local_name(e) == b"sheetPr" => {
+                    in_sheet_pr = false;
+                    out.extend_from_slice(splicer.bytes(span));
+                    continue;
+                }
+                // The file's own colour, superseded by the one just written.
+                Event::Start(e) | Event::Empty(e)
+                    if in_sheet_pr && local_name(e) == b"tabColor" =>
+                {
+                    continue;
+                }
+                Event::End(e) if end_local_name(e) == b"tabColor" => continue,
+                // Any other child of `<worksheet>`: `<sheetPr>` comes before
+                // all of them, so this is the last moment one can be added.
+                // The root itself is not a child of itself.
+                Event::Start(e) | Event::Empty(e) if !tab_done && local_name(e) != b"worksheet" => {
+                    let prefix = prefix_of(e);
+                    open(&mut out, &prefix, b"sheetPr", &[], false);
+                    write_tab_color(&mut out, &prefix, tab_wanted);
+                    close(&mut out, &prefix, b"sheetPr");
+                    tab_done = true;
+                }
+                _ => {}
+            }
+        }
+
+        if skip_filter > 0 {
+            match &event {
+                Event::Start(e) if local_name(e) == b"autoFilter" => skip_filter += 1,
+                Event::End(e) if end_local_name(e) == b"autoFilter" => skip_filter -= 1,
+                _ => {}
+            }
+            if untouched {
+                out.extend_from_slice(splicer.bytes(span));
+            }
+            continue;
+        }
+
+        match &event {
+            Event::Start(e) | Event::Empty(e) if local_name(e) == b"autoFilter" => {
+                if untouched {
+                    out.extend_from_slice(splicer.bytes(span.clone()));
+                } else {
+                    write_filter(&mut out, &prefix_of(e), ctx.sheet);
+                }
+                wrote_filter = true;
+                if matches!(event, Event::Start(_)) {
+                    skip_filter = 1;
+                }
+                continue;
+            }
+            // The schema fixes the order of a worksheet's children, so a filter
+            // the file did not have goes in immediately before the first
+            // element that must follow it — not simply after `</sheetData>`,
+            // which would put it ahead of `<sheetProtection>` and make the part
+            // invalid.
+            Event::Start(e) | Event::Empty(e) if !wrote_filter && after_filter(local_name(e)) => {
+                write_filter(&mut out, &prefix_of(e), ctx.sheet);
+                wrote_filter = true;
+            }
+            Event::End(e) if !wrote_filter && end_local_name(e) == b"worksheet" => {
+                write_filter(&mut out, &prefix, ctx.sheet);
+                wrote_filter = true;
+            }
+            _ => {}
+        }
+
         match &event {
             Event::Start(e) | Event::Empty(e) if local_name(e) == b"cols" => {
                 prefix = prefix_of(e);
@@ -156,6 +269,168 @@ pub(crate) fn rewrite(part: &str, data: &[u8], ctx: &mut Context<'_>) -> Result<
     }
 
     Ok(out)
+}
+
+/// The tab colour the file currently states, if any.
+///
+/// Guarded by a substring test so a worksheet with no `<sheetPr>` — the common
+/// case — costs one pass over the bytes and no XML parsing.
+fn file_tab_color(part: &str, data: &[u8]) -> Result<Option<ss_model::Color>> {
+    const TAG: &[u8] = b"tabColor";
+    if !data.windows(TAG.len()).any(|w| w == TAG) {
+        return Ok(None);
+    }
+    let mut splicer = Splicer::new(part, data);
+    while let Some((event, _)) = splicer.next()? {
+        match &event {
+            Event::Start(e) | Event::Empty(e) if local_name(e) == b"tabColor" => {
+                let color = crate::styles::read_color(e);
+                return Ok((color != ss_model::Color::Auto).then_some(color));
+            }
+            // `<sheetPr>` is the first child of `<worksheet>`, so anything
+            // inside `<sheetData>` is far too late to be the sheet's own.
+            Event::Start(e) if local_name(e) == b"sheetData" => break,
+            _ => {}
+        }
+    }
+    Ok(None)
+}
+
+fn write_tab_color(out: &mut Vec<u8>, prefix: &[u8], color: Option<ss_model::Color>) {
+    let sets = match color {
+        None | Some(ss_model::Color::Auto) => return,
+        Some(ss_model::Color::Rgb(_)) => vec![Set::to(
+            b"rgb",
+            color.and_then(|c| c.to_hex()).unwrap_or_default(),
+        )],
+        Some(ss_model::Color::Indexed(i)) => vec![Set::to(b"indexed", i.to_string())],
+        Some(ss_model::Color::Theme { index, tint }) => {
+            let mut sets = vec![Set::to(b"theme", index.to_string())];
+            if tint != 0.0 {
+                sets.push(Set::to(b"tint", ss_model::format_general(tint)));
+            }
+            sets
+        }
+    };
+    open(out, prefix, b"tabColor", &sets, true);
+}
+
+/// The worksheet children the schema puts *after* `<autoFilter>`.
+///
+/// Listed rather than derived, because the sequence is a fixed list in the
+/// schema and there is nothing in the file that says where an element belongs.
+/// Everything before `autoFilter` — `sheetData`, `sheetCalcPr`,
+/// `sheetProtection`, `protectedRanges`, `scenarios` — is deliberately absent.
+fn after_filter(name: &[u8]) -> bool {
+    matches!(
+        name,
+        b"sortState"
+            | b"dataConsolidate"
+            | b"customSheetViews"
+            | b"mergeCells"
+            | b"phoneticPr"
+            | b"conditionalFormatting"
+            | b"dataValidations"
+            | b"hyperlinks"
+            | b"printOptions"
+            | b"pageMargins"
+            | b"pageSetup"
+            | b"headerFooter"
+            | b"rowBreaks"
+            | b"colBreaks"
+            | b"customProperties"
+            | b"cellWatches"
+            | b"ignoredErrors"
+            | b"smartTags"
+            | b"drawing"
+            | b"drawingHF"
+            | b"picture"
+            | b"oleObjects"
+            | b"controls"
+            | b"webPublishItems"
+            | b"tableParts"
+            | b"extLst"
+    )
+}
+
+/// Writes the sheet's autofilter, or nothing at all when it has none.
+///
+/// Nothing at all is the important half: clearing a filter has to *remove* the
+/// element, and a writer that only ever replaced it would leave the arrows on
+/// a sheet the user just un-filtered.
+fn write_filter(out: &mut Vec<u8>, prefix: &[u8], sheet: &Sheet) {
+    let Some(filter) = &sheet.filter else {
+        return;
+    };
+    let range = range_ref(filter.range);
+    if filter.columns.is_empty() {
+        open(out, prefix, b"autoFilter", &[Set::to(b"ref", range)], true);
+        return;
+    }
+    open(out, prefix, b"autoFilter", &[Set::to(b"ref", range)], false);
+    for column in &filter.columns {
+        open(
+            out,
+            prefix,
+            b"filterColumn",
+            &[Set::to(b"colId", column.col.to_string())],
+            false,
+        );
+        match &column.kind {
+            ss_model::FilterKind::Values { values, blanks } => {
+                let blank = blanks.then(|| "1".to_string());
+                open(
+                    out,
+                    prefix,
+                    b"filters",
+                    &[Set::maybe(b"blank", blank)],
+                    false,
+                );
+                for value in values {
+                    open(
+                        out,
+                        prefix,
+                        b"filter",
+                        &[Set::to(b"val", value.clone())],
+                        true,
+                    );
+                }
+                close(out, prefix, b"filters");
+            }
+            ss_model::FilterKind::Custom { first, second } => {
+                let and = second
+                    .as_ref()
+                    .and_then(|(and, _)| and.then(|| "1".to_string()));
+                open(
+                    out,
+                    prefix,
+                    b"customFilters",
+                    &[Set::maybe(b"and", and)],
+                    false,
+                );
+                for criterion in std::iter::once(first).chain(second.iter().map(|(_, c)| c)) {
+                    open(
+                        out,
+                        prefix,
+                        b"customFilter",
+                        &[
+                            Set::to(b"operator", criterion.op.code()),
+                            Set::to(b"val", criterion.value.clone()),
+                        ],
+                        true,
+                    );
+                }
+                close(out, prefix, b"customFilters");
+            }
+        }
+        close(out, prefix, b"filterColumn");
+    }
+    close(out, prefix, b"autoFilter");
+}
+
+/// A range as `ref` spells it.
+fn range_ref(range: CellRange) -> String {
+    format!("{}:{}", range.start.to_a1(), range.end.to_a1())
 }
 
 /// The model's cells, walked in the same row-major order the file is in.
@@ -993,6 +1268,10 @@ mod tests {
             },
         );
         set(&mut sheet, "A3", CellValue::Number(7.0), 0);
+        // As the reader would have left it. The writer compares the model's
+        // filter against the file's, so a fixture that claimed the sheet had
+        // none would be describing a filter the user had just cleared.
+        sheet.filter = crate::autofilter::parse("sheet1.xml", SHEET.as_bytes()).expect("parses");
 
         let sst = Sst::read(
             "sharedStrings.xml",
@@ -1140,6 +1419,151 @@ mod tests {
     }
 
     #[test]
+    fn a_tab_colour_is_written_where_the_schema_puts_it() {
+        let mut sheet = Sheet::new("Data");
+        sheet.view.tab_color = Some(ss_model::Color::rgb(0, 0xB0, 0x50));
+
+        // No `<sheetPr>` at all: one is authored, and it goes first.
+        let out = written_from(r#"<worksheet><sheetData/></worksheet>"#, &sheet);
+        assert_eq!(
+            out,
+            r#"<worksheet><sheetPr><tabColor rgb="FF00B050"/></sheetPr><sheetData/></worksheet>"#
+        );
+
+        // A `<sheetPr>` that exists but says nothing about colour keeps what it
+        // does say.
+        let out = written_from(
+            r#"<worksheet><sheetPr codeName="Sheet3"><outlinePr summaryBelow="1"/></sheetPr><sheetData/></worksheet>"#,
+            &sheet,
+        );
+        assert_eq!(
+            out,
+            r#"<worksheet><sheetPr codeName="Sheet3"><tabColor rgb="FF00B050"/><outlinePr summaryBelow="1"/></sheetPr><sheetData/></worksheet>"#
+        );
+
+        // And one that already carries a different colour is corrected.
+        let out = written_from(
+            r#"<worksheet><sheetPr><tabColor rgb="FFC00000"/></sheetPr><sheetData/></worksheet>"#,
+            &sheet,
+        );
+        assert!(out.contains(r#"<tabColor rgb="FF00B050"/>"#), "{out}");
+        assert!(!out.contains("FFC00000"), "{out}");
+    }
+
+    #[test]
+    fn a_themed_tab_colour_nobody_changed_is_not_flattened_to_rgb() {
+        // `theme="4" tint="-0.2"` resolves to an rgb, and writing that rgb back
+        // would be a different document: it stops following the theme.
+        const THEMED: &str = r#"<worksheet><sheetPr><tabColor theme="4" tint="-0.2"/></sheetPr><sheetData/></worksheet>"#;
+        let mut sheet = Sheet::new("Data");
+        sheet.view.tab_color = Some(ss_model::Color::Theme {
+            index: 4,
+            tint: -0.2,
+        });
+        assert_eq!(written_from(THEMED, &sheet), THEMED);
+
+        // Removing it takes the element and nothing else.
+        let mut cleared = Sheet::new("Data");
+        cleared.view.tab_color = None;
+        assert_eq!(
+            written_from(THEMED, &cleared),
+            r#"<worksheet><sheetPr></sheetPr><sheetData/></worksheet>"#
+        );
+    }
+
+    #[test]
+    fn a_filter_the_user_did_not_touch_keeps_what_we_do_not_model() {
+        // `<top10>` is a filter kind this crate has no representation for. A
+        // writer that rebuilt the element from the model would delete it on a
+        // save that had nothing to do with filtering.
+        const RICH: &str = concat!(
+            r#"<worksheet><sheetData/><autoFilter ref="A1:C9">"#,
+            r#"<filterColumn colId="0" hiddenButton="1"><top10 val="10" percent="1"/></filterColumn>"#,
+            r#"</autoFilter></worksheet>"#,
+        );
+        let mut sheet = Sheet::new("Data");
+        sheet.filter = crate::autofilter::parse("s.xml", RICH.as_bytes()).expect("parses");
+        assert!(
+            !sheet.filter.as_ref().expect("read").is_filtering(),
+            "a top-10 filter is not one we can represent"
+        );
+        assert_eq!(written_from(RICH, &sheet), RICH);
+    }
+
+    #[test]
+    fn clearing_a_filter_removes_the_element_rather_than_emptying_it() {
+        let sheet = Sheet::new("Data");
+        let out = written_from(
+            r#"<worksheet><sheetData/><autoFilter ref="A1:C9"/></worksheet>"#,
+            &sheet,
+        );
+        assert_eq!(out, r#"<worksheet><sheetData/></worksheet>"#);
+    }
+
+    #[test]
+    fn a_filter_added_to_a_sheet_that_had_none_lands_in_schema_order() {
+        // Between `<sheetProtection>` and `<mergeCells>`. Anywhere else and
+        // Excel reports the file as damaged rather than as oddly ordered.
+        let mut sheet = Sheet::new("Data");
+        sheet.filter = Some(ss_model::AutoFilter::over(CellRange::new(
+            CellRef::from_a1("A1").expect("valid"),
+            CellRef::from_a1("B4").expect("valid"),
+        )));
+        let out = written_from(
+            r#"<worksheet><sheetData/><sheetProtection sheet="1"/><mergeCells count="1"><mergeCell ref="D1:E1"/></mergeCells></worksheet>"#,
+            &sheet,
+        );
+        assert_eq!(
+            out,
+            r#"<worksheet><sheetData/><sheetProtection sheet="1"/><autoFilter ref="A1:B4"/><mergeCells count="1"><mergeCell ref="D1:E1"/></mergeCells></worksheet>"#
+        );
+    }
+
+    #[test]
+    fn a_filter_with_criteria_writes_them_and_reads_back_as_itself() {
+        let mut sheet = Sheet::new("Data");
+        let mut filter = ss_model::AutoFilter::over(CellRange::new(
+            CellRef::from_a1("A1").expect("valid"),
+            CellRef::from_a1("C9").expect("valid"),
+        ));
+        filter.set(
+            1,
+            Some(ss_model::FilterKind::Values {
+                values: ["North".to_string(), "South".to_string()]
+                    .into_iter()
+                    .collect(),
+                blanks: true,
+            }),
+        );
+        filter.set(
+            2,
+            Some(ss_model::FilterKind::Custom {
+                first: ss_model::Criterion {
+                    op: ss_model::Compare::Greater,
+                    value: "10".into(),
+                },
+                second: Some((
+                    true,
+                    ss_model::Criterion {
+                        op: ss_model::Compare::LessEqual,
+                        value: "99".into(),
+                    },
+                )),
+            }),
+        );
+        sheet.filter = Some(filter);
+
+        let out = written_from(r#"<worksheet><sheetData/></worksheet>"#, &sheet);
+        let back = crate::autofilter::parse("s.xml", out.as_bytes()).expect("parses");
+        assert_eq!(back, sheet.filter, "what was written reads back as itself");
+        assert!(out.contains(r#"<filters blank="1">"#), "{out}");
+        assert!(
+            out.contains(r#"<customFilter operator="greaterThan" val="10"/>"#),
+            "{out}"
+        );
+    }
+
+    #[test]
     fn a_volatile_formula_keeps_saying_so_when_its_text_changes() {
         // `ca="1"` is how Excel is told to recalculate a formula it cannot see
         // is volatile. Losing it on an edit means the cell silently goes stale.
@@ -1220,8 +1644,9 @@ mod tests {
             "{out}"
         );
         assert!(
-            out.contains(r#"</sheetData><pageSetup orientation="landscape"/>"#),
-            "{out}"
+            out.contains(r#"<autoFilter ref="A1:C3"/><pageSetup orientation="landscape"/>"#),
+            "the fixture's filter goes in ahead of pageSetup, and pageSetup is \
+             untouched: {out}"
         );
     }
 }

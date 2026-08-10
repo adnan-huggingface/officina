@@ -240,6 +240,26 @@ impl Package {
         }
     }
 
+    /// Removes a part, its `.rels` companion, and its content-type override.
+    ///
+    /// The three go together because leaving any one behind produces a package
+    /// Excel objects to: an override naming a part that is not there is invalid
+    /// by the OPC spec, and a `.rels` part whose owner is gone is a set of
+    /// relationships from nowhere.
+    ///
+    /// What it deliberately does *not* do is follow those relationships. A
+    /// worksheet points at drawings, tables, and pivot definitions, and some of
+    /// them are shared; deciding which are now unreachable is a graph traversal,
+    /// and getting it wrong deletes a part another sheet still needs. An
+    /// orphaned part is untidy and opens; a missing one does not.
+    pub fn remove_part(&mut self, name: &PartName) -> bool {
+        let rels = name.rels_part();
+        self.parts.remove(&rels);
+        self.content_types.remove_override(&rels);
+        self.content_types.remove_override(name);
+        self.parts.remove(name).is_some()
+    }
+
     pub fn save(&self, path: impl AsRef<Path>) -> Result<()> {
         let mut buf = Vec::new();
         self.write(Cursor::new(&mut buf))?;

@@ -112,6 +112,50 @@ pub enum Patch {
         axis: Axis,
         entries: Vec<(u32, Option<StyleId>)>,
     },
+    /// A whole sheet put into the workbook's list at `index`.
+    ///
+    /// Boxed because a `Sheet` is the largest thing in this enum by a wide
+    /// margin, and every other patch would otherwise pay for it.
+    SheetInsert {
+        index: usize,
+        sheet: Box<ss_model::Sheet>,
+    },
+    /// A sheet taken out. Its inverse is a `SheetInsert` carrying it, which is
+    /// why deleting a sheet is the one undo entry that costs what the sheet
+    /// costs — there is nowhere smaller to keep a sheet than in a sheet.
+    SheetRemove {
+        index: usize,
+    },
+    SheetName {
+        index: usize,
+        name: String,
+    },
+    /// A tab dragged from one position to another.
+    SheetMove {
+        from: usize,
+        to: usize,
+    },
+    SheetHidden {
+        index: usize,
+        hidden: bool,
+    },
+    TabColor {
+        index: usize,
+        color: Option<ss_model::Color>,
+    },
+    /// The workbook's defined names, replaced wholesale.
+    ///
+    /// Wholesale because a sheet-scoped name carries an *index* into the sheet
+    /// list, so inserting or removing a sheet re-points every name after it.
+    /// There are tens of these, not millions.
+    DefinedNames {
+        names: Vec<ss_model::DefinedName>,
+    },
+    /// A sheet's autofilter — the rule, not the hidden rows it produces.
+    Filter {
+        sheet: usize,
+        filter: Option<ss_model::AutoFilter>,
+    },
 }
 
 /// One user-visible action, as a list of patches applied in order.
@@ -244,6 +288,84 @@ fn apply_patch(book: &mut Workbook, patch: Patch) -> Vec<Patch> {
             vec![Patch::Geometry {
                 sheet,
                 geometry: geometry.restore(target),
+            }]
+        }
+
+        Patch::SheetInsert { index, sheet } => {
+            let index = index.min(book.sheets.len());
+            book.sheets.insert(index, *sheet);
+            vec![Patch::SheetRemove { index }]
+        }
+
+        Patch::SheetRemove { index } => {
+            if index >= book.sheets.len() {
+                return Vec::new();
+            }
+            let removed = book.sheets.remove(index);
+            // The active sheet is an index, and the sheet it named may have
+            // just gone or moved down one.
+            book.active_sheet = book.active_sheet.min(book.sheets.len().saturating_sub(1));
+            vec![Patch::SheetInsert {
+                index,
+                sheet: Box::new(removed),
+            }]
+        }
+
+        Patch::SheetName { index, name } => {
+            let Some(target) = book.sheet_mut(index) else {
+                return Vec::new();
+            };
+            let before = std::mem::replace(&mut target.name, name);
+            vec![Patch::SheetName {
+                index,
+                name: before,
+            }]
+        }
+
+        Patch::SheetMove { from, to } => {
+            if from >= book.sheets.len() || to >= book.sheets.len() {
+                return Vec::new();
+            }
+            let sheet = book.sheets.remove(from);
+            book.sheets.insert(to, sheet);
+            vec![Patch::SheetMove { from: to, to: from }]
+        }
+
+        Patch::SheetHidden { index, hidden } => {
+            let Some(target) = book.sheet_mut(index) else {
+                return Vec::new();
+            };
+            let before = std::mem::replace(&mut target.hidden, hidden);
+            vec![Patch::SheetHidden {
+                index,
+                hidden: before,
+            }]
+        }
+
+        Patch::TabColor { index, color } => {
+            let Some(target) = book.sheet_mut(index) else {
+                return Vec::new();
+            };
+            let before = std::mem::replace(&mut target.view.tab_color, color);
+            vec![Patch::TabColor {
+                index,
+                color: before,
+            }]
+        }
+
+        Patch::DefinedNames { names } => {
+            let before = std::mem::replace(&mut book.defined_names, names);
+            vec![Patch::DefinedNames { names: before }]
+        }
+
+        Patch::Filter { sheet, filter } => {
+            let Some(target) = book.sheet_mut(sheet) else {
+                return Vec::new();
+            };
+            let before = std::mem::replace(&mut target.filter, filter);
+            vec![Patch::Filter {
+                sheet,
+                filter: before,
             }]
         }
 
