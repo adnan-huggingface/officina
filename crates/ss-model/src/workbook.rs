@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use crate::cell::{Cell, CellRef, FormulaId};
 use crate::formula::Formula;
-use crate::shift::{Axis, Shift};
+use crate::shift::{Axis, Move, Shift};
 use crate::store::CellStore;
 use crate::strings::StringTable;
 
@@ -316,6 +316,83 @@ impl Sheet {
         }
 
         removed
+    }
+
+    /// Reorders everything the sheet holds for a band of rows or columns
+    /// picked up and put down somewhere else.
+    ///
+    /// Nothing is returned because nothing is destroyed. That is the whole
+    /// difference from [`Sheet::shift`]: a move is a permutation, so every cell
+    /// still has a home and the undo is simply the opposite move.
+    ///
+    /// Formula *text* is not touched here, for the same reason it is not
+    /// touched there — lexing belongs to `ss-formula`, and `edit::move_band`
+    /// does both halves.
+    pub fn rearrange(&mut self, mv: Move) {
+        if mv.is_noop() {
+            return;
+        }
+        let moved = |at: CellRef| mv.axis.with(at, mv.point(mv.axis.index(at)));
+        let taken: Vec<(CellRef, Cell)> = self.cells.iter().map(|(at, c)| (at, *c)).collect();
+        self.cells = Default::default();
+        for (at, cell) in taken {
+            self.cells.set(moved(at), cell);
+        }
+
+        // A merge is a rectangle, and a move can pull one apart — the span it
+        // lands on is the best a rectangle can say. One that ends up a single
+        // cell is not a merge any more.
+        self.merges = self
+            .merges
+            .iter()
+            .map(|m| mv.range(*m))
+            .filter(|m| m.rows() > 1 || m.cols() > 1)
+            .collect();
+
+        for formula in &mut self.formulas {
+            match &mut formula.kind {
+                crate::formula::FormulaKind::Array { range } => *range = mv.range(*range),
+                crate::formula::FormulaKind::Shared {
+                    range: Some(range), ..
+                } => *range = mv.range(*range),
+                _ => {}
+            }
+        }
+
+        // The sizes and styles travel with the band, which is the point: a
+        // column dragged elsewhere takes its width and its shading with it.
+        let sizes = match mv.axis {
+            Axis::Rows => &mut self.row_heights,
+            Axis::Columns => &mut self.column_widths,
+        };
+        *sizes = sizes
+            .iter()
+            .map(|(index, size)| (mv.point(*index), *size))
+            .collect();
+        let styles = match mv.axis {
+            Axis::Rows => &mut self.row_styles,
+            Axis::Columns => &mut self.column_styles,
+        };
+        *styles = styles
+            .iter()
+            .map(|(index, style)| (mv.point(*index), *style))
+            .collect();
+
+        for cf in &mut self.conditional_formats {
+            cf.ranges = cf.ranges.iter().map(|r| mv.range(*r)).collect();
+        }
+        for dv in &mut self.validations {
+            dv.ranges = dv.ranges.iter().map(|r| mv.range(*r)).collect();
+        }
+        // The filter's own rectangle moves with the cells; its column offsets
+        // are relative to that rectangle, so they are right either way unless
+        // the move reached inside it, and a move that does is a move the
+        // filter has no way to describe.
+        if let Some(filter) = &mut self.filter {
+            filter.range = mv.range(filter.range);
+        }
+        // The freeze is a boundary line rather than content, and a boundary
+        // does not travel with the rows that happened to be beside it.
     }
 
     pub fn insert_rows(&mut self, at: u32, count: u32) -> Vec<(CellRef, Cell)> {

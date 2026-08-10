@@ -33,7 +33,7 @@ pub use formula::{Formula, FormulaKind};
 pub use numfmt::{format_general, FormatValue, Formatted, NumberFormat};
 pub use picture::Picture;
 pub use pivot::PivotTable;
-pub use shift::{Axis, Shift};
+pub use shift::{Axis, Move, Shift};
 pub use store::CellStore;
 pub use strings::{StrId, StringTable};
 pub use style::{

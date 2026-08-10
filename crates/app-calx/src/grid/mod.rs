@@ -567,6 +567,14 @@ pub enum Action {
     },
     /// Size the selected columns to their contents.
     AutoFit(Axis),
+    /// A band of rows or columns dragged somewhere else. `before` names the
+    /// index it comes to sit in front of, counted in the grid as it is now.
+    MoveBand {
+        axis: Axis,
+        first: u32,
+        last: u32,
+        before: u32,
+    },
     /// A header boundary was double-clicked: fit the one row or column before
     /// it, whatever happens to be selected elsewhere.
     AutoFitAt {
@@ -751,6 +759,10 @@ pub struct GridView {
     pub(crate) before_resize: Option<Geometry>,
     /// The rectangle the fill drag currently covers.
     pub(crate) fill_target: Option<CellRange>,
+    /// Where a band being dragged would land: the index it would sit in front
+    /// of. Drawn as a line between two rows or columns, because that is what a
+    /// drop between them is.
+    pub(crate) move_target: Option<u32>,
     /// Where the scrollbars were drawn last frame, and how far they reach.
     /// Recomputed every frame; kept so input can hit-test them.
     pub(crate) bars: paint::Bars,
@@ -800,6 +812,16 @@ pub(crate) enum Drag {
     SelectHeaders {
         axis: Axis,
         anchor: u32,
+    },
+    /// Dragging a band of selected rows or columns somewhere else.
+    ///
+    /// Started from a header that is already inside the selection, which is
+    /// what tells a move apart from the sweep that would otherwise begin
+    /// there: a press on a header nobody selected can only mean "select this".
+    MoveBand {
+        axis: Axis,
+        first: u32,
+        last: u32,
     },
     /// Dragging a column's right edge, or a row's bottom edge.
     ResizeColumn {
@@ -857,6 +879,7 @@ impl Default for GridView {
             drag: None,
             before_resize: None,
             fill_target: None,
+            move_target: None,
             bars: paint::Bars::default(),
             summary: Summary::default(),
             summarized: None,

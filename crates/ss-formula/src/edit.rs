@@ -84,6 +84,15 @@ pub enum Patch {
         sheet: usize,
         shift: Shift,
     },
+    /// A band of rows or columns picked up and put down elsewhere.
+    ///
+    /// Its own patch rather than a delete and an insert, because it is not
+    /// one: nothing is destroyed, so nothing has to be carried in the undo but
+    /// the opposite move.
+    Rearrange {
+        sheet: usize,
+        rearrange: ss_model::Move,
+    },
     /// A chart's title. The rest of a chart is preserved verbatim, so this is
     /// the only thing in one the model can disagree with the file about.
     ChartTitle {
@@ -369,6 +378,27 @@ fn apply_patch(book: &mut Workbook, patch: Patch) -> Vec<Patch> {
             }]
         }
 
+        Patch::Rearrange { sheet, rearrange } => {
+            let Some(target) = book.sheet_mut(sheet) else {
+                return Vec::new();
+            };
+            target.rearrange(rearrange);
+            // The band is somewhere else now, so the undo picks it up from
+            // where it landed and puts it back where it started.
+            let (first, last) = rearrange.landing();
+            let before = if rearrange.before > rearrange.last {
+                rearrange.first
+            } else {
+                // Moving left: the band ends up in front of what used to
+                // follow it, which has itself moved along by the band's width.
+                rearrange.last + 1
+            };
+            vec![Patch::Rearrange {
+                sheet,
+                rearrange: ss_model::Move::new(rearrange.axis, first, last, before),
+            }]
+        }
+
         Patch::Shift { sheet, shift } => {
             let Some(target) = book.sheet_mut(sheet) else {
                 return Vec::new();
@@ -426,6 +456,53 @@ pub fn structural(book: &Workbook, sheet: usize, shift: Shift) -> Change {
     }
 
     Change::new(label_for(shift), patches)
+}
+
+/// A band of rows or columns moved, with every formula in the workbook
+/// rewritten to keep meaning what it meant.
+///
+/// The counterpart of [`structural`], and it differs in what it cannot do:
+/// nothing is destroyed, so no reference can end up `#REF!` and no cells have
+/// to be carried in the undo. What a formula says changes; what it means does
+/// not, which is the whole promise of moving a column rather than retyping it.
+pub fn move_band(book: &Workbook, sheet: usize, mv: ss_model::Move) -> Change {
+    let Some(moved) = book.sheet(sheet) else {
+        return Change::default();
+    };
+    if mv.is_noop() {
+        return Change::default();
+    }
+    let mut patches = vec![Patch::Rearrange {
+        sheet,
+        rearrange: mv,
+    }];
+
+    // Every sheet, for the same reason a shift touches every sheet: a formula
+    // on Sheet2 can name Sheet1!A1, and A1 is somewhere else now.
+    for (index, other) in book.sheets.iter().enumerate() {
+        let texts: Vec<(FormulaId, String)> = other
+            .formulas
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| !f.text.is_empty())
+            .filter_map(|(i, f)| {
+                let rewritten = crate::translate::move_band(&f.text, &other.name, &moved.name, mv)?;
+                Some((FormulaId::from_index(i as u32), rewritten))
+            })
+            .collect();
+        if !texts.is_empty() {
+            patches.push(Patch::Formulas {
+                sheet: index,
+                texts,
+            });
+        }
+    }
+
+    let label = match mv.axis {
+        Axis::Rows => "Move rows",
+        Axis::Columns => "Move columns",
+    };
+    Change::new(label, patches)
 }
 
 fn label_for(shift: Shift) -> &'static str {
@@ -804,6 +881,118 @@ mod tests {
             },
             data: std::sync::Arc::from(Vec::new().into_boxed_slice()),
             content_type: "image/png".into(),
+        }
+    }
+
+    /// A sheet whose first row spells out which column each cell is in, and
+    /// whose second row is a formula pointing at the cell above it.
+    fn lettered() -> Workbook {
+        let mut book = Workbook::blank();
+        for col in 0..5u32 {
+            let letter = ss_model::column_name(col);
+            let change = input(&mut book, 0, CellRef::new(0, col), &letter);
+            apply(&mut book, change);
+            let change = input(&mut book, 0, CellRef::new(1, col), &format!("={letter}1"));
+            apply(&mut book, change);
+        }
+        book
+    }
+
+    fn shown(book: &Workbook, a1: &str) -> String {
+        match book.sheets[0].get(at(a1)).map(|c| c.value) {
+            Some(CellValue::Text(id)) => book.strings.resolve(id).to_string(),
+            Some(CellValue::Number(n)) => ss_model::format_general(n),
+            _ => String::new(),
+        }
+    }
+
+    fn formula(book: &Workbook, a1: &str) -> String {
+        book.sheets[0]
+            .formula_at(at(a1))
+            .map(|f| f.text.clone())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn a_moved_column_takes_its_cells_and_its_formulas_with_it() {
+        let mut book = lettered();
+        // B moved to the far side of D: A C D B E.
+        let change = move_band(&book, 0, ss_model::Move::new(Axis::Columns, 1, 1, 4));
+        let undo = apply(&mut book, change);
+
+        assert_eq!(
+            (0..5)
+                .map(|c| shown(&book, &format!("{}1", ss_model::column_name(c))))
+                .collect::<Vec<_>>(),
+            ["A", "C", "D", "B", "E"]
+        );
+        // Each formula still points at the cell above it, wherever that went.
+        for col in 0..5u32 {
+            let letter = ss_model::column_name(col);
+            assert_eq!(
+                formula(&book, &format!("{letter}2")),
+                format!("{letter}1"),
+                "the formula under {letter}1"
+            );
+        }
+
+        apply(&mut book, undo);
+        assert_eq!(
+            (0..5)
+                .map(|c| shown(&book, &format!("{}1", ss_model::column_name(c))))
+                .collect::<Vec<_>>(),
+            ["A", "B", "C", "D", "E"],
+            "and back"
+        );
+        assert_eq!(formula(&book, "B2"), "B1");
+    }
+
+    #[test]
+    fn a_range_over_a_moved_column_still_covers_the_same_cells() {
+        // The trap: mapping the two corners says A1:C1 and quietly drops a
+        // column from the sum. The range still spans the same four.
+        let mut book = lettered();
+        let change = input(&mut book, 0, at("A4"), "=SUM(A1:D1)");
+        apply(&mut book, change);
+        let change = input(&mut book, 0, at("A5"), "=B1");
+        apply(&mut book, change);
+
+        let change = move_band(&book, 0, ss_model::Move::new(Axis::Columns, 1, 1, 4));
+        apply(&mut book, change);
+        assert_eq!(formula(&book, "A4"), "SUM(A1:D1)");
+        assert_eq!(formula(&book, "A5"), "D1", "B is at D now");
+    }
+
+    #[test]
+    fn moving_rows_carries_their_heights_and_leaves_the_freeze_alone() {
+        let mut book = Workbook::blank();
+        {
+            let sheet = &mut book.sheets[0];
+            sheet.row_heights.insert(1, 40.0);
+            sheet.frozen = Some(CellRef::new(2, 0));
+        }
+        let change = move_band(&book, 0, ss_model::Move::new(Axis::Rows, 1, 1, 5));
+        apply(&mut book, change);
+        let sheet = &book.sheets[0];
+        assert_eq!(
+            sheet.row_heights.get(&4),
+            Some(&40.0),
+            "the height went too"
+        );
+        assert_eq!(sheet.row_heights.get(&1), None);
+        assert_eq!(
+            sheet.frozen,
+            Some(CellRef::new(2, 0)),
+            "a freeze is a line on the sheet, not a property of the rows beside it"
+        );
+    }
+
+    #[test]
+    fn a_move_that_lands_where_it_started_is_not_a_change_at_all() {
+        let book = lettered();
+        for before in 1..=2u32 {
+            let change = move_band(&book, 0, ss_model::Move::new(Axis::Columns, 1, 1, before));
+            assert!(change.patches.is_empty(), "before {before}");
         }
     }
 

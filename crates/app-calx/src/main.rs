@@ -719,6 +719,12 @@ impl Calx {
             Action::Visibility { axis, hide } => self.set_visibility(axis, hide),
             Action::AutoFit(axis) => self.autofit(axis),
             Action::AutoFitAt { axis, index } => self.autofit_span(axis, index, index),
+            Action::MoveBand {
+                axis,
+                first,
+                last,
+                before,
+            } => self.move_band(axis, first, last, before),
             Action::PicturesMoved(before) => self.pictures_moved(sheet, before),
             Action::DeletePicture(index) => self.delete_picture(sheet, index),
             Action::FilterMenu(col) => self.open_filter_menu(col),
@@ -1165,6 +1171,40 @@ impl Calx {
             vec![Patch::Geometry { sheet, geometry }],
         ));
         self.grid.invalidate();
+    }
+
+    /// Puts a dragged band of rows or columns down where it was dropped.
+    fn move_band(&mut self, axis: Axis, first: u32, last: u32, before: u32) {
+        let sheet = self.grid.sheet_index;
+        let mv = ss_model::Move::new(axis, first, last, before);
+        let change = edit::move_band(&self.doc.workbook, sheet, mv);
+        if change.patches.is_empty() {
+            return;
+        }
+        self.perform(change);
+        // The selection follows the band. Watching it stay behind on the
+        // columns the move pushed into its old place is disorienting, and it
+        // also makes a second drag move the wrong ones.
+        let (landed_first, landed_last) = mv.landing();
+        match axis {
+            Axis::Rows => self
+                .grid
+                .selection
+                .select_rows(landed_first, landed_last, false),
+            Axis::Columns => self
+                .grid
+                .selection
+                .select_columns(landed_first, landed_last, false),
+        }
+        self.grid.invalidate();
+        self.status = format!(
+            "Moved {} {}",
+            landed_last - landed_first + 1,
+            match axis {
+                Axis::Rows => "rows",
+                Axis::Columns => "columns",
+            }
+        );
     }
 
     /// Hides or shows the selected rows or columns.

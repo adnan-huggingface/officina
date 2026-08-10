@@ -15,7 +15,7 @@ use ui_kit::egui;
 use super::editor::{self, Editor, Mode};
 use super::{
     plan, rect_of, rect_of_range, Action, Direction, Drag, Format, GridView, Layout, PaintEdge,
-    Scroll, BOTTOM, LEFT, RESIZE_GRAB, RIGHT, TOP,
+    Scroll, Selection, BOTTOM, LEFT, RESIZE_GRAB, RIGHT, TOP,
 };
 use ss_formula::cond::{Formatting, Overlay};
 use ss_model::style::{BorderStyle, HAlign, VAlign};
@@ -266,6 +266,68 @@ fn header_index(layout: &Layout, panes: &[Pane], axis: Axis, pos: egui::Pos2) ->
     }
 }
 
+/// The whole-row or whole-column band the selection holds `index` in, if any.
+///
+/// Only a band of *entire* rows or columns counts. A rectangle that happens to
+/// span three columns is a selection of cells, and dragging the header above
+/// one of them means "select this column", not "move these three".
+fn selected_band(selection: &Selection, axis: Axis, index: u32) -> Option<(u32, u32)> {
+    selection.ranges().iter().find_map(|r| {
+        let (whole, first, last) = match axis {
+            Axis::Columns => (
+                r.start.row == 0 && r.end.row == ss_model::cell::MAX_ROWS - 1,
+                r.start.col,
+                r.end.col,
+            ),
+            Axis::Rows => (
+                r.start.col == 0 && r.end.col == ss_model::cell::MAX_COLS - 1,
+                r.start.row,
+                r.end.row,
+            ),
+        };
+        (whole && (first..=last).contains(&index)).then_some((first, last))
+    })
+}
+
+/// The boundary a drop at `pos` names: the index the band would sit before.
+///
+/// The nearer edge of whatever is under the pointer, because a drop is
+/// *between* two rows and the answer has to be able to name the far side of
+/// the last one.
+fn drop_boundary(layout: &Layout, panes: &[Pane], axis: Axis, pos: egui::Pos2) -> u32 {
+    let index = header_index(layout, panes, axis, pos);
+    let Some(pane) = panes.first() else {
+        return index;
+    };
+    let pane = match axis {
+        Axis::Columns => panes
+            .iter()
+            .find(|p| p.rect.x_range().contains(pos.x))
+            .unwrap_or(pane),
+        Axis::Rows => panes
+            .iter()
+            .find(|p| p.rect.y_range().contains(pos.y))
+            .unwrap_or(pane),
+    };
+    let (along, start, size) = match axis {
+        Axis::Columns => (
+            pane.scroll.x + f64::from(pos.x - pane.rect.left()),
+            layout.cols.offset(index),
+            layout.cols.size(index),
+        ),
+        Axis::Rows => (
+            pane.scroll.y + f64::from(pos.y - pane.rect.top()),
+            layout.rows.offset(index),
+            layout.rows.size(index),
+        ),
+    };
+    if along > start + size / 2.0 {
+        index.saturating_add(1)
+    } else {
+        index
+    }
+}
+
 /// One of the up-to-four views a frozen sheet is drawn as.
 struct Pane {
     rect: egui::Rect,
@@ -361,6 +423,31 @@ impl GridView {
                 .vline(body.left() + split.x, content.y_range(), seam);
         }
 
+        // Where a band being dragged would land. A line between two rows says
+        // "between", which a highlighted row would not: dropping *on* a row and
+        // dropping *before* it are different answers.
+        if let (Some(Drag::MoveBand { axis, .. }), Some(before)) = (self.drag, self.move_target) {
+            let drop = egui::Stroke::new(3.0, palette.selection_edge);
+            for pane in &panes {
+                match axis {
+                    Axis::Columns => {
+                        let x =
+                            pane.rect.left() + (layout.cols.offset(before) - pane.scroll.x) as f32;
+                        if pane.rect.x_range().contains(x) {
+                            ui.painter().vline(x, content.y_range(), drop);
+                        }
+                    }
+                    Axis::Rows => {
+                        let y =
+                            pane.rect.top() + (layout.rows.offset(before) - pane.scroll.y) as f32;
+                        if pane.rect.y_range().contains(y) {
+                            ui.painter().hline(content.x_range(), y, drop);
+                        }
+                    }
+                }
+            }
+        }
+
         // Resolved while the layout is still borrowed, painted after it goes
         // back into `self`.
         let editor_rect = self
@@ -395,11 +482,15 @@ impl GridView {
                         Axis::Columns => egui::CursorIcon::ResizeHorizontal,
                         Axis::Rows => egui::CursorIcon::ResizeVertical,
                     })
+                    .or_else(|| self.movable_band(layout, content, body, &panes, pos))
                     .or_else(|| self.pointer_over(sheet, layout, &panes, pos));
                 if let Some(icon) = icon {
                     ui.ctx().set_cursor_icon(icon);
                 }
             }
+        }
+        if matches!(self.drag, Some(Drag::MoveBand { .. })) {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
         }
 
         let cursor_rect = cell_rect(layout, &panes, self.selection.cursor());
@@ -1365,6 +1456,16 @@ impl GridView {
                 continue;
             }
             let index = header_index(layout, panes, axis, pos);
+            // A press inside a band that is already selected picks it up. A
+            // press anywhere else on the header starts a new selection, which
+            // is what makes the two gestures tell themselves apart without a
+            // modifier: you cannot move what you have not selected.
+            if !modifiers.ctrl && !modifiers.shift {
+                if let Some((first, last)) = selected_band(&self.selection, axis, index) {
+                    self.drag = Some(Drag::MoveBand { axis, first, last });
+                    return;
+                }
+            }
             // Shift extends the band already there, as it does everywhere else.
             let anchor = match (modifiers.shift, axis) {
                 (true, Axis::Columns) => self.selection.anchor().col,
@@ -1407,6 +1508,34 @@ impl GridView {
             self.selection.move_to(at, sheet);
         }
         self.drag = Some(Drag::Select);
+    }
+
+    /// An open hand over the header of a band that could be dragged elsewhere.
+    ///
+    /// The only thing that says the gesture exists. A header looks exactly the
+    /// same whether or not the column under it is selected, so without this
+    /// nothing distinguishes "press here to move it" from "press here to
+    /// select it" until after the press.
+    fn movable_band(
+        &self,
+        layout: &Layout,
+        content: egui::Rect,
+        body: egui::Rect,
+        panes: &[Pane],
+        pos: egui::Pos2,
+    ) -> Option<egui::CursorIcon> {
+        if !content.contains(pos) {
+            return None;
+        }
+        let axis = if pos.y < body.top() && pos.x >= body.left() {
+            Axis::Columns
+        } else if pos.x < body.left() && pos.y >= body.top() {
+            Axis::Rows
+        } else {
+            return None;
+        };
+        let index = header_index(layout, panes, axis, pos);
+        selected_band(&self.selection, axis, index).map(|_| egui::CursorIcon::Grab)
     }
 
     /// The cursor a picture would put under the pointer, if any.
@@ -1564,6 +1693,14 @@ impl GridView {
                 let index = header_index(layout, panes, axis, pos);
                 self.selection.extend_headers(axis, anchor, index);
             }
+            Drag::MoveBand { axis, first, last } => {
+                let before = drop_boundary(layout, panes, axis, pos);
+                // A drop anywhere inside the band, or against either of its own
+                // edges, is a drop that changes nothing. Showing no line there
+                // says so before the button comes up.
+                self.move_target =
+                    (!(first..=last.saturating_add(1)).contains(&before)).then_some(before);
+            }
             Drag::ResizeColumn {
                 index,
                 origin,
@@ -1606,6 +1743,16 @@ impl GridView {
             Drag::ResizeColumn { .. } | Drag::ResizeRow { .. } => {
                 if let Some(before) = self.before_resize.take() {
                     self.actions.push(Action::Resized(before));
+                }
+            }
+            Drag::MoveBand { axis, first, last } => {
+                if let Some(before) = self.move_target.take() {
+                    self.actions.push(Action::MoveBand {
+                        axis,
+                        first,
+                        last,
+                        before,
+                    });
                 }
             }
             // The model already holds the new geometry. What goes out is how it
@@ -2464,6 +2611,106 @@ mod tests {
             )],
             "B through E, as one band"
         );
+    }
+
+    #[test]
+    fn a_selected_column_can_be_dragged_somewhere_else() {
+        let ctx = context();
+        let mut book = Workbook::blank();
+        let mut view = GridView::default();
+        frame(&mut view, &mut book, vec![], &ctx);
+
+        // Select B, then pick it up and drop it past D.
+        let b = header_of(&view, Axis::Columns, 1);
+        frame(&mut view, &mut book, vec![press(b, true)], &ctx);
+        frame(&mut view, &mut book, vec![press(b, false)], &ctx);
+        view.actions.clear();
+
+        let d = header_of(&view, Axis::Columns, 3);
+        frame(&mut view, &mut book, vec![press(b, true)], &ctx);
+        assert!(
+            matches!(
+                view.drag,
+                Some(Drag::MoveBand {
+                    first: 1,
+                    last: 1,
+                    ..
+                })
+            ),
+            "a press inside the band picks it up: {:?}",
+            view.drag
+        );
+        frame(
+            &mut view,
+            &mut book,
+            vec![egui::Event::PointerMoved(d)],
+            &ctx,
+        );
+        // Past the middle of D, so it lands after it rather than before.
+        let past = egui::pos2(d.x + 20.0, d.y);
+        frame(
+            &mut view,
+            &mut book,
+            vec![egui::Event::PointerMoved(past)],
+            &ctx,
+        );
+        assert_eq!(view.move_target, Some(4), "the line sits after D");
+        frame(&mut view, &mut book, vec![press(past, false)], &ctx);
+
+        assert_eq!(
+            view.actions,
+            [Action::MoveBand {
+                axis: Axis::Columns,
+                first: 1,
+                last: 1,
+                before: 4,
+            }]
+        );
+    }
+
+    #[test]
+    fn a_press_on_a_header_nobody_selected_still_selects_it() {
+        // The two gestures share a press, so the one that is not wanted has to
+        // stay out of the way: you cannot move what you have not selected.
+        let ctx = context();
+        let mut book = Workbook::blank();
+        let mut view = GridView::default();
+        frame(&mut view, &mut book, vec![], &ctx);
+
+        let at = header_of(&view, Axis::Columns, 2);
+        frame(&mut view, &mut book, vec![press(at, true)], &ctx);
+        assert!(
+            matches!(view.drag, Some(Drag::SelectHeaders { .. })),
+            "{:?}",
+            view.drag
+        );
+    }
+
+    #[test]
+    fn dropping_a_band_back_on_itself_asks_for_nothing() {
+        let ctx = context();
+        let mut book = Workbook::blank();
+        let mut view = GridView::default();
+        frame(&mut view, &mut book, vec![], &ctx);
+
+        let b = header_of(&view, Axis::Columns, 1);
+        frame(&mut view, &mut book, vec![press(b, true)], &ctx);
+        frame(&mut view, &mut book, vec![press(b, false)], &ctx);
+        view.actions.clear();
+
+        frame(&mut view, &mut book, vec![press(b, true)], &ctx);
+        frame(
+            &mut view,
+            &mut book,
+            vec![egui::Event::PointerMoved(b)],
+            &ctx,
+        );
+        assert_eq!(
+            view.move_target, None,
+            "no line, because nothing would move"
+        );
+        frame(&mut view, &mut book, vec![press(b, false)], &ctx);
+        assert!(view.actions.is_empty(), "{:?}", view.actions);
     }
 
     #[test]

@@ -255,6 +255,134 @@ fn shift_range(a: A1, b: A1, shift: Shift) -> Option<String> {
     (after != before).then_some(after)
 }
 
+/// Rewrites `text` for a band of rows or columns that was moved, or `None` if
+/// nothing in it moved.
+///
+/// The counterpart of [`translate`] for the other kind of grid change, and the
+/// easier one: nothing here can produce `#REF!`. A move reorders rather than
+/// adds or removes, so every reference still names a cell afterwards and the
+/// only question is which.
+pub fn move_band(text: &str, home: &str, moved: &str, mv: ss_model::Move) -> Option<String> {
+    if mv.is_noop() {
+        return None;
+    }
+    let tokens = tokenize(text).ok()?;
+    let mut out = String::new();
+    let mut copied = 0usize;
+    let mut qualifier: Option<&str> = None;
+    let mut i = 0;
+
+    while i < tokens.len() {
+        if let Tok::Sheet(name) = &tokens[i].kind {
+            qualifier = Some(name);
+            i += 1;
+            continue;
+        }
+        let on_target = qualifier.unwrap_or(home).eq_ignore_ascii_case(moved);
+        let range = matches!(&tokens[i].kind, Tok::Cell(_))
+            && matches!(tokens.get(i + 1).map(|t| &t.kind), Some(Tok::Colon))
+            && matches!(tokens.get(i + 2).map(|t| &t.kind), Some(Tok::Cell(_)));
+
+        let (span, replacement) = if range {
+            let (Tok::Cell(a), Tok::Cell(b)) = (&tokens[i].kind, &tokens[i + 2].kind) else {
+                unreachable!("just matched")
+            };
+            (3, on_target.then(|| moved_range(*a, *b, mv)).flatten())
+        } else {
+            (
+                1,
+                on_target
+                    .then(|| moved_single(&tokens[i].kind, mv))
+                    .flatten(),
+            )
+        };
+
+        if let Some(new_text) = replacement {
+            let end = tokens[i + span - 1].end;
+            out.push_str(&text[copied..tokens[i].at]);
+            out.push_str(&new_text);
+            copied = end;
+        }
+        qualifier = None;
+        i += span;
+    }
+
+    if copied == 0 {
+        return None;
+    }
+    out.push_str(&text[copied..]);
+    Some(out)
+}
+
+fn moved_single(tok: &Tok, mv: ss_model::Move) -> Option<String> {
+    match tok {
+        Tok::Cell(cell) => {
+            let after = match mv.axis {
+                Axis::Rows => A1 {
+                    row: mv.point(cell.row),
+                    ..*cell
+                },
+                Axis::Columns => A1 {
+                    col: mv.point(cell.col),
+                    ..*cell
+                },
+            };
+            let after = write_cell(&after);
+            (after != write_cell(cell)).then_some(after)
+        }
+        Tok::ColSpan {
+            start,
+            start_abs,
+            end,
+            end_abs,
+        } => {
+            if mv.axis != Axis::Columns {
+                return None;
+            }
+            let before = write_col_span(*start, *start_abs, *end, *end_abs);
+            let (s, e) = mv.span(*start.min(end), *start.max(end));
+            let after = write_col_span(s, *start_abs, e, *end_abs);
+            (after != before).then_some(after)
+        }
+        Tok::RowSpan {
+            start,
+            start_abs,
+            end,
+            end_abs,
+        } => {
+            if mv.axis != Axis::Rows {
+                return None;
+            }
+            let before = write_row_span(*start, *start_abs, *end, *end_abs);
+            let (s, e) = mv.span(*start.min(end), *start.max(end));
+            let after = write_row_span(s, *start_abs, e, *end_abs);
+            (after != before).then_some(after)
+        }
+        _ => None,
+    }
+}
+
+fn moved_range(a: A1, b: A1, mv: ss_model::Move) -> Option<String> {
+    let (mut a2, mut b2) = (a, b);
+    match mv.axis {
+        Axis::Rows => {
+            let (lo_row, hi_row) = (a.row.min(b.row), a.row.max(b.row));
+            let (lo, hi) = mv.span(lo_row, hi_row);
+            a2.row = if a.row == lo_row { lo } else { hi };
+            b2.row = if b.row == lo_row { lo } else { hi };
+        }
+        Axis::Columns => {
+            let (lo_col, hi_col) = (a.col.min(b.col), a.col.max(b.col));
+            let (lo, hi) = mv.span(lo_col, hi_col);
+            a2.col = if a.col == lo_col { lo } else { hi };
+            b2.col = if b.col == lo_col { lo } else { hi };
+        }
+    }
+    let before = format!("{}:{}", write_cell(&a), write_cell(&b));
+    let after = format!("{}:{}", write_cell(&a2), write_cell(&b2));
+    (after != before).then_some(after)
+}
+
 /// Rewrites every qualifier naming `from` so that it names `to`.
 ///
 /// Renaming a sheet has to reach every formula in the workbook, because a
