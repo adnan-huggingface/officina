@@ -32,7 +32,12 @@ pub use axis::Layout;
 pub use editor::{Editor, Mode};
 pub use selection::{Direction, Selection};
 
-/// How far a click may be from a header edge and still grab it.
+/// How close to a boundary the pointer has to be to grab it, either side.
+///
+/// Four pixels each way is eight in total, about twice what Excel gives you.
+/// It does not want to be much more: a default row is twenty pixels tall, and
+/// a zone any wider would leave less of the row header for selecting the row
+/// than for resizing it.
 const RESIZE_GRAB: f32 = 4.0;
 
 /// The most columns a long label may overflow into.
@@ -785,6 +790,17 @@ impl Summary {
 pub(crate) enum Drag {
     /// Sweeping a selection out from the anchor.
     Select,
+    /// Sweeping whole rows or columns out along a header.
+    ///
+    /// Its own kind rather than a `Select` that happens to have started in a
+    /// header, because the two extend differently: this one grows a band of
+    /// entire rows or columns, and `Select` grows a rectangle towards whatever
+    /// cell is under the pointer. Routing a header sweep through the second
+    /// collapsed the band to a single cell the moment the pointer moved.
+    SelectHeaders {
+        axis: Axis,
+        anchor: u32,
+    },
     /// Dragging a column's right edge, or a row's bottom edge.
     ResizeColumn {
         index: u32,

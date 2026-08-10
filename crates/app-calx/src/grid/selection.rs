@@ -13,6 +13,8 @@
 use ss_model::cell::{MAX_COLS, MAX_ROWS};
 use ss_model::{CellRange, CellRef, Sheet};
 
+use super::Axis;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
     Up,
@@ -160,6 +162,25 @@ impl Selection {
             CellRef::new(MAX_ROWS - 1, from.max(to)),
         );
         self.replace(range, additive, CellRef::new(self.cursor.row, from));
+    }
+
+    /// Sweeping along a header: the band the last click started grows.
+    ///
+    /// It rewrites the last range rather than adding one, so a sweep that began
+    /// with Ctrl held keeps every band already selected and still ends up with
+    /// one band per sweep instead of one per frame.
+    pub fn extend_headers(&mut self, axis: Axis, from: u32, to: u32) {
+        let range = match axis {
+            Axis::Rows => CellRange::new(
+                CellRef::new(from.min(to), 0),
+                CellRef::new(from.max(to), MAX_COLS - 1),
+            ),
+            Axis::Columns => CellRange::new(
+                CellRef::new(0, from.min(to)),
+                CellRef::new(MAX_ROWS - 1, from.max(to)),
+            ),
+        };
+        *self.ranges.last_mut().expect("never empty") = range;
     }
 
     pub fn select_all(&mut self) {

@@ -235,6 +235,37 @@ fn header_edge(
     None
 }
 
+/// The row or column a position along a header names.
+///
+/// Clamped rather than optional: sweeping a band of columns runs the pointer
+/// off the end of the strip all the time, and the band should follow it to the
+/// last column rather than stop dead the moment the pointer leaves.
+fn header_index(layout: &Layout, panes: &[Pane], axis: Axis, pos: egui::Pos2) -> u32 {
+    let Some(first) = panes.first() else {
+        return 0;
+    };
+    match axis {
+        Axis::Columns => {
+            let pane = panes
+                .iter()
+                .find(|p| p.rect.x_range().contains(pos.x))
+                .unwrap_or_else(|| panes.last().unwrap_or(first));
+            layout
+                .cols
+                .index_at(pane.scroll.x + f64::from(pos.x - pane.rect.left()))
+        }
+        Axis::Rows => {
+            let pane = panes
+                .iter()
+                .find(|p| p.rect.y_range().contains(pos.y))
+                .unwrap_or_else(|| panes.last().unwrap_or(first));
+            layout
+                .rows
+                .index_at(pane.scroll.y + f64::from(pos.y - pane.rect.top()))
+        }
+    }
+}
+
 /// One of the up-to-four views a frozen sheet is drawn as.
 struct Pane {
     rect: egui::Rect,
@@ -1326,32 +1357,26 @@ impl GridView {
             None => {}
         }
 
-        if in_column_header {
-            let pane = panes
-                .iter()
-                .find(|p| p.rect.x_range().contains(pos.x))
-                .unwrap_or(&panes[0]);
-            let x = pane.scroll.x + f64::from(pos.x - pane.rect.left());
-            self.selection.select_columns(
-                layout.cols.index_at(x),
-                layout.cols.index_at(x),
-                modifiers.ctrl,
-            );
-            self.drag = Some(Drag::Select);
-            return;
-        }
-        if in_row_header {
-            let pane = panes
-                .iter()
-                .find(|p| p.rect.y_range().contains(pos.y))
-                .unwrap_or(&panes[0]);
-            let y = pane.scroll.y + f64::from(pos.y - pane.rect.top());
-            self.selection.select_rows(
-                layout.rows.index_at(y),
-                layout.rows.index_at(y),
-                modifiers.ctrl,
-            );
-            self.drag = Some(Drag::Select);
+        for (in_header, axis) in [
+            (in_column_header, Axis::Columns),
+            (in_row_header, Axis::Rows),
+        ] {
+            if !in_header {
+                continue;
+            }
+            let index = header_index(layout, panes, axis, pos);
+            // Shift extends the band already there, as it does everywhere else.
+            let anchor = match (modifiers.shift, axis) {
+                (true, Axis::Columns) => self.selection.anchor().col,
+                (true, Axis::Rows) => self.selection.anchor().row,
+                (false, _) => index,
+            };
+            let additive = modifiers.ctrl && !modifiers.shift;
+            match axis {
+                Axis::Columns => self.selection.select_columns(anchor, index, additive),
+                Axis::Rows => self.selection.select_rows(anchor, index, additive),
+            }
+            self.drag = Some(Drag::SelectHeaders { axis, anchor });
             return;
         }
         // The corner box selects everything.
@@ -1535,6 +1560,10 @@ impl GridView {
                     self.selection.extend_to(at, sheet);
                 }
             }
+            Drag::SelectHeaders { axis, anchor } => {
+                let index = header_index(layout, panes, axis, pos);
+                self.selection.extend_headers(axis, anchor, index);
+            }
             Drag::ResizeColumn {
                 index,
                 origin,
@@ -1589,7 +1618,7 @@ impl GridView {
             }
             // Scrolling has already happened frame by frame, and it is not an
             // edit, so there is nothing to report and nothing to undo.
-            Drag::Select | Drag::ScrollThumb { .. } => {}
+            Drag::Select | Drag::SelectHeaders { .. } | Drag::ScrollThumb { .. } => {}
         }
     }
 
@@ -2211,6 +2240,7 @@ fn draw_edge(
 mod tests {
     use super::*;
     use crate::grid::Selection;
+    use ss_model::cell::{MAX_COLS, MAX_ROWS};
 
     /// A context with the type faces installed.
     ///
@@ -2345,6 +2375,94 @@ mod tests {
         assert!(
             book.sheets[0].column_widths.len() == 1,
             "only the column that was dragged"
+        );
+    }
+
+    /// The middle of the header cell for a column, and for a row.
+    fn header_of(view: &GridView, axis: Axis, index: u32) -> egui::Pos2 {
+        let (_, _, layout) = view.layout.as_ref().expect("laid out");
+        let (hw, hh) = (layout.header_width as f32, layout.header_height as f32);
+        match axis {
+            Axis::Columns => egui::pos2(
+                hw + (layout.cols.offset(index) + layout.cols.size(index) / 2.0) as f32,
+                hh / 2.0,
+            ),
+            Axis::Rows => egui::pos2(
+                hw / 2.0,
+                hh + (layout.rows.offset(index) + layout.rows.size(index) / 2.0) as f32,
+            ),
+        }
+    }
+
+    #[test]
+    fn a_column_stays_selected_while_the_pointer_is_still_down() {
+        // The bug this exists for: a press on a header selected the whole
+        // column and set an ordinary selection drag. The next frame extended
+        // that drag towards "the cell under the pointer" — and the pointer was
+        // over the header, which `cell_at` answers for anyway rather than
+        // refusing — so the column collapsed to one cell before the button
+        // came back up. The selection looked like it cleared itself.
+        let ctx = context();
+        let mut book = Workbook::blank();
+        let mut view = GridView::default();
+        frame(&mut view, &mut book, vec![], &ctx);
+
+        let at = header_of(&view, Axis::Columns, 2);
+        frame(&mut view, &mut book, vec![press(at, true)], &ctx);
+        let whole = CellRange::new(CellRef::new(0, 2), CellRef::new(MAX_ROWS - 1, 2));
+        assert_eq!(view.selection.ranges(), [whole], "on the press");
+        // Two more frames with the button still down, which is where it went.
+        frame(&mut view, &mut book, vec![], &ctx);
+        frame(&mut view, &mut book, vec![], &ctx);
+        assert_eq!(view.selection.ranges(), [whole], "still down");
+        frame(&mut view, &mut book, vec![press(at, false)], &ctx);
+        assert_eq!(view.selection.ranges(), [whole], "after the release");
+    }
+
+    #[test]
+    fn a_row_stays_selected_too() {
+        let ctx = context();
+        let mut book = Workbook::blank();
+        let mut view = GridView::default();
+        frame(&mut view, &mut book, vec![], &ctx);
+
+        let at = header_of(&view, Axis::Rows, 3);
+        frame(&mut view, &mut book, vec![press(at, true)], &ctx);
+        frame(&mut view, &mut book, vec![], &ctx);
+        frame(&mut view, &mut book, vec![press(at, false)], &ctx);
+        assert_eq!(
+            view.selection.ranges(),
+            [CellRange::new(
+                CellRef::new(3, 0),
+                CellRef::new(3, MAX_COLS - 1)
+            )]
+        );
+    }
+
+    #[test]
+    fn sweeping_along_a_header_grows_one_band_rather_than_many() {
+        let ctx = context();
+        let mut book = Workbook::blank();
+        let mut view = GridView::default();
+        frame(&mut view, &mut book, vec![], &ctx);
+
+        let from = header_of(&view, Axis::Columns, 1);
+        let to = header_of(&view, Axis::Columns, 4);
+        frame(&mut view, &mut book, vec![press(from, true)], &ctx);
+        frame(
+            &mut view,
+            &mut book,
+            vec![egui::Event::PointerMoved(to)],
+            &ctx,
+        );
+        frame(&mut view, &mut book, vec![press(to, false)], &ctx);
+        assert_eq!(
+            view.selection.ranges(),
+            [CellRange::new(
+                CellRef::new(0, 1),
+                CellRef::new(MAX_ROWS - 1, 4)
+            )],
+            "B through E, as one band"
         );
     }
 
