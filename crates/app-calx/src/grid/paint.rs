@@ -1947,14 +1947,17 @@ impl GridView {
                 }
                 egui::Event::Key {
                     key,
+                    physical_key,
                     pressed: true,
                     modifiers,
                     ..
                 } => {
                     if self.editor.is_some() {
-                        self.editing_key(key, modifiers);
+                        self.editing_key(key, physical_key, modifiers);
                     } else {
-                        follow = self.grid_key(key, modifiers, sheet, book, body, layout).or(follow);
+                        follow = self
+                            .grid_key(key, physical_key, modifiers, sheet, book, body, layout)
+                            .or(follow);
                     }
                 }
                 _ => {}
@@ -1972,7 +1975,26 @@ impl GridView {
     /// editor was opened by typing, and moves the caret when it was opened with
     /// F2. Getting this backwards makes a half-typed formula unusable in one
     /// mode and cell navigation unusable in the other.
-    fn editing_key(&mut self, key: egui::Key, modifiers: egui::Modifiers) {
+    fn editing_key(
+        &mut self,
+        key: egui::Key,
+        physical: Option<egui::Key>,
+        modifiers: egui::Modifiers,
+    ) {
+        // Shift changes what the platform calls the key — Ctrl+Shift+; can
+        // arrive as `:` — so keys that pair with shift are matched physically.
+        let hit = |want: egui::Key| key == want || physical == Some(want);
+        if modifiers.ctrl && hit(egui::Key::Semicolon) {
+            let stamp = if modifiers.shift {
+                crate::clock::time_text()
+            } else {
+                crate::clock::date_text()
+            };
+            if let Some(open) = &mut self.editor {
+                open.text.push_str(&stamp);
+            }
+            return;
+        }
         let enter_mode = self.editor.as_ref().is_some_and(|e| e.mode == Mode::Enter);
         let direction = match key {
             egui::Key::ArrowUp => Some(Direction::Up),
@@ -2013,9 +2035,11 @@ impl GridView {
 
     /// Keys while the grid itself has the keyboard. Returns the cell the view
     /// should scroll to when the key moved one, or None when nothing moved.
+    #[allow(clippy::too_many_arguments)]
     fn grid_key(
         &mut self,
         key: egui::Key,
+        physical: Option<egui::Key>,
         modifiers: egui::Modifiers,
         sheet: &Sheet,
         book: &Workbook,
@@ -2037,6 +2061,65 @@ impl GridView {
                     return None;
                 }
                 _ => self.selected_picture = None,
+            }
+        }
+
+        // Keys whose logical name changes under shift — Ctrl+Shift+5 arrives
+        // as `%` on some platforms — are matched against the physical key too.
+        let hit = |want: egui::Key| key == want || physical == Some(want);
+        if modifiers.ctrl && !modifiers.alt {
+            // Ctrl+9 and Ctrl+0 hide the selected rows and columns; with
+            // shift they unhide, as in Excel.
+            if hit(egui::Key::Num9) {
+                self.actions.push(Action::Visibility {
+                    axis: Axis::Rows,
+                    hide: !modifiers.shift,
+                });
+                return None;
+            }
+            if hit(egui::Key::Num0) {
+                self.actions.push(Action::Visibility {
+                    axis: Axis::Columns,
+                    hide: !modifiers.shift,
+                });
+                return None;
+            }
+            // Ctrl+; types today's date and Ctrl+Shift+; the time — into a
+            // fresh editor, exactly as if the user had typed the digits.
+            if hit(egui::Key::Semicolon) {
+                let stamp = if modifiers.shift {
+                    crate::clock::time_text()
+                } else {
+                    crate::clock::date_text()
+                };
+                self.editor = Some(Editor::typing(self.selection.cursor(), stamp));
+                return None;
+            }
+            // Ctrl+Shift+~ ! @ # $ % ^: Excel's number-format row, using the
+            // same codes the toolbar combo names, so the combo agrees.
+            if modifiers.shift {
+                let code = if hit(egui::Key::Backtick) {
+                    Some("General")
+                } else if hit(egui::Key::Num1) {
+                    Some("#,##0.00")
+                } else if hit(egui::Key::Num2) {
+                    Some("h:mm:ss AM/PM")
+                } else if hit(egui::Key::Num3) {
+                    Some("d-mmm-yy")
+                } else if hit(egui::Key::Num4) {
+                    Some("\"$\"#,##0.00")
+                } else if hit(egui::Key::Num5) {
+                    Some("0%")
+                } else if hit(egui::Key::Num6) {
+                    Some("0.00E+00")
+                } else {
+                    None
+                };
+                if let Some(code) = code {
+                    self.actions
+                        .push(Action::Format(Format::NumberFormat(code.into())));
+                    return None;
+                }
             }
         }
 
@@ -2095,15 +2178,31 @@ impl GridView {
             egui::Key::Y if modifiers.ctrl => self.actions.push(Action::Redo),
             egui::Key::D if modifiers.ctrl => self.fill_within(Direction::Down),
             egui::Key::R if modifiers.ctrl => self.fill_within(Direction::Right),
-            egui::Key::A if modifiers.ctrl => self.selection.select_all(),
+            egui::Key::A if modifiers.ctrl => {
+                // First press selects the island of data around the cursor;
+                // pressed again — or on an empty patch — the whole sheet.
+                let region =
+                    super::selection::current_region(sheet, self.selection.cursor());
+                let lone = region.rows() == 1 && region.cols() == 1;
+                if lone || self.selection.ranges() == [region] {
+                    self.selection.select_all();
+                } else {
+                    self.selection.select_range(region);
+                }
+            }
             egui::Key::B if modifiers.ctrl => self.actions.push(Action::Format(Format::Bold)),
             egui::Key::I if modifiers.ctrl => self.actions.push(Action::Format(Format::Italic)),
             egui::Key::U if modifiers.ctrl => self.actions.push(Action::Format(Format::Underline)),
             egui::Key::Num5 if modifiers.ctrl => self.actions.push(Action::Format(Format::Strike)),
+            // Ctrl+Shift+Space is select-all, as in Excel — not an additive
+            // column selection, which is what it used to do here.
+            egui::Key::Space if modifiers.ctrl && modifiers.shift => {
+                self.selection.select_all();
+            }
             egui::Key::Space if modifiers.ctrl => {
                 let range = self.selection.active_range();
                 self.selection
-                    .select_columns(range.start.col, range.end.col, modifiers.shift);
+                    .select_columns(range.start.col, range.end.col, false);
             }
             egui::Key::Space if modifiers.shift => {
                 let range = self.selection.active_range();
@@ -2127,10 +2226,41 @@ impl GridView {
                 let at = if modifiers.ctrl {
                     CellRef::new(0, 0)
                 } else {
-                    CellRef::new(self.selection.cursor().row, 0)
+                    let row = if modifiers.shift {
+                        self.selection.lead().row
+                    } else {
+                        self.selection.cursor().row
+                    };
+                    CellRef::new(row, 0)
                 };
+                if modifiers.shift {
+                    self.selection.extend_to(at, sheet);
+                    return Some(self.selection.lead());
+                }
                 self.selection.move_to(at, sheet);
                 return Some(self.selection.cursor());
+            }
+            // End mirrors Home: the last filled cell of the row, and with
+            // Ctrl the bottom-right corner of everything the sheet uses.
+            egui::Key::End => {
+                if modifiers.ctrl {
+                    let target = sheet
+                        .cells
+                        .used_range()
+                        .map_or(CellRef::new(0, 0), |(_, end)| end);
+                    if modifiers.shift {
+                        self.selection.extend_to(target, sheet);
+                        return Some(self.selection.lead());
+                    }
+                    self.selection.move_to(target, sheet);
+                    return Some(self.selection.cursor());
+                }
+                self.selection.end_of_row(sheet, modifiers.shift);
+                return Some(if modifiers.shift {
+                    self.selection.lead()
+                } else {
+                    self.selection.cursor()
+                });
             }
             // A page is however many rows currently fit, which is why it
             // depends on the viewport rather than on a constant.
@@ -3338,6 +3468,146 @@ mod tests {
     /// A grid with the keyboard, ready to be typed at.
     fn typing() -> (egui::Context, Workbook, GridView) {
         (context(), Workbook::blank(), GridView::default())
+    }
+
+    /// Fills the named cells with a number, so there is data to navigate.
+    fn seed(book: &mut Workbook, cells: &[&str]) {
+        let sheet = book.sheet_mut(0).expect("a sheet");
+        for at in cells {
+            sheet.set(
+                CellRef::from_a1(at).expect("test address"),
+                ss_model::Cell {
+                    value: ss_model::CellValue::Number(1.0),
+                    ..Default::default()
+                },
+            );
+        }
+    }
+
+    #[test]
+    fn ctrl_a_selects_the_region_first_and_the_sheet_second() {
+        let (ctx, mut book, mut view) = typing();
+        seed(&mut book, &["B2", "B3", "C2", "C3"]);
+        frame(&mut view, &mut book, vec![], &ctx);
+        let b2 = cell_of(&view, CellRef::new(1, 1));
+        frame(&mut view, &mut book, vec![press(b2, true)], &ctx);
+        frame(&mut view, &mut book, vec![press(b2, false)], &ctx);
+
+        frame(&mut view, &mut book, vec![ctrl(egui::Key::A)], &ctx);
+        assert_eq!(
+            view.selection.ranges(),
+            [CellRange::new(CellRef::new(1, 1), CellRef::new(2, 2))],
+            "first press: the island"
+        );
+        frame(&mut view, &mut book, vec![ctrl(egui::Key::A)], &ctx);
+        assert_eq!(
+            view.selection.active_range().rows(),
+            MAX_ROWS,
+            "second press: everything"
+        );
+        assert_eq!(
+            view.selection.cursor(),
+            CellRef::new(1, 1),
+            "the active cell never moved"
+        );
+    }
+
+    #[test]
+    fn ctrl_shift_space_selects_everything() {
+        let (ctx, mut book, mut view) = typing();
+        frame(&mut view, &mut book, vec![], &ctx);
+        frame(
+            &mut view,
+            &mut book,
+            vec![key(egui::Key::Space, egui::Modifiers::CTRL | egui::Modifiers::SHIFT)],
+            &ctx,
+        );
+        let all = view.selection.active_range();
+        assert_eq!((all.rows(), all.cols()), (MAX_ROWS, MAX_COLS));
+    }
+
+    #[test]
+    fn end_and_ctrl_end_mirror_home() {
+        let (ctx, mut book, mut view) = typing();
+        seed(&mut book, &["A1", "C1", "B5"]);
+        frame(&mut view, &mut book, vec![], &ctx);
+
+        frame(&mut view, &mut book, vec![plain(egui::Key::End)], &ctx);
+        assert_eq!(
+            view.selection.cursor(),
+            CellRef::new(0, 2),
+            "End: the last filled cell of the row"
+        );
+        frame(&mut view, &mut book, vec![ctrl(egui::Key::End)], &ctx);
+        assert_eq!(
+            view.selection.cursor(),
+            CellRef::new(4, 2),
+            "Ctrl+End: the bottom-right of everything used"
+        );
+        frame(&mut view, &mut book, vec![plain(egui::Key::Home)], &ctx);
+        assert_eq!(view.selection.cursor(), CellRef::new(4, 0));
+    }
+
+    #[test]
+    fn ctrl_nine_and_zero_hide_what_shift_unhides() {
+        let (ctx, mut book, mut view) = typing();
+        frame(&mut view, &mut book, vec![], &ctx);
+        frame(&mut view, &mut book, vec![ctrl(egui::Key::Num9)], &ctx);
+        frame(&mut view, &mut book, vec![ctrl(egui::Key::Num0)], &ctx);
+        frame(
+            &mut view,
+            &mut book,
+            vec![key(egui::Key::Num9, egui::Modifiers::CTRL | egui::Modifiers::SHIFT)],
+            &ctx,
+        );
+        assert_eq!(
+            view.actions,
+            [
+                Action::Visibility {
+                    axis: Axis::Rows,
+                    hide: true
+                },
+                Action::Visibility {
+                    axis: Axis::Columns,
+                    hide: true
+                },
+                Action::Visibility {
+                    axis: Axis::Rows,
+                    hide: false
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn the_number_format_row_reaches_the_grid() {
+        let (ctx, mut book, mut view) = typing();
+        frame(&mut view, &mut book, vec![], &ctx);
+        // Ctrl+Shift+5 is percent; bare Ctrl+5 stays strikethrough.
+        frame(
+            &mut view,
+            &mut book,
+            vec![key(egui::Key::Num5, egui::Modifiers::CTRL | egui::Modifiers::SHIFT)],
+            &ctx,
+        );
+        frame(&mut view, &mut book, vec![ctrl(egui::Key::Num5)], &ctx);
+        assert_eq!(
+            view.actions,
+            [
+                Action::Format(Format::NumberFormat("0%".into())),
+                Action::Format(Format::Strike),
+            ]
+        );
+    }
+
+    #[test]
+    fn ctrl_semicolon_types_todays_date() {
+        let (ctx, mut book, mut view) = typing();
+        frame(&mut view, &mut book, vec![], &ctx);
+        frame(&mut view, &mut book, vec![ctrl(egui::Key::Semicolon)], &ctx);
+        let open = view.editor.as_ref().expect("an editor opened");
+        assert_eq!(open.text.matches('/').count(), 2, "m/d/yyyy: {}", open.text);
+        assert_eq!(open.mode, Mode::Enter, "commits like typed digits");
     }
 
     #[test]

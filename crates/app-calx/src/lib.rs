@@ -6,5 +6,6 @@
 
 #![forbid(unsafe_code)]
 
+pub mod clock;
 pub mod grid;
 pub mod icons;

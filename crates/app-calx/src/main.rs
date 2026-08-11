@@ -159,6 +159,10 @@ enum Dialog {
         /// happened" and "nothing matched" look identical otherwise.
         report: String,
     },
+    /// Excel's Go To (Ctrl+G, F5): an address, a range, or a defined name.
+    GoTo {
+        text: String,
+    },
     /// The checkbox list behind one filter arrow.
     Filter {
         /// An offset into the filter's range.
@@ -650,6 +654,27 @@ impl Calx {
         // nobody can see is a workbook full of formulas nobody can read.
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::F3)) {
             self.open_names();
+        }
+        // Go To, under both of Excel's keys.
+        if ctx.input_mut(|i| {
+            i.consume_key(egui::Modifiers::COMMAND, egui::Key::G)
+                | i.consume_key(egui::Modifiers::NONE, egui::Key::F5)
+        }) {
+            self.dialog = Some(Dialog::GoTo {
+                text: String::new(),
+            });
+        }
+        if ctx.input_mut(|i| {
+            i.consume_key(
+                egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+                egui::Key::L,
+            )
+        }) {
+            self.toggle_filter();
+        }
+        // Alt+= writes the SUM the toolbar button writes.
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::ALT, egui::Key::Equals)) {
+            self.autosum();
         }
     }
 
@@ -2711,6 +2736,31 @@ impl Calx {
                 if accept {
                     let name = text.clone();
                     self.rename_sheet(index, &name);
+                    keep = false;
+                }
+            }
+
+            Dialog::GoTo { text } => {
+                let mut accept = false;
+                modal(ctx, "Go to", |ui| {
+                    let field = ui.text_edit_singleline(text);
+                    if text.is_empty() {
+                        field.request_focus();
+                    }
+                    if field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        accept = true;
+                    }
+                    ui.add_space(2.0);
+                    ui.weak("A cell, a range, or a defined name — B12, A1:D9, Sales.");
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        accept |= ui.button("Go").clicked();
+                        keep &= !ui.button("Cancel").clicked();
+                    });
+                });
+                if accept {
+                    let target = text.clone();
+                    self.go_to(&target);
                     keep = false;
                 }
             }

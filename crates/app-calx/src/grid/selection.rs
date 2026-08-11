@@ -265,6 +265,81 @@ impl Selection {
         let first = *it.next().expect("never empty");
         it.fold(first, |acc, r| span_range(acc, *r))
     }
+
+    /// One rectangle, keeping the cursor in place when it falls inside.
+    pub fn select_range(&mut self, range: CellRange) {
+        if !range.contains(self.cursor) {
+            self.cursor = range.start;
+        }
+        self.ranges = vec![range];
+        self.anchor = range.start;
+        self.lead = range.end;
+    }
+
+    /// End: the last filled cell of the row, the mirror of Home.
+    pub fn end_of_row(&mut self, sheet: &Sheet, extend: bool) {
+        let row = if extend { self.lead.row } else { self.cursor.row };
+        let Some((_, used_end)) = sheet.cells.used_range() else {
+            return;
+        };
+        let filled =
+            |col: u32| sheet.get(CellRef::new(row, col)).is_some_and(|c| !c.is_vacant());
+        // The last filled column of this row; an empty row answers with the
+        // sheet's own last used column, so End still goes *somewhere* useful.
+        let mut col = used_end.col;
+        while col > 0 && !filled(col) {
+            col -= 1;
+        }
+        if !filled(col) {
+            col = used_end.col;
+        }
+        let target = CellRef::new(row, col);
+        if extend {
+            self.extend_to(target, sheet);
+        } else {
+            self.move_to(target, sheet);
+        }
+    }
+}
+
+/// Excel's "current region": the island of data around `at`, grown until it
+/// is bordered by empty rows and columns on every side. Diagonal contact
+/// counts, which is why each probe strip reaches one cell past the corners.
+pub fn current_region(sheet: &Sheet, at: CellRef) -> CellRange {
+    let filled = |row: u32, col: u32| {
+        sheet
+            .get(CellRef::new(row, col))
+            .is_some_and(|c| !c.is_vacant())
+    };
+    let Some((used_start, used_end)) = sheet.cells.used_range() else {
+        return CellRange::new(at, at);
+    };
+    let mut range = CellRange::new(at, at);
+    loop {
+        let mut grown = range;
+        // Probe columns one past each side, clamped to the used range so an
+        // island near the edge does not walk a million empty cells.
+        let c0 = range.start.col.saturating_sub(1).max(used_start.col.saturating_sub(1));
+        let c1 = (range.end.col + 1).min(used_end.col);
+        let r0 = range.start.row.saturating_sub(1).max(used_start.row.saturating_sub(1));
+        let r1 = (range.end.row + 1).min(used_end.row);
+        if range.start.row > 0 && (c0..=c1).any(|c| filled(range.start.row - 1, c)) {
+            grown.start.row -= 1;
+        }
+        if range.end.row < used_end.row && (c0..=c1).any(|c| filled(range.end.row + 1, c)) {
+            grown.end.row += 1;
+        }
+        if range.start.col > 0 && (r0..=r1).any(|r| filled(r, range.start.col - 1)) {
+            grown.start.col -= 1;
+        }
+        if range.end.col < used_end.col && (r0..=r1).any(|r| filled(r, range.end.col + 1)) {
+            grown.end.col += 1;
+        }
+        if grown == range {
+            return range;
+        }
+        range = grown;
+    }
 }
 
 fn offset(at: CellRef, dir: Direction, by: i64) -> CellRef {
@@ -520,6 +595,35 @@ mod tests {
         sel.step(Direction::Up, &sheet);
         sel.step(Direction::Left, &sheet);
         assert_eq!(sel.cursor(), a1("A1"));
+    }
+
+    #[test]
+    fn the_current_region_is_the_island_and_only_the_island() {
+        // Data at B2:C3, a diagonal straggler at D4, an unrelated island at F8.
+        let sheet = sheet_with(&["B2", "B3", "C2", "C3", "D4", "F8"]);
+        let region = current_region(&sheet, a1("B2"));
+        assert_eq!(
+            region,
+            CellRange::new(a1("B2"), a1("D4")),
+            "diagonal contact joins D4; F8 stays out"
+        );
+        // From an isolated cell the region is just that cell.
+        assert_eq!(current_region(&sheet, a1("F8")), CellRange::new(a1("F8"), a1("F8")));
+        // From an empty cell far away, likewise — the caller decides that
+        // means select-all.
+        assert_eq!(current_region(&sheet, a1("H20")), CellRange::new(a1("H20"), a1("H20")));
+    }
+
+    #[test]
+    fn end_goes_to_the_last_filled_cell_of_the_row() {
+        let sheet = sheet_with(&["A1", "C1", "B5"]);
+        let mut sel = Selection::at(a1("A1"));
+        sel.end_of_row(&sheet, false);
+        assert_eq!(sel.cursor(), a1("C1"));
+        // An empty row still lands at the sheet's used width.
+        let mut sel = Selection::at(a1("A3"));
+        sel.end_of_row(&sheet, false);
+        assert_eq!(sel.cursor(), a1("C3"));
     }
 
     #[test]
