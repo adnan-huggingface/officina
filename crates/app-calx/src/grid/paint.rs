@@ -488,6 +488,7 @@ impl GridView {
             Some(Drag::MoveBand { .. }) => Some(egui::CursorIcon::Grabbing),
             Some(Drag::MovePicture { .. }) => Some(egui::CursorIcon::Move),
             Some(Drag::ResizePicture { handle, .. }) => Some(handle.cursor()),
+            Some(Drag::Fill { .. }) => Some(egui::CursorIcon::Crosshair),
             Some(_) => None,
             None => ui.ctx().pointer_hover_pos().and_then(|pos| {
                 header_edge(layout, content, body, &panes, pos)
@@ -497,6 +498,7 @@ impl GridView {
                     })
                     .or_else(|| self.movable_band(layout, content, body, &panes, pos))
                     .or_else(|| self.pointer_over(sheet, layout, &panes, pos))
+                    .or_else(|| self.fill_hover(layout, &panes, pos))
             }),
         };
         if let Some(icon) = icon {
@@ -553,6 +555,18 @@ impl GridView {
             Axis::Rows => self.scroll.y = moved,
             Axis::Columns => self.scroll.x = moved,
         }
+    }
+
+    /// The thin cross over the fill handle. The square is six pixels wide, so
+    /// the cursor changing is most of what says it exists at all.
+    fn fill_hover(&self, layout: &Layout, panes: &[Pane], pos: egui::Pos2) -> Option<egui::CursorIcon> {
+        if self.editor.is_some() || self.selected_picture.is_some() {
+            return None;
+        }
+        panes
+            .iter()
+            .any(|pane| pane.rect.contains(pos) && self.fill_handle(layout, pane).contains(pos))
+            .then_some(egui::CursorIcon::Crosshair)
     }
 
     /// The small square at the bottom-right corner of the selection.
@@ -840,6 +854,18 @@ impl GridView {
         // Selection under the text — unless a picture owns the selection, in
         // which case there is nothing selected in the cells at all and saying
         // otherwise would leave the user guessing what Delete is about to do.
+        //
+        // The active cell is left unfilled inside the highlight, as Excel
+        // leaves it white: it is the one cell typing would land in, and the
+        // gap in the wash is how the eye finds it in a screenful of blue.
+        let unfilled = {
+            let cursor = self.selection.cursor();
+            let anchor = sheet.merge_at(cursor).map_or(cursor, |m| m.start);
+            match sheet.merge_at(anchor) {
+                Some(m) => super::rect_of_range(layout, *m, pane.rect, pane.scroll),
+                None => rect_of(layout, anchor, pane.rect, pane.scroll),
+            }
+        };
         for range in self
             .selection
             .ranges()
@@ -851,7 +877,7 @@ impl GridView {
             if !visible.is_positive() {
                 continue;
             }
-            painter.rect_filled(visible, 0.0, palette.selection_fill);
+            fill_except(&painter, visible, unfilled, palette.selection_fill);
             painter.rect_stroke(
                 rect,
                 0.0,
@@ -1351,7 +1377,20 @@ impl GridView {
         if let Some(drag) = self.drag {
             let (down, at) = ui.input(|i| (i.pointer.any_down(), i.pointer.interact_pos()));
             match (down, at) {
-                (true, Some(pos)) => self.continue_drag(drag, book, &frame, pos),
+                (true, Some(pos)) => {
+                    self.continue_drag(drag, book, &frame, pos);
+                    // Held past the edge with the mouse still: no new events
+                    // arrive, so the next frame has to be asked for or the
+                    // auto-scroll stalls until the pointer moves again.
+                    if !body.contains(pos)
+                        && matches!(
+                            drag,
+                            Drag::Select | Drag::SelectHeaders { .. } | Drag::Fill { .. }
+                        )
+                    {
+                        ui.ctx().request_repaint();
+                    }
+                }
                 (false, _) => {
                     self.finish_drag(drag);
                     self.invalidate();
@@ -1372,15 +1411,63 @@ impl GridView {
                 .as_ref()
                 .and_then(|open| cell_rect(layout, &panes, open.at))
                 .is_some_and(|rect| rect.expand(2.0).contains(pos));
-            if ui.input(|i| i.pointer.any_pressed()) && !inside_editor {
+            let (primary, secondary) = ui.input(|i| {
+                (
+                    i.pointer.button_pressed(egui::PointerButton::Primary),
+                    i.pointer.button_pressed(egui::PointerButton::Secondary),
+                )
+            });
+            if primary && !inside_editor {
                 // Clicking away from an open editor keeps what was typed, the
                 // way every spreadsheet does.
                 self.commit(None);
                 self.begin_drag(book, &frame, pos, modifiers);
+            } else if secondary && !inside_editor {
+                // A right-click is a request for the menu, not a selection
+                // gesture: inside the selection it changes nothing, so the
+                // menu can act on what is selected; outside it, it moves
+                // there first, as Excel's does. It never starts a drag.
+                self.commit(None);
+                self.secondary_press(book, &frame, pos);
             }
         }
         self.handle_keys(ui, book, body, layout);
         self.layout = Some(cached);
+    }
+
+    /// What a right-button press does to the selection before the context
+    /// menu opens over it.
+    fn secondary_press(&mut self, book: &Workbook, frame: &Frame, pos: egui::Pos2) {
+        let Some(sheet) = book.sheet(self.sheet_index) else {
+            return;
+        };
+        let Frame {
+            layout, body, panes, ..
+        } = *frame;
+        let in_column_header = pos.y < body.top() && pos.x >= body.left();
+        let in_row_header = pos.x < body.left() && pos.y >= body.top();
+        if in_column_header || in_row_header {
+            let axis = if in_column_header {
+                Axis::Columns
+            } else {
+                Axis::Rows
+            };
+            let index = header_index(layout, panes, axis, pos);
+            if selected_band(&self.selection, axis, index).is_none() {
+                match axis {
+                    Axis::Columns => self.selection.select_columns(index, index, false),
+                    Axis::Rows => self.selection.select_rows(index, index, false),
+                }
+            }
+            return;
+        }
+        if body.contains(pos) {
+            if let Some(at) = self.cell_at(layout, body, panes, pos) {
+                if !self.selection.contains(at) {
+                    self.selection.move_to(at, sheet);
+                }
+            }
+        }
     }
 
     fn begin_drag(
@@ -1650,6 +1737,29 @@ impl GridView {
         sheet.pictures[index].anchor = super::picture::anchor_of(layout, rect, &current);
     }
 
+    /// Nudges the view when a drag holds the pointer past the edge of the
+    /// body, so a sweep can keep selecting beyond what is on screen. The step
+    /// grows with the overshoot, the way Excel accelerates the further out
+    /// the pointer is held.
+    fn auto_scroll(&mut self, body: egui::Rect, pos: egui::Pos2, horizontal: bool, vertical: bool) {
+        let step = |over: f32| f64::from((over * 0.3).clamp(2.0, 48.0));
+        if horizontal {
+            if pos.x > body.right() {
+                self.scroll.x += step(pos.x - body.right());
+            } else if pos.x < body.left() {
+                self.scroll.x -= step(body.left() - pos.x);
+            }
+        }
+        if vertical {
+            if pos.y > body.bottom() {
+                self.scroll.y += step(pos.y - body.bottom());
+            } else if pos.y < body.top() {
+                self.scroll.y -= step(body.top() - pos.y);
+            }
+        }
+        self.scroll = self.scroll.clamped();
+    }
+
     fn continue_drag(&mut self, drag: Drag, book: &mut Workbook, frame: &Frame, pos: egui::Pos2) {
         let (layout, body, panes) = (frame.layout, frame.body, frame.panes);
         match drag {
@@ -1692,12 +1802,14 @@ impl GridView {
                 self.set_picture_rect(book, layout, index, rect);
             }
             Drag::Fill { from } => {
+                self.auto_scroll(body, pos, true, true);
                 let Some(at) = self.cell_at(layout, body, panes, pos) else {
                     return;
                 };
                 self.fill_target = Some(fill_target(from, at));
             }
             Drag::Select => {
+                self.auto_scroll(body, pos, true, true);
                 let Some(at) = self.cell_at(layout, body, panes, pos) else {
                     return;
                 };
@@ -1706,6 +1818,13 @@ impl GridView {
                 }
             }
             Drag::SelectHeaders { axis, anchor } => {
+                // Only along the axis being swept: a column sweep has the
+                // pointer above the body the whole time, and scrolling the
+                // rows away because of it would be nonsense.
+                match axis {
+                    Axis::Columns => self.auto_scroll(body, pos, true, false),
+                    Axis::Rows => self.auto_scroll(body, pos, false, true),
+                }
                 let index = header_index(layout, panes, axis, pos);
                 self.selection.extend_headers(axis, anchor, index);
             }
@@ -1802,7 +1921,9 @@ impl GridView {
             return;
         };
         let events = ui.input(|i| i.events.clone());
-        let mut moved = false;
+        // The cell the view should chase, when a key moved one: the cursor
+        // for plain movement, the growing corner for an extension.
+        let mut follow: Option<CellRef> = None;
 
         for event in events {
             match event {
@@ -1833,16 +1954,15 @@ impl GridView {
                     if self.editor.is_some() {
                         self.editing_key(key, modifiers);
                     } else {
-                        moved |= self.grid_key(key, modifiers, sheet, book, body, layout);
+                        follow = self.grid_key(key, modifiers, sheet, book, body, layout).or(follow);
                     }
                 }
                 _ => {}
             }
         }
 
-        if moved {
-            let cursor = self.selection.cursor();
-            self.scroll_into_view(cursor, body.size(), book, sheet);
+        if let Some(target) = follow {
+            self.scroll_into_view(target, body.size(), book, sheet);
         }
     }
 
@@ -1891,8 +2011,8 @@ impl GridView {
         }
     }
 
-    /// Keys while the grid itself has the keyboard. Returns whether the cursor
-    /// moved, so the caller can scroll it back into view.
+    /// Keys while the grid itself has the keyboard. Returns the cell the view
+    /// should scroll to when the key moved one, or None when nothing moved.
     fn grid_key(
         &mut self,
         key: egui::Key,
@@ -1901,7 +2021,7 @@ impl GridView {
         book: &Workbook,
         body: egui::Rect,
         layout: &Layout,
-    ) -> bool {
+    ) -> Option<CellRef> {
         // A selected picture takes the two keys that are about *it* rather than
         // about the cells. Everything else — arrows, typing — deselects it,
         // because the cell cursor is what those keys move.
@@ -1910,11 +2030,11 @@ impl GridView {
                 egui::Key::Delete | egui::Key::Backspace => {
                     self.actions.push(Action::DeletePicture(index));
                     self.selected_picture = None;
-                    return false;
+                    return None;
                 }
                 egui::Key::Escape => {
                     self.selected_picture = None;
-                    return false;
+                    return None;
                 }
                 _ => self.selected_picture = None,
             }
@@ -1935,7 +2055,13 @@ impl GridView {
             } else {
                 self.selection.step(direction, sheet);
             }
-            return true;
+            // An extension chases its growing corner; plain movement chases
+            // the cursor. The two only differ while shift is held.
+            return Some(if modifiers.shift {
+                self.selection.lead()
+            } else {
+                self.selection.cursor()
+            });
         }
 
         match key {
@@ -1946,7 +2072,7 @@ impl GridView {
                     Direction::Right
                 };
                 self.selection.advance(dir, sheet);
-                return true;
+                return Some(self.selection.cursor());
             }
             egui::Key::Enter => {
                 let dir = if modifiers.shift {
@@ -1955,7 +2081,7 @@ impl GridView {
                     Direction::Down
                 };
                 self.selection.advance(dir, sheet);
-                return true;
+                return Some(self.selection.cursor());
             }
             egui::Key::F2 => self.open_editor(book, Mode::Edit),
             // Backspace opens an editor on an emptied cell; Delete just empties.
@@ -2004,7 +2130,7 @@ impl GridView {
                     CellRef::new(self.selection.cursor().row, 0)
                 };
                 self.selection.move_to(at, sheet);
-                return true;
+                return Some(self.selection.cursor());
             }
             // A page is however many rows currently fit, which is why it
             // depends on the viewport rather than on a constant.
@@ -2022,14 +2148,14 @@ impl GridView {
                 let at = CellRef::new(row.min(ss_model::cell::MAX_ROWS - 1), cursor.col);
                 if modifiers.shift {
                     self.selection.extend_to(at, sheet);
-                } else {
-                    self.selection.move_to(at, sheet);
+                    return Some(self.selection.lead());
                 }
-                return true;
+                self.selection.move_to(at, sheet);
+                return Some(self.selection.cursor());
             }
             _ => {}
         }
-        false
+        None
     }
 
     /// Ctrl-D and Ctrl-R: fill the selection from its own first row or column.
@@ -2395,6 +2521,36 @@ fn draw_edge(
         }
         None => {
             painter.line_segment([from, to], stroke);
+        }
+    }
+}
+
+/// Fills `area` except where `hole` covers it.
+///
+/// Four strips around the hole rather than a fill-then-erase: the wash is
+/// translucent, so painting over it with an "eraser" colour would also erase
+/// the gridlines and any cell fill underneath.
+fn fill_except(painter: &egui::Painter, area: egui::Rect, hole: egui::Rect, color: egui::Color32) {
+    let hole = hole.intersect(area);
+    if !hole.is_positive() {
+        painter.rect_filled(area, 0.0, color);
+        return;
+    }
+    let strips = [
+        egui::Rect::from_min_max(area.min, egui::pos2(hole.left(), area.bottom())),
+        egui::Rect::from_min_max(egui::pos2(hole.right(), area.top()), area.max),
+        egui::Rect::from_min_max(
+            egui::pos2(hole.left(), area.top()),
+            egui::pos2(hole.right(), hole.top()),
+        ),
+        egui::Rect::from_min_max(
+            egui::pos2(hole.left(), hole.bottom()),
+            egui::pos2(hole.right(), area.bottom()),
+        ),
+    ];
+    for strip in strips {
+        if strip.is_positive() {
+            painter.rect_filled(strip, 0.0, color);
         }
     }
 }
@@ -2846,6 +3002,132 @@ mod tests {
             pressed,
             modifiers: egui::Modifiers::default(),
         }
+    }
+
+    fn right_press(pos: egui::Pos2, pressed: bool) -> egui::Event {
+        egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Secondary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        }
+    }
+
+    #[test]
+    fn a_right_click_inside_the_selection_leaves_it_alone() {
+        // The bug this exists for: every press ran the selection gesture,
+        // whichever button it came from — so right-clicking a selected range
+        // collapsed it to one cell before the menu opened, and "right-click,
+        // Sort" sorted a single cell.
+        let ctx = context();
+        let mut book = Workbook::blank();
+        let mut view = GridView::default();
+        frame(&mut view, &mut book, vec![], &ctx);
+
+        let from = cell_of(&view, CellRef::new(1, 1));
+        let to = cell_of(&view, CellRef::new(3, 2));
+        frame(&mut view, &mut book, vec![press(from, true)], &ctx);
+        frame(&mut view, &mut book, vec![egui::Event::PointerMoved(to)], &ctx);
+        frame(&mut view, &mut book, vec![press(to, false)], &ctx);
+        let range = CellRange::new(CellRef::new(1, 1), CellRef::new(3, 2));
+        assert_eq!(view.selection.ranges(), [range]);
+
+        let inside = cell_of(&view, CellRef::new(2, 2));
+        frame(&mut view, &mut book, vec![right_press(inside, true)], &ctx);
+        frame(&mut view, &mut book, vec![right_press(inside, false)], &ctx);
+        assert_eq!(view.selection.ranges(), [range], "the selection is kept");
+        assert_eq!(view.selection.cursor(), CellRef::new(1, 1), "so is the cursor");
+
+        // Outside the selection it moves there first, as Excel's does.
+        let outside = cell_of(&view, CellRef::new(6, 4));
+        frame(&mut view, &mut book, vec![right_press(outside, true)], &ctx);
+        assert_eq!(view.selection.cursor(), CellRef::new(6, 4));
+        assert!(view.selection.is_single_cell());
+        assert!(view.drag.is_none(), "a right press never starts a drag");
+    }
+
+    #[test]
+    fn dragging_a_selection_keeps_the_active_cell_where_it_started() {
+        let ctx = context();
+        let mut book = Workbook::blank();
+        let mut view = GridView::default();
+        frame(&mut view, &mut book, vec![], &ctx);
+
+        let from = cell_of(&view, CellRef::new(1, 1));
+        let to = cell_of(&view, CellRef::new(4, 3));
+        frame(&mut view, &mut book, vec![press(from, true)], &ctx);
+        frame(&mut view, &mut book, vec![egui::Event::PointerMoved(to)], &ctx);
+        frame(&mut view, &mut book, vec![press(to, false)], &ctx);
+        assert_eq!(
+            view.selection.active_range(),
+            CellRange::new(CellRef::new(1, 1), CellRef::new(4, 3))
+        );
+        assert_eq!(
+            view.selection.cursor(),
+            CellRef::new(1, 1),
+            "typing lands where the drag began, not where it ended"
+        );
+    }
+
+    #[test]
+    fn holding_a_drag_past_the_edge_scrolls_the_view() {
+        let ctx = context();
+        let mut book = Workbook::blank();
+        let mut view = GridView::default();
+        frame(&mut view, &mut book, vec![], &ctx);
+
+        let from = cell_of(&view, CellRef::new(2, 1));
+        frame(&mut view, &mut book, vec![press(from, true)], &ctx);
+        // Park the pointer below the bottom edge and let frames pass. Each
+        // one nudges the scroll further, even with no new pointer events.
+        let below = egui::pos2(from.x, 5000.0);
+        frame(&mut view, &mut book, vec![egui::Event::PointerMoved(below)], &ctx);
+        let after_one = view.scroll.y;
+        assert!(after_one > 0.0, "the view moved: {after_one}");
+        frame(&mut view, &mut book, vec![], &ctx);
+        frame(&mut view, &mut book, vec![], &ctx);
+        assert!(view.scroll.y > after_one, "and keeps moving while held");
+        frame(&mut view, &mut book, vec![press(below, false)], &ctx);
+        assert!(
+            view.selection.active_range().rows() > 1,
+            "the sweep selected past the first screenful: {:?}",
+            view.selection.active_range()
+        );
+    }
+
+    #[test]
+    fn the_pointer_over_the_fill_handle_is_a_thin_cross() {
+        let ctx = context();
+        let mut book = Workbook::blank();
+        let mut view = GridView::default();
+        frame(&mut view, &mut book, vec![], &ctx);
+
+        // The handle sits on the bottom-right corner of A1.
+        let (_, _, layout) = view.layout.as_ref().expect("laid out");
+        let corner = egui::pos2(
+            layout.header_width as f32 + layout.cols.size(0) as f32,
+            layout.header_height as f32 + layout.rows.size(0) as f32,
+        );
+        let icon = frame(
+            &mut view,
+            &mut book,
+            vec![egui::Event::PointerMoved(corner)],
+            &ctx,
+        );
+        assert_eq!(icon, egui::CursorIcon::Crosshair);
+
+        // And it stays a cross for the whole fill drag, even though the
+        // pointer leaves the handle on the first frame of it.
+        frame(&mut view, &mut book, vec![press(corner, true)], &ctx);
+        let away = cell_of(&view, CellRef::new(4, 0));
+        let icon = frame(
+            &mut view,
+            &mut book,
+            vec![egui::Event::PointerMoved(away)],
+            &ctx,
+        );
+        assert_eq!(icon, egui::CursorIcon::Crosshair);
+        frame(&mut view, &mut book, vec![press(away, false)], &ctx);
     }
 
     /// A workbook with one picture anchored over B2:D5, near enough.

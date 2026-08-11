@@ -42,6 +42,11 @@ pub struct Selection {
     anchor: CellRef,
     /// The active cell — where typing goes and what the name box shows.
     cursor: CellRef,
+    /// The corner an extension is moving. Distinct from the cursor: in Excel
+    /// the active cell stays put while shift-arrow or a drag grows the
+    /// rectangle, and it is this corner — not the active cell — that moves
+    /// and that the view follows.
+    lead: CellRef,
 }
 
 impl Default for Selection {
@@ -56,6 +61,7 @@ impl Selection {
             ranges: vec![CellRange::new(cell, cell)],
             anchor: cell,
             cursor: cell,
+            lead: cell,
         }
     }
 
@@ -65,6 +71,12 @@ impl Selection {
 
     pub fn anchor(&self) -> CellRef {
         self.anchor
+    }
+
+    /// The cell navigation should keep in view: the moving corner while
+    /// extending, which equals the cursor whenever nothing is being extended.
+    pub fn lead(&self) -> CellRef {
+        self.lead
     }
 
     pub fn ranges(&self) -> &[CellRange] {
@@ -102,13 +114,16 @@ impl Selection {
         self.ranges = vec![expand(sheet, CellRange::new(at, at))];
         self.anchor = at;
         self.cursor = at;
+        self.lead = at;
     }
 
     /// Grows the active rectangle to reach `at`, keeping the anchor fixed.
+    /// The cursor stays where it is: extending a selection does not move
+    /// where typing lands.
     pub fn extend_to(&mut self, at: CellRef, sheet: &Sheet) {
         let range = expand(sheet, span(self.anchor, at));
         *self.ranges.last_mut().expect("never empty") = range;
-        self.cursor = at;
+        self.lead = at;
     }
 
     /// Ctrl-click: starts a new area without losing the ones already there.
@@ -117,6 +132,7 @@ impl Selection {
         self.ranges.push(expand(sheet, CellRange::new(at, at)));
         self.anchor = at;
         self.cursor = at;
+        self.lead = at;
     }
 
     /// Arrow key: one step, collapsing the selection.
@@ -125,9 +141,9 @@ impl Selection {
         self.move_to(at, sheet);
     }
 
-    /// Shift-arrow: one step of the rectangle's edge.
+    /// Shift-arrow: one step of the rectangle's moving corner.
     pub fn extend(&mut self, dir: Direction, sheet: &Sheet) {
-        let at = offset(self.cursor, dir, 1);
+        let at = offset(self.lead, dir, 1);
         self.extend_to(at, sheet);
     }
 
@@ -139,10 +155,14 @@ impl Selection {
     /// is how anyone navigates a large sheet, so getting it slightly wrong is
     /// felt immediately.
     pub fn jump(&mut self, dir: Direction, sheet: &Sheet, extend: bool) {
-        let target = boundary(sheet, self.cursor, dir);
         if extend {
+            // The walk starts from the moving corner, so repeated
+            // Ctrl+Shift+arrow keeps growing rather than re-treading the
+            // same run from the active cell.
+            let target = boundary(sheet, self.lead, dir);
             self.extend_to(target, sheet);
         } else {
+            let target = boundary(sheet, self.cursor, dir);
             self.move_to(target, sheet);
         }
     }
@@ -181,6 +201,7 @@ impl Selection {
             ),
         };
         *self.ranges.last_mut().expect("never empty") = range;
+        self.lead = if to >= from { range.end } else { range.start };
     }
 
     pub fn select_all(&mut self) {
@@ -189,6 +210,7 @@ impl Selection {
             CellRef::new(MAX_ROWS - 1, MAX_COLS - 1),
         )];
         self.anchor = CellRef::new(0, 0);
+        self.lead = self.cursor;
     }
 
     fn replace(&mut self, range: CellRange, additive: bool, cursor: CellRef) {
@@ -199,6 +221,8 @@ impl Selection {
         }
         self.anchor = range.start;
         self.cursor = cursor;
+        // Shift-arrow after a header click grows the band from its far end.
+        self.lead = range.end;
     }
 
     /// Moves the cursor within the selection, as Tab and Enter do.
@@ -391,6 +415,29 @@ mod tests {
         // Reversing past the anchor flips the rectangle rather than emptying it.
         sel.extend_to(a1("A1"), &sheet);
         assert_eq!(sel.active_range(), CellRange::new(a1("A1"), a1("C3")));
+    }
+
+    #[test]
+    fn extending_moves_the_lead_and_not_the_active_cell() {
+        // The bug this exists for: the cursor rode along with the growing
+        // edge, so after shift-selecting a block, typing landed in the far
+        // corner instead of in the cell that was active — which is not
+        // where Excel puts it, and not where anyone is looking.
+        let sheet = sheet_with(&[]);
+        let mut sel = Selection::at(a1("B2"));
+        sel.extend(Direction::Down, &sheet);
+        sel.extend(Direction::Down, &sheet);
+        sel.extend(Direction::Right, &sheet);
+        assert_eq!(sel.active_range(), CellRange::new(a1("B2"), a1("C4")));
+        assert_eq!(sel.cursor(), a1("B2"), "typing still lands at B2");
+        assert_eq!(sel.lead(), a1("C4"), "the view follows the moving corner");
+        // Ctrl+Shift+arrow keeps walking from the lead, not from the cursor.
+        sel.jump(Direction::Down, &sheet, true);
+        assert_eq!(sel.cursor(), a1("B2"));
+        // A plain step collapses everything back to one cell again.
+        sel.step(Direction::Right, &sheet);
+        assert_eq!(sel.cursor(), sel.lead());
+        assert!(sel.is_single_cell());
     }
 
     #[test]
