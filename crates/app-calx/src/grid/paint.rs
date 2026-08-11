@@ -602,12 +602,26 @@ impl GridView {
             ui.fonts_mut(|f| f.layout_job(job))
         };
 
-        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect.expand(1.0)));
-        let output = egui::TextEdit::singleline(&mut open.text)
+        // Multiline, but Enter still commits: the editor's own return key is
+        // Alt+Enter, which is how Excel breaks a line inside a cell. The
+        // child gets room below the cell so added lines grow downward over
+        // the grid instead of being clipped at the first row boundary.
+        let room = egui::Rect::from_min_max(
+            rect.min - egui::vec2(1.0, 1.0),
+            egui::pos2(rect.max.x + 1.0, ui.max_rect().bottom()),
+        );
+        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(room));
+        let output = egui::TextEdit::multiline(&mut open.text)
             .id(id)
             .margin(egui::Margin::symmetric(2, 0))
             .layouter(&mut layouter)
             .desired_width(rect.width().max(60.0))
+            .desired_rows(1)
+            .lock_focus(false)
+            .return_key(Some(egui::KeyboardShortcut::new(
+                egui::Modifiers::ALT,
+                egui::Key::Enter,
+            )))
             .show(&mut child);
 
         if open.fresh {
@@ -1385,7 +1399,10 @@ impl GridView {
                     if !body.contains(pos)
                         && matches!(
                             drag,
-                            Drag::Select | Drag::SelectHeaders { .. } | Drag::Fill { .. }
+                            Drag::Select
+                                | Drag::SelectHeaders { .. }
+                                | Drag::Fill { .. }
+                                | Drag::Point
                         )
                     {
                         ui.ctx().request_repaint();
@@ -1418,6 +1435,23 @@ impl GridView {
                 )
             });
             if primary && !inside_editor {
+                // Mid-formula, a click is Excel's point mode: the cell's name
+                // goes into the formula, and the click never reaches the grid.
+                let points = self
+                    .editor
+                    .as_ref()
+                    .is_some_and(|open| open.is_formula() && open.can_point())
+                    && body.contains(pos);
+                if points {
+                    if let Some(at) = self.cell_at(layout, body, &panes, pos) {
+                        if let Some(open) = &mut self.editor {
+                            open.point_at(at);
+                        }
+                        self.drag = Some(Drag::Point);
+                        self.layout = Some(cached);
+                        return;
+                    }
+                }
                 // Clicking away from an open editor keeps what was typed, the
                 // way every spreadsheet does.
                 self.commit(None);
@@ -1808,6 +1842,15 @@ impl GridView {
                 };
                 self.fill_target = Some(fill_target(from, at));
             }
+            Drag::Point => {
+                self.auto_scroll(body, pos, true, true);
+                let Some(at) = self.cell_at(layout, body, panes, pos) else {
+                    return;
+                };
+                if let Some(open) = &mut self.editor {
+                    open.point_to(at);
+                }
+            }
             Drag::Select => {
                 self.auto_scroll(body, pos, true, true);
                 let Some(at) = self.cell_at(layout, body, panes, pos) else {
@@ -1899,8 +1942,9 @@ impl GridView {
                 }
             }
             // Scrolling has already happened frame by frame, and it is not an
-            // edit, so there is nothing to report and nothing to undo.
-            Drag::Select | Drag::SelectHeaders { .. } | Drag::ScrollThumb { .. } => {}
+            // edit, so there is nothing to report and nothing to undo. A
+            // pointed reference is already in the formula's text.
+            Drag::Select | Drag::SelectHeaders { .. } | Drag::ScrollThumb { .. } | Drag::Point => {}
         }
     }
 
@@ -1953,7 +1997,7 @@ impl GridView {
                     ..
                 } => {
                     if self.editor.is_some() {
-                        self.editing_key(key, physical_key, modifiers);
+                        follow = self.editing_key(key, physical_key, modifiers).or(follow);
                     } else {
                         follow = self
                             .grid_key(key, physical_key, modifiers, sheet, book, body, layout)
@@ -1980,7 +2024,7 @@ impl GridView {
         key: egui::Key,
         physical: Option<egui::Key>,
         modifiers: egui::Modifiers,
-    ) {
+    ) -> Option<CellRef> {
         // Shift changes what the platform calls the key — Ctrl+Shift+; can
         // arrive as `:` — so keys that pair with shift are matched physically.
         let hit = |want: egui::Key| key == want || physical == Some(want);
@@ -1993,7 +2037,7 @@ impl GridView {
             if let Some(open) = &mut self.editor {
                 open.text.push_str(&stamp);
             }
-            return;
+            return None;
         }
         let enter_mode = self.editor.as_ref().is_some_and(|e| e.mode == Mode::Enter);
         let direction = match key {
@@ -2005,11 +2049,32 @@ impl GridView {
         };
         if let Some(direction) = direction {
             if enter_mode {
+                // Mid-formula the arrows point at cells, as Excel's do; only
+                // when the text cannot take a reference do they commit.
+                let points = self
+                    .editor
+                    .as_ref()
+                    .is_some_and(|e| e.is_formula() && e.can_point());
+                if points {
+                    return self.point_step(direction, modifiers.shift);
+                }
                 self.commit(Some(direction));
             }
-            return;
+            return None;
         }
         match key {
+            // Alt+Enter is the editor's own return key: it inserts the
+            // newline itself, and the commit below must not fire.
+            egui::Key::Enter if modifiers.alt => {}
+            // Ctrl+Enter writes the entry into every selected cell at once.
+            egui::Key::Enter if modifiers.ctrl => {
+                if let Some(open) = self.editor.take() {
+                    self.actions.push(Action::CommitAll {
+                        at: open.at,
+                        text: open.text,
+                    });
+                }
+            }
             egui::Key::Enter => self.commit(Some(if modifiers.shift {
                 Direction::Up
             } else {
@@ -2029,8 +2094,42 @@ impl GridView {
                     open.mode = Mode::Edit;
                 }
             }
+            // F4 cycles the dollars on the reference just written or typed.
+            egui::Key::F4 => {
+                if let Some(open) = &mut self.editor {
+                    open.cycle_reference();
+                }
+            }
             _ => {}
         }
+        None
+    }
+
+    /// An arrow in point mode: moves the pointed reference one step, or
+    /// starts one beside the cell being edited. Returns the pointed cell so
+    /// the view can follow it.
+    fn point_step(&mut self, direction: Direction, extend: bool) -> Option<CellRef> {
+        let open = self.editor.as_mut()?;
+        let from = match open.pointed() {
+            Some((_, lead)) => lead,
+            None => open.at,
+        };
+        let (dr, dc) = match direction {
+            Direction::Up => (-1i64, 0i64),
+            Direction::Down => (1, 0),
+            Direction::Left => (0, -1),
+            Direction::Right => (0, 1),
+        };
+        let to = CellRef::new(
+            (i64::from(from.row) + dr).clamp(0, i64::from(ss_model::cell::MAX_ROWS) - 1) as u32,
+            (i64::from(from.col) + dc).clamp(0, i64::from(ss_model::cell::MAX_COLS) - 1) as u32,
+        );
+        if extend && open.pointed().is_some() {
+            open.point_to(to);
+        } else {
+            open.point_at(to);
+        }
+        Some(to)
     }
 
     /// Keys while the grid itself has the keyboard. Returns the cell the view
@@ -3597,6 +3696,111 @@ mod tests {
                 Action::Format(Format::NumberFormat("0%".into())),
                 Action::Format(Format::Strike),
             ]
+        );
+    }
+
+    #[test]
+    fn clicking_a_cell_mid_formula_points_at_it() {
+        let (ctx, mut book, mut view) = typing();
+        frame(&mut view, &mut book, vec![egui::Event::Text("=".into())], &ctx);
+
+        // Click C3: the reference goes into the formula, the editor stays.
+        let c3 = cell_of(&view, CellRef::new(2, 2));
+        frame(&mut view, &mut book, vec![press(c3, true)], &ctx);
+        assert_eq!(view.editor.as_ref().map(|e| e.text.as_str()), Some("=C3"));
+        // Dragging stretches it into a range before the button comes up.
+        let d4 = cell_of(&view, CellRef::new(3, 3));
+        frame(&mut view, &mut book, vec![egui::Event::PointerMoved(d4)], &ctx);
+        frame(&mut view, &mut book, vec![press(d4, false)], &ctx);
+        assert_eq!(view.editor.as_ref().map(|e| e.text.as_str()), Some("=C3:D4"));
+
+        // An operator locks it; the next click starts the second reference.
+        view.editor.as_mut().expect("open").text.push('+');
+        let b1 = cell_of(&view, CellRef::new(0, 1));
+        frame(&mut view, &mut book, vec![press(b1, true)], &ctx);
+        frame(&mut view, &mut book, vec![press(b1, false)], &ctx);
+        assert_eq!(
+            view.editor.as_ref().map(|e| e.text.as_str()),
+            Some("=C3:D4+B1")
+        );
+
+        // While the reference is live, another click replaces it — Excel
+        // keeps replacing until an operator or Enter locks it in.
+        let a5 = cell_of(&view, CellRef::new(4, 0));
+        frame(&mut view, &mut book, vec![press(a5, true)], &ctx);
+        frame(&mut view, &mut book, vec![press(a5, false)], &ctx);
+        assert_eq!(
+            view.editor.as_ref().map(|e| e.text.as_str()),
+            Some("=C3:D4+A5")
+        );
+        frame(&mut view, &mut book, vec![plain(egui::Key::Enter)], &ctx);
+        assert!(view.editor.is_none());
+        assert!(!view.actions.is_empty());
+    }
+
+    #[test]
+    fn arrows_point_while_a_formula_wants_a_reference() {
+        let (ctx, mut book, mut view) = typing();
+        frame(&mut view, &mut book, vec![], &ctx);
+        // Start at B2 so there is room to arrow in every direction.
+        let b2 = cell_of(&view, CellRef::new(1, 1));
+        frame(&mut view, &mut book, vec![press(b2, true)], &ctx);
+        frame(&mut view, &mut book, vec![press(b2, false)], &ctx);
+        frame(&mut view, &mut book, vec![egui::Event::Text("=".into())], &ctx);
+
+        frame(&mut view, &mut book, vec![plain(egui::Key::ArrowDown)], &ctx);
+        assert_eq!(view.editor.as_ref().map(|e| e.text.as_str()), Some("=B3"));
+        frame(&mut view, &mut book, vec![plain(egui::Key::ArrowRight)], &ctx);
+        assert_eq!(
+            view.editor.as_ref().map(|e| e.text.as_str()),
+            Some("=C3"),
+            "arrows move the pointed reference, not the caret"
+        );
+        frame(
+            &mut view,
+            &mut book,
+            vec![key(egui::Key::ArrowDown, egui::Modifiers::SHIFT)],
+            &ctx,
+        );
+        assert_eq!(
+            view.editor.as_ref().map(|e| e.text.as_str()),
+            Some("=C3:C4"),
+            "shift stretches it"
+        );
+        // F4 pins it, and pinning takes the reference out of point mode.
+        frame(&mut view, &mut book, vec![plain(egui::Key::F4)], &ctx);
+        assert_eq!(
+            view.editor.as_ref().map(|e| e.text.as_str()),
+            Some("=$C$3:$C$4")
+        );
+        // Enter still commits.
+        frame(&mut view, &mut book, vec![plain(egui::Key::Enter)], &ctx);
+        assert!(view.editor.is_none());
+    }
+
+    #[test]
+    fn ctrl_enter_asks_for_the_whole_selection() {
+        let (ctx, mut book, mut view) = typing();
+        frame(&mut view, &mut book, vec![], &ctx);
+        let from = cell_of(&view, CellRef::new(1, 1));
+        let to = cell_of(&view, CellRef::new(3, 1));
+        frame(&mut view, &mut book, vec![press(from, true)], &ctx);
+        frame(&mut view, &mut book, vec![egui::Event::PointerMoved(to)], &ctx);
+        frame(&mut view, &mut book, vec![press(to, false)], &ctx);
+        frame(&mut view, &mut book, vec![egui::Event::Text("7".into())], &ctx);
+        frame(
+            &mut view,
+            &mut book,
+            vec![key(egui::Key::Enter, egui::Modifiers::CTRL)],
+            &ctx,
+        );
+        assert!(view.editor.is_none());
+        assert_eq!(
+            view.actions,
+            [Action::CommitAll {
+                at: CellRef::new(1, 1),
+                text: "7".into()
+            }]
         );
     }
 

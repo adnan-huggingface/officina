@@ -533,6 +533,12 @@ pub enum Action {
         text: String,
         advance: Option<Direction>,
     },
+    /// Ctrl+Enter: the entry goes to every cell of the selection at once,
+    /// relative references travelling as a copy would carry them.
+    CommitAll {
+        at: CellRef,
+        text: String,
+    },
     /// Delete: empty the selection but keep its formatting.
     Clear,
     Insert(Axis),
@@ -862,6 +868,10 @@ pub(crate) enum Drag {
     Fill {
         from: CellRange,
     },
+    /// Sweeping a range *into an open formula*: the press named a cell in
+    /// point mode, and dragging stretches that reference instead of moving
+    /// the selection.
+    Point,
     /// Dragging a scrollbar thumb. The payload is how far into the thumb the
     /// pointer took hold, so the thumb does not jump to centre itself under
     /// the cursor the moment it is grabbed.

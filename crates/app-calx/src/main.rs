@@ -845,6 +845,56 @@ impl Calx {
                     self.grid.selection.advance(direction, s);
                 }
             }
+            Action::CommitAll { at, text } => {
+                // The same refusal a single commit gets, judged once at the
+                // active cell.
+                let typed = edit::typed_value(&text);
+                if let Some(refusal) = cond::validate(&self.doc.workbook, sheet, at, &typed) {
+                    let blocks = refusal.blocks();
+                    self.status = refusal.message;
+                    if blocks {
+                        return;
+                    }
+                }
+                // Excel fills a whole-column selection to the bottom of the
+                // sheet; a bounded fill with a message beats an unbounded
+                // freeze, and beats a silent one.
+                const MOST: usize = 100_000;
+                let mut targets = Vec::new();
+                let mut seen = std::collections::HashSet::new();
+                let mut clipped = false;
+                'ranges: for range in self.grid.selection.ranges() {
+                    for row in range.start.row..=range.end.row {
+                        for col in range.start.col..=range.end.col {
+                            if targets.len() >= MOST {
+                                clipped = true;
+                                break 'ranges;
+                            }
+                            let cell = CellRef::new(row, col);
+                            let Some(s) = self.doc.workbook.sheet(sheet) else {
+                                break 'ranges;
+                            };
+                            // Covered merge cells and pivot cells take no
+                            // writes, the same as they refuse single edits.
+                            if s.merge_at(cell).is_some_and(|m| m.start != cell)
+                                || s.pivot_at(cell).is_some()
+                            {
+                                continue;
+                            }
+                            if seen.insert(cell) {
+                                targets.push(cell);
+                            }
+                        }
+                    }
+                }
+                let change =
+                    edit::input_many(&mut self.doc.workbook, sheet, at, &targets, &text);
+                self.perform(change);
+                if clipped {
+                    self.status =
+                        format!("Filled the first {MOST} cells of the selection");
+                }
+            }
             Action::Clear => {
                 let ranges = self.grid.selection.ranges().to_vec();
                 let change = edit::clear_contents(&self.doc.workbook, sheet, &ranges);

@@ -614,6 +614,42 @@ pub fn input(book: &mut Workbook, sheet: usize, at: CellRef, typed: &str) -> Cha
     )
 }
 
+/// Ctrl+Enter: one entry, written to every target at once.
+///
+/// Each cell receives the text as if it had been typed there: a formula's
+/// relative references travel by the cell's distance from `at`, exactly as a
+/// copy would carry them, and `$` pins what it always pins. One change, one
+/// undo.
+pub fn input_many(
+    book: &mut Workbook,
+    sheet: usize,
+    at: CellRef,
+    targets: &[CellRef],
+    typed: &str,
+) -> Change {
+    let mut cells = Vec::with_capacity(targets.len());
+    for &target in targets {
+        let text = match typed.strip_prefix('=') {
+            Some(body) => {
+                let rows = i64::from(target.row) - i64::from(at.row);
+                let cols = i64::from(target.col) - i64::from(at.col);
+                match crate::translate::offset(body, rows, cols) {
+                    Some(moved) => format!("={moved}"),
+                    None => typed.to_string(),
+                }
+            }
+            None => typed.to_string(),
+        };
+        let style = book
+            .sheet(sheet)
+            .and_then(|s| s.get(target))
+            .map_or(StyleId::DEFAULT, |c| c.style);
+        let cell = typed_cell(book, sheet, style, &text);
+        cells.push((target, Some(cell)));
+    }
+    Change::new("Fill selection", vec![Patch::Cells { sheet, cells }])
+}
+
 /// The cell that `typed` produces, keeping `style` unless the input calls for
 /// one of its own.
 ///
@@ -913,6 +949,29 @@ mod tests {
 
     fn at(a1: &str) -> CellRef {
         CellRef::from_a1(a1).expect("valid address")
+    }
+
+    #[test]
+    fn one_entry_fills_many_cells_with_travelling_references() {
+        let mut book = Workbook::blank();
+        let targets = [at("B2"), at("B3"), at("C4")];
+        let change = input_many(&mut book, 0, at("B2"), &targets, "=A1*2");
+        assert_eq!(change.label, "Fill selection");
+        apply(&mut book, change);
+        let formula = |a: &str| {
+            let sheet = &book.sheets[0];
+            sheet.formula_at(at(a)).expect("a formula").text.clone()
+        };
+        assert_eq!(formula("B2"), "A1*2", "home cell keeps the entry as typed");
+        assert_eq!(formula("B3"), "A2*2", "one row down, references follow");
+        assert_eq!(formula("C4"), "B3*2", "and across");
+        // Plain values are simply repeated.
+        let change = input_many(&mut book, 0, at("D1"), &[at("D1"), at("D2")], "7");
+        apply(&mut book, change);
+        assert_eq!(
+            book.sheets[0].get(at("D2")).map(|c| c.value),
+            Some(CellValue::Number(7.0))
+        );
     }
 
     fn a_picture(col: u32) -> ss_model::Picture {
