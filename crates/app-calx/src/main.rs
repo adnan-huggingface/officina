@@ -775,6 +775,9 @@ impl Calx {
         if change.is_empty() {
             return;
         }
+        // Any edit dismisses the marching ants, as Excel's does. A paste that
+        // wants to keep them (copy can be pasted repeatedly) puts them back.
+        self.grid.marquee = None;
         let undo = edit::apply(&mut self.doc.workbook, change);
         self.undo.push(undo);
         self.redo.clear();
@@ -906,6 +909,17 @@ impl Calx {
             Action::Redo => self.redo(),
             Action::Copy { cut } => self.copy(ui, cut),
             Action::Paste(text) => self.paste(text),
+            // Enter over the marching ants: paste what the app itself holds.
+            Action::PasteClip => {
+                let text = self.clip_text.clone();
+                self.paste(text);
+            }
+            Action::CancelClipboard => {
+                // The grid has already dropped the ants; what must not
+                // survive them is the pending cut, or a later paste would
+                // still move cells nobody can see are marked.
+                self.cut_from = None;
+            }
             Action::Fill { from, to } => {
                 let change = clip::fill(&mut self.doc.workbook, sheet, from, to);
                 self.perform(change);
@@ -1825,11 +1839,24 @@ impl Calx {
         ui.ctx().copy_text(self.clip_text.clone());
         self.clip = Some(taken);
         self.cut_from = cut.then_some((sheet, range));
+        // The ants say what would move or be pasted; Escape dismisses them.
+        self.grid.marquee = Some((sheet, range));
         self.status = if cut { "Cut" } else { "Copied" }.to_string();
     }
 
     fn paste(&mut self, text: String) {
         self.paste_how(text, clip::PasteSpecial::default());
+    }
+
+    /// What the OS clipboard holds right now.
+    ///
+    /// The menu paths need this: Ctrl+V arrives as an event carrying the
+    /// text, but a click on "Paste" carries nothing, and pasting the text
+    /// *we* remember would ignore whatever another program copied since.
+    fn os_clipboard_text(&self) -> String {
+        arboard::Clipboard::new()
+            .and_then(|mut c| c.get_text())
+            .unwrap_or_else(|_| self.clip_text.clone())
     }
 
     fn paste_how(&mut self, text: String, how: clip::PasteSpecial) {
@@ -1846,12 +1873,19 @@ impl Calx {
         let mut change = clip::paste_special(&mut self.doc.workbook, sheet, target, &source, how);
         // A cut is a paste that also empties where it came from, and the two
         // have to be one undo step or Ctrl-Z leaves the data in both places.
+        let was_cut = self.cut_from.is_some();
         if let Some((from_sheet, from_range)) = self.cut_from.take() {
             let cleared = edit::clear_contents(&self.doc.workbook, from_sheet, &[from_range]);
             change.patches.splice(0..0, cleared.patches);
             change.label = "Move".to_string();
         }
+        let ants = self.grid.marquee;
         self.perform(change);
+        // A copy can be pasted again, so its ants keep marching; a cut is
+        // spent the moment it lands.
+        if !was_cut {
+            self.grid.marquee = ants;
+        }
     }
 
     /// The command surface, in three rows: the document, the selection's
@@ -3120,7 +3154,7 @@ impl Calx {
                 });
                 if go {
                     let how = *how;
-                    let text = self.clip_text.clone();
+                    let text = self.os_clipboard_text();
                     self.paste_how(text, how);
                     keep = false;
                 }
@@ -3422,7 +3456,7 @@ impl Calx {
             }
         }
         if ui.button("Paste").clicked() {
-            requested = Some(Action::Paste(self.clip_text.clone()));
+            requested = Some(Action::Paste(self.os_clipboard_text()));
             ui.close();
         }
         // The two people reach for most, straight on the menu; the rest are
@@ -3443,7 +3477,7 @@ impl Calx {
         }
         match special {
             Some(Some(kind)) => {
-                let text = self.clip_text.clone();
+                let text = self.os_clipboard_text();
                 self.paste_how(
                     text,
                     ss_formula::clip::PasteSpecial {

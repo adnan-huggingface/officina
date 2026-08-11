@@ -919,6 +919,35 @@ impl GridView {
             }
         }
 
+        // The marching ants: an animated dashed border around what was
+        // copied or cut, so a pending paste has a visible source and a
+        // pending cut is not a silent trap. Repainted on a short timer for
+        // as long as they march.
+        if let Some((from_sheet, from_range)) = self.marquee {
+            if from_sheet == self.sheet_index {
+                let rect = super::rect_of_range(layout, from_range, pane.rect, pane.scroll);
+                if rect.intersect(pane.rect).is_positive() {
+                    let phase = ((ui.input(|i| i.time) * 30.0) % 12.0) as f32;
+                    let corners = [
+                        rect.left_top(),
+                        rect.right_top(),
+                        rect.right_bottom(),
+                        rect.left_bottom(),
+                        rect.left_top(),
+                    ];
+                    painter.extend(egui::Shape::dashed_line_with_offset(
+                        &corners,
+                        egui::Stroke::new(2.0, palette.selection_edge),
+                        &[8.0],
+                        &[4.0],
+                        phase,
+                    ));
+                    ui.ctx()
+                        .request_repaint_after(std::time::Duration::from_millis(60));
+                }
+            }
+        }
+
         // The fill preview, and the handle that starts one.
         if let (Some(Drag::Fill { from }), Some(to)) = (self.drag, self.fill_target) {
             let _ = from;
@@ -2257,6 +2286,13 @@ impl GridView {
                 return Some(self.selection.cursor());
             }
             egui::Key::Enter => {
+                // With the ants marching, Enter completes the paste and
+                // dismisses them, which is what Excel's Enter-paste is.
+                if self.marquee.is_some() {
+                    self.marquee = None;
+                    self.actions.push(Action::PasteClip);
+                    return None;
+                }
                 let dir = if modifiers.shift {
                     Direction::Up
                 } else {
@@ -2264,6 +2300,11 @@ impl GridView {
                 };
                 self.selection.advance(dir, sheet);
                 return Some(self.selection.cursor());
+            }
+            egui::Key::Escape => {
+                if self.marquee.take().is_some() {
+                    self.actions.push(Action::CancelClipboard);
+                }
             }
             egui::Key::F2 => self.open_editor(book, Mode::Edit),
             // Backspace opens an editor on an emptied cell; Delete just empties.
@@ -3801,6 +3842,29 @@ mod tests {
                 at: CellRef::new(1, 1),
                 text: "7".into()
             }]
+        );
+    }
+
+    #[test]
+    fn escape_dismisses_the_ants_and_enter_pastes_them() {
+        let (ctx, mut book, mut view) = typing();
+        frame(&mut view, &mut book, vec![], &ctx);
+        let source = CellRange::new(CellRef::new(0, 0), CellRef::new(1, 1));
+
+        view.marquee = Some((0, source));
+        frame(&mut view, &mut book, vec![plain(egui::Key::Escape)], &ctx);
+        assert!(view.marquee.is_none());
+        assert_eq!(view.actions, [Action::CancelClipboard]);
+
+        view.actions.clear();
+        view.marquee = Some((0, source));
+        frame(&mut view, &mut book, vec![plain(egui::Key::Enter)], &ctx);
+        assert!(view.marquee.is_none());
+        assert_eq!(view.actions, [Action::PasteClip]);
+        assert_eq!(
+            view.selection.cursor(),
+            CellRef::new(0, 0),
+            "Enter pasted instead of moving down"
         );
     }
 

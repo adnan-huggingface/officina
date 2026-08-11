@@ -27,3 +27,6 @@ rfd = "0.15"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp"] }
 # Ctrl+; types today's date, which is a *local* date; std only knows UTC.
 time = { version = "0.3", features = ["local-offset"] }
+# Menu-driven paste has no key event to ride, so the OS clipboard has to be
+# *read*; egui only ever hears about it through Ctrl+V.
+arboard = { version = "3", default-features = false }

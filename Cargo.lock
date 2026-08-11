@@ -449,6 +449,7 @@ dependencies = [
 name = "calx"
 version = "0.1.0"
 dependencies = [
+ "arboard",
  "image",
  "rfd",
  "ss-csv",

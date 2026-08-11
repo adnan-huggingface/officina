@@ -539,6 +539,11 @@ pub enum Action {
         at: CellRef,
         text: String,
     },
+    /// Enter with the marching ants up: complete the paste from the
+    /// application's clipboard and dismiss them.
+    PasteClip,
+    /// Escape with the ants up: dismiss them, and forget any pending cut.
+    CancelClipboard,
     /// Delete: empty the selection but keep its formatting.
     Clear,
     Insert(Axis),
@@ -790,6 +795,10 @@ pub struct GridView {
     /// Pictures decoded and uploaded, by package part. Not part of the
     /// document: a cache of what the document's bytes mean on this GPU.
     pub(crate) textures: picture::Textures,
+    /// The marching ants: the copied or cut range, on the sheet it lives on.
+    /// Set by the application on copy, dismissed by Escape, any edit, or the
+    /// paste that spends a cut.
+    pub marquee: Option<(usize, CellRange)>,
 }
 
 /// What the status bar says about the selection.
@@ -904,6 +913,7 @@ impl Default for GridView {
             summary: Summary::default(),
             summarized: None,
             textures: picture::Textures::default(),
+            marquee: None,
         }
     }
 }
