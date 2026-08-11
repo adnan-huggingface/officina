@@ -1066,6 +1066,8 @@ impl Calx {
             Action::Merge(join) => self.merge(join),
             Action::Freeze(on) => self.freeze(on),
             Action::Visibility { axis, hide } => self.set_visibility(axis, hide),
+            Action::Group { axis, ungroup } => self.group_selection(axis, ungroup),
+            Action::ToggleOutline { axis, index } => self.toggle_outline(axis, index),
             Action::AutoFit(axis) => self.autofit(axis),
             Action::AutoFitAt { axis, index } => self.autofit_span(axis, index, index),
             Action::MoveBand {
@@ -1680,6 +1682,102 @@ impl Calx {
     /// Hiding is a size of zero, which is exactly how the file stores it — a
     /// hidden row is `hidden="1"` with no height, and a height of zero is what
     /// that means on screen.
+    /// Shift+Alt+Right and its inverse: the selected rows or columns go one
+    /// outline level deeper or shallower.
+    fn group_selection(&mut self, axis: Axis, ungroup: bool) {
+        let sheet = self.grid.sheet_index;
+        let Some(current) = self.doc.workbook.sheet(sheet) else {
+            return;
+        };
+        let mut geometry = Geometry::of(current);
+        let range = self.grid.selection.active_range();
+        let (from, to) = match axis {
+            Axis::Rows => (range.start.row, range.end.row),
+            Axis::Columns => (range.start.col, range.end.col),
+        };
+        let to = to.min(from.saturating_add(4096));
+        let outlines = match axis {
+            Axis::Rows => &mut geometry.row_outlines,
+            Axis::Columns => &mut geometry.column_outlines,
+        };
+        for index in from..=to {
+            let level = outlines.get(&index).copied().unwrap_or(0);
+            let next = if ungroup {
+                level.saturating_sub(1)
+            } else {
+                (level + 1).min(7)
+            };
+            if next == 0 {
+                outlines.remove(&index);
+            } else {
+                outlines.insert(index, next);
+            }
+        }
+        self.perform(Change::new(
+            if ungroup { "Ungroup" } else { "Group" },
+            vec![Patch::Geometry { sheet, geometry }],
+        ));
+        self.grid.invalidate();
+        let what = match axis {
+            Axis::Rows => "rows",
+            Axis::Columns => "columns",
+        };
+        self.status = format!(
+            "{} {} {}–{}",
+            if ungroup { "Ungrouped" } else { "Grouped" },
+            what,
+            from + 1,
+            to + 1
+        );
+    }
+
+    /// A collapse button: hides or reveals the contiguous group ending just
+    /// before the summary line that carries the button.
+    fn toggle_outline(&mut self, axis: Axis, index: u32) {
+        let sheet = self.grid.sheet_index;
+        let Some(current) = self.doc.workbook.sheet(sheet) else {
+            return;
+        };
+        let mut geometry = Geometry::of(current);
+        let levels = match axis {
+            Axis::Rows => geometry.row_outlines.clone(),
+            Axis::Columns => geometry.column_outlines.clone(),
+        };
+        let Some(prev) = index.checked_sub(1) else {
+            return;
+        };
+        let level = levels.get(&prev).copied().unwrap_or(0);
+        if level == 0 {
+            return;
+        }
+        let mut first = prev;
+        while first > 0 && levels.get(&(first - 1)).copied().unwrap_or(0) >= level {
+            first -= 1;
+        }
+        let (sizes, collapsed) = match axis {
+            Axis::Rows => (&mut geometry.row_heights, &mut geometry.row_collapsed),
+            Axis::Columns => (&mut geometry.column_widths, &mut geometry.column_collapsed),
+        };
+        let expanding = collapsed.contains(&index);
+        for i in first..index {
+            if expanding {
+                sizes.remove(&i);
+            } else {
+                sizes.insert(i, 0.0);
+            }
+        }
+        if expanding {
+            collapsed.remove(&index);
+        } else {
+            collapsed.insert(index);
+        }
+        self.perform(Change::new(
+            if expanding { "Expand" } else { "Collapse" },
+            vec![Patch::Geometry { sheet, geometry }],
+        ));
+        self.grid.invalidate();
+    }
+
     fn set_visibility(&mut self, axis: Axis, hide: bool) {
         let sheet = self.grid.sheet_index;
         let Some(current) = self.doc.workbook.sheet(sheet) else {
@@ -4223,6 +4321,34 @@ impl Calx {
                 Action::Visibility {
                     axis: Axis::Columns,
                     hide: false,
+                },
+            ),
+            (
+                "Group rows",
+                Action::Group {
+                    axis: Axis::Rows,
+                    ungroup: false,
+                },
+            ),
+            (
+                "Ungroup rows",
+                Action::Group {
+                    axis: Axis::Rows,
+                    ungroup: true,
+                },
+            ),
+            (
+                "Group columns",
+                Action::Group {
+                    axis: Axis::Columns,
+                    ungroup: false,
+                },
+            ),
+            (
+                "Ungroup columns",
+                Action::Group {
+                    axis: Axis::Columns,
+                    ungroup: true,
                 },
             ),
             ("Fit columns to contents", Action::AutoFit(Axis::Columns)),

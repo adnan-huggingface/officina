@@ -586,6 +586,17 @@ pub enum Action {
         axis: Axis,
         hide: bool,
     },
+    /// Deepen or shallow the outline level of the selected rows or columns.
+    Group {
+        axis: Axis,
+        ungroup: bool,
+    },
+    /// A collapse button in the outline margin: `index` is the summary row
+    /// or column just past the group it controls.
+    ToggleOutline {
+        axis: Axis,
+        index: u32,
+    },
     /// Size the selected columns to their contents.
     AutoFit(Axis),
     /// A band of rows or columns dragged somewhere else. `before` names the

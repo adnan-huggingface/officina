@@ -181,10 +181,16 @@ impl Axis {
 pub struct Layout {
     pub rows: Axis,
     pub cols: Axis,
-    /// Width of the row-number gutter down the left edge.
+    /// Width of the row-number gutter down the left edge — including the
+    /// outline margin, when the sheet has grouped rows.
     pub header_width: f64,
     /// Height of the column-letter strip across the top.
     pub header_height: f64,
+    /// The strip carved off the left of the gutter for row-group collapse
+    /// buttons; zero on a sheet with no grouped rows.
+    pub outline_row_margin: f64,
+    /// And off the top of the letter strip, for column groups.
+    pub outline_col_margin: f64,
     /// The scale this layout was built at. Anything measured in the file's own
     /// units — a drawing's EMU offsets — has to be scaled the same way.
     pub zoom: f64,
@@ -196,6 +202,17 @@ impl Layout {
         // A stored height is the user's own answer and overrides the fitted
         // one — that is exactly what `customHeight="1"` means in the file.
         heights.extend(sheet.row_heights.iter().map(|(r, h)| (*r, *h)));
+
+        let row_margin = if sheet.row_outlines.is_empty() {
+            0.0
+        } else {
+            OUTLINE_MARGIN * scale
+        };
+        let col_margin = if sheet.column_outlines.is_empty() {
+            0.0
+        } else {
+            OUTLINE_MARGIN * scale
+        };
 
         Layout {
             rows: Axis::new(
@@ -211,21 +228,27 @@ impl Layout {
                 |chars| column_pixels(chars, scale),
             ),
             // Wide enough for seven digits, which is one more than the largest
-            // row number needs.
+            // row number needs. The outline margin joins only when there is
+            // an outline to control, so an ungrouped sheet loses nothing.
             header_width: if sheet.view.headings {
-                46.0 * scale
+                46.0 * scale + row_margin
             } else {
                 0.0
             },
             header_height: if sheet.view.headings {
-                row_pixels(DEFAULT_ROW_POINTS, scale)
+                row_pixels(DEFAULT_ROW_POINTS, scale) + col_margin
             } else {
                 0.0
             },
+            outline_row_margin: if sheet.view.headings { row_margin } else { 0.0 },
+            outline_col_margin: if sheet.view.headings { col_margin } else { 0.0 },
             zoom: scale,
         }
     }
 }
+
+/// The width of one outline-button strip.
+const OUTLINE_MARGIN: f64 = 15.0;
 
 /// How many points of row a line of text at this font size needs.
 ///

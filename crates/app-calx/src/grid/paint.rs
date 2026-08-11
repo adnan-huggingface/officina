@@ -407,6 +407,8 @@ impl GridView {
         }
         if sheet.view.headings {
             self.paint_headers(ui, &frame);
+            // The collapse buttons go over the freshly painted gutter.
+            self.paint_outline_margin(ui.painter(), sheet, &frame);
         }
         paint_bars(ui, &self.bars, &palette);
 
@@ -547,6 +549,119 @@ impl GridView {
             Axis::Rows => self.scroll.y = moved,
             Axis::Columns => self.scroll.x = moved,
         }
+    }
+
+    /// The collapse buttons in the outline margin: a boxed − on the summary
+    /// line of every expanded group, a boxed + where one is collapsed.
+    fn paint_outline_margin(&self, painter: &egui::Painter, sheet: &Sheet, frame: &Frame) {
+        let Frame {
+            layout, full, panes, ..
+        } = *frame;
+        let ink = egui::Color32::from_gray(0x55);
+        let rm = layout.outline_row_margin as f32;
+        if rm > 0.0 {
+            for pane in panes {
+                let rows = layout
+                    .rows
+                    .visible(pane.scroll.y, pane.scroll.y + f64::from(pane.rect.height()));
+                for row in rows {
+                    if summary_level(&sheet.row_outlines, row).is_none() {
+                        continue;
+                    }
+                    let y = pane.rect.top() + (layout.rows.offset(row) - pane.scroll.y) as f32;
+                    let h = layout.rows.size(row) as f32;
+                    if h <= 1.0 {
+                        continue;
+                    }
+                    let side = (rm - 5.0).min(h - 3.0).max(6.0);
+                    let rect = egui::Rect::from_center_size(
+                        egui::pos2(full.left() + rm / 2.0, y + h / 2.0),
+                        egui::vec2(side, side),
+                    );
+                    draw_outline_button(painter, rect, !sheet.row_collapsed.contains(&row), ink);
+                }
+            }
+        }
+        let cm = layout.outline_col_margin as f32;
+        if cm > 0.0 {
+            for pane in panes {
+                let cols = layout
+                    .cols
+                    .visible(pane.scroll.x, pane.scroll.x + f64::from(pane.rect.width()));
+                for col in cols {
+                    if summary_level(&sheet.column_outlines, col).is_none() {
+                        continue;
+                    }
+                    let x = pane.rect.left() + (layout.cols.offset(col) - pane.scroll.x) as f32;
+                    let w = layout.cols.size(col) as f32;
+                    if w <= 1.0 {
+                        continue;
+                    }
+                    let side = (cm - 5.0).min(w - 3.0).max(6.0);
+                    let rect = egui::Rect::from_center_size(
+                        egui::pos2(x + w / 2.0, full.top() + cm / 2.0),
+                        egui::vec2(side, side),
+                    );
+                    draw_outline_button(
+                        painter,
+                        rect,
+                        !sheet.column_collapsed.contains(&col),
+                        ink,
+                    );
+                }
+            }
+        }
+    }
+
+    /// A press in the outline margin. True when the margin owns the press,
+    /// whether or not it landed on a button.
+    #[allow(clippy::too_many_arguments)]
+    fn outline_press(
+        &mut self,
+        sheet: &Sheet,
+        layout: &Layout,
+        panes: &[Pane],
+        full: egui::Rect,
+        body: egui::Rect,
+        pos: egui::Pos2,
+    ) -> bool {
+        let rm = layout.outline_row_margin as f32;
+        if rm > 0.0 && pos.x >= full.left() && pos.x < full.left() + rm && pos.y >= body.top() {
+            if let Some(pane) = panes
+                .iter()
+                .find(|p| (p.rect.top()..p.rect.bottom()).contains(&pos.y))
+            {
+                let row = layout
+                    .rows
+                    .index_at(pane.scroll.y + f64::from(pos.y - pane.rect.top()));
+                if summary_level(&sheet.row_outlines, row).is_some() {
+                    self.actions.push(Action::ToggleOutline {
+                        axis: Axis::Rows,
+                        index: row,
+                    });
+                }
+            }
+            return true;
+        }
+        let cm = layout.outline_col_margin as f32;
+        if cm > 0.0 && pos.y >= full.top() && pos.y < full.top() + cm && pos.x >= body.left() {
+            if let Some(pane) = panes
+                .iter()
+                .find(|p| (p.rect.left()..p.rect.right()).contains(&pos.x))
+            {
+                let col = layout
+                    .cols
+                    .index_at(pane.scroll.x + f64::from(pos.x - pane.rect.left()));
+                if summary_level(&sheet.column_outlines, col).is_some() {
+                    self.actions.push(Action::ToggleOutline {
+                        axis: Axis::Columns,
+                        index: col,
+                    });
+                }
+            }
+            return true;
+        }
+        false
     }
 
     /// Whether `pos` sits on the selection's border — the few pixels either
@@ -1659,6 +1774,12 @@ impl GridView {
             return;
         }
 
+        // The outline margin's collapse buttons, tested before the headers
+        // the margin was carved from — a press there is never a selection.
+        if self.outline_press(sheet, layout, panes, full, body, pos) {
+            return;
+        }
+
         let in_column_header = pos.y < body.top() && pos.x >= body.left();
         let in_row_header = pos.x < body.left() && pos.y >= body.top();
 
@@ -2503,6 +2624,26 @@ impl GridView {
             }
         }
 
+        // Shift+Alt+Right groups, Shift+Alt+Left ungroups — Excel's keys,
+        // with the axis read off the selection the way insert and delete
+        // already read it.
+        if modifiers.shift && modifiers.alt {
+            if key == egui::Key::ArrowRight {
+                self.actions.push(Action::Group {
+                    axis: self.structural_axis(),
+                    ungroup: false,
+                });
+                return None;
+            }
+            if key == egui::Key::ArrowLeft {
+                self.actions.push(Action::Group {
+                    axis: self.structural_axis(),
+                    ungroup: true,
+                });
+                return None;
+            }
+        }
+
         let direction = match key {
             egui::Key::ArrowUp => Some(Direction::Up),
             egui::Key::ArrowDown => Some(Direction::Down),
@@ -3075,6 +3216,42 @@ fn fill_down_extent(sheet: &Sheet, from: CellRange) -> Option<CellRange> {
     None
 }
 
+/// The level of the group ending just before `index` — present exactly when
+/// `index` is a summary line, the first row or column shallower than its
+/// predecessor.
+fn summary_level(levels: &std::collections::BTreeMap<u32, u8>, index: u32) -> Option<u8> {
+    let before = index
+        .checked_sub(1)
+        .map(|i| levels.get(&i).copied().unwrap_or(0))
+        .unwrap_or(0);
+    let own = levels.get(&index).copied().unwrap_or(0);
+    (before > own).then_some(before)
+}
+
+/// A boxed − (expanded) or + (collapsed).
+fn draw_outline_button(painter: &egui::Painter, rect: egui::Rect, open: bool, ink: egui::Color32) {
+    painter.rect_stroke(
+        rect,
+        2.0,
+        egui::Stroke::new(1.0, ink),
+        egui::StrokeKind::Inside,
+    );
+    let stroke = egui::Stroke::new(1.2, ink);
+    let inset = rect.width() * 0.25;
+    painter.hline(
+        (rect.left() + inset)..=(rect.right() - inset),
+        rect.center().y,
+        stroke,
+    );
+    if !open {
+        painter.vline(
+            rect.center().x,
+            (rect.top() + inset)..=(rect.bottom() - inset),
+            stroke,
+        );
+    }
+}
+
 /// Fills `area` except where `hole` covers it.
 ///
 /// Four strips around the hole rather than a fill-then-erase: the wash is
@@ -3162,6 +3339,8 @@ mod tests {
             cols: super::super::axis::Axis::uniform(64.0, 100),
             header_width: 46.0,
             header_height: 20.0,
+            outline_row_margin: 0.0,
+            outline_col_margin: 0.0,
             zoom: 1.0,
         };
         let content = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600.0, 400.0));
@@ -4281,6 +4460,62 @@ mod tests {
         frame(&mut view, &mut book, vec![press(middle, true)], &ctx);
         assert!(matches!(view.drag, Some(Drag::Select)), "{:?}", view.drag);
         frame(&mut view, &mut book, vec![press(middle, false)], &ctx);
+    }
+
+    #[test]
+    fn grouping_keys_and_margin_buttons_speak_outline() {
+        let (ctx, mut book, mut view) = typing();
+        frame(&mut view, &mut book, vec![], &ctx);
+
+        // Shift+Alt+Right asks to group the selected rows.
+        view.selection = Selection::at(CellRef::new(1, 0));
+        view.selection
+            .extend_to(CellRef::new(3, 0), book.sheet(0).expect("sheet"));
+        frame(
+            &mut view,
+            &mut book,
+            vec![key(
+                egui::Key::ArrowRight,
+                egui::Modifiers::SHIFT | egui::Modifiers::ALT,
+            )],
+            &ctx,
+        );
+        assert_eq!(
+            view.take_actions(),
+            [Action::Group {
+                axis: Axis::Rows,
+                ungroup: false
+            }]
+        );
+
+        // With levels in the model, the margin appears; a click on the
+        // summary row's button asks to toggle the group.
+        {
+            let sheet = book.sheet_mut(0).expect("sheet");
+            sheet.row_outlines.insert(1, 1);
+            sheet.row_outlines.insert(2, 1);
+            sheet.row_outlines.insert(3, 1);
+        }
+        view.invalidate();
+        frame(&mut view, &mut book, vec![], &ctx);
+        let (_, _, layout) = view.layout.as_ref().expect("laid out");
+        let margin = layout.outline_row_margin as f32;
+        assert!(margin > 0.0, "the margin exists once anything is grouped");
+        let button = egui::pos2(
+            margin / 2.0,
+            layout.header_height as f32
+                + (layout.rows.offset(4) + layout.rows.size(4) / 2.0) as f32,
+        );
+        frame(&mut view, &mut book, vec![press(button, true)], &ctx);
+        frame(&mut view, &mut book, vec![press(button, false)], &ctx);
+        assert_eq!(
+            view.take_actions(),
+            [Action::ToggleOutline {
+                axis: Axis::Rows,
+                index: 4
+            }],
+            "row 5 is the summary line of the group over rows 2–4"
+        );
     }
 
     #[test]
