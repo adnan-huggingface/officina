@@ -165,6 +165,29 @@ enum Dialog {
     GoTo {
         text: String,
     },
+    /// Excel's Data Validation: one rule, edited whole, applied to the
+    /// selection. `existing` is where the working copy came from when the
+    /// selection already had a rule.
+    Validation {
+        rule: ss_model::cond::DataValidation,
+        existing: Option<usize>,
+    },
+    /// A manager for the sheet's conditional-formatting rules: the list is a
+    /// working copy edited whole and applied as one patch, plus a builder
+    /// for a new rule over the selection.
+    CondFormat {
+        formats: Vec<ss_model::cond::ConditionalFormat>,
+        kind: usize,
+        operator: ss_model::cond::CfOperator,
+        value1: String,
+        value2: String,
+        bold: bool,
+        italic: bool,
+        use_text_color: bool,
+        text_color: [u8; 3],
+        use_fill: bool,
+        fill_color: [u8; 3],
+    },
     /// The checkbox list behind one filter arrow.
     Filter {
         /// An offset into the filter's range.
@@ -721,6 +744,46 @@ impl Calx {
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::ALT, egui::Key::Equals)) {
             self.autosum();
         }
+    }
+
+    /// Opens Data Validation on the rule covering the cursor, or on a fresh
+    /// rule over the selection.
+    fn open_validation(&mut self) {
+        let sheet = self.grid.sheet_index;
+        let cursor = self.grid.selection.cursor();
+        let Some(s) = self.doc.workbook.sheet(sheet) else {
+            return;
+        };
+        let existing = s.validations.iter().position(|v| v.covers(cursor));
+        let rule = match existing {
+            Some(i) => s.validations[i].clone(),
+            None => ss_model::cond::DataValidation {
+                ranges: self.grid.selection.ranges().to_vec(),
+                kind: ss_model::cond::DvKind::List,
+                ..Default::default()
+            },
+        };
+        self.dialog = Some(Dialog::Validation { rule, existing });
+    }
+
+    fn open_cond_format(&mut self) {
+        let sheet = self.grid.sheet_index;
+        let Some(s) = self.doc.workbook.sheet(sheet) else {
+            return;
+        };
+        self.dialog = Some(Dialog::CondFormat {
+            formats: s.conditional_formats.clone(),
+            kind: 0,
+            operator: ss_model::cond::CfOperator::GreaterThan,
+            value1: String::new(),
+            value2: String::new(),
+            bold: false,
+            italic: false,
+            use_text_color: false,
+            text_color: [0x9C, 0x00, 0x06],
+            use_fill: true,
+            fill_color: [0xFF, 0xC7, 0xCE],
+        });
     }
 
     fn open_names(&mut self) {
@@ -1996,6 +2059,8 @@ impl Calx {
         let mut find_dialog = false;
         let mut format_cells = false;
         let mut names_dialog = false;
+        let mut validation_dialog = false;
+        let mut cond_dialog = false;
 
         ui.horizontal(|ui| {
             if icons::button(ui, Icon::New, false, "New workbook (Ctrl+N)").clicked() {
@@ -2216,6 +2281,21 @@ impl Calx {
                     filter = Some(FilterCommand::Reapply);
                 }
             });
+            separate(ui);
+            if ui
+                .button("Validate…")
+                .on_hover_text("Data validation for the selection")
+                .clicked()
+            {
+                validation_dialog = true;
+            }
+            if ui
+                .button("Cond. format…")
+                .on_hover_text("Conditional formatting rules")
+                .clicked()
+            {
+                cond_dialog = true;
+            }
         });
 
         // The formatting row.
@@ -2418,6 +2498,12 @@ impl Calx {
         }
         if names_dialog {
             self.open_names();
+        }
+        if validation_dialog {
+            self.open_validation();
+        }
+        if cond_dialog {
+            self.open_cond_format();
         }
         if let Some(axis) = size {
             self.open_size_dialog(axis);
@@ -2997,6 +3083,444 @@ impl Calx {
                 if accept {
                     let target = text.clone();
                     self.go_to(&target);
+                    keep = false;
+                }
+            }
+
+            Dialog::Validation { rule, existing } => {
+                use ss_model::cond::{DvKind, DvOperator, DvSeverity};
+                let existing = *existing;
+                let (mut accept, mut remove) = (false, false);
+                modal(ctx, "Data validation", |ui| {
+                    ui.label(
+                        egui::RichText::new(format!("Applies to {}", ranges_label(&rule.ranges)))
+                            .weak()
+                            .small(),
+                    );
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        ui.label("Allow:");
+                        egui::ComboBox::from_id_salt("calx-dv-kind")
+                            .selected_text(dv_kind_name(rule.kind))
+                            .show_ui(ui, |ui| {
+                                for kind in [
+                                    DvKind::List,
+                                    DvKind::Whole,
+                                    DvKind::Decimal,
+                                    DvKind::Date,
+                                    DvKind::Time,
+                                    DvKind::TextLength,
+                                    DvKind::Custom,
+                                ] {
+                                    ui.selectable_value(&mut rule.kind, kind, dv_kind_name(kind));
+                                }
+                            });
+                        ui.checkbox(&mut rule.allow_blank, "Ignore blank");
+                    });
+                    match rule.kind {
+                        DvKind::List => {
+                            ui.horizontal(|ui| {
+                                ui.label("Source:");
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut rule.formula1)
+                                        .hint_text("\"Yes,No\" or A1:A9")
+                                        .desired_width(220.0),
+                                );
+                            });
+                            ui.checkbox(&mut rule.show_dropdown, "In-cell dropdown");
+                        }
+                        DvKind::Custom => {
+                            ui.horizontal(|ui| {
+                                ui.label("Formula:");
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut rule.formula1)
+                                        .hint_text("=ISNUMBER(A1)")
+                                        .desired_width(220.0),
+                                );
+                            });
+                        }
+                        DvKind::None => {}
+                        _ => {
+                            ui.horizontal(|ui| {
+                                ui.label("Data:");
+                                egui::ComboBox::from_id_salt("calx-dv-op")
+                                    .selected_text(dv_op_name(rule.operator))
+                                    .show_ui(ui, |ui| {
+                                        for op in [
+                                            DvOperator::Between,
+                                            DvOperator::NotBetween,
+                                            DvOperator::Equal,
+                                            DvOperator::NotEqual,
+                                            DvOperator::GreaterThan,
+                                            DvOperator::LessThan,
+                                            DvOperator::GreaterThanOrEqual,
+                                            DvOperator::LessThanOrEqual,
+                                        ] {
+                                            ui.selectable_value(
+                                                &mut rule.operator,
+                                                op,
+                                                dv_op_name(op),
+                                            );
+                                        }
+                                    });
+                            });
+                            let two = matches!(
+                                rule.operator,
+                                DvOperator::Between | DvOperator::NotBetween
+                            );
+                            ui.horizontal(|ui| {
+                                ui.label(if two { "Minimum:" } else { "Value:" });
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut rule.formula1)
+                                        .desired_width(120.0),
+                                );
+                                if two {
+                                    ui.label("Maximum:");
+                                    ui.add(
+                                        egui::TextEdit::singleline(&mut rule.formula2)
+                                            .desired_width(120.0),
+                                    );
+                                }
+                            });
+                        }
+                    }
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        ui.label("On error:");
+                        egui::ComboBox::from_id_salt("calx-dv-severity")
+                            .selected_text(match rule.severity {
+                                DvSeverity::Stop => "Stop",
+                                DvSeverity::Warning => "Warning",
+                                DvSeverity::Information => "Information",
+                            })
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut rule.severity, DvSeverity::Stop, "Stop");
+                                ui.selectable_value(
+                                    &mut rule.severity,
+                                    DvSeverity::Warning,
+                                    "Warning",
+                                );
+                                ui.selectable_value(
+                                    &mut rule.severity,
+                                    DvSeverity::Information,
+                                    "Information",
+                                );
+                            });
+                        ui.add(
+                            egui::TextEdit::singleline(&mut rule.error_title)
+                                .hint_text("Error title")
+                                .desired_width(140.0),
+                        );
+                    });
+                    ui.add(
+                        egui::TextEdit::singleline(&mut rule.error_message)
+                            .hint_text("Error message")
+                            .desired_width(320.0),
+                    );
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut rule.prompt_title)
+                                .hint_text("Prompt title")
+                                .desired_width(140.0),
+                        );
+                        ui.add(
+                            egui::TextEdit::singleline(&mut rule.prompt_message)
+                                .hint_text("Prompt message")
+                                .desired_width(172.0),
+                        );
+                    });
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        accept = ui.button("OK").clicked();
+                        ui.add_enabled_ui(existing.is_some(), |ui| {
+                            remove = ui
+                                .button("Remove")
+                                .on_hover_text("Delete this rule from every cell it covers")
+                                .clicked();
+                        });
+                        keep &= !ui.button("Cancel").clicked();
+                    });
+                });
+                let sheet = self.grid.sheet_index;
+                if accept {
+                    if let Some(s) = self.doc.workbook.sheet(sheet) {
+                        let mut list = s.validations.clone();
+                        match existing {
+                            Some(i) if i < list.len() => list[i] = rule.clone(),
+                            _ => list.push(rule.clone()),
+                        }
+                        self.perform(Change::new(
+                            "Data validation",
+                            vec![Patch::Validations {
+                                sheet,
+                                validations: list,
+                            }],
+                        ));
+                        self.grid.invalidate();
+                    }
+                    keep = false;
+                }
+                if remove {
+                    if let (Some(s), Some(i)) = (self.doc.workbook.sheet(sheet), existing) {
+                        let mut list = s.validations.clone();
+                        if i < list.len() {
+                            list.remove(i);
+                        }
+                        self.perform(Change::new(
+                            "Remove validation",
+                            vec![Patch::Validations {
+                                sheet,
+                                validations: list,
+                            }],
+                        ));
+                        self.grid.invalidate();
+                    }
+                    keep = false;
+                }
+            }
+
+            Dialog::CondFormat {
+                formats,
+                kind,
+                operator,
+                value1,
+                value2,
+                bold,
+                italic,
+                use_text_color,
+                text_color,
+                use_fill,
+                fill_color,
+            } => {
+                use ss_model::cond::{CfKind, CfOperator, CfRule, CfValue, CfValueKind};
+                const KINDS: [&str; 9] = [
+                    "Cell value",
+                    "Text contains",
+                    "Duplicate values",
+                    "Unique values",
+                    "Top 10",
+                    "Above average",
+                    "Formula is true",
+                    "Colour scale",
+                    "Data bar",
+                ];
+                let mut accept = false;
+                let mut add = false;
+                let selection = self.grid.selection.ranges().to_vec();
+                modal(ctx, "Conditional formatting", |ui| {
+                    // The sheet's rules, each with its own delete.
+                    let mut delete: Option<(usize, usize)> = None;
+                    if formats.is_empty() {
+                        ui.weak("No rules on this sheet yet.");
+                    }
+                    for (b, block) in formats.iter().enumerate() {
+                        for (r, rule) in block.rules.iter().enumerate() {
+                            ui.horizontal(|ui| {
+                                if ui.small_button("✕").on_hover_text("Delete rule").clicked() {
+                                    delete = Some((b, r));
+                                }
+                                ui.small(format!(
+                                    "{} — {}",
+                                    ranges_label(&block.ranges),
+                                    cf_rule_label(rule)
+                                ));
+                            });
+                        }
+                    }
+                    if let Some((b, r)) = delete {
+                        formats[b].rules.remove(r);
+                        if formats[b].rules.is_empty() {
+                            formats.remove(b);
+                        }
+                    }
+                    ui.separator();
+                    ui.label("New rule over the selection:");
+                    ui.horizontal(|ui| {
+                        egui::ComboBox::from_id_salt("calx-cf-kind")
+                            .selected_text(KINDS[*kind])
+                            .show_ui(ui, |ui| {
+                                for (i, name) in KINDS.iter().enumerate() {
+                                    ui.selectable_value(kind, i, *name);
+                                }
+                            });
+                        match *kind {
+                            0 => {
+                                egui::ComboBox::from_id_salt("calx-cf-op")
+                                    .selected_text(cf_op_name(*operator))
+                                    .show_ui(ui, |ui| {
+                                        for op in [
+                                            CfOperator::GreaterThan,
+                                            CfOperator::GreaterThanOrEqual,
+                                            CfOperator::LessThan,
+                                            CfOperator::LessThanOrEqual,
+                                            CfOperator::Equal,
+                                            CfOperator::NotEqual,
+                                            CfOperator::Between,
+                                            CfOperator::NotBetween,
+                                        ] {
+                                            ui.selectable_value(operator, op, cf_op_name(op));
+                                        }
+                                    });
+                                ui.add(
+                                    egui::TextEdit::singleline(value1).desired_width(80.0),
+                                );
+                                if matches!(
+                                    operator,
+                                    CfOperator::Between | CfOperator::NotBetween
+                                ) {
+                                    ui.label("and");
+                                    ui.add(
+                                        egui::TextEdit::singleline(value2).desired_width(80.0),
+                                    );
+                                }
+                            }
+                            1 => {
+                                ui.add(
+                                    egui::TextEdit::singleline(value1)
+                                        .hint_text("text")
+                                        .desired_width(140.0),
+                                );
+                            }
+                            4 => {
+                                ui.label("rank");
+                                ui.add(
+                                    egui::TextEdit::singleline(value1)
+                                        .hint_text("10")
+                                        .desired_width(50.0),
+                                );
+                            }
+                            6 => {
+                                ui.add(
+                                    egui::TextEdit::singleline(value1)
+                                        .hint_text("=A1>B1")
+                                        .desired_width(180.0),
+                                );
+                            }
+                            _ => {}
+                        }
+                    });
+                    // The format the rule paints with, for the dxf kinds.
+                    if *kind <= 6 {
+                        ui.horizontal(|ui| {
+                            ui.checkbox(bold, "Bold");
+                            ui.checkbox(italic, "Italic");
+                            ui.checkbox(use_text_color, "Text");
+                            if *use_text_color {
+                                ui.color_edit_button_srgb(text_color);
+                            }
+                            ui.checkbox(use_fill, "Fill");
+                            if *use_fill {
+                                ui.color_edit_button_srgb(fill_color);
+                            }
+                        });
+                    } else {
+                        ui.horizontal(|ui| {
+                            ui.label("Colour:");
+                            ui.color_edit_button_srgb(fill_color);
+                        });
+                    }
+                    ui.horizontal(|ui| {
+                        add = ui.button("Add rule").clicked();
+                        ui.add_space(12.0);
+                        accept = ui.button("OK").clicked();
+                        keep &= !ui.button("Cancel").clicked();
+                    });
+                });
+                if add && !selection.is_empty() {
+                    let wins = formats
+                        .iter()
+                        .flat_map(|f| f.rules.iter())
+                        .map(|r| r.priority)
+                        .min()
+                        .unwrap_or(2)
+                        - 1;
+                    let dxf = if *kind <= 6
+                        && (*bold || *italic || *use_text_color || *use_fill)
+                    {
+                        let [r, g, b] = *text_color;
+                        let [fr, fg, fb] = *fill_color;
+                        Some(self.doc.workbook.styles.add_dxf(ss_model::style::Dxf {
+                            bold: bold.then_some(true),
+                            italic: italic.then_some(true),
+                            color: use_text_color.then_some(Color::rgb(r, g, b)),
+                            fill: use_fill.then_some(ss_model::style::Fill::solid(
+                                Color::rgb(fr, fg, fb),
+                            )),
+                            ..Default::default()
+                        }))
+                    } else {
+                        None
+                    };
+                    let [fr, fg, fb] = *fill_color;
+                    let visual_color = Color::rgb(fr, fg, fb);
+                    let stop = |kind: CfValueKind| CfValue {
+                        kind,
+                        value: String::new(),
+                    };
+                    let rule_kind = match *kind {
+                        0 => {
+                            let mut formulas = vec![value1.clone()];
+                            if matches!(operator, CfOperator::Between | CfOperator::NotBetween)
+                            {
+                                formulas.push(value2.clone());
+                            }
+                            CfKind::CellIs {
+                                operator: *operator,
+                                formulas,
+                            }
+                        }
+                        1 => CfKind::Text {
+                            op: ss_model::cond::TextOp::Contains,
+                            text: value1.clone(),
+                        },
+                        2 => CfKind::Duplicates { unique: false },
+                        3 => CfKind::Duplicates { unique: true },
+                        4 => CfKind::Top10 {
+                            rank: value1.trim().parse().unwrap_or(10),
+                            percent: false,
+                            bottom: false,
+                        },
+                        5 => CfKind::AboveAverage {
+                            above: true,
+                            equal_average: false,
+                            std_dev: None,
+                        },
+                        6 => CfKind::Expression {
+                            formula: value1.trim_start_matches('=').to_string(),
+                        },
+                        7 => CfKind::ColorScale {
+                            stops: vec![stop(CfValueKind::Min), stop(CfValueKind::Max)],
+                            colors: vec![Color::rgb(0xFF, 0xFF, 0xFF), visual_color],
+                        },
+                        _ => CfKind::DataBar {
+                            min: stop(CfValueKind::Min),
+                            max: stop(CfValueKind::Max),
+                            color: visual_color,
+                            show_value: true,
+                        },
+                    };
+                    formats.push(ss_model::cond::ConditionalFormat {
+                        ranges: selection,
+                        rules: vec![CfRule {
+                            kind: rule_kind,
+                            dxf,
+                            priority: wins,
+                            stop_if_true: false,
+                        }],
+                    });
+                    value1.clear();
+                    value2.clear();
+                }
+                if accept {
+                    let sheet = self.grid.sheet_index;
+                    self.perform(Change::new(
+                        "Conditional formatting",
+                        vec![Patch::ConditionalFormats {
+                            sheet,
+                            formats: formats.clone(),
+                        }],
+                    ));
+                    self.grid.invalidate();
                     keep = false;
                 }
             }
@@ -3741,12 +4265,28 @@ impl Calx {
             ui.close();
         }
         let mut find_dialog = false;
+        let mut validation = false;
+        let mut cond = false;
+        if ui.button("Data validation…").clicked() {
+            validation = true;
+            ui.close();
+        }
+        if ui.button("Conditional formatting…").clicked() {
+            cond = true;
+            ui.close();
+        }
         if ui.button("Find and replace…").clicked() {
             find_dialog = true;
             ui.close();
         }
         if find_dialog {
             self.open_find(true);
+        }
+        if validation {
+            self.open_validation();
+        }
+        if cond {
+            self.open_cond_format();
         }
         if ui.button("Clear formatting").clicked() {
             requested = Some(Action::Format(Format::Clear));
@@ -3864,6 +4404,119 @@ fn color_swatch(ui: &mut egui::Ui, label: &str, [r, g, b]: [u8; 3]) -> egui::Res
         egui::StrokeKind::Inside,
     );
     response
+}
+
+/// `A1:D9 F2:F9`, the way a dialog names where a rule applies.
+fn ranges_label(ranges: &[CellRange]) -> String {
+    ranges
+        .iter()
+        .map(|r| {
+            if r.start == r.end {
+                r.start.to_a1()
+            } else {
+                format!("{}:{}", r.start.to_a1(), r.end.to_a1())
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn dv_kind_name(kind: ss_model::cond::DvKind) -> &'static str {
+    use ss_model::cond::DvKind;
+    match kind {
+        DvKind::None => "Any value",
+        DvKind::Whole => "Whole number",
+        DvKind::Decimal => "Decimal",
+        DvKind::List => "List",
+        DvKind::Date => "Date",
+        DvKind::Time => "Time",
+        DvKind::TextLength => "Text length",
+        DvKind::Custom => "Custom formula",
+    }
+}
+
+fn dv_op_name(op: ss_model::cond::DvOperator) -> &'static str {
+    use ss_model::cond::DvOperator;
+    match op {
+        DvOperator::Between => "between",
+        DvOperator::NotBetween => "not between",
+        DvOperator::Equal => "equal to",
+        DvOperator::NotEqual => "not equal to",
+        DvOperator::GreaterThan => "greater than",
+        DvOperator::LessThan => "less than",
+        DvOperator::GreaterThanOrEqual => "at least",
+        DvOperator::LessThanOrEqual => "at most",
+    }
+}
+
+fn cf_op_name(op: ss_model::cond::CfOperator) -> &'static str {
+    use ss_model::cond::CfOperator;
+    match op {
+        CfOperator::GreaterThan => "greater than",
+        CfOperator::GreaterThanOrEqual => "at least",
+        CfOperator::LessThan => "less than",
+        CfOperator::LessThanOrEqual => "at most",
+        CfOperator::Equal => "equal to",
+        CfOperator::NotEqual => "not equal to",
+        CfOperator::Between => "between",
+        CfOperator::NotBetween => "not between",
+        CfOperator::ContainsText => "containing",
+        CfOperator::NotContains => "not containing",
+        CfOperator::BeginsWith => "beginning with",
+        CfOperator::EndsWith => "ending with",
+    }
+}
+
+/// One line of the rule manager: what a rule does, in words.
+fn cf_rule_label(rule: &ss_model::cond::CfRule) -> String {
+    use ss_model::cond::{CfKind, TextOp};
+    match &rule.kind {
+        CfKind::CellIs { operator, formulas } => format!(
+            "cell is {} {}",
+            cf_op_name(*operator),
+            formulas.join(" and ")
+        ),
+        CfKind::Expression { formula } => format!("formula ={formula}"),
+        CfKind::Text { op, text } => format!(
+            "text {} \"{text}\"",
+            match op {
+                TextOp::Contains => "contains",
+                TextOp::NotContains => "does not contain",
+                TextOp::BeginsWith => "begins with",
+                TextOp::EndsWith => "ends with",
+            }
+        ),
+        CfKind::ColorScale { .. } => "colour scale".to_string(),
+        CfKind::DataBar { .. } => "data bar".to_string(),
+        CfKind::IconSet { set, .. } => format!("icon set {set}"),
+        CfKind::Top10 {
+            rank,
+            percent,
+            bottom,
+        } => format!(
+            "{} {rank}{}",
+            if *bottom { "bottom" } else { "top" },
+            if *percent { "%" } else { "" }
+        ),
+        CfKind::AboveAverage { above, .. } => {
+            if *above { "above average" } else { "below average" }.to_string()
+        }
+        CfKind::TimePeriod { period } => format!("time period {period}"),
+        CfKind::Duplicates { unique } => if *unique {
+            "unique values"
+        } else {
+            "duplicate values"
+        }
+        .to_string(),
+        CfKind::Presence { blanks, negated } => match (blanks, negated) {
+            (true, false) => "blanks",
+            (true, true) => "no blanks",
+            (false, false) => "errors",
+            (false, true) => "no errors",
+        }
+        .to_string(),
+        CfKind::Other(name) => name.clone(),
+    }
 }
 
 /// A modal window: centred, not resizable, and blocking the rest of the app.
