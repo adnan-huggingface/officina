@@ -37,6 +37,10 @@ pub struct Geometry {
     pub column_widths: BTreeMap<u32, f64>,
     pub row_heights: BTreeMap<u32, f64>,
     pub frozen: Option<CellRef>,
+    pub row_outlines: BTreeMap<u32, u8>,
+    pub column_outlines: BTreeMap<u32, u8>,
+    pub row_collapsed: std::collections::BTreeSet<u32>,
+    pub column_collapsed: std::collections::BTreeSet<u32>,
 }
 
 impl Geometry {
@@ -46,6 +50,10 @@ impl Geometry {
             column_widths: sheet.column_widths.clone(),
             row_heights: sheet.row_heights.clone(),
             frozen: sheet.frozen,
+            row_outlines: sheet.row_outlines.clone(),
+            column_outlines: sheet.column_outlines.clone(),
+            row_collapsed: sheet.row_collapsed.clone(),
+            column_collapsed: sheet.column_collapsed.clone(),
         }
     }
 
@@ -55,6 +63,10 @@ impl Geometry {
         sheet.column_widths = self.column_widths;
         sheet.row_heights = self.row_heights;
         sheet.frozen = self.frozen;
+        sheet.row_outlines = self.row_outlines;
+        sheet.column_outlines = self.column_outlines;
+        sheet.row_collapsed = self.row_collapsed;
+        sheet.column_collapsed = self.column_collapsed;
         previous
     }
 }

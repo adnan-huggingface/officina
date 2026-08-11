@@ -702,6 +702,9 @@ struct RowAttrs {
     /// none of its own. Without `customFormat` the `s` is advisory and Excel
     /// ignores it.
     style: Option<StyleId>,
+    /// Outline (group) depth, and whether this row wears the collapse button.
+    outline: u8,
+    collapsed: bool,
 }
 
 fn read_row_attrs(e: &BytesStart<'_>) -> RowAttrs {
@@ -711,6 +714,8 @@ fn read_row_attrs(e: &BytesStart<'_>) -> RowAttrs {
         custom_height: false,
         hidden: false,
         style: None,
+        outline: 0,
+        collapsed: false,
     };
     let mut style = None;
     let mut custom_format = false;
@@ -722,6 +727,10 @@ fn read_row_attrs(e: &BytesStart<'_>) -> RowAttrs {
             b"hidden" => out.hidden = parse_bool(&a.value).unwrap_or(false),
             b"s" => style = parse_u32(&a.value).map(StyleId),
             b"customFormat" => custom_format = parse_bool(&a.value).unwrap_or(false),
+            b"outlineLevel" => {
+                out.outline = parse_u32(&a.value).unwrap_or(0).min(7) as u8;
+            }
+            b"collapsed" => out.collapsed = parse_bool(&a.value).unwrap_or(false),
             _ => {}
         }
     }
@@ -744,6 +753,12 @@ fn apply_row_geometry(attrs: &RowAttrs, sheet: &mut Sheet, row: u32) {
     }
     if let Some(style) = attrs.style {
         sheet.row_styles.insert(row, style);
+    }
+    if attrs.outline > 0 {
+        sheet.row_outlines.insert(row, attrs.outline);
+    }
+    if attrs.collapsed {
+        sheet.row_collapsed.insert(row);
     }
 }
 
@@ -770,7 +785,11 @@ fn read_col_geometry(e: &BytesStart<'_>, sheet: &mut Sheet) {
     let style = attr_u32(e, b"style")
         .map(StyleId)
         .filter(|s| *s != StyleId::DEFAULT);
-    if width.is_none() && style.is_none() {
+    let outline = attr_u32(e, b"outlineLevel").unwrap_or(0).min(7) as u8;
+    let collapsed = attr_raw(e, b"collapsed")
+        .and_then(|raw| parse_bool(&raw))
+        .unwrap_or(false);
+    if width.is_none() && style.is_none() && outline == 0 && !collapsed {
         return;
     }
     if min == 0 || min > max {
@@ -787,6 +806,12 @@ fn read_col_geometry(e: &BytesStart<'_>, sheet: &mut Sheet) {
         }
         if let Some(style) = style {
             sheet.column_styles.insert(c - 1, style);
+        }
+        if outline > 0 {
+            sheet.column_outlines.insert(c - 1, outline);
+        }
+        if collapsed {
+            sheet.column_collapsed.insert(c - 1);
         }
     }
 }

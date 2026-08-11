@@ -85,6 +85,19 @@ pub(crate) fn rewrite(part: &str, data: &[u8], ctx: &mut Context<'_>) -> Result<
     let mut skip_cf = 0usize;
     let mut skip_dv = 0usize;
 
+    // `<sheetFormatPr>` states the deepest outline level per axis, and Excel
+    // sizes the outline pane from it — group a row without correcting it and
+    // the collapse buttons render clipped.
+    let outline_rows = ctx.sheet.row_outlines.values().copied().max().unwrap_or(0);
+    let outline_cols = ctx
+        .sheet
+        .column_outlines
+        .values()
+        .copied()
+        .max()
+        .unwrap_or(0);
+    let mut wrote_fmt = false;
+
     // The tab colour, which lives in `<sheetPr>` — the first child of
     // `<worksheet>` — and had no writer until a menu could set it. Same rule as
     // the filter: if the model agrees with the file, nothing is touched, so a
@@ -206,6 +219,56 @@ pub(crate) fn rewrite(part: &str, data: &[u8], ctx: &mut Context<'_>) -> Result<
                 out.extend_from_slice(splicer.bytes(span));
             }
             continue;
+        }
+
+        match &event {
+            Event::Start(e) | Event::Empty(e) if local_name(e) == b"sheetFormatPr" => {
+                wrote_fmt = true;
+                let stated_rows = raw_attr(e, b"outlineLevelRow")
+                    .and_then(|a| parse_u32(&a.value))
+                    .unwrap_or(0) as u8;
+                let stated_cols = raw_attr(e, b"outlineLevelCol")
+                    .and_then(|a| parse_u32(&a.value))
+                    .unwrap_or(0) as u8;
+                if stated_rows == outline_rows && stated_cols == outline_cols {
+                    out.extend_from_slice(splicer.bytes(span));
+                } else {
+                    let sets = [
+                        if outline_rows > 0 {
+                            Set::to(b"outlineLevelRow", outline_rows.to_string())
+                        } else {
+                            Set::off(b"outlineLevelRow")
+                        },
+                        if outline_cols > 0 {
+                            Set::to(b"outlineLevelCol", outline_cols.to_string())
+                        } else {
+                            Set::off(b"outlineLevelCol")
+                        },
+                    ];
+                    out.extend_from_slice(&retag(e, &sets, matches!(event, Event::Empty(_))));
+                }
+                continue;
+            }
+            // A file with no `<sheetFormatPr>` gets one when the model has
+            // outlines to declare; its schema slot is just before `<cols>`.
+            Event::Start(e) | Event::Empty(e)
+                if !wrote_fmt
+                    && matches!(local_name(e), b"cols" | b"sheetData")
+                    && (outline_rows > 0 || outline_cols > 0) =>
+            {
+                let fmt_prefix = prefix_of(e);
+                let mut sets = Vec::new();
+                if outline_rows > 0 {
+                    sets.push(Set::to(b"outlineLevelRow", outline_rows.to_string()));
+                }
+                if outline_cols > 0 {
+                    sets.push(Set::to(b"outlineLevelCol", outline_cols.to_string()));
+                }
+                open(&mut out, &fmt_prefix, b"sheetFormatPr", &sets, true);
+                wrote_fmt = true;
+                // No `continue`: the element itself still gets its own turn.
+            }
+            _ => {}
         }
 
         match &event {
@@ -983,6 +1046,8 @@ fn write_row(
             b"hidden",
             b"s",
             b"customFormat",
+            b"outlineLevel",
+            b"collapsed",
         ] {
             if !sets.iter().any(|s| s.name == name) {
                 sets.push(Set::off(name));
@@ -1108,6 +1173,12 @@ fn geometry_sets(sheet: &Sheet, row: u32) -> Vec<Set<'static>> {
         sets.push(Set::to(b"s", style.0.to_string()));
         sets.push(Set::to(b"customFormat", "1"));
     }
+    if let Some(level) = sheet.row_outlines.get(&row) {
+        sets.push(Set::to(b"outlineLevel", level.to_string()));
+    }
+    if sheet.row_collapsed.contains(&row) {
+        sets.push(Set::to(b"collapsed", "1"));
+    }
     sets
 }
 
@@ -1146,6 +1217,11 @@ struct FileRow {
     /// that attribute Excel ignores the style, so recording it would make the
     /// model and the file disagree about a row nobody formatted.
     style: Option<ss_model::StyleId>,
+    /// Outline depth and the collapse marker, so a Group that changes
+    /// nothing *but* these is still seen as a change — the fast path would
+    /// otherwise splice the ungrouped bytes back and discard it silently.
+    outline: u8,
+    collapsed: bool,
 }
 
 impl FileRow {
@@ -1166,6 +1242,13 @@ impl FileRow {
             .flatten()
             .map(ss_model::StyleId)
             .filter(|s| *s != ss_model::StyleId::DEFAULT);
+        let outline = raw_attr(&start, b"outlineLevel")
+            .and_then(|a| parse_u32(&a.value))
+            .unwrap_or(0)
+            .min(7) as u8;
+        let collapsed = raw_attr(&start, b"collapsed")
+            .and_then(|a| parse_bool(&a.value))
+            .unwrap_or(false);
         let tail = span.end..span.end;
         FileRow {
             index,
@@ -1178,6 +1261,8 @@ impl FileRow {
             hidden,
             spans,
             style,
+            outline,
+            collapsed,
         }
     }
 
@@ -1192,6 +1277,8 @@ impl FileRow {
         };
         stated == sheet.row_heights.get(&self.index).copied()
             && self.style == sheet.row_styles.get(&self.index).copied()
+            && self.outline == sheet.row_outlines.get(&self.index).copied().unwrap_or(0)
+            && self.collapsed == sheet.row_collapsed.contains(&self.index)
     }
 }
 
@@ -1551,6 +1638,11 @@ struct ColumnLook {
     /// `<col>` carrying nothing but a style means, and it is not the same as a
     /// width that happens to equal the default.
     width: Option<f64>,
+    /// Outline depth and collapse marker. In the look so a Group that
+    /// changes nothing else still compares unequal to the file's bytes —
+    /// the early-out would otherwise splice the ungrouped element back.
+    outline: u8,
+    collapsed: bool,
 }
 
 impl ColumnLook {
@@ -1562,11 +1654,13 @@ impl ColumnLook {
                 .map(|s| s.0)
                 .unwrap_or_default(),
             width: sheet.column_widths.get(&column).copied(),
+            outline: sheet.column_outlines.get(&column).copied().unwrap_or(0),
+            collapsed: sheet.column_collapsed.contains(&column),
         }
     }
 
     fn is_default(self) -> bool {
-        self.style == 0 && self.width.is_none()
+        self.style == 0 && self.width.is_none() && self.outline == 0 && !self.collapsed
     }
 
     /// The look a `<col>` element itself states.
@@ -1588,6 +1682,13 @@ impl ColumnLook {
             } else {
                 raw_attr(e, b"width").and_then(|a| parse_f64(&a.value))
             },
+            outline: raw_attr(e, b"outlineLevel")
+                .and_then(|a| parse_u32(&a.value))
+                .unwrap_or(0)
+                .min(7) as u8,
+            collapsed: raw_attr(e, b"collapsed")
+                .and_then(|a| parse_bool(&a.value))
+                .unwrap_or(false),
         }
     }
 
@@ -1620,6 +1721,16 @@ impl ColumnLook {
             // what it was — and the width still sitting in the file is exactly
             // the size the column should come back at.
             None => sets.push(Set::off(b"hidden")),
+        }
+        if self.outline > 0 {
+            sets.push(Set::to(b"outlineLevel", self.outline.to_string()));
+        } else {
+            sets.push(Set::off(b"outlineLevel"));
+        }
+        if self.collapsed {
+            sets.push(Set::to(b"collapsed", "1"));
+        } else {
+            sets.push(Set::off(b"collapsed"));
         }
         sets
     }
@@ -1722,13 +1833,15 @@ fn missing_columns(
     covered: &std::collections::BTreeSet<u32>,
 ) -> Vec<(u32, u32, ColumnLook)> {
     let mut runs: Vec<(u32, u32, ColumnLook)> = Vec::new();
-    // Both maps, because a column may have a width and no style or a style and
-    // no width, and either on its own is worth a `<col>`. A BTreeSet walks them
-    // in order, so a run only ever grows at its end.
+    // Every map, because a column may carry any one of these alone — a width,
+    // a style, or an outline level — and each on its own is worth a `<col>`.
+    // A BTreeSet walks them in order, so a run only ever grows at its end.
     let named: std::collections::BTreeSet<u32> = sheet
         .column_styles
         .keys()
         .chain(sheet.column_widths.keys())
+        .chain(sheet.column_outlines.keys())
+        .chain(sheet.column_collapsed.iter())
         .copied()
         .collect();
     for column in named {
@@ -1785,6 +1898,12 @@ fn write_columns(
                 sets.push(Set::to(b"customWidth", "1"));
             }
             None => sets.push(Set::to(b"width", ss_model::format_general(DEFAULT_WIDTH))),
+        }
+        if look.outline > 0 {
+            sets.push(Set::to(b"outlineLevel", look.outline.to_string()));
+        }
+        if look.collapsed {
+            sets.push(Set::to(b"collapsed", "1"));
         }
         open(out, prefix, b"col", &sets, true);
     }
@@ -1869,8 +1988,12 @@ mod tests {
     }
 
     /// The same worksheet, but with a `<cols>` block already in it.
+    // The `<sheetFormatPr>` rides along because Excel always writes one
+    // beside an outline — a file with levels and no declaration is a file
+    // the writer would correct, and this fixture stands in for untouched.
     const WITH_COLS: &str = concat!(
         r#"<?xml version="1.0"?><worksheet xmlns="http://x">"#,
+        r#"<sheetFormatPr outlineLevelCol="1"/>"#,
         r#"<cols><col min="1" max="3" width="12.5" customWidth="1" outlineLevel="1"/></cols>"#,
         r#"<sheetData><row r="1"><c r="A1"><v>1</v></c></row></sheetData></worksheet>"#,
     );
@@ -1912,9 +2035,10 @@ mod tests {
 
     #[test]
     fn a_span_whose_columns_stop_agreeing_is_split_and_keeps_its_attributes() {
-        // The file's span covers A to C; only B is styled now. Splitting has to
-        // carry `customWidth` and `outlineLevel` onto every piece, because this
-        // writer does not model either and must not drop them.
+        // The file's span covers A to C; only B is styled now. Splitting has
+        // to carry `customWidth` and `outlineLevel` onto every piece — the
+        // width from the file's own spelling, the outline from the model,
+        // which learnt it when grouping did.
         let mut sheet = Sheet::new("Data");
         set(&mut sheet, "A1", CellValue::Number(1.0), 0);
         with_cols_widths(&mut sheet);
@@ -1932,15 +2056,18 @@ mod tests {
         assert_eq!(out.matches("width=\"12.5\"").count(), 3, "{out}");
     }
 
-    /// The widths `WITH_COLS` states, as the reader would have left them.
+    /// The widths and outlines `WITH_COLS` states, as the reader would have
+    /// left them.
     ///
     /// A model with no width against a file that has one is not a sheet nobody
     /// touched — it is a sheet whose widths were just cleared, and the writer
     /// is right to take them out. So a fixture standing in for an untouched
-    /// sheet has to say what the file says.
+    /// sheet has to say what the file says. The outline levels joined the
+    /// model when grouping did, and the same rule now covers them.
     fn with_cols_widths(sheet: &mut Sheet) {
         for column in 0..3 {
             sheet.column_widths.insert(column, 12.5);
+            sheet.column_outlines.insert(column, 1);
         }
     }
 

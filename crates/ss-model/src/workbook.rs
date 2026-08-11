@@ -134,6 +134,15 @@ pub struct Sheet {
     pub column_styles: BTreeMap<u32, crate::StyleId>,
     /// The same for `<row s=".." customFormat="1">`.
     pub row_styles: BTreeMap<u32, crate::StyleId>,
+    /// Outline (group) depth per row, 1–7; absent means ungrouped. Hiding a
+    /// collapsed group is still spelled `row_heights[r] = 0.0` — the whole
+    /// stack agrees on the zero convention and a second spelling would fork it.
+    pub row_outlines: BTreeMap<u32, u8>,
+    pub column_outlines: BTreeMap<u32, u8>,
+    /// The summary row/column wearing the collapse button for the group that
+    /// ends beside it — `<row collapsed="1">`.
+    pub row_collapsed: std::collections::BTreeSet<u32>,
+    pub column_collapsed: std::collections::BTreeSet<u32>,
     pub conditional_formats: Vec<crate::cond::ConditionalFormat>,
     pub validations: Vec<crate::cond::DataValidation>,
     /// Charts anchored to this sheet. A view over parts kept verbatim, never a
@@ -296,6 +305,20 @@ impl Sheet {
             .filter_map(|(index, style)| shift.point(*index).map(|moved| (moved, *style)))
             .collect();
 
+        let outlines = match shift.axis {
+            Axis::Rows => &mut self.row_outlines,
+            Axis::Columns => &mut self.column_outlines,
+        };
+        *outlines = outlines
+            .iter()
+            .filter_map(|(index, level)| shift.point(*index).map(|moved| (moved, *level)))
+            .collect();
+        let collapsed = match shift.axis {
+            Axis::Rows => &mut self.row_collapsed,
+            Axis::Columns => &mut self.column_collapsed,
+        };
+        *collapsed = collapsed.iter().filter_map(|i| shift.point(*i)).collect();
+
         // A conditional format or a validation whose whole region is deleted
         // goes with it; one that survives moves with the cells it was applied to.
         for cf in &mut self.conditional_formats {
@@ -377,6 +400,19 @@ impl Sheet {
             .iter()
             .map(|(index, style)| (mv.point(*index), *style))
             .collect();
+        let outlines = match mv.axis {
+            Axis::Rows => &mut self.row_outlines,
+            Axis::Columns => &mut self.column_outlines,
+        };
+        *outlines = outlines
+            .iter()
+            .map(|(index, level)| (mv.point(*index), *level))
+            .collect();
+        let collapsed = match mv.axis {
+            Axis::Rows => &mut self.row_collapsed,
+            Axis::Columns => &mut self.column_collapsed,
+        };
+        *collapsed = collapsed.iter().map(|i| mv.point(*i)).collect();
 
         for cf in &mut self.conditional_formats {
             cf.ranges = cf.ranges.iter().map(|r| mv.range(*r)).collect();
