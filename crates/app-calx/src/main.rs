@@ -92,6 +92,8 @@ struct Calx {
     /// — a modal is modal — and a single `Option` makes that true rather than
     /// merely intended.
     dialog: Option<Dialog>,
+    /// The sheet tab being dragged along the strip, if one is.
+    dragging_tab: Option<usize>,
 }
 
 /// A window that takes over until it is answered.
@@ -236,6 +238,7 @@ impl Calx {
             name_box: "A1".to_string(),
             last_body: egui::vec2(800.0, 600.0),
             dialog: None,
+            dragging_tab: None,
         }
     }
 
@@ -2219,7 +2222,7 @@ impl Calx {
         ui.horizontal(|ui| {
             let look = self.cursor_look();
 
-            let mut name = look.font.name.clone();
+            let name = look.font.name.clone();
             egui::ComboBox::from_id_salt("calx-font")
                 .selected_text(&name)
                 .width(130.0)
@@ -2236,7 +2239,6 @@ impl Calx {
                         }
                     }
                 });
-            name.clear();
 
             let mut size = look.font.size;
             if ui
@@ -2286,7 +2288,12 @@ impl Calx {
             let theme = self.doc.workbook.styles.theme();
             let mut text_rgb = look.font.color.resolve(theme).unwrap_or([0, 0, 0]);
             ui.horizontal(|ui| {
-                icons::button(ui, Icon::TextColor, false, "Text colour");
+                // The icon *applies* the colour beside it, as Excel's A-with-
+                // a-bar does; the swatch is where a different one is picked.
+                if icons::button(ui, Icon::TextColor, false, "Apply this text colour").clicked() {
+                    let [r, g, b] = text_rgb;
+                    requested = Some(Action::Format(Format::TextColor(Some(Color::rgb(r, g, b)))));
+                }
                 if ui
                     .color_edit_button_srgb(&mut text_rgb)
                     .on_hover_text("Text colour")
@@ -2298,7 +2305,10 @@ impl Calx {
             });
             let mut fill_rgb = look.fill.shade(theme).unwrap_or([255, 255, 255]);
             ui.horizontal(|ui| {
-                icons::button(ui, Icon::FillColor, false, "Fill colour");
+                if icons::button(ui, Icon::FillColor, false, "Apply this fill colour").clicked() {
+                    let [r, g, b] = fill_rgb;
+                    requested = Some(Action::Format(Format::Fill(Some(Color::rgb(r, g, b)))));
+                }
                 if ui
                     .color_edit_button_srgb(&mut fill_rgb)
                     .on_hover_text("Fill colour")
@@ -2656,6 +2666,7 @@ impl Calx {
             .filter(|s| s.hidden && s.kind.has_grid())
             .count();
 
+        let mut tab_rects: Vec<(usize, egui::Rect)> = Vec::new();
         egui::ScrollArea::horizontal()
             .id_salt("calx-tabs")
             .max_height(26.0)
@@ -2671,8 +2682,14 @@ impl Calx {
                         let selected = index == self.grid.sheet_index;
                         let stripe = sheet.view.tab_color.and_then(|c| c.resolve(theme));
                         let response = tab(ui, &sheet.name, selected, stripe);
+                        tab_rects.push((index, response.rect));
                         if response.clicked() && !selected {
                             switch = Some(index);
+                        }
+                        // Dragging a tab sideways picks it up; the drop is
+                        // resolved below, once every tab's place is known.
+                        if response.drag_started() {
+                            self.dragging_tab = Some(index);
                         }
                         response.context_menu(|ui| {
                             let mut chose = |command| context = Some((index, command));
@@ -2747,7 +2764,56 @@ impl Calx {
                 });
             });
 
+        // A tab in flight: a closed hand for the pointer, a drop line where
+        // it would land, and the reorder itself when the button comes up.
+        if let Some(dragged) = self.dragging_tab {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+            let pos = ui.ctx().pointer_latest_pos();
+            // Past the middle of a tab lands after it; the slot is named as
+            // "before sheet N", the same language Move or Copy speaks.
+            let before = pos.map(|pos| {
+                tab_rects
+                    .iter()
+                    .find(|(_, rect)| pos.x < rect.center().x)
+                    .map_or(self.doc.workbook.sheets.len(), |(index, _)| *index)
+            });
+            if let (Some(before), Some(pos)) = (before, pos) {
+                let x = tab_rects
+                    .iter()
+                    .find(|(index, _)| *index == before)
+                    .map_or_else(
+                        || tab_rects.last().map_or(pos.x, |(_, r)| r.right()),
+                        |(_, r)| r.left(),
+                    );
+                if let Some((_, sample)) = tab_rects.first() {
+                    ui.painter().vline(
+                        x,
+                        sample.y_range(),
+                        egui::Stroke::new(2.0, egui::Color32::from_rgb(0x21, 0x73, 0x46)),
+                    );
+                }
+            }
+            if ui.ctx().input(|i| !i.pointer.any_down()) {
+                self.dragging_tab = None;
+                if let Some(before) = before {
+                    if before != dragged && before != dragged + 1 {
+                        self.move_sheet(dragged, before, false);
+                    }
+                }
+            }
+        }
+
         ui.horizontal(|ui| {
+            // The mode cell, leftmost as Excel puts it: Ready, Enter while
+            // typing, Edit under F2, Point while a reference is being aimed.
+            let mode = match &self.grid.editor {
+                Some(open) if open.is_formula() && open.can_point() => "Point",
+                Some(open) if open.mode == grid::editor::Mode::Enter => "Enter",
+                Some(_) => "Edit",
+                None => "Ready",
+            };
+            ui.small(mode);
+            ui.separator();
             ui.small(&self.status);
             if self.edited {
                 ui.small("• edited");
@@ -3020,9 +3086,18 @@ impl Calx {
                     });
                 });
                 if accept {
-                    if let Some(size) = parse_size(text, axis) {
-                        self.resize_selection(axis, size);
-                        keep = false;
+                    match parse_size(text, axis) {
+                        Some(size) => {
+                            self.resize_selection(axis, size);
+                            keep = false;
+                        }
+                        // OK on an unreadable number: the dialog stays, and
+                        // the status line says why — a button that silently
+                        // does nothing reads as a broken button.
+                        None => {
+                            self.status =
+                                format!("\"{}\" is not a number from 0 to {ceiling}", text.trim());
+                        }
                     }
                 }
             }
@@ -3490,6 +3565,11 @@ impl Calx {
                     keep = false;
                 }
             }
+        }
+        // Escape cancels whichever dialog is up, the way Cancel would —
+        // every one of them, because a window Escape cannot leave is a trap.
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            keep = false;
         }
         if keep {
             self.dialog = Some(dialog);
