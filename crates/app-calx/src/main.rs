@@ -909,6 +909,31 @@ impl Calx {
             Action::Redo => self.redo(),
             Action::Copy { cut } => self.copy(ui, cut),
             Action::Paste(text) => self.paste(text),
+            Action::MoveRange { from, to, copy } => {
+                let end = CellRef::new(to.row + from.rows() - 1, to.col + from.cols() - 1);
+                if copy {
+                    // Ctrl-drag: a copy, with copy semantics — relative
+                    // references adjust by the distance travelled.
+                    if let Some(source) = clip::copy(&self.doc.workbook, sheet, from) {
+                        let mut change = clip::paste(
+                            &mut self.doc.workbook,
+                            sheet,
+                            CellRange::new(to, to),
+                            &source,
+                        );
+                        change.label = "Copy cells".to_string();
+                        self.perform(change);
+                    }
+                } else {
+                    let change = edit::move_range(&mut self.doc.workbook, sheet, from, to);
+                    self.perform(change);
+                }
+                // The selection lands on the block where it came down.
+                self.grid.selection = grid::Selection::at(to);
+                if let Some(s) = self.doc.workbook.sheet(sheet) {
+                    self.grid.selection.extend_to(end, s);
+                }
+            }
             // Enter over the marching ants: paste what the app itself holds.
             Action::PasteClip => {
                 let text = self.clip_text.clone();
@@ -1862,6 +1887,23 @@ impl Calx {
     fn paste_how(&mut self, text: String, how: clip::PasteSpecial) {
         let sheet = self.grid.sheet_index;
         let target = self.grid.selection.active_range();
+
+        // A cut pasted whole on its own sheet is a *move*, and a move is not
+        // a copy: the formulas travel as written, and every reference in the
+        // workbook that pointed into the block follows the data. Cross-sheet
+        // cuts and partial pastes fall through to the clear-and-paste below.
+        if let Some((from_sheet, from_range)) = self.cut_from {
+            if from_sheet == sheet
+                && text == self.clip_text
+                && how == clip::PasteSpecial::default()
+            {
+                self.cut_from = None;
+                let change =
+                    edit::move_range(&mut self.doc.workbook, sheet, from_range, target.start);
+                self.perform(change);
+                return;
+            }
+        }
 
         // Our own clip carries formulas and styles; the system clipboard carries
         // only text. Prefer ours when the clipboard is still what we put there.

@@ -255,6 +255,109 @@ fn shift_range(a: A1, b: A1, shift: Shift) -> Option<String> {
     (after != before).then_some(after)
 }
 
+/// Rewrites `text` after a block of cells moved: every reference pointing
+/// *into* the block travels with it, and everything else holds still.
+///
+/// This is the third translation, and it is neither of the others. It is not
+/// a copy, so `$` plays no part — the dollars say what a copy may not adjust,
+/// and here the data itself went somewhere else, anchored or not. It is not
+/// a structural shift either: cells outside the block did not move, so
+/// references to them must not change. A range travels only when both of its
+/// corners were inside the block, which is Excel's rule.
+///
+/// `home` is the sheet the formula lives on; `moved_on` the sheet the block
+/// moved on. Returns `None` when nothing in the text needed to change.
+pub fn follow_move(
+    text: &str,
+    home: &str,
+    moved_on: &str,
+    from: ss_model::CellRange,
+    rows: i64,
+    cols: i64,
+) -> Option<String> {
+    if rows == 0 && cols == 0 {
+        return None;
+    }
+    let tokens = tokenize(text).ok()?;
+    let mut out = String::new();
+    let mut copied = 0usize;
+    let mut qualifier: Option<&str> = None;
+    let mut i = 0;
+
+    let inside = |cell: &A1| {
+        (from.start.row..=from.end.row).contains(&cell.row)
+            && (from.start.col..=from.end.col).contains(&cell.col)
+    };
+
+    while i < tokens.len() {
+        if let Tok::Sheet(name) = &tokens[i].kind {
+            qualifier = Some(name);
+            i += 1;
+            continue;
+        }
+        let on_target = qualifier.unwrap_or(home).eq_ignore_ascii_case(moved_on);
+        let range = matches!(&tokens[i].kind, Tok::Cell(_))
+            && matches!(tokens.get(i + 1).map(|t| &t.kind), Some(Tok::Colon))
+            && matches!(tokens.get(i + 2).map(|t| &t.kind), Some(Tok::Cell(_)));
+
+        let (span, replacement) = if range {
+            let (Tok::Cell(a), Tok::Cell(b)) = (&tokens[i].kind, &tokens[i + 2].kind) else {
+                unreachable!("just matched")
+            };
+            let travels = on_target && inside(a) && inside(b);
+            (
+                3,
+                travels.then(|| match (carry_cell(*a, rows, cols), carry_cell(*b, rows, cols)) {
+                    (Some(a2), Some(b2)) => {
+                        format!("{}:{}", write_cell(&a2), write_cell(&b2))
+                    }
+                    _ => REF_ERROR.to_string(),
+                }),
+            )
+        } else if let Tok::Cell(cell) = &tokens[i].kind {
+            let travels = on_target && inside(cell);
+            (
+                1,
+                travels.then(|| {
+                    carry_cell(*cell, rows, cols)
+                        .as_ref()
+                        .map_or(REF_ERROR.to_string(), write_cell)
+                }),
+            )
+        } else {
+            (1, None)
+        };
+
+        if let Some(new_text) = replacement {
+            let end = tokens[i + span - 1].end;
+            out.push_str(&text[copied..tokens[i].at]);
+            out.push_str(&new_text);
+            copied = end;
+        }
+        qualifier = None;
+        i += span;
+    }
+
+    if copied == 0 {
+        return None;
+    }
+    out.push_str(&text[copied..]);
+    Some(out)
+}
+
+/// Moves one corner with the block it sits in, dollars and all.
+fn carry_cell(cell: A1, rows: i64, cols: i64) -> Option<A1> {
+    let row = i64::from(cell.row) + rows;
+    let col = i64::from(cell.col) + cols;
+    ((0..i64::from(MAX_ROWS)).contains(&row) && (0..i64::from(MAX_COLS)).contains(&col)).then_some(
+        A1 {
+            row: row as u32,
+            col: col as u32,
+            ..cell
+        },
+    )
+}
+
 /// Rewrites `text` for a band of rows or columns that was moved, or `None` if
 /// nothing in it moved.
 ///

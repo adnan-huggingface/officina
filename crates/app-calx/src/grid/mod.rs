@@ -539,6 +539,13 @@ pub enum Action {
         at: CellRef,
         text: String,
     },
+    /// The selection dragged by its border to a new top-left. A move by
+    /// default; `copy` when Ctrl was held at the drop, as Excel reads it.
+    MoveRange {
+        from: CellRange,
+        to: CellRef,
+        copy: bool,
+    },
     /// Enter with the marching ants up: complete the paste from the
     /// application's clipboard and dismiss them.
     PasteClip,
@@ -783,6 +790,8 @@ pub struct GridView {
     pub(crate) before_resize: Option<Geometry>,
     /// The rectangle the fill drag currently covers.
     pub(crate) fill_target: Option<CellRange>,
+    /// Where a range dragged by its border would land, drawn as an outline.
+    pub(crate) move_range_target: Option<CellRange>,
     /// Where a band being dragged would land: the index it would sit in front
     /// of. Drawn as a line between two rows or columns, because that is what a
     /// drop between them is.
@@ -884,6 +893,14 @@ pub(crate) enum Drag {
     /// point mode, and dragging stretches that reference instead of moving
     /// the selection.
     Point,
+    /// The selection picked up by its border and carried. `grab` is which
+    /// cell of the block the pointer took hold of, as offsets from its
+    /// top-left, so the block does not jump to put its corner under the
+    /// cursor.
+    MoveRange {
+        from: CellRange,
+        grab: (i64, i64),
+    },
     /// Dragging a scrollbar thumb. The payload is how far into the thumb the
     /// pointer took hold, so the thumb does not jump to centre itself under
     /// the cursor the moment it is grabbed.
@@ -911,6 +928,7 @@ impl Default for GridView {
             drag: None,
             before_resize: None,
             fill_target: None,
+            move_range_target: None,
             move_target: None,
             bars: paint::Bars::default(),
             summary: Summary::default(),

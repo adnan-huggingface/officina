@@ -614,6 +614,104 @@ pub fn input(book: &mut Workbook, sheet: usize, at: CellRef, typed: &str) -> Cha
     )
 }
 
+/// A block of cells picked up and put down with its top-left corner at `to`
+/// — the drag of a selection border, and the honest half of cut-and-paste.
+///
+/// A move is not a copy, and the difference is everything here. The moved
+/// cells keep their formulas *as written* — their references were not asked
+/// to change, only carried (references pointing into the moved block travel
+/// with it, so `=B1+C1` moved wholesale still adds the same two numbers).
+/// And every formula anywhere in the workbook that pointed into the block
+/// follows the data to its new address, dollars notwithstanding: `$` guards
+/// against copies, not against the data itself being taken elsewhere.
+///
+/// Merges wholly inside the block move with it. A destination that would
+/// fall off the sheet refuses by returning an empty change.
+pub fn move_range(book: &mut Workbook, sheet: usize, from: CellRange, to: CellRef) -> Change {
+    let rows = i64::from(to.row) - i64::from(from.start.row);
+    let cols = i64::from(to.col) - i64::from(from.start.col);
+    if rows == 0 && cols == 0 {
+        return Change::default();
+    }
+    let end_row = i64::from(from.end.row) + rows;
+    let end_col = i64::from(from.end.col) + cols;
+    if end_row >= i64::from(ss_model::cell::MAX_ROWS) || end_col >= i64::from(ss_model::cell::MAX_COLS)
+    {
+        return Change::default();
+    }
+    let Some(moved_name) = book.sheet(sheet).map(|s| s.name.clone()) else {
+        return Change::default();
+    };
+
+    // The final state of every touched position, keyed so that a source cell
+    // that is also a destination appears exactly once — a position written
+    // twice in one patch would leave the undo restoring the wrong layer.
+    let mut outcome: std::collections::BTreeMap<CellRef, Option<Cell>> =
+        std::collections::BTreeMap::new();
+    if let Some(s) = book.sheet(sheet) {
+        for row in from.start.row..=from.end.row {
+            for col in from.start.col..=from.end.col {
+                let at = CellRef::new(row, col);
+                outcome.entry(at).or_insert(None);
+                let landing = CellRef::new(
+                    (i64::from(row) + rows) as u32,
+                    (i64::from(col) + cols) as u32,
+                );
+                outcome.insert(landing, s.get(at).cloned());
+            }
+        }
+    }
+    let mut patches = vec![Patch::Cells {
+        sheet,
+        cells: outcome.into_iter().collect(),
+    }];
+
+    // Merges wholly inside the block travel with it.
+    if let Some(s) = book.sheet(sheet) {
+        let inside = |m: &CellRange| {
+            m.start.row >= from.start.row
+                && m.end.row <= from.end.row
+                && m.start.col >= from.start.col
+                && m.end.col <= from.end.col
+        };
+        if s.merges.iter().any(inside) {
+            let mut geometry = Geometry::of(s);
+            for merge in &mut geometry.merges {
+                if inside(merge) {
+                    merge.start.row = (i64::from(merge.start.row) + rows) as u32;
+                    merge.start.col = (i64::from(merge.start.col) + cols) as u32;
+                    merge.end.row = (i64::from(merge.end.row) + rows) as u32;
+                    merge.end.col = (i64::from(merge.end.col) + cols) as u32;
+                }
+            }
+            patches.push(Patch::Geometry { sheet, geometry });
+        }
+    }
+
+    // Every formula in the workbook follows the data it pointed at.
+    for (index, other) in book.sheets.iter().enumerate() {
+        let texts: Vec<(FormulaId, String)> = other
+            .formulas
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| !f.text.is_empty())
+            .filter_map(|(i, f)| {
+                let moved =
+                    crate::translate::follow_move(&f.text, &other.name, &moved_name, from, rows, cols)?;
+                Some((FormulaId::from_index(i as u32), moved))
+            })
+            .collect();
+        if !texts.is_empty() {
+            patches.push(Patch::Formulas {
+                sheet: index,
+                texts,
+            });
+        }
+    }
+
+    Change::new("Move cells", patches)
+}
+
 /// Ctrl+Enter: one entry, written to every target at once.
 ///
 /// Each cell receives the text as if it had been typed there: a formula's
@@ -949,6 +1047,70 @@ mod tests {
 
     fn at(a1: &str) -> CellRef {
         CellRef::from_a1(a1).expect("valid address")
+    }
+
+    #[test]
+    fn a_move_carries_formulas_as_written_and_references_follow() {
+        let mut book = Workbook::blank();
+        book.sheets[0].set(
+            at("B1"),
+            Cell {
+                value: CellValue::Number(3.0),
+                ..Default::default()
+            },
+        );
+        let inside = book.sheets[0].push_formula(Formula::normal("B1*2"));
+        book.sheets[0].set(
+            at("B2"),
+            Cell {
+                value: CellValue::Number(6.0),
+                style: StyleId::DEFAULT,
+                formula: Some(inside),
+            },
+        );
+        let watcher = book.sheets[0].push_formula(Formula::normal("$B$1+B2"));
+        book.sheets[0].set(
+            at("D1"),
+            Cell {
+                value: CellValue::Number(9.0),
+                style: StyleId::DEFAULT,
+                formula: Some(watcher),
+            },
+        );
+
+        let from = CellRange::new(at("B1"), at("B2"));
+        let change = move_range(&mut book, 0, from, at("C5"));
+        let undo = apply(&mut book, change);
+
+        let text =
+            |book: &Workbook, a: &str| book.sheets[0].formula_at(at(a)).map(|f| f.text.clone());
+        assert!(book.sheets[0].get(at("B1")).is_none_or(|c| c.is_vacant()));
+        assert_eq!(
+            book.sheets[0].get(at("C5")).map(|c| c.value),
+            Some(CellValue::Number(3.0))
+        );
+        assert_eq!(
+            text(&book, "C6").as_deref(),
+            Some("C5*2"),
+            "a reference inside the block travelled with it"
+        );
+        assert_eq!(
+            text(&book, "D1").as_deref(),
+            Some("$C$5+C6"),
+            "watchers follow the data, dollars notwithstanding"
+        );
+
+        apply(&mut book, undo);
+        assert_eq!(
+            book.sheets[0].get(at("B1")).map(|c| c.value),
+            Some(CellValue::Number(3.0))
+        );
+        assert_eq!(
+            text(&book, "D1").as_deref(),
+            Some("$B$1+B2"),
+            "undo restores the text"
+        );
+        assert_eq!(text(&book, "B2").as_deref(), Some("B1*2"));
     }
 
     #[test]

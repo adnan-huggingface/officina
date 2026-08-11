@@ -489,6 +489,7 @@ impl GridView {
             Some(Drag::MovePicture { .. }) => Some(egui::CursorIcon::Move),
             Some(Drag::ResizePicture { handle, .. }) => Some(handle.cursor()),
             Some(Drag::Fill { .. }) => Some(egui::CursorIcon::Crosshair),
+            Some(Drag::MoveRange { .. }) => Some(egui::CursorIcon::Move),
             Some(_) => None,
             None => ui.ctx().pointer_hover_pos().and_then(|pos| {
                 header_edge(layout, content, body, &panes, pos)
@@ -499,6 +500,7 @@ impl GridView {
                     .or_else(|| self.movable_band(layout, content, body, &panes, pos))
                     .or_else(|| self.pointer_over(sheet, layout, &panes, pos))
                     .or_else(|| self.fill_hover(layout, &panes, pos))
+                    .or_else(|| self.border_hover(layout, &panes, pos))
             }),
         };
         if let Some(icon) = icon {
@@ -555,6 +557,29 @@ impl GridView {
             Axis::Rows => self.scroll.y = moved,
             Axis::Columns => self.scroll.x = moved,
         }
+    }
+
+    /// Whether `pos` sits on the selection's border — the few pixels either
+    /// side of its outline, minus the fill handle's corner — which is where
+    /// a drag picks the block up rather than starting a new selection.
+    fn on_selection_border(&self, layout: &Layout, panes: &[Pane], pos: egui::Pos2) -> bool {
+        if self.editor.is_some() || self.selected_picture.is_some() {
+            return false;
+        }
+        let range = self.selection.active_range();
+        panes.iter().any(|pane| {
+            if !pane.rect.contains(pos) || self.fill_handle(layout, pane).contains(pos) {
+                return false;
+            }
+            let rect = super::rect_of_range(layout, range, pane.rect, pane.scroll);
+            rect.expand(3.0).contains(pos) && !rect.shrink(3.0).contains(pos)
+        })
+    }
+
+    /// The move cursor over that border.
+    fn border_hover(&self, layout: &Layout, panes: &[Pane], pos: egui::Pos2) -> Option<egui::CursorIcon> {
+        self.on_selection_border(layout, panes, pos)
+            .then_some(egui::CursorIcon::Move)
     }
 
     /// The thin cross over the fill handle. The square is six pixels wide, so
@@ -945,6 +970,20 @@ impl GridView {
                     ui.ctx()
                         .request_repaint_after(std::time::Duration::from_millis(60));
                 }
+            }
+        }
+
+        // Where a dragged block would land, as an outline the size of it.
+        if let (Some(Drag::MoveRange { .. }), Some(target)) = (self.drag, self.move_range_target)
+        {
+            let rect = rect_of_range(layout, target, pane.rect, pane.scroll);
+            if rect.intersect(pane.rect).is_positive() {
+                painter.rect_stroke(
+                    rect,
+                    0.0,
+                    egui::Stroke::new(2.0, palette.selection_edge),
+                    egui::StrokeKind::Inside,
+                );
             }
         }
 
@@ -1458,6 +1497,7 @@ impl GridView {
                                 | Drag::SelectHeaders { .. }
                                 | Drag::Fill { .. }
                                 | Drag::Point
+                                | Drag::MoveRange { .. }
                         )
                     {
                         ui.ctx().request_repaint();
@@ -1689,6 +1729,24 @@ impl GridView {
             }
         }
 
+        // The selection's border picks the whole block up — Excel's
+        // drag-move, and the most-reached-for mouse gesture it has. The
+        // handle was tested first, so the corner still fills.
+        if self.on_selection_border(layout, panes, pos) {
+            if let Some(at) = self.cell_at(layout, body, panes, pos) {
+                let from = self.selection.active_range();
+                self.drag = Some(Drag::MoveRange {
+                    from,
+                    grab: (
+                        i64::from(at.row) - i64::from(from.start.row),
+                        i64::from(at.col) - i64::from(from.start.col),
+                    ),
+                });
+                self.move_range_target = None;
+                return;
+            }
+        }
+
         let Some(at) = self.cell_at(layout, body, panes, pos) else {
             return;
         };
@@ -1906,6 +1964,25 @@ impl GridView {
                     open.point_to(at);
                 }
             }
+            Drag::MoveRange { from, grab } => {
+                self.auto_scroll(body, pos, true, true);
+                let Some(at) = self.cell_at(layout, body, panes, pos) else {
+                    return;
+                };
+                // The grabbed cell stays under the pointer; the block is
+                // clamped so no part of it leaves the sheet.
+                let rows = i64::from(from.rows());
+                let cols = i64::from(from.cols());
+                let row = (i64::from(at.row) - grab.0)
+                    .clamp(0, i64::from(ss_model::cell::MAX_ROWS) - rows);
+                let col = (i64::from(at.col) - grab.1)
+                    .clamp(0, i64::from(ss_model::cell::MAX_COLS) - cols);
+                let start = CellRef::new(row as u32, col as u32);
+                self.move_range_target = Some(CellRange::new(
+                    start,
+                    CellRef::new(start.row + from.rows() - 1, start.col + from.cols() - 1),
+                ));
+            }
             Drag::Select => {
                 self.auto_scroll(body, pos, true, true);
                 let Some(at) = self.cell_at(layout, body, panes, pos) else {
@@ -1992,6 +2069,17 @@ impl GridView {
                         last,
                         before,
                     });
+                }
+            }
+            Drag::MoveRange { from, .. } => {
+                if let Some(target) = self.move_range_target.take() {
+                    if target.start != from.start {
+                        self.actions.push(Action::MoveRange {
+                            from,
+                            to: target.start,
+                            copy: ctrl,
+                        });
+                    }
                 }
             }
             // The model already holds the new geometry. What goes out is how it
@@ -3933,6 +4021,58 @@ mod tests {
             "fills down as far as column A runs"
         );
         assert!(view.drag.is_none());
+    }
+
+    #[test]
+    fn dragging_the_selection_border_moves_the_block() {
+        let (ctx, mut book, mut view) = typing();
+        seed(&mut book, &["B2", "C3"]);
+        frame(&mut view, &mut book, vec![], &ctx);
+        view.selection = Selection::at(CellRef::new(1, 1));
+        view.selection
+            .extend_to(CellRef::new(2, 2), book.sheet(0).expect("sheet"));
+        frame(&mut view, &mut book, vec![], &ctx);
+
+        // The top edge of the block, over the middle of column B.
+        let (_, _, layout) = view.layout.as_ref().expect("laid out");
+        let edge = egui::pos2(
+            layout.header_width as f32
+                + (layout.cols.offset(1) + layout.cols.size(1) / 2.0) as f32,
+            layout.header_height as f32 + layout.rows.offset(1) as f32,
+        );
+        // Hovering it shows the move cursor.
+        let icon = frame(
+            &mut view,
+            &mut book,
+            vec![egui::Event::PointerMoved(edge)],
+            &ctx,
+        );
+        assert_eq!(icon, egui::CursorIcon::Move);
+
+        frame(&mut view, &mut book, vec![press(edge, true)], &ctx);
+        assert!(
+            matches!(view.drag, Some(Drag::MoveRange { .. })),
+            "the border picks the block up: {:?}",
+            view.drag
+        );
+        let drop = cell_of(&view, CellRef::new(5, 4));
+        frame(&mut view, &mut book, vec![egui::Event::PointerMoved(drop)], &ctx);
+        frame(&mut view, &mut book, vec![press(drop, false)], &ctx);
+        assert_eq!(
+            view.actions,
+            [Action::MoveRange {
+                from: CellRange::new(CellRef::new(1, 1), CellRef::new(2, 2)),
+                to: CellRef::new(5, 4),
+                copy: false,
+            }],
+            "the grabbed cell stays under the pointer"
+        );
+        // A press in the middle of the block still just selects.
+        view.actions.clear();
+        let middle = cell_of(&view, CellRef::new(1, 1));
+        frame(&mut view, &mut book, vec![press(middle, true)], &ctx);
+        assert!(matches!(view.drag, Some(Drag::Select)), "{:?}", view.drag);
+        frame(&mut view, &mut book, vec![press(middle, false)], &ctx);
     }
 
     #[test]
