@@ -455,21 +455,9 @@ impl GridView {
             .as_ref()
             .and_then(|open| cell_rect(layout, &panes, open.at));
 
-        // A chart floats above the cells, so a click on one is not a click on
-        // the cell underneath. Resolved here, where the panes are still known.
-        if response.clicked() && self.selected_picture.is_none() {
-            self.selected_chart = ui.ctx().pointer_interact_pos().and_then(|pos| {
-                panes.iter().find_map(|pane| {
-                    if !pane.rect.contains(pos) {
-                        return None;
-                    }
-                    sheet.charts.iter().position(|chart| {
-                        super::chart::rect_of(layout, &chart.anchor, pane.rect, pane.scroll)
-                            .contains(pos)
-                    })
-                })
-            });
-        }
+        // Chart selection moved into `begin_drag`, beside the pictures': a
+        // press on a chart selects it and starts a move, exactly as one on a
+        // picture does, and a press anywhere else deselects it.
 
         // What the pointer would do if pressed, or — while a drag is in flight
         // — what it is doing. A resize arrow over a handle is most of what
@@ -488,6 +476,8 @@ impl GridView {
             Some(Drag::MoveBand { .. }) => Some(egui::CursorIcon::Grabbing),
             Some(Drag::MovePicture { .. }) => Some(egui::CursorIcon::Move),
             Some(Drag::ResizePicture { handle, .. }) => Some(handle.cursor()),
+            Some(Drag::MoveChart { .. }) => Some(egui::CursorIcon::Move),
+            Some(Drag::ResizeChart { handle, .. }) => Some(handle.cursor()),
             Some(Drag::Fill { .. }) => Some(egui::CursorIcon::Crosshair),
             Some(Drag::MoveRange { .. }) => Some(egui::CursorIcon::Move),
             Some(_) => None,
@@ -563,7 +553,8 @@ impl GridView {
     /// side of its outline, minus the fill handle's corner — which is where
     /// a drag picks the block up rather than starting a new selection.
     fn on_selection_border(&self, layout: &Layout, panes: &[Pane], pos: egui::Pos2) -> bool {
-        if self.editor.is_some() || self.selected_picture.is_some() {
+        if self.editor.is_some() || self.selected_picture.is_some() || self.selected_chart.is_some()
+        {
             return false;
         }
         let range = self.selection.active_range();
@@ -585,7 +576,8 @@ impl GridView {
     /// The thin cross over the fill handle. The square is six pixels wide, so
     /// the cursor changing is most of what says it exists at all.
     fn fill_hover(&self, layout: &Layout, panes: &[Pane], pos: egui::Pos2) -> Option<egui::CursorIcon> {
-        if self.editor.is_some() || self.selected_picture.is_some() {
+        if self.editor.is_some() || self.selected_picture.is_some() || self.selected_chart.is_some()
+        {
             return None;
         }
         panes
@@ -909,7 +901,7 @@ impl GridView {
             .selection
             .ranges()
             .iter()
-            .filter(|_| self.selected_picture.is_none())
+            .filter(|_| self.selected_picture.is_none() && self.selected_chart.is_none())
         {
             let rect = super::rect_of_range(layout, *range, pane.rect, pane.scroll);
             let visible = rect.intersect(pane.rect);
@@ -997,7 +989,10 @@ impl GridView {
                 egui::Stroke::new(1.0, palette.selection_edge),
                 egui::StrokeKind::Inside,
             );
-        } else if self.editor.is_none() && self.selected_picture.is_none() {
+        } else if self.editor.is_none()
+            && self.selected_picture.is_none()
+            && self.selected_chart.is_none()
+        {
             let handle = self.fill_handle(layout, pane);
             if handle.intersect(pane.rect).is_positive() {
                 painter.rect_filled(handle, 1.0, palette.selection_edge);
@@ -1142,11 +1137,18 @@ impl GridView {
                 super::picture::draw_selection(&painter, rect);
             }
         }
+        // A selected chart wears the same chrome.
+        if let Some(chart) = self.selected_chart.and_then(|i| sheet.charts.get(i)) {
+            let rect = super::chart::rect_of(layout, &chart.anchor, pane.rect, pane.scroll);
+            if rect.intersect(pane.rect).is_positive() {
+                super::picture::draw_selection(&painter, rect);
+            }
+        }
 
-        // The cell cursor is not drawn while a picture is selected: two
-        // selections on screen at once would leave the user guessing which one
-        // Delete is about to act on.
-        if self.selected_picture.is_some() {
+        // The cell cursor is not drawn while a picture or chart is selected:
+        // two selections on screen at once would leave the user guessing
+        // which one Delete is about to act on.
+        if self.selected_picture.is_some() || self.selected_chart.is_some() {
             return;
         }
 
@@ -1652,6 +1654,10 @@ impl GridView {
         if self.begin_picture_drag(sheet, layout, panes, pos) {
             return;
         }
+        // Charts are the same kind of floating object, tested right after.
+        if self.begin_chart_drag(sheet, layout, panes, pos) {
+            return;
+        }
 
         let in_column_header = pos.y < body.top() && pos.x >= body.left();
         let in_row_header = pos.x < body.left() && pos.y >= body.top();
@@ -1803,11 +1809,19 @@ impl GridView {
                 return Some(handle.cursor());
             }
         }
-        sheet
+        if let Some(chart) = self.selected_chart.and_then(|i| sheet.charts.get(i)) {
+            let rect = super::chart::rect_of(layout, &chart.anchor, pane.rect, pane.scroll);
+            if let Some(handle) = super::picture::handle_at(rect, pos) {
+                return Some(handle.cursor());
+            }
+        }
+        let over_object = sheet
             .pictures
             .iter()
-            .any(|p| super::chart::rect_of(layout, &p.anchor, pane.rect, pane.scroll).contains(pos))
-            .then_some(egui::CursorIcon::Move)
+            .map(|p| &p.anchor)
+            .chain(sheet.charts.iter().map(|c| &c.anchor))
+            .any(|a| super::chart::rect_of(layout, a, pane.rect, pane.scroll).contains(pos));
+        over_object.then_some(egui::CursorIcon::Move)
     }
 
     /// Selects, moves or resizes a picture. True when the press was claimed.
@@ -1865,6 +1879,76 @@ impl GridView {
 
         self.selected_picture = None;
         false
+    }
+
+    /// Selects, moves or resizes a chart — pictures' twin in every way.
+    fn begin_chart_drag(
+        &mut self,
+        sheet: &Sheet,
+        layout: &Layout,
+        panes: &[Pane],
+        pos: egui::Pos2,
+    ) -> bool {
+        if let Some((index, chart)) = self
+            .selected_chart
+            .and_then(|i| sheet.charts.get(i).map(|c| (i, c)))
+        {
+            for pane in panes {
+                if !pane.rect.contains(pos) {
+                    continue;
+                }
+                let rect = super::chart::rect_of(layout, &chart.anchor, pane.rect, pane.scroll);
+                if let Some(handle) = super::picture::handle_at(rect, pos) {
+                    self.before_charts = Some(sheet.charts.clone());
+                    self.drag = Some(Drag::ResizeChart {
+                        index,
+                        handle,
+                        start: super::picture::sheet_rect(layout, &chart.anchor),
+                    });
+                    return true;
+                }
+            }
+        }
+
+        for pane in panes {
+            if !pane.rect.contains(pos) {
+                continue;
+            }
+            let hit = sheet.charts.iter().enumerate().rev().find(|(_, c)| {
+                super::chart::rect_of(layout, &c.anchor, pane.rect, pane.scroll).contains(pos)
+            });
+            if let Some((index, chart)) = hit {
+                self.selected_chart = Some(index);
+                self.selected_picture = None;
+                let rect = super::picture::sheet_rect(layout, &chart.anchor);
+                self.before_charts = Some(sheet.charts.clone());
+                self.drag = Some(Drag::MoveChart {
+                    index,
+                    grab: sheet_space(pane, pos) - rect.min,
+                });
+                return true;
+            }
+        }
+
+        self.selected_chart = None;
+        false
+    }
+
+    /// Writes a chart's new rectangle back as an anchor of its own kind.
+    fn set_chart_rect(
+        &mut self,
+        book: &mut Workbook,
+        layout: &Layout,
+        index: usize,
+        rect: egui::Rect,
+    ) {
+        let Some(sheet) = book.sheet_mut(self.sheet_index) else {
+            return;
+        };
+        let Some(current) = sheet.charts.get(index).map(|c| c.anchor.clone()) else {
+            return;
+        };
+        sheet.charts[index].anchor = super::picture::anchor_of(layout, rect, &current);
     }
 
     /// Writes a picture's new rectangle back as an anchor of its own kind.
@@ -1947,6 +2031,34 @@ impl GridView {
                 let to = sheet_space(pane, pos);
                 let rect = handle.resize(start, egui::pos2(to.x.max(0.0), to.y.max(0.0)));
                 self.set_picture_rect(book, layout, index, rect);
+            }
+            Drag::MoveChart { index, grab } => {
+                let Some(pane) = pane_at(panes, pos) else {
+                    return;
+                };
+                let Some(size) = book
+                    .sheet(self.sheet_index)
+                    .and_then(|s| s.charts.get(index))
+                    .map(|c| super::picture::sheet_rect(layout, &c.anchor).size())
+                else {
+                    return;
+                };
+                let at = sheet_space(pane, pos) - grab;
+                let rect =
+                    egui::Rect::from_min_size(egui::pos2(at.x.max(0.0), at.y.max(0.0)), size);
+                self.set_chart_rect(book, layout, index, rect);
+            }
+            Drag::ResizeChart {
+                index,
+                handle,
+                start,
+            } => {
+                let Some(pane) = pane_at(panes, pos) else {
+                    return;
+                };
+                let to = sheet_space(pane, pos);
+                let rect = handle.resize(start, egui::pos2(to.x.max(0.0), to.y.max(0.0)));
+                self.set_chart_rect(book, layout, index, rect);
             }
             Drag::Fill { from } => {
                 self.auto_scroll(body, pos, true, true);
@@ -2088,6 +2200,11 @@ impl GridView {
             Drag::MovePicture { .. } | Drag::ResizePicture { .. } => {
                 if let Some(before) = self.before_pictures.take() {
                     self.actions.push(Action::PicturesMoved(before));
+                }
+            }
+            Drag::MoveChart { .. } | Drag::ResizeChart { .. } => {
+                if let Some(before) = self.before_charts.take() {
+                    self.actions.push(Action::ChartsMoved(before));
                 }
             }
             // Scrolling has already happened frame by frame, and it is not an
@@ -2309,6 +2426,21 @@ impl GridView {
                     return None;
                 }
                 _ => self.selected_picture = None,
+            }
+        }
+        // And a selected chart takes exactly the same two.
+        if let Some(index) = self.selected_chart {
+            match key {
+                egui::Key::Delete | egui::Key::Backspace => {
+                    self.actions.push(Action::DeleteChart(index));
+                    self.selected_chart = None;
+                    return None;
+                }
+                egui::Key::Escape => {
+                    self.selected_chart = None;
+                    return None;
+                }
+                _ => self.selected_chart = None,
             }
         }
 
@@ -3576,6 +3708,82 @@ mod tests {
             content_type: "image/png".into(),
         });
         book
+    }
+
+    /// A workbook with one bar chart anchored over B2:E6, near enough.
+    fn with_chart() -> Workbook {
+        use ss_model::chart::{Anchor, AnchorPoint, Grouping};
+        let mut book = Workbook::blank();
+        let sheet = book.sheet_mut(0).expect("a sheet");
+        sheet.charts.push(ss_model::Chart {
+            part: "/xl/charts/chart1.xml".into(),
+            drawing_part: "/xl/drawings/drawing1.xml".into(),
+            anchor_index: 0,
+            anchor: Anchor::TwoCell {
+                from: AnchorPoint {
+                    col: 1,
+                    col_offset: 0,
+                    row: 1,
+                    row_offset: 0,
+                },
+                to: AnchorPoint {
+                    col: 4,
+                    col_offset: 0,
+                    row: 5,
+                    row_offset: 0,
+                },
+            },
+            kind: ss_model::ChartKind::Bar,
+            grouping: Grouping::Clustered,
+            horizontal: false,
+            title: None,
+            title_ref: None,
+            legend: None,
+            series: Vec::new(),
+        });
+        book
+    }
+
+    #[test]
+    fn a_chart_selects_moves_and_deletes_like_the_object_it_is() {
+        let ctx = context();
+        let mut book = with_chart();
+        let mut view = GridView::default();
+        frame(&mut view, &mut book, vec![], &ctx);
+
+        // A press inside it selects it and picks it up.
+        let sheet = book.sheet(0).expect("a sheet").clone();
+        let layout = Layout::for_sheet(&book, &sheet, view.zoom);
+        let origin = egui::vec2(layout.header_width as f32, layout.header_height as f32);
+        let rect = crate::grid::picture::sheet_rect(&layout, &sheet.charts[0].anchor)
+            .translate(origin);
+        let inside = rect.center();
+        frame(&mut view, &mut book, vec![press(inside, true)], &ctx);
+        assert_eq!(view.selected_chart, Some(0));
+        assert!(matches!(view.drag, Some(Drag::MoveChart { .. })), "{:?}", view.drag);
+
+        // Dragging it moves the anchor; releasing reports one undo entry.
+        let further = inside + egui::vec2(96.0, 40.0);
+        frame(&mut view, &mut book, vec![egui::Event::PointerMoved(further)], &ctx);
+        frame(&mut view, &mut book, vec![press(further, false)], &ctx);
+        assert_ne!(
+            book.sheet(0).expect("sheet").charts[0].anchor,
+            sheet.charts[0].anchor,
+            "the anchor changed"
+        );
+        assert_eq!(
+            view.actions
+                .iter()
+                .filter(|a| matches!(a, Action::ChartsMoved(_)))
+                .count(),
+            1
+        );
+
+        // Delete removes the chart, not the cells underneath it.
+        view.actions.clear();
+        frame(&mut view, &mut book, vec![plain(egui::Key::Delete)], &ctx);
+        assert_eq!(view.actions, [Action::DeleteChart(0)]);
+        assert!(view.selected_chart.is_none());
     }
 
     /// Where a picture is on screen, given the same layout the view uses.

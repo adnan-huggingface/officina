@@ -213,6 +213,8 @@ fn read_drawing(
         };
         drawn.charts.push(ss_model::Chart {
             part: target.as_str().to_string(),
+            drawing_part: drawing_name.as_str().to_string(),
+            anchor_index: found.index,
             anchor: found.anchor,
             kind,
             grouping: body.grouping,
@@ -241,9 +243,12 @@ pub(crate) fn drawing_of(
     rel.resolve(sheet_part)?.ok()
 }
 
-/// The anchors in a drawing that hold a picture, and the geometry the *file*
-/// gives them — which is what a changed anchor is compared against.
-pub(crate) fn picture_anchors(
+/// The anchors in a drawing that hold a picture or a chart, and the geometry
+/// the *file* gives them — which is what a changed anchor is compared
+/// against. Both kinds, and deliberately in the same map: the writer decides
+/// deletion by "in the file, absent from the model", so an anchor kind this
+/// map covered but the model did not would be silently stripped on save.
+pub(crate) fn object_anchors(
     package: &Package,
     drawing_name: &ooxml::PartName,
 ) -> Result<std::collections::BTreeMap<usize, ss_model::Anchor>> {
@@ -260,6 +265,19 @@ pub(crate) fn picture_anchors(
         };
         if target_part.content_type.starts_with("image/") {
             out.insert(found.index, found.anchor);
+            continue;
+        }
+        // Chart anchors, but only the charts the *reader* keeps: a chart of a
+        // kind we do not recognize never reaches the model, and an anchor in
+        // this map with no model object behind it would read as "deleted".
+        if target_part.content_type.contains("chart") {
+            let known = chart::parse(target.as_str(), target_part.data())
+                .ok()
+                .and_then(|body| body.kind)
+                .is_some();
+            if known {
+                out.insert(found.index, found.anchor);
+            }
         }
     }
     Ok(out)

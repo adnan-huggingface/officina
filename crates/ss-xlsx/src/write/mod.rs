@@ -144,18 +144,25 @@ impl XlsxDocument {
             let data = sheet_out::rewrite(name.as_str(), part.data(), &mut ctx)?;
             written.push((name.clone(), content_type, data));
 
-            // Pictures the user moved, resized or deleted. Compared against the
-            // *file*, re-read, rather than against a flag set when the drag
-            // ended: a picture dragged and dragged back has not changed, and a
-            // part we rewrite for nothing is a part we could get wrong for
-            // nothing.
+            // Pictures and charts the user moved, resized or deleted.
+            // Compared against the *file*, re-read, rather than against a
+            // flag set when the drag ended: an object dragged and dragged
+            // back has not changed, and a part we rewrite for nothing is a
+            // part we could get wrong for nothing.
             if let Some(drawing) = crate::drawing_of(&self.package, &name) {
-                let original = crate::picture_anchors(&self.package, &drawing)?;
+                let original = crate::object_anchors(&self.package, &drawing)?;
                 let current: std::collections::BTreeMap<usize, &ss_model::Anchor> = sheet
                     .pictures
                     .iter()
                     .filter(|p| p.drawing_part == drawing.as_str())
                     .map(|p| (p.anchor_index, &p.anchor))
+                    .chain(
+                        sheet
+                            .charts
+                            .iter()
+                            .filter(|c| c.drawing_part == drawing.as_str())
+                            .map(|c| (c.anchor_index, &c.anchor)),
+                    )
                     .collect();
 
                 let mut wanted = drawing_out::Wanted::new();

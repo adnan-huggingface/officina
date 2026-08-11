@@ -121,6 +121,87 @@ fn a_chart_nobody_retitled_is_not_rewritten() {
 }
 
 #[test]
+fn a_moved_chart_keeps_its_new_anchor_across_a_save() {
+    let Some(path) = corpus_file() else { return };
+    let mut doc = XlsxDocument::open(&path).expect("opens");
+    let sheet_idx = doc
+        .workbook
+        .sheets
+        .iter()
+        .position(|s| !s.charts.is_empty())
+        .expect("a chart somewhere");
+
+    let moved = match doc.workbook.sheets[sheet_idx].charts[0].anchor.clone() {
+        ss_model::Anchor::TwoCell { mut from, mut to } => {
+            from.row += 5;
+            to.row += 5;
+            ss_model::Anchor::TwoCell { from, to }
+        }
+        other => other,
+    };
+    doc.workbook.sheets[sheet_idx].charts[0].anchor = moved.clone();
+
+    let parts_before = doc.package.parts().count();
+    let mut bytes = Vec::new();
+    doc.write_to(Cursor::new(&mut bytes)).expect("writes");
+    let reopened = XlsxDocument::read(Cursor::new(bytes)).expect("reads back");
+
+    assert_eq!(
+        reopened.workbook.sheets[sheet_idx].charts[0].anchor, moved,
+        "the anchor the user dragged to is the anchor the file keeps"
+    );
+    assert_eq!(
+        reopened.package.parts().count(),
+        parts_before,
+        "no part was added or lost"
+    );
+}
+
+#[test]
+fn a_deleted_chart_stays_gone_and_every_part_stays_put() {
+    let Some(path) = corpus_file() else { return };
+    let mut doc = XlsxDocument::open(&path).expect("opens");
+    let sheet_idx = doc
+        .workbook
+        .sheets
+        .iter()
+        .position(|s| !s.charts.is_empty())
+        .expect("a chart somewhere");
+    let count = doc.workbook.sheets[sheet_idx].charts.len();
+    let kept: Vec<_> = doc.workbook.sheets[sheet_idx]
+        .charts
+        .iter()
+        .skip(1)
+        .map(|c| c.anchor.clone())
+        .collect();
+    doc.workbook.sheets[sheet_idx].charts.remove(0);
+
+    let parts_before = doc.package.parts().count();
+    let mut bytes = Vec::new();
+    doc.write_to(Cursor::new(&mut bytes)).expect("writes");
+    let reopened = XlsxDocument::read(Cursor::new(bytes)).expect("reads back");
+
+    assert_eq!(
+        reopened.workbook.sheets[sheet_idx].charts.len(),
+        count - 1,
+        "the chart is gone from the drawing"
+    );
+    assert_eq!(
+        reopened.workbook.sheets[sheet_idx]
+            .charts
+            .iter()
+            .map(|c| c.anchor.clone())
+            .collect::<Vec<_>>(),
+        kept,
+        "its neighbours kept their anchors"
+    );
+    // The chart part itself stays in the package, orphaned rather than
+    // dangling — the same policy pictures follow, because a missing part a
+    // relationship still names is a file Excel refuses to open.
+    assert_eq!(reopened.package.parts().count(), parts_before);
+}
+
+#[test]
 fn a_real_workbooks_pivot_table_is_found_with_its_fields() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus/xlsx/pivot-table.xlsx");
     if !path.exists() {

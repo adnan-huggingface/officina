@@ -165,6 +165,12 @@ pub struct Series {
 pub struct Chart {
     /// The chart part's name, so a writer can find the bytes again.
     pub part: String,
+    /// The drawing part whose anchor places this chart, and which anchor it
+    /// is, counted over *every* anchor in that drawing in document order —
+    /// the same identity contract pictures carry, and for the same reason:
+    /// it is what survives a save when the anchor itself has changed.
+    pub drawing_part: String,
+    pub anchor_index: usize,
     pub anchor: Anchor,
     pub kind: ChartKind,
     pub grouping: Grouping,
@@ -224,6 +230,8 @@ mod tests {
     fn the_axis_labels_come_from_whichever_series_has_them() {
         let chart = Chart {
             part: "/xl/charts/chart1.xml".to_string(),
+            drawing_part: "/xl/drawings/drawing1.xml".to_string(),
+            anchor_index: 0,
             anchor: Anchor::TwoCell {
                 from: AnchorPoint::default(),
                 to: AnchorPoint::default(),

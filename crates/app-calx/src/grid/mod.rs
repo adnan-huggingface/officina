@@ -608,6 +608,10 @@ pub enum Action {
     PicturesMoved(Vec<ss_model::Picture>),
     /// Delete pressed with a picture selected.
     DeletePicture(usize),
+    /// A chart was moved or resized; the payload is the charts as they were.
+    ChartsMoved(Vec<ss_model::Chart>),
+    /// Delete pressed with a chart selected.
+    DeleteChart(usize),
     /// A filter arrow on the header row was clicked. The payload is the column
     /// as an offset into the filter's range, which is what `colId` means.
     FilterMenu(u32),
@@ -785,6 +789,8 @@ pub struct GridView {
     /// How the sheet's pictures looked before the drag in progress started,
     /// which is the whole undo entry. Same shape as `before_resize`.
     pub(crate) before_pictures: Option<Vec<ss_model::Picture>>,
+    /// And the charts, for a chart drag.
+    pub(crate) before_charts: Option<Vec<ss_model::Chart>>,
     pub(crate) drag: Option<Drag>,
     /// How the sheet looked before the resize drag in progress started.
     pub(crate) before_resize: Option<Geometry>,
@@ -885,6 +891,17 @@ pub(crate) enum Drag {
         handle: picture::Handle,
         start: egui::Rect,
     },
+    /// Dragging a selected chart around the sheet, exactly as a picture.
+    MoveChart {
+        index: usize,
+        grab: egui::Vec2,
+    },
+    /// Dragging one of a selected chart's eight handles.
+    ResizeChart {
+        index: usize,
+        handle: picture::Handle,
+        start: egui::Rect,
+    },
     /// Dragging the small square at the corner of the selection.
     Fill {
         from: CellRange,
@@ -925,6 +942,7 @@ impl Default for GridView {
             selected_chart: None,
             selected_picture: None,
             before_pictures: None,
+            before_charts: None,
             drag: None,
             before_resize: None,
             fill_target: None,

@@ -127,6 +127,12 @@ pub enum Patch {
         sheet: usize,
         pictures: Vec<ss_model::Picture>,
     },
+    /// Every chart on a sheet, replaced wholesale — the same shape as
+    /// `Pictures`, for the same reasons.
+    Charts {
+        sheet: usize,
+        charts: Vec<ss_model::Chart>,
+    },
     /// A style put on whole rows or columns.
     ///
     /// Shading a column is not shading a million cells: Excel stores it once on
@@ -296,6 +302,17 @@ fn apply_patch(book: &mut Workbook, patch: Patch) -> Vec<Patch> {
             vec![Patch::Pictures {
                 sheet,
                 pictures: before,
+            }]
+        }
+
+        Patch::Charts { sheet, charts } => {
+            let Some(target) = book.sheet_mut(sheet) else {
+                return Vec::new();
+            };
+            let before = std::mem::replace(&mut target.charts, charts);
+            vec![Patch::Charts {
+                sheet,
+                charts: before,
             }]
         }
 

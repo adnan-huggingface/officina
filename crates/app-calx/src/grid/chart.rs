@@ -502,6 +502,8 @@ mod tests {
     fn chart(kind: ChartKind) -> Chart {
         Chart {
             part: "/xl/charts/chart1.xml".to_string(),
+            drawing_part: "/xl/drawings/drawing1.xml".to_string(),
+            anchor_index: 0,
             anchor: Anchor::TwoCell {
                 from: AnchorPoint {
                     col: 2,

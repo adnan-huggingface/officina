@@ -500,6 +500,48 @@ impl Calx {
         self.edited = true;
     }
 
+    /// Records a finished chart drag, or drops it if nothing actually moved.
+    fn charts_moved(&mut self, sheet: usize, before: Vec<ss_model::Chart>) {
+        let unchanged = self
+            .doc
+            .workbook
+            .sheet(sheet)
+            .is_some_and(|s| s.charts == before);
+        if unchanged {
+            return;
+        }
+        self.undo.push(Change::new(
+            "Move chart",
+            vec![Patch::Charts {
+                sheet,
+                charts: before,
+            }],
+        ));
+        self.redo.clear();
+        self.edited = true;
+    }
+
+    fn delete_chart(&mut self, sheet: usize, index: usize) {
+        let Some(target) = self.doc.workbook.sheet_mut(sheet) else {
+            return;
+        };
+        if index >= target.charts.len() {
+            return;
+        }
+        let before = target.charts.clone();
+        target.charts.remove(index);
+        self.grid.selected_chart = None;
+        self.undo.push(Change::new(
+            "Delete chart",
+            vec![Patch::Charts {
+                sheet,
+                charts: before,
+            }],
+        ));
+        self.redo.clear();
+        self.edited = true;
+    }
+
     /// Writes to the current path, asking for one if there is none.
     fn save(&mut self) {
         match self.path.clone() {
@@ -968,6 +1010,8 @@ impl Calx {
             } => self.move_band(axis, first, last, before),
             Action::PicturesMoved(before) => self.pictures_moved(sheet, before),
             Action::DeletePicture(index) => self.delete_picture(sheet, index),
+            Action::ChartsMoved(before) => self.charts_moved(sheet, before),
+            Action::DeleteChart(index) => self.delete_chart(sheet, index),
             Action::FilterMenu(col) => self.open_filter_menu(col),
             Action::Resized(before) => {
                 // A press on a boundary that never moved is not an edit. It

@@ -44,8 +44,28 @@ pub(crate) fn rewrite(part: &str, data: &[u8], wanted: &Wanted) -> Result<Vec<u8
     let mut editing: Option<Option<Anchor>> = None;
     // Depth inside a `<from>`, `<to>` or `<ext>` whose contents are replaced.
     let mut suppress = 0usize;
+    // How deep inside the anchor the current element sits. Zero means a
+    // direct child, and only direct children may be rewritten: a
+    // `<xdr:graphicFrame>` — a chart — carries an `<a:ext>` of its own
+    // deeper in, a mandatory DrawingML element that must not be clobbered
+    // into the drawing namespace just because its local name matches.
+    let mut inside = 0usize;
 
     while let Some((event, span)) = splicer.next()? {
+        let is_anchor_tag = |name: &[u8]| {
+            matches!(name, b"twoCellAnchor" | b"oneCellAnchor" | b"absoluteAnchor")
+        };
+        // The depth of *this* element, measured before it opens.
+        let at_depth = inside;
+        if editing.is_some() {
+            match &event {
+                Event::Start(e) if !is_anchor_tag(local_name(e)) => inside += 1,
+                Event::End(e) if !is_anchor_tag(end_local_name(e)) => {
+                    inside = inside.saturating_sub(1);
+                }
+                _ => {}
+            }
+        }
         match &event {
             Event::Start(e) if local_name(e) == b"wsDr" => {
                 prefix = prefix_of(e);
@@ -61,6 +81,7 @@ pub(crate) fn rewrite(part: &str, data: &[u8], wanted: &Wanted) -> Result<Vec<u8
                 let index = seen;
                 seen += 1;
                 editing = wanted.get(&index).cloned();
+                inside = 0;
                 match &editing {
                     // Deleted: the whole element goes, opening tag included.
                     Some(None) => {}
@@ -114,7 +135,9 @@ pub(crate) fn rewrite(part: &str, data: &[u8], wanted: &Wanted) -> Result<Vec<u8
             // `<xdr:ext cx cy>` on a one-cell or absolute anchor, and
             // `<xdr:pos x y>` on an absolute one. Both are attribute-only.
             Event::Empty(e) | Event::Start(e)
-                if local_name(e) == b"ext" && matches!(editing, Some(Some(_))) =>
+                if local_name(e) == b"ext"
+                    && matches!(editing, Some(Some(_)))
+                    && at_depth == 0 =>
             {
                 let Some(Some(anchor)) = &editing else {
                     unreachable!("guarded above")
@@ -136,7 +159,9 @@ pub(crate) fn rewrite(part: &str, data: &[u8], wanted: &Wanted) -> Result<Vec<u8
                 }
             }
             Event::Empty(e) | Event::Start(e)
-                if local_name(e) == b"pos" && matches!(editing, Some(Some(_))) =>
+                if local_name(e) == b"pos"
+                    && matches!(editing, Some(Some(_)))
+                    && at_depth == 0 =>
             {
                 let Some(Some(anchor)) = &editing else {
                     unreachable!("guarded above")
