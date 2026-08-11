@@ -133,6 +133,21 @@ pub enum Patch {
         sheet: usize,
         charts: Vec<ss_model::Chart>,
     },
+    /// Every data-validation rule on a sheet, replaced wholesale. A sheet
+    /// holds a handful, and add/edit/delete then share one inverse: the list
+    /// as it was.
+    Validations {
+        sheet: usize,
+        validations: Vec<ss_model::cond::DataValidation>,
+    },
+    /// Every conditional-formatting block on a sheet, wholesale — and here
+    /// wholesale is also the *honest* choice: priorities are workbook-wide
+    /// and blocks merge and split as regions change, so no per-rule index
+    /// would survive an edit.
+    ConditionalFormats {
+        sheet: usize,
+        formats: Vec<ss_model::cond::ConditionalFormat>,
+    },
     /// A style put on whole rows or columns.
     ///
     /// Shading a column is not shading a million cells: Excel stores it once on
@@ -313,6 +328,28 @@ fn apply_patch(book: &mut Workbook, patch: Patch) -> Vec<Patch> {
             vec![Patch::Charts {
                 sheet,
                 charts: before,
+            }]
+        }
+
+        Patch::Validations { sheet, validations } => {
+            let Some(target) = book.sheet_mut(sheet) else {
+                return Vec::new();
+            };
+            let before = std::mem::replace(&mut target.validations, validations);
+            vec![Patch::Validations {
+                sheet,
+                validations: before,
+            }]
+        }
+
+        Patch::ConditionalFormats { sheet, formats } => {
+            let Some(target) = book.sheet_mut(sheet) else {
+                return Vec::new();
+            };
+            let before = std::mem::replace(&mut target.conditional_formats, formats);
+            vec![Patch::ConditionalFormats {
+                sheet,
+                formats: before,
             }]
         }
 

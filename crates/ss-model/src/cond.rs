@@ -82,6 +82,26 @@ pub enum CfOperator {
 }
 
 impl CfOperator {
+    /// The attribute value the file spells this operator with — the exact
+    /// inverse of [`CfOperator::from_xml`], because what a writer emits, the
+    /// reader must read back to the same value.
+    pub fn as_xml(self) -> &'static str {
+        match self {
+            CfOperator::LessThan => "lessThan",
+            CfOperator::LessThanOrEqual => "lessThanOrEqual",
+            CfOperator::Equal => "equal",
+            CfOperator::NotEqual => "notEqual",
+            CfOperator::GreaterThanOrEqual => "greaterThanOrEqual",
+            CfOperator::GreaterThan => "greaterThan",
+            CfOperator::Between => "between",
+            CfOperator::NotBetween => "notBetween",
+            CfOperator::ContainsText => "containsText",
+            CfOperator::NotContains => "notContains",
+            CfOperator::BeginsWith => "beginsWith",
+            CfOperator::EndsWith => "endsWith",
+        }
+    }
+
     pub fn from_xml(text: &str) -> Option<CfOperator> {
         Some(match text {
             "lessThan" => CfOperator::LessThan,
@@ -109,6 +129,18 @@ pub enum TextOp {
     EndsWith,
 }
 
+impl TextOp {
+    /// The `cfRule` type string for a text rule of this shape.
+    pub fn rule_type(self) -> &'static str {
+        match self {
+            TextOp::Contains => "containsText",
+            TextOp::NotContains => "notContainsText",
+            TextOp::BeginsWith => "beginsWith",
+            TextOp::EndsWith => "endsWith",
+        }
+    }
+}
+
 /// One end of a scale: `<cfvo type="min"/>`, `<cfvo type="num" val="0"/>`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CfValue {
@@ -131,6 +163,20 @@ pub enum CfValueKind {
 }
 
 impl CfValueKind {
+    /// The inverse of [`CfValueKind::from_xml`].
+    pub fn as_xml(self) -> &'static str {
+        match self {
+            CfValueKind::Min => "min",
+            CfValueKind::Max => "max",
+            CfValueKind::Number => "num",
+            CfValueKind::Percent => "percent",
+            CfValueKind::Percentile => "percentile",
+            CfValueKind::Formula => "formula",
+            CfValueKind::AutoMin => "autoMin",
+            CfValueKind::AutoMax => "autoMax",
+        }
+    }
+
     pub fn from_xml(text: &str) -> CfValueKind {
         match text {
             "min" => CfValueKind::Min,
@@ -196,6 +242,21 @@ pub enum DvKind {
 }
 
 impl DvKind {
+    /// The inverse of [`DvKind::from_xml`]. `None` answers "none", which a
+    /// writer should treat as "write no rule at all" — the reader drops it.
+    pub fn as_xml(self) -> &'static str {
+        match self {
+            DvKind::None => "none",
+            DvKind::Whole => "whole",
+            DvKind::Decimal => "decimal",
+            DvKind::List => "list",
+            DvKind::Date => "date",
+            DvKind::Time => "time",
+            DvKind::TextLength => "textLength",
+            DvKind::Custom => "custom",
+        }
+    }
+
     pub fn from_xml(text: &str) -> DvKind {
         match text {
             "whole" => DvKind::Whole,
@@ -224,6 +285,20 @@ pub enum DvOperator {
 }
 
 impl DvOperator {
+    /// The inverse of [`DvOperator::from_xml`].
+    pub fn as_xml(self) -> &'static str {
+        match self {
+            DvOperator::Between => "between",
+            DvOperator::NotBetween => "notBetween",
+            DvOperator::Equal => "equal",
+            DvOperator::NotEqual => "notEqual",
+            DvOperator::GreaterThan => "greaterThan",
+            DvOperator::LessThan => "lessThan",
+            DvOperator::GreaterThanOrEqual => "greaterThanOrEqual",
+            DvOperator::LessThanOrEqual => "lessThanOrEqual",
+        }
+    }
+
     pub fn from_xml(text: &str) -> DvOperator {
         match text {
             "notBetween" => DvOperator::NotBetween,
@@ -248,6 +323,18 @@ pub enum DvSeverity {
     Warning,
     /// Says so and accepts.
     Information,
+}
+
+impl DvSeverity {
+    /// The `errorStyle` attribute value. `stop` is the schema default and may
+    /// be omitted by a writer that prefers silence.
+    pub fn as_xml(self) -> &'static str {
+        match self {
+            DvSeverity::Stop => "stop",
+            DvSeverity::Warning => "warning",
+            DvSeverity::Information => "information",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
