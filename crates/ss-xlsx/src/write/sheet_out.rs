@@ -71,6 +71,20 @@ pub(crate) fn rewrite(part: &str, data: &[u8], ctx: &mut Context<'_>) -> Result<
     let mut wrote_filter = false;
     let mut skip_filter = 0usize;
 
+    // Conditional formatting and data validations, on the filter's pattern:
+    // if the model still says what the file says, the file's own bytes go
+    // back — which is what keeps x14 extensions, icon-set detail, and rule
+    // kinds we do not model alive across a save. Only an actual edit
+    // rewrites them from the model, and losing what we cannot represent is
+    // then a consequence of the edit rather than of the save.
+    let (file_cf, file_dv) = file_rules(part, data)?;
+    let cf_untouched = file_cf == ctx.sheet.conditional_formats;
+    let dv_untouched = file_dv == ctx.sheet.validations;
+    let mut wrote_cf = false;
+    let mut wrote_dv = false;
+    let mut skip_cf = 0usize;
+    let mut skip_dv = 0usize;
+
     // The tab colour, which lives in `<sheetPr>` — the first child of
     // `<worksheet>` — and had no writer until a menu could set it. Same rule as
     // the filter: if the model agrees with the file, nothing is touched, so a
@@ -167,6 +181,82 @@ pub(crate) fn rewrite(part: &str, data: &[u8], ctx: &mut Context<'_>) -> Result<
             Event::End(e) if !wrote_filter && end_local_name(e) == b"worksheet" => {
                 write_filter(&mut out, &prefix, ctx.sheet);
                 wrote_filter = true;
+            }
+            _ => {}
+        }
+
+        if skip_cf > 0 {
+            match &event {
+                Event::Start(e) if local_name(e) == b"conditionalFormatting" => skip_cf += 1,
+                Event::End(e) if end_local_name(e) == b"conditionalFormatting" => skip_cf -= 1,
+                _ => {}
+            }
+            if cf_untouched {
+                out.extend_from_slice(splicer.bytes(span));
+            }
+            continue;
+        }
+        if skip_dv > 0 {
+            match &event {
+                Event::Start(e) if local_name(e) == b"dataValidations" => skip_dv += 1,
+                Event::End(e) if end_local_name(e) == b"dataValidations" => skip_dv -= 1,
+                _ => {}
+            }
+            if dv_untouched {
+                out.extend_from_slice(splicer.bytes(span));
+            }
+            continue;
+        }
+
+        match &event {
+            Event::Start(e) | Event::Empty(e) if local_name(e) == b"conditionalFormatting" => {
+                // The first block the file had stands in for all of them:
+                // the model's blocks are written there, once, and the rest
+                // of the file's are swallowed.
+                if cf_untouched {
+                    out.extend_from_slice(splicer.bytes(span.clone()));
+                } else if !wrote_cf {
+                    write_conditional_formats(&mut out, &prefix_of(e), ctx.sheet);
+                }
+                wrote_cf = true;
+                if matches!(event, Event::Start(_)) {
+                    skip_cf = 1;
+                }
+                continue;
+            }
+            Event::Start(e) | Event::Empty(e) if local_name(e) == b"dataValidations" => {
+                if dv_untouched {
+                    out.extend_from_slice(splicer.bytes(span.clone()));
+                } else if !wrote_dv {
+                    write_validations(&mut out, &prefix_of(e), ctx.sheet);
+                }
+                wrote_dv = true;
+                if matches!(event, Event::Start(_)) {
+                    skip_dv = 1;
+                }
+                continue;
+            }
+            // Blocks the file never had go in at their schema positions:
+            // immediately before the first element that must follow them.
+            Event::Start(e) | Event::Empty(e) => {
+                if !cf_untouched && !wrote_cf && after_conditional(local_name(e)) {
+                    write_conditional_formats(&mut out, &prefix_of(e), ctx.sheet);
+                    wrote_cf = true;
+                }
+                if !dv_untouched && !wrote_dv && after_validations(local_name(e)) {
+                    write_validations(&mut out, &prefix_of(e), ctx.sheet);
+                    wrote_dv = true;
+                }
+            }
+            Event::End(e) if end_local_name(e) == b"worksheet" => {
+                if !cf_untouched && !wrote_cf {
+                    write_conditional_formats(&mut out, &prefix, ctx.sheet);
+                    wrote_cf = true;
+                }
+                if !dv_untouched && !wrote_dv {
+                    write_validations(&mut out, &prefix, ctx.sheet);
+                    wrote_dv = true;
+                }
             }
             _ => {}
         }
@@ -431,6 +521,349 @@ fn write_filter(out: &mut Vec<u8>, prefix: &[u8], sheet: &Sheet) {
 /// A range as `ref` spells it.
 fn range_ref(range: CellRange) -> String {
     format!("{}:{}", range.start.to_a1(), range.end.to_a1())
+}
+
+/// The conditional formats and validations as the file's own bytes read
+/// back, which is what an edit is detected against.
+fn file_rules(
+    part: &str,
+    data: &[u8],
+) -> Result<(
+    Vec<ss_model::cond::ConditionalFormat>,
+    Vec<ss_model::cond::DataValidation>,
+)> {
+    let mut scratch = Sheet::new("scratch");
+    let mut strings = StringTable::default();
+    crate::sheet::parse(part, data, &mut scratch, &[], &mut strings)?;
+    Ok((scratch.conditional_formats, scratch.validations))
+}
+
+/// The worksheet children `<conditionalFormatting>` must precede.
+fn after_conditional(name: &[u8]) -> bool {
+    name == b"dataValidations" || after_validations(name)
+}
+
+/// And the ones `<dataValidations>` must precede.
+fn after_validations(name: &[u8]) -> bool {
+    matches!(
+        name,
+        b"hyperlinks"
+            | b"printOptions"
+            | b"pageMargins"
+            | b"pageSetup"
+            | b"headerFooter"
+            | b"rowBreaks"
+            | b"colBreaks"
+            | b"customProperties"
+            | b"cellWatches"
+            | b"ignoredErrors"
+            | b"smartTags"
+            | b"drawing"
+            | b"legacyDrawing"
+            | b"legacyDrawingHF"
+            | b"picture"
+            | b"oleObjects"
+            | b"controls"
+            | b"webPublishItems"
+            | b"tableParts"
+            | b"extLst"
+    )
+}
+
+/// Writes every `<conditionalFormatting>` block the model holds.
+fn write_conditional_formats(out: &mut Vec<u8>, prefix: &[u8], sheet: &Sheet) {
+    for block in &sheet.conditional_formats {
+        if block.ranges.is_empty() || block.rules.is_empty() {
+            continue;
+        }
+        let sqref = block
+            .ranges
+            .iter()
+            .map(|r| range_ref(*r))
+            .collect::<Vec<_>>()
+            .join(" ");
+        open(
+            out,
+            prefix,
+            b"conditionalFormatting",
+            &[Set::to(b"sqref", sqref)],
+            false,
+        );
+        for rule in &block.rules {
+            write_cf_rule(out, prefix, rule, block.anchor());
+        }
+        close(out, prefix, b"conditionalFormatting");
+    }
+}
+
+fn write_cf_rule(
+    out: &mut Vec<u8>,
+    prefix: &[u8],
+    rule: &ss_model::cond::CfRule,
+    anchor: Option<ss_model::CellRef>,
+) {
+    use ss_model::cond::{CfKind, TextOp};
+    let home = anchor.map_or_else(|| "A1".to_string(), |a| a.to_a1());
+    let mut sets: Vec<Set> = Vec::new();
+    let mut formulas: Vec<String> = Vec::new();
+    let ty: String = match &rule.kind {
+        CfKind::CellIs {
+            operator,
+            formulas: bounds,
+        } => {
+            sets.push(Set::to(b"operator", operator.as_xml()));
+            formulas = bounds.clone();
+            "cellIs".into()
+        }
+        CfKind::Expression { formula } => {
+            formulas = vec![formula.clone()];
+            "expression".into()
+        }
+        // A text rule carries its answer twice: our reader takes the `text`
+        // attribute, Excel evaluates the derived formula, so both go out.
+        CfKind::Text { op, text } => {
+            sets.push(Set::to(b"text", text.clone()));
+            let quoted = format!("\"{}\"", text.replace('"', "\"\""));
+            formulas = vec![match op {
+                TextOp::Contains => format!("NOT(ISERROR(SEARCH({quoted},{home})))"),
+                TextOp::NotContains => format!("ISERROR(SEARCH({quoted},{home}))"),
+                TextOp::BeginsWith => format!("LEFT({home},LEN({quoted}))={quoted}"),
+                TextOp::EndsWith => format!("RIGHT({home},LEN({quoted}))={quoted}"),
+            }];
+            op.rule_type().into()
+        }
+        CfKind::TimePeriod { period } => {
+            sets.push(Set::to(b"timePeriod", period.clone()));
+            "timePeriod".into()
+        }
+        CfKind::Duplicates { unique } => if *unique {
+            "uniqueValues"
+        } else {
+            "duplicateValues"
+        }
+        .into(),
+        CfKind::Presence { blanks, negated } => match (blanks, negated) {
+            (true, false) => "containsBlanks",
+            (true, true) => "notContainsBlanks",
+            (false, false) => "containsErrors",
+            (false, true) => "notContainsErrors",
+        }
+        .into(),
+        CfKind::Top10 {
+            rank,
+            percent,
+            bottom,
+        } => {
+            sets.push(Set::to(b"rank", rank.to_string()));
+            if *percent {
+                sets.push(Set::to(b"percent", "1"));
+            }
+            if *bottom {
+                sets.push(Set::to(b"bottom", "1"));
+            }
+            "top10".into()
+        }
+        CfKind::AboveAverage {
+            above,
+            equal_average,
+            std_dev,
+        } => {
+            if !*above {
+                sets.push(Set::to(b"aboveAverage", "0"));
+            }
+            if *equal_average {
+                sets.push(Set::to(b"equalAverage", "1"));
+            }
+            if let Some(sd) = std_dev {
+                sets.push(Set::to(b"stdDev", sd.to_string()));
+            }
+            "aboveAverage".into()
+        }
+        CfKind::ColorScale { .. } => "colorScale".into(),
+        CfKind::DataBar { .. } => "dataBar".into(),
+        CfKind::IconSet { .. } => "iconSet".into(),
+        // A kind we never modelled keeps its name; its body is gone, which
+        // is the price of editing the rules beside it. The untouched path
+        // is what protects the sheet nobody edited.
+        CfKind::Other(name) => name.clone(),
+    };
+    let mut all = vec![Set::to(b"type", ty)];
+    if let Some(dxf) = rule.dxf {
+        all.push(Set::to(b"dxfId", dxf.to_string()));
+    }
+    all.push(Set::to(b"priority", rule.priority.to_string()));
+    if rule.stop_if_true {
+        all.push(Set::to(b"stopIfTrue", "1"));
+    }
+    all.append(&mut sets);
+    let visual = matches!(
+        &rule.kind,
+        CfKind::ColorScale { .. } | CfKind::DataBar { .. } | CfKind::IconSet { .. }
+    );
+    let childless = formulas.is_empty() && !visual;
+    open(out, prefix, b"cfRule", &all, childless);
+    for formula in &formulas {
+        open(out, prefix, b"formula", &[], false);
+        out.extend_from_slice(escape_text(formula).as_bytes());
+        close(out, prefix, b"formula");
+    }
+    match &rule.kind {
+        CfKind::ColorScale { stops, colors } => {
+            open(out, prefix, b"colorScale", &[], false);
+            for stop in stops {
+                write_cfvo(out, prefix, stop);
+            }
+            for color in colors {
+                write_cf_color(out, prefix, b"color", *color);
+            }
+            close(out, prefix, b"colorScale");
+        }
+        CfKind::DataBar {
+            min,
+            max,
+            color,
+            show_value,
+        } => {
+            let bar: Vec<Set> = if *show_value {
+                Vec::new()
+            } else {
+                vec![Set::to(b"showValue", "0")]
+            };
+            open(out, prefix, b"dataBar", &bar, false);
+            write_cfvo(out, prefix, min);
+            write_cfvo(out, prefix, max);
+            write_cf_color(out, prefix, b"color", *color);
+            close(out, prefix, b"dataBar");
+        }
+        CfKind::IconSet {
+            set,
+            stops,
+            show_value,
+            reverse,
+        } => {
+            let mut icon = vec![Set::to(b"iconSet", set.clone())];
+            if !*show_value {
+                icon.push(Set::to(b"showValue", "0"));
+            }
+            if *reverse {
+                icon.push(Set::to(b"reverse", "1"));
+            }
+            open(out, prefix, b"iconSet", &icon, false);
+            for stop in stops {
+                write_cfvo(out, prefix, stop);
+            }
+            close(out, prefix, b"iconSet");
+        }
+        _ => {}
+    }
+    if !childless {
+        close(out, prefix, b"cfRule");
+    }
+}
+
+fn write_cfvo(out: &mut Vec<u8>, prefix: &[u8], value: &ss_model::cond::CfValue) {
+    let mut sets = vec![Set::to(b"type", value.kind.as_xml())];
+    if !value.value.is_empty() {
+        sets.push(Set::to(b"val", value.value.clone()));
+    }
+    open(out, prefix, b"cfvo", &sets, true);
+}
+
+/// A rule-owned colour, spelt the way the styles writer spells one.
+fn write_cf_color(out: &mut Vec<u8>, prefix: &[u8], name: &[u8], color: ss_model::Color) {
+    use ss_model::Color;
+    let sets = match color {
+        Color::Auto => vec![Set::to(b"auto", "1")],
+        Color::Rgb(_) => vec![Set::to(b"rgb", color.to_hex().unwrap_or_default())],
+        Color::Indexed(i) => vec![Set::to(b"indexed", i.to_string())],
+        Color::Theme { index, tint } => {
+            let mut sets = vec![Set::to(b"theme", index.to_string())];
+            if tint != 0.0 {
+                sets.push(Set::to(b"tint", ss_model::format_general(tint)));
+            }
+            sets
+        }
+    };
+    open(out, prefix, name, &sets, true);
+}
+
+/// Writes the `<dataValidations>` wrapper and every rule in it, or nothing
+/// at all when no rule survives the reader's own droppings.
+fn write_validations(out: &mut Vec<u8>, prefix: &[u8], sheet: &Sheet) {
+    use ss_model::cond::{DvKind, DvOperator, DvSeverity};
+    let rules: Vec<_> = sheet
+        .validations
+        .iter()
+        .filter(|v| !v.ranges.is_empty() && v.kind != DvKind::None)
+        .collect();
+    if rules.is_empty() {
+        return;
+    }
+    open(
+        out,
+        prefix,
+        b"dataValidations",
+        &[Set::to(b"count", rules.len().to_string())],
+        false,
+    );
+    for v in rules {
+        let mut sets = vec![Set::to(b"type", v.kind.as_xml())];
+        if v.operator != DvOperator::Between {
+            sets.push(Set::to(b"operator", v.operator.as_xml()));
+        }
+        if v.severity != DvSeverity::Stop {
+            sets.push(Set::to(b"errorStyle", v.severity.as_xml()));
+        }
+        if v.allow_blank {
+            sets.push(Set::to(b"allowBlank", "1"));
+        }
+        // Inverted in the file: `showDropDown="1"` *hides* the arrow.
+        if !v.show_dropdown {
+            sets.push(Set::to(b"showDropDown", "1"));
+        }
+        // The model does not carry these two booleans, and Excel keys the
+        // popups off them: the error alert is always armed, the prompt
+        // exactly when there is something to say.
+        sets.push(Set::to(b"showErrorMessage", "1"));
+        if !v.prompt_title.is_empty() || !v.prompt_message.is_empty() {
+            sets.push(Set::to(b"showInputMessage", "1"));
+        }
+        if !v.error_title.is_empty() {
+            sets.push(Set::to(b"errorTitle", v.error_title.clone()));
+        }
+        if !v.error_message.is_empty() {
+            sets.push(Set::to(b"error", v.error_message.clone()));
+        }
+        if !v.prompt_title.is_empty() {
+            sets.push(Set::to(b"promptTitle", v.prompt_title.clone()));
+        }
+        if !v.prompt_message.is_empty() {
+            sets.push(Set::to(b"prompt", v.prompt_message.clone()));
+        }
+        let sqref = v
+            .ranges
+            .iter()
+            .map(|r| range_ref(*r))
+            .collect::<Vec<_>>()
+            .join(" ");
+        sets.push(Set::to(b"sqref", sqref));
+        let childless = v.formula1.is_empty() && v.formula2.is_empty();
+        open(out, prefix, b"dataValidation", &sets, childless);
+        for (name, formula) in [
+            (b"formula1".as_slice(), &v.formula1),
+            (b"formula2".as_slice(), &v.formula2),
+        ] {
+            if !formula.is_empty() {
+                open(out, prefix, name, &[], false);
+                out.extend_from_slice(escape_text(formula).as_bytes());
+                close(out, prefix, name);
+            }
+        }
+        if !childless {
+            close(out, prefix, b"dataValidation");
+        }
+    }
+    close(out, prefix, b"dataValidations");
 }
 
 /// The model's cells, walked in the same row-major order the file is in.
