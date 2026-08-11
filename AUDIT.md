@@ -264,7 +264,19 @@ marked, every `[FIX]` is fixed with a regression test, and the fidelity harness 
 
 ## Findings log
 
-### Inventory pass (2026-08-11) — what the code says before any testing
+### Fix pass (2026-08-11) — all twenty findings below are FIXED
+
+Commits `4899370` (A), `2f90410` (B), `464aa41` (C), `e084f69` (D),
+`c1cfd8b` (E), `0e1b2b8` (F), `5b6d6b6` (G), `2330e16` (H). Each landed with
+regression tests; workspace tests, clippy, and the fidelity harness green
+throughout. Also fixed on the way, unlisted: the active cell rode along with
+a growing selection (typing landed in the wrong corner — selection now
+carries a separate lead); cut-paste re-anchored relative references (now
+true move semantics via `edit::move_range`); a drawing-splicer bug that
+would have clobbered the mandatory `a:ext` inside any chart's graphicFrame;
+`NOW`-adjacent date stamps used UTC (Ctrl+; is local time).
+
+### Inventory pass (2026-08-11) — what the code said before the fixes
 
 Confirmed bugs / mismatches, in fix order (tasks #51–#58):
 
