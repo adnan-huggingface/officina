@@ -31,6 +31,9 @@ pub(crate) struct Additions {
     borders: Vec<Border>,
     /// The `<xf>` entries to append to `cellXfs`.
     styles: Vec<CellFormat>,
+    /// Differential formats past the file's count — conditional-formatting
+    /// rules authored in the app point at these.
+    dxfs: Vec<ss_model::style::Dxf>,
 }
 
 /// Compares the model's style table against the file's.
@@ -52,6 +55,7 @@ pub(crate) fn additions(part: &str, data: &[u8], styles: &StyleTable) -> Result<
         fills: after(styles.fills(), file.fills),
         borders: after(styles.borders(), file.borders),
         styles: after(styles.entries(), file.cell_xfs),
+        dxfs: after(styles.dxfs(), file.dxfs),
     })
 }
 
@@ -70,6 +74,10 @@ pub(crate) fn rewrite(part: &str, data: &[u8], add: &Additions) -> Result<Vec<u8
     // handled separately because its schema position is *first child*, before
     // even `<fonts>`; the other three sit together just before the xf tables.
     let mut pending_tables = !file.has_fonts || !file.has_fills || !file.has_borders;
+    // `<dxfs>` sits after the xf tables; when the file has none at all the
+    // block is written before whatever schema-later element shows up first,
+    // or before `</styleSheet>` if nothing does.
+    let mut pending_dxfs = !file.has_dxfs && !add.dxfs.is_empty();
 
     while let Some((event, span)) = splicer.next()? {
         match &event {
@@ -210,11 +218,132 @@ pub(crate) fn rewrite(part: &str, data: &[u8], add: &Additions) -> Result<Vec<u8
                 out.extend_from_slice(splicer.bytes(span));
             }
 
+            Event::Start(e) | Event::Empty(e) if local_name(e) == b"dxfs" => {
+                open_table(
+                    &mut out,
+                    &mut splicer,
+                    e,
+                    span,
+                    &event,
+                    file.dxfs,
+                    add.dxfs.len(),
+                );
+                if matches!(event, Event::Empty(_)) && !add.dxfs.is_empty() {
+                    for dxf in &add.dxfs {
+                        write_dxf(&mut out, &prefix, dxf);
+                    }
+                    close(&mut out, &prefix, b"dxfs");
+                }
+            }
+            Event::End(e) if end_local_name(e) == b"dxfs" => {
+                for dxf in &add.dxfs {
+                    write_dxf(&mut out, &prefix, dxf);
+                }
+                out.extend_from_slice(splicer.bytes(span));
+            }
+
+            // A file with no `<dxfs>` gets one at its schema position: before
+            // the first of these, or failing that, before the sheet closes.
+            Event::Start(e) | Event::Empty(e)
+                if pending_dxfs
+                    && matches!(local_name(e), b"tableStyles" | b"colors" | b"extLst") =>
+            {
+                write_dxfs_block(&mut out, &prefix, &add.dxfs);
+                pending_dxfs = false;
+                out.extend_from_slice(splicer.bytes(span));
+            }
+            Event::End(e) if pending_dxfs && end_local_name(e) == b"styleSheet" => {
+                write_dxfs_block(&mut out, &prefix, &add.dxfs);
+                pending_dxfs = false;
+                out.extend_from_slice(splicer.bytes(span));
+            }
+
             _ => out.extend_from_slice(splicer.bytes(span)),
         }
     }
 
     Ok(out)
+}
+
+fn write_dxfs_block(out: &mut Vec<u8>, prefix: &[u8], dxfs: &[ss_model::style::Dxf]) {
+    open(
+        out,
+        prefix,
+        b"dxfs",
+        &[Set::to(b"count", dxfs.len().to_string())],
+        false,
+    );
+    for dxf in dxfs {
+        write_dxf(out, prefix, dxf);
+    }
+    close(out, prefix, b"dxfs");
+}
+
+/// A differential format: only what the rule changes is written, because a
+/// `<dxf>` field *sets* — an all-fields dxf would repaint everything.
+///
+/// The fill goes out backwards on purpose: a differential solid fill carries
+/// its visible colour in `bgColor` with the pattern type omitted, which is
+/// how Excel spells it and exactly what our own reader inverts. A dxf read
+/// from a file is never re-emitted (only additions past the file's count
+/// are), so `number_format` — which would need a fresh `numFmtId` — never
+/// reaches this function from anything the app can author.
+fn write_dxf(out: &mut Vec<u8>, prefix: &[u8], dxf: &ss_model::style::Dxf) {
+    open(out, prefix, b"dxf", &[], false);
+    let has_font = dxf.bold.is_some()
+        || dxf.italic.is_some()
+        || dxf.strike.is_some()
+        || dxf.underline.is_some()
+        || dxf.color.is_some();
+    if has_font {
+        open(out, prefix, b"font", &[], false);
+        if dxf.bold == Some(true) {
+            open(out, prefix, b"b", &[], true);
+        } else if dxf.bold == Some(false) {
+            open(out, prefix, b"b", &[Set::to(b"val", "0")], true);
+        }
+        if dxf.italic == Some(true) {
+            open(out, prefix, b"i", &[], true);
+        } else if dxf.italic == Some(false) {
+            open(out, prefix, b"i", &[Set::to(b"val", "0")], true);
+        }
+        if dxf.strike == Some(true) {
+            open(out, prefix, b"strike", &[], true);
+        } else if dxf.strike == Some(false) {
+            open(out, prefix, b"strike", &[Set::to(b"val", "0")], true);
+        }
+        if let Some(u) = dxf.underline {
+            open(out, prefix, b"u", &[Set::to(b"val", u.as_str())], true);
+        }
+        if let Some(color) = dxf.color {
+            write_color(out, prefix, b"color", color);
+        }
+        close(out, prefix, b"font");
+    }
+    if let Some(fill) = &dxf.fill {
+        open(out, prefix, b"fill", &[], false);
+        let sets = match &fill.pattern {
+            // Solid stays unsaid: an omitted patternType inside a dxf means
+            // solid, and writing it out loud is not what Excel does.
+            Pattern::Solid => Vec::new(),
+            Pattern::None => vec![Set::to(b"patternType", "none")],
+            Pattern::Named(name) => vec![Set::to(b"patternType", name.clone())],
+        };
+        let has_colors = !fill.fg.is_auto() || !fill.bg.is_auto();
+        open(out, prefix, b"patternFill", &sets, !has_colors);
+        if has_colors {
+            // Swapped relative to a table fill: the visible colour rides in
+            // `bgColor` here. The reader swaps them back.
+            write_color(out, prefix, b"fgColor", fill.bg);
+            write_color(out, prefix, b"bgColor", fill.fg);
+            close(out, prefix, b"patternFill");
+        }
+        close(out, prefix, b"fill");
+    }
+    if let Some(border) = &dxf.border {
+        write_border(out, prefix, border);
+    }
+    close(out, prefix, b"dxf");
 }
 
 /// Re-emits a table's start tag with its count corrected.
@@ -508,10 +637,12 @@ struct Scan {
     has_fonts: bool,
     has_fills: bool,
     has_borders: bool,
+    has_dxfs: bool,
     fonts: usize,
     fills: usize,
     borders: usize,
     cell_xfs: usize,
+    dxfs: usize,
 }
 
 fn scan(part: &str, data: &[u8]) -> Result<Scan> {
@@ -522,10 +653,12 @@ fn scan(part: &str, data: &[u8]) -> Result<Scan> {
         has_fonts: false,
         has_fills: false,
         has_borders: false,
+        has_dxfs: false,
         fonts: 0,
         fills: 0,
         borders: 0,
         cell_xfs: 0,
+        dxfs: 0,
     };
     // `<font>`, `<fill>`, and `<border>` all appear inside `<dxfs>` too, where
     // they are differential formats and not table entries. Counting those would
@@ -555,7 +688,11 @@ fn scan(part: &str, data: &[u8]) -> Result<Scan> {
                     section = b"borders";
                 }
                 b"cellXfs" => section = b"cellXfs",
-                b"dxfs" => depth_in_dxfs = true,
+                b"dxfs" => {
+                    out.has_dxfs = true;
+                    depth_in_dxfs = true;
+                }
+                b"dxf" if depth_in_dxfs => out.dxfs += 1,
                 b"font" if section == b"fonts" => out.fonts += 1,
                 b"fill" if section == b"fills" => out.fills += 1,
                 b"border" if section == b"borders" => out.borders += 1,
@@ -619,6 +756,42 @@ mod tests {
         assert_eq!(scan.fills, 2);
         assert_eq!(scan.borders, 1);
         assert_eq!(scan.cell_xfs, 1);
+    }
+
+    #[test]
+    fn an_authored_dxf_is_appended_and_spelt_backwards() {
+        let mut styles = table();
+        // The fixture already carries one dxf; in the app the reader would
+        // have put it in the table, so the test stands in for that first.
+        let replica = ss_model::style::Dxf {
+            bold: Some(true),
+            fill: Some(Fill::solid(Color::rgb(0xFF, 0xC7, 0xCE))),
+            ..Default::default()
+        };
+        styles.add_dxf(replica);
+        let before = styles.dxfs().len();
+        let dxf = ss_model::style::Dxf {
+            italic: Some(true),
+            fill: Some(Fill::solid(Color::rgb(0xC6, 0xEF, 0xCE))),
+            ..Default::default()
+        };
+        let id = styles.add_dxf(dxf);
+        assert_eq!(id as usize, before, "appended past the file's own");
+
+        let out = rewritten(&styles);
+        assert!(
+            out.contains(&format!(r#"<dxfs count="{}""#, before + 1)),
+            "{out}"
+        );
+        // The visible colour of a differential solid fill rides in bgColor
+        // with the pattern type unsaid — Excel's spelling, and our reader's
+        // exact inverse.
+        assert!(
+            out.contains(
+                r#"<dxf><font><i/></font><fill><patternFill><bgColor rgb="FFC6EFCE"/></patternFill></fill></dxf>"#
+            ),
+            "{out}"
+        );
     }
 
     #[test]
