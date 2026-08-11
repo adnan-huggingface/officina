@@ -920,8 +920,8 @@ impl Calx {
                 // still move cells nobody can see are marked.
                 self.cut_from = None;
             }
-            Action::Fill { from, to } => {
-                let change = clip::fill(&mut self.doc.workbook, sheet, from, to);
+            Action::Fill { from, to, toggle } => {
+                let change = clip::fill_series(&mut self.doc.workbook, sheet, from, to, toggle);
                 self.perform(change);
                 self.grid.selection = grid::Selection::at(to.start);
                 if let Some(s) = self.doc.workbook.sheet(sheet) {

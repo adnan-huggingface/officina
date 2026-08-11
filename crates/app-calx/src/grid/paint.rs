@@ -1397,6 +1397,32 @@ impl GridView {
                 self.layout = Some(cached);
                 return;
             }
+            // Double-clicking the fill handle fills down alongside a
+            // neighbouring column's data. Tested by position, not by drag
+            // state: the double-click arrives on the second *press*, before
+            // that press has begun its own drag.
+            let on_handle = pos.is_some_and(|pos| {
+                panes
+                    .iter()
+                    .any(|pane| pane.rect.contains(pos) && self.fill_handle(layout, pane).contains(pos))
+            });
+            if on_handle && self.editor.is_none() && self.selected_picture.is_none() {
+                let from = self.selection.active_range();
+                self.drag = None;
+                self.fill_target = None;
+                if let Some(to) = book
+                    .sheet(self.sheet_index)
+                    .and_then(|sheet| fill_down_extent(sheet, from))
+                {
+                    self.actions.push(Action::Fill {
+                        from,
+                        to,
+                        toggle: false,
+                    });
+                }
+                self.layout = Some(cached);
+                return;
+            }
             // And on a cell, the same gesture opens it for editing — for the
             // same reason it has to be resolved up here, and only when the
             // drag underway is the plain selection sweep the first click
@@ -1438,7 +1464,7 @@ impl GridView {
                     }
                 }
                 (false, _) => {
-                    self.finish_drag(drag);
+                    self.finish_drag(drag, modifiers.ctrl);
                     self.invalidate();
                 }
                 _ => {}
@@ -1936,14 +1962,20 @@ impl GridView {
     }
 
     /// The pointer came up. A resize or a fill only becomes an undoable change
-    /// here, at the end, rather than once per frame of the drag.
-    fn finish_drag(&mut self, drag: Drag) {
+    /// here, at the end, rather than once per frame of the drag. `ctrl` is
+    /// whether the modifier was held at release, which is when Excel reads it
+    /// for the fill handle's copy-or-series toggle.
+    fn finish_drag(&mut self, drag: Drag, ctrl: bool) {
         self.drag = None;
         match drag {
             Drag::Fill { from } => {
                 if let Some(to) = self.fill_target.take() {
                     if to != from {
-                        self.actions.push(Action::Fill { from, to });
+                        self.actions.push(Action::Fill {
+                            from,
+                            to,
+                            toggle: ctrl,
+                        });
                     }
                 }
             }
@@ -2437,7 +2469,11 @@ impl GridView {
             _ => return,
         };
         if from != to {
-            self.actions.push(Action::Fill { from, to });
+            self.actions.push(Action::Fill {
+                from,
+                to,
+                toggle: false,
+            });
         }
     }
 
@@ -2793,6 +2829,30 @@ fn draw_edge(
             painter.line_segment([from, to], stroke);
         }
     }
+}
+
+/// How far a double-clicked fill handle should reach: down alongside the
+/// neighbouring column's contiguous data, the left neighbour asked first,
+/// exactly as Excel decides it. `None` when neither neighbour has anything
+/// to measure against.
+fn fill_down_extent(sheet: &Sheet, from: CellRange) -> Option<CellRange> {
+    let filled = |row: u32, col: u32| {
+        sheet
+            .get(CellRef::new(row, col))
+            .is_some_and(|c| !c.is_vacant())
+    };
+    let left = from.start.col.checked_sub(1);
+    let right = (from.end.col + 1 < ss_model::cell::MAX_COLS).then_some(from.end.col + 1);
+    for col in [left, right].into_iter().flatten() {
+        let mut row = from.end.row;
+        while row + 1 < ss_model::cell::MAX_ROWS && filled(row + 1, col) {
+            row += 1;
+        }
+        if row > from.end.row {
+            return Some(CellRange::new(from.start, CellRef::new(row, from.end.col)));
+        }
+    }
+    None
 }
 
 /// Fills `area` except where `hole` covers it.
@@ -3846,6 +3906,36 @@ mod tests {
     }
 
     #[test]
+    fn double_clicking_the_fill_handle_fills_down_beside_the_neighbour() {
+        let (ctx, mut book, mut view) = typing();
+        seed(&mut book, &["A1", "A2", "A3", "A4", "B1"]);
+        frame(&mut view, &mut book, vec![], &ctx);
+
+        // Select B1 and double-click its fill handle.
+        view.selection = Selection::at(CellRef::new(0, 1));
+        let (_, _, layout) = view.layout.as_ref().expect("laid out");
+        let handle = egui::pos2(
+            layout.header_width as f32 + (layout.cols.offset(1) + layout.cols.size(1)) as f32,
+            layout.header_height as f32 + layout.rows.size(0) as f32,
+        );
+        view.actions.clear();
+        for _ in 0..2 {
+            frame(&mut view, &mut book, vec![press(handle, true)], &ctx);
+            frame(&mut view, &mut book, vec![press(handle, false)], &ctx);
+        }
+        assert_eq!(
+            view.actions,
+            [Action::Fill {
+                from: CellRange::new(CellRef::new(0, 1), CellRef::new(0, 1)),
+                to: CellRange::new(CellRef::new(0, 1), CellRef::new(3, 1)),
+                toggle: false,
+            }],
+            "fills down as far as column A runs"
+        );
+        assert!(view.drag.is_none());
+    }
+
+    #[test]
     fn escape_dismisses_the_ants_and_enter_pastes_them() {
         let (ctx, mut book, mut view) = typing();
         frame(&mut view, &mut book, vec![], &ctx);
@@ -4016,6 +4106,7 @@ mod tests {
             vec![Action::Fill {
                 from: CellRange::new(CellRef::new(0, 0), CellRef::new(0, 1)),
                 to: CellRange::new(CellRef::new(0, 0), CellRef::new(3, 1)),
+                toggle: false,
             }]
         );
     }

@@ -555,10 +555,13 @@ pub enum Action {
     },
     /// Text arrived from the system clipboard.
     Paste(String),
-    /// The fill handle was dragged from `from` out to `to`.
+    /// The fill handle was dragged from `from` out to `to`. `toggle` is
+    /// Ctrl, which asks the series for the opposite of its default: a lone
+    /// number counts instead of copying, a run copies instead of counting.
     Fill {
         from: CellRange,
         to: CellRange,
+        toggle: bool,
     },
     /// A row or column resize finished; the payload is how the sheet looked
     /// before it started, which is the whole undo entry.

@@ -212,6 +212,14 @@ pub struct NumberFormat {
     sections: Vec<Section>,
 }
 
+impl NumberFormat {
+    /// Whether any section reads its number as a date or a time — which is
+    /// what decides that dragging the fill handle counts in days.
+    pub fn is_datetime(&self) -> bool {
+        self.sections.iter().any(Section::is_datetime)
+    }
+}
+
 impl Default for NumberFormat {
     fn default() -> Self {
         NumberFormat::general()

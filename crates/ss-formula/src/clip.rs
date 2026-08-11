@@ -370,6 +370,20 @@ fn materialize(
 /// The direction is whichever way `to` grew past `from`. Numbers extrapolate,
 /// formulas are re-anchored, and anything else repeats.
 pub fn fill(book: &mut Workbook, sheet: usize, from: CellRange, to: CellRange) -> Change {
+    fill_series(book, sheet, from, to, false)
+}
+
+/// [`fill`], with Excel's Ctrl held: whatever the seed would have done, it
+/// does the other thing — a lone number counts instead of copying, a run of
+/// numbers copies instead of counting, a weekday repeats instead of walking
+/// the week.
+pub fn fill_series(
+    book: &mut Workbook,
+    sheet: usize,
+    from: CellRange,
+    to: CellRange,
+    toggle: bool,
+) -> Change {
     let Some(source) = copy(book, sheet, from) else {
         return Change::default();
     };
@@ -401,7 +415,11 @@ pub fn fill(book: &mut Workbook, sheet: usize, from: CellRange, to: CellRange) -
                 }
             })
             .collect();
-        let series = Series::of(&seed);
+        // A lone date counts in days where a lone number would copy — the
+        // format is what tells 45870 apart from the 1st of August.
+        let dated = matches!(seed[..], [only] if matches!(only.value, ClipValue::Number(_))
+            && book.styles.number_format(only.style).is_datetime());
+        let series = Series::of(&seed, dated, toggle);
 
         for index in start..=end {
             let step = index as i64 - origin as i64;
@@ -471,7 +489,9 @@ enum Series {
 }
 
 impl Series {
-    fn of(seed: &[&ClipCell]) -> Series {
+    /// `dated` says a lone numeric seed wears a date format; `toggle` is
+    /// Ctrl, which flips whatever the seed would otherwise have done.
+    fn of(seed: &[&ClipCell], dated: bool, toggle: bool) -> Series {
         if seed.iter().any(|c| c.formula.is_some()) {
             return Series::Repeat;
         }
@@ -484,15 +504,31 @@ impl Series {
             })
             .collect();
         if let Some(numbers) = numbers {
-            if numbers.len() == 1 {
-                // Excel copies a lone number rather than counting from it.
-                return Series::Repeat;
+            if let [only] = numbers[..] {
+                // Excel copies a lone number but *counts* a lone date, one
+                // day at a time; Ctrl asks for the other one.
+                return if dated != toggle {
+                    Series::Linear {
+                        intercept: only,
+                        slope: 1.0,
+                    }
+                } else {
+                    Series::Repeat
+                };
             }
-            return Series::fit(&numbers);
+            return if toggle {
+                Series::Repeat
+            } else {
+                Series::fit(&numbers)
+            };
         }
 
-        // A single text cell: "Item 4" counts, and so does "Mon".
+        // A single text cell: "Item 4" counts, and so does "Mon" — unless
+        // Ctrl asks for plain copies.
         if let [only] = seed {
+            if toggle {
+                return Series::Repeat;
+            }
             if let ClipValue::Text(text) = &only.value {
                 if let Some((list, entry)) = list_index(text) {
                     return Series::Ring { list, entry };
@@ -654,6 +690,69 @@ mod tests {
             },
         );
         book
+    }
+
+    #[test]
+    fn ctrl_flips_what_the_fill_handle_would_have_done() {
+        // A lone number copies; Ctrl makes it count.
+        let mut book = book_with(&[("A1", 5.0)]);
+        let change = fill_series(&mut book, 0, range("A1", "A1"), range("A1", "A3"), true);
+        apply(&mut book, change);
+        assert_eq!((shown(&book, "A2"), shown(&book, "A3")), ("6".into(), "7".into()));
+
+        // Two numbers count; Ctrl makes them tile as copies.
+        let mut book = book_with(&[("B1", 1.0), ("B2", 2.0)]);
+        let change = fill_series(&mut book, 0, range("B1", "B2"), range("B1", "B4"), true);
+        apply(&mut book, change);
+        assert_eq!((shown(&book, "B3"), shown(&book, "B4")), ("1".into(), "2".into()));
+
+        // And a weekday holds still under Ctrl instead of walking the week.
+        let mut book = Workbook::blank();
+        let id = book.strings.intern("Mon");
+        book.sheets[0].set(
+            at("C1"),
+            Cell {
+                value: CellValue::Text(id),
+                ..Default::default()
+            },
+        );
+        let change = fill_series(&mut book, 0, range("C1", "C1"), range("C1", "C2"), true);
+        apply(&mut book, change);
+        assert_eq!(shown(&book, "C2"), "Mon");
+    }
+
+    #[test]
+    fn a_lone_date_counts_in_days_where_a_number_copies() {
+        let mut book = book_with(&[("A1", 45_000.0)]);
+        let dated = book.styles.restyle(StyleId::DEFAULT, |l| {
+            l.number_format = "d-mmm-yy".to_string();
+        });
+        book.sheets[0].set(
+            at("A1"),
+            Cell {
+                value: CellValue::Number(45_000.0),
+                style: dated,
+                formula: None,
+            },
+        );
+        let change = fill(&mut book, 0, range("A1", "A1"), range("A1", "A3"));
+        apply(&mut book, change);
+        let serial = |book: &Workbook, a1: &str| match book.sheets[0].get(at(a1)).map(|c| c.value)
+        {
+            Some(CellValue::Number(n)) => n,
+            other => panic!("expected a number, got {other:?}"),
+        };
+        assert_eq!(serial(&book, "A2"), 45_001.0, "one day later");
+        assert_eq!(serial(&book, "A3"), 45_002.0);
+        assert_eq!(
+            book.sheets[0].get(at("A2")).map(|c| c.style),
+            Some(dated),
+            "the format travels with the fill"
+        );
+        // Ctrl+drag on the same date copies it instead.
+        let change = fill_series(&mut book, 0, range("A1", "A1"), range("A1", "A2"), true);
+        apply(&mut book, change);
+        assert_eq!(serial(&book, "A2"), 45_000.0);
     }
 
     #[test]
