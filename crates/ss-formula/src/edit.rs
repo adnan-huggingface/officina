@@ -26,8 +26,8 @@ use ss_model::{
 use crate::translate::translate;
 use crate::value::Value;
 
-/// Merges, sizes, and the freeze — everything positional a sheet holds that is
-/// not a cell.
+/// Merges, sizes, and the pane division — everything positional a sheet
+/// holds that is not a cell.
 ///
 /// Snapshotted whole rather than patched, because it is small and because
 /// getting a partial merge restore wrong is silent.
@@ -36,7 +36,7 @@ pub struct Geometry {
     pub merges: Vec<CellRange>,
     pub column_widths: BTreeMap<u32, f64>,
     pub row_heights: BTreeMap<u32, f64>,
-    pub frozen: Option<CellRef>,
+    pub panes: Option<ss_model::Panes>,
     pub row_outlines: BTreeMap<u32, u8>,
     pub column_outlines: BTreeMap<u32, u8>,
     pub row_collapsed: std::collections::BTreeSet<u32>,
@@ -49,7 +49,7 @@ impl Geometry {
             merges: sheet.merges.clone(),
             column_widths: sheet.column_widths.clone(),
             row_heights: sheet.row_heights.clone(),
-            frozen: sheet.frozen,
+            panes: sheet.panes,
             row_outlines: sheet.row_outlines.clone(),
             column_outlines: sheet.column_outlines.clone(),
             row_collapsed: sheet.row_collapsed.clone(),
@@ -62,7 +62,7 @@ impl Geometry {
         sheet.merges = self.merges;
         sheet.column_widths = self.column_widths;
         sheet.row_heights = self.row_heights;
-        sheet.frozen = self.frozen;
+        sheet.panes = self.panes;
         sheet.row_outlines = self.row_outlines;
         sheet.column_outlines = self.column_outlines;
         sheet.row_collapsed = self.row_collapsed;
@@ -1315,7 +1315,7 @@ mod tests {
         {
             let sheet = &mut book.sheets[0];
             sheet.row_heights.insert(1, 40.0);
-            sheet.frozen = Some(CellRef::new(2, 0));
+            sheet.panes = Some(ss_model::Panes::frozen(CellRef::new(2, 0)));
         }
         let change = move_band(&book, 0, ss_model::Move::new(Axis::Rows, 1, 1, 5));
         apply(&mut book, change);
@@ -1327,8 +1327,8 @@ mod tests {
         );
         assert_eq!(sheet.row_heights.get(&1), None);
         assert_eq!(
-            sheet.frozen,
-            Some(CellRef::new(2, 0)),
+            sheet.panes,
+            Some(ss_model::Panes::frozen(CellRef::new(2, 0))),
             "a freeze is a line on the sheet, not a property of the rows beside it"
         );
     }

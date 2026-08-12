@@ -108,6 +108,23 @@ pub(crate) fn rewrite(part: &str, data: &[u8], ctx: &mut Context<'_>) -> Result<
     let mut tab_done = tab_settled;
     let mut in_sheet_pr = false;
 
+    // The pane division, which lives in `<sheetView>` and had no writer at all
+    // until now — so freezing a sheet was a change that did not survive its own
+    // save. Settled by comparing only the division itself: a `topLeftCell` the
+    // user never moved is none of this writer's business, and rewriting it
+    // would put a diff in every file that was merely opened.
+    let pane_wanted = wanted_pane(ctx.sheet);
+    let file_pane = file_pane(part, data)?;
+    let pane_settled = file_pane.as_ref().map(PaneTag::division) == pane_wanted.as_ref().map(PaneTag::division);
+    let mut views_done = pane_settled;
+    let mut in_sheet_view = false;
+    let mut skip_pane = 0usize;
+    let mut skip_selection = 0usize;
+    // The pane whose `<selection>` the file called active, so that the one kept
+    // is the one the cursor was actually in.
+    let old_active = file_pane.as_ref().map(|p| p.active.clone()).unwrap_or_default();
+    let mut kept_selection = false;
+
     while let Some((event, span)) = splicer.next()? {
         if !tab_settled {
             match &event {
@@ -152,6 +169,99 @@ pub(crate) fn rewrite(part: &str, data: &[u8], ctx: &mut Context<'_>) -> Result<
                     write_tab_color(&mut out, &prefix, tab_wanted);
                     close(&mut out, &prefix, b"sheetPr");
                     tab_done = true;
+                }
+                _ => {}
+            }
+        }
+
+        if !pane_settled {
+            // A `<pane>` or a `<selection>` with children — neither has any in
+            // practice, but a swallowed element has to be swallowed whole.
+            if skip_pane > 0 {
+                match &event {
+                    Event::Start(e) if local_name(e) == b"pane" => skip_pane += 1,
+                    Event::End(e) if end_local_name(e) == b"pane" => skip_pane -= 1,
+                    _ => {}
+                }
+                continue;
+            }
+            if skip_selection > 0 {
+                match &event {
+                    Event::Start(e) if local_name(e) == b"selection" => skip_selection += 1,
+                    Event::End(e) if end_local_name(e) == b"selection" => skip_selection -= 1,
+                    _ => {}
+                }
+                continue;
+            }
+            match &event {
+                Event::Start(e) if local_name(e) == b"sheetView" => {
+                    out.extend_from_slice(splicer.bytes(span));
+                    write_pane(&mut out, &prefix_of(e), pane_wanted.as_ref());
+                    in_sheet_view = true;
+                    views_done = true;
+                    continue;
+                }
+                Event::Empty(e) if local_name(e) == b"sheetView" => {
+                    if pane_wanted.is_some() {
+                        // The view has to grow a body to hold the division.
+                        let view_prefix = prefix_of(e);
+                        out.extend_from_slice(&retag(e, &[], false));
+                        write_pane(&mut out, &view_prefix, pane_wanted.as_ref());
+                        close(&mut out, &view_prefix, b"sheetView");
+                    } else {
+                        out.extend_from_slice(splicer.bytes(span));
+                    }
+                    views_done = true;
+                    continue;
+                }
+                Event::End(e) if end_local_name(e) == b"sheetView" => {
+                    in_sheet_view = false;
+                    out.extend_from_slice(splicer.bytes(span));
+                    continue;
+                }
+                // The file's own division, superseded by the one just written.
+                Event::Start(e) | Event::Empty(e) if in_sheet_view && local_name(e) == b"pane" => {
+                    if matches!(event, Event::Start(_)) {
+                        skip_pane = 1;
+                    }
+                    continue;
+                }
+                // A sheet keeps one selection per pane, and the panes have just
+                // changed underneath them. The one the cursor was in is kept
+                // and re-labelled; the others named panes that no longer exist.
+                Event::Start(e) | Event::Empty(e)
+                    if in_sheet_view && local_name(e) == b"selection" =>
+                {
+                    let pane = raw_attr(e, b"pane")
+                        .map(|a| String::from_utf8_lossy(&a.value).into_owned())
+                        .unwrap_or_default();
+                    let mine = pane == old_active;
+                    if !kept_selection && mine {
+                        kept_selection = true;
+                        let label = pane_wanted.as_ref().map(|p| p.active.clone());
+                        out.extend_from_slice(&retag(
+                            e,
+                            &[Set::maybe(b"pane", label)],
+                            matches!(event, Event::Empty(_)),
+                        ));
+                        continue;
+                    }
+                    if matches!(event, Event::Start(_)) {
+                        skip_selection = 1;
+                    }
+                    continue;
+                }
+                // A file with no `<sheetViews>` at all — an authored workbook —
+                // gets one, in its schema slot before everything that follows.
+                Event::Start(e) | Event::Empty(e)
+                    if !views_done && !in_sheet_pr && after_views(local_name(e)) =>
+                {
+                    write_sheet_views(&mut out, &prefix_of(e), pane_wanted.as_ref());
+                    views_done = true;
+                }
+                Event::End(e) if !views_done && end_local_name(e) == b"worksheet" => {
+                    write_sheet_views(&mut out, &prefix, pane_wanted.as_ref());
+                    views_done = true;
                 }
                 _ => {}
             }
@@ -466,6 +576,156 @@ fn write_tab_color(out: &mut Vec<u8>, prefix: &[u8], color: Option<ss_model::Col
         }
     };
     open(out, prefix, b"tabColor", &sets, true);
+}
+
+/// A `<pane>` as a file spells it.
+///
+/// Kept as the attributes rather than as the model's [`ss_model::Panes`],
+/// because deciding whether the file already says what the model says is a
+/// question about the file's own numbers — a split's position is in twips, and
+/// converting the model's boundary back is the only way to compare them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct PaneTag {
+    frozen: bool,
+    /// `xSplit`/`ySplit`: columns and rows when frozen, twips when split.
+    x: u32,
+    y: u32,
+    top_left: String,
+    active: String,
+}
+
+impl PaneTag {
+    /// The part that decides whether the file needs rewriting: where the sheet
+    /// is divided and whether the division pins. `topLeftCell` is where the
+    /// user had scrolled to, which no edit here changes.
+    fn division(&self) -> (bool, u32, u32) {
+        (self.frozen, self.x, self.y)
+    }
+
+    fn pane_name(at: CellRef) -> String {
+        match (at.col > 0, at.row > 0) {
+            (true, true) => "bottomRight",
+            (true, false) => "topRight",
+            _ => "bottomLeft",
+        }
+        .to_string()
+    }
+}
+
+/// The `<pane>` the model asks for, in the units the file writes.
+fn wanted_pane(sheet: &Sheet) -> Option<PaneTag> {
+    let panes = sheet.panes?;
+    let (x, y) = if panes.frozen {
+        (panes.at.col, panes.at.row)
+    } else {
+        (
+            sheet.pane_offset(ss_model::Axis::Columns, panes.at.col),
+            sheet.pane_offset(ss_model::Axis::Rows, panes.at.row),
+        )
+    };
+    // The first cell of the *scrolling* pane. A sheet scrolled to A1 and then
+    // frozen at C3 is showing C3 in its scrolling pane, not A1 — the frozen
+    // bands are not part of that pane at all.
+    let scrolled = sheet.view.top_left.unwrap_or(panes.at);
+    let top_left = CellRef::new(
+        scrolled.row.max(panes.at.row),
+        scrolled.col.max(panes.at.col),
+    );
+    Some(PaneTag {
+        frozen: panes.frozen,
+        x,
+        y,
+        top_left: top_left.to_a1(),
+        active: PaneTag::pane_name(panes.at),
+    })
+}
+
+/// The `<pane>` the file already has, if it has one.
+fn file_pane(part: &str, data: &[u8]) -> Result<Option<PaneTag>> {
+    let mut splicer = Splicer::new(part, data);
+    while let Some((event, _)) = splicer.next()? {
+        match &event {
+            Event::Start(e) | Event::Empty(e) if local_name(e) == b"pane" => {
+                let text = |name: &[u8]| {
+                    raw_attr(e, name)
+                        .map(|a| String::from_utf8_lossy(&a.value).into_owned())
+                        .unwrap_or_default()
+                };
+                let number = |name: &[u8]| {
+                    raw_attr(e, name)
+                        .and_then(|a| parse_u32(&a.value))
+                        .unwrap_or(0)
+                };
+                let state = text(b"state");
+                return Ok(Some(PaneTag {
+                    frozen: state == "frozen" || state == "frozenSplit",
+                    x: number(b"xSplit"),
+                    y: number(b"ySplit"),
+                    top_left: text(b"topLeftCell"),
+                    active: text(b"activePane"),
+                }));
+            }
+            // `<sheetViews>` comes before the cells, so anything here is far
+            // too late to hold a pane.
+            Event::Start(e) if local_name(e) == b"sheetData" => break,
+            _ => {}
+        }
+    }
+    Ok(None)
+}
+
+fn write_pane(out: &mut Vec<u8>, prefix: &[u8], pane: Option<&PaneTag>) {
+    let Some(pane) = pane else { return };
+    let mut sets = Vec::new();
+    if pane.x > 0 {
+        sets.push(Set::to(b"xSplit", pane.x.to_string()));
+    }
+    if pane.y > 0 {
+        sets.push(Set::to(b"ySplit", pane.y.to_string()));
+    }
+    sets.push(Set::to(b"topLeftCell", pane.top_left.clone()));
+    sets.push(Set::to(b"activePane", pane.active.clone()));
+    sets.push(Set::to(
+        b"state",
+        if pane.frozen { "frozen" } else { "split" },
+    ));
+    open(out, prefix, b"pane", &sets, true);
+}
+
+/// Authors the whole `<sheetViews>` block for a file that never had one.
+///
+/// `workbookViewId` is required by the schema and there is exactly one workbook
+/// view in anything this writes, so zero is not a guess.
+fn write_sheet_views(out: &mut Vec<u8>, prefix: &[u8], pane: Option<&PaneTag>) {
+    if pane.is_none() {
+        return;
+    }
+    open(out, prefix, b"sheetViews", &[], false);
+    open(
+        out,
+        prefix,
+        b"sheetView",
+        &[Set::to(b"workbookViewId", "0")],
+        false,
+    );
+    write_pane(out, prefix, pane);
+    close(out, prefix, b"sheetView");
+    close(out, prefix, b"sheetViews");
+}
+
+/// The worksheet children the schema puts *after* `<sheetViews>`.
+fn after_views(name: &[u8]) -> bool {
+    matches!(
+        name,
+        b"sheetFormatPr"
+            | b"cols"
+            | b"sheetData"
+            | b"sheetCalcPr"
+            | b"sheetProtection"
+            | b"protectedRanges"
+            | b"scenarios"
+            | b"autoFilter"
+    ) || after_filter(name)
 }
 
 /// The worksheet children the schema puts *after* `<autoFilter>`.
@@ -2234,6 +2494,67 @@ mod tests {
             "{out}"
         );
         assert!(out.contains(r#"<autoFilter ref="A1:C3"/>"#), "{out}");
+    }
+
+    #[test]
+    fn a_freeze_reaches_the_file_it_was_made_in() {
+        let mut sheet = Sheet::new("Data");
+        sheet.panes = Some(ss_model::Panes::frozen(CellRef::new(1, 0)));
+
+        // A file with no view at all — an authored workbook — grows one.
+        let out = written_from(r#"<worksheet><sheetData/></worksheet>"#, &sheet);
+        assert_eq!(
+            out,
+            r#"<worksheet><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><sheetData/></worksheet>"#
+        );
+
+        // A view that exists keeps everything it says about itself.
+        let out = written_from(
+            r#"<worksheet><sheetViews><sheetView tabSelected="1" zoomScale="90" workbookViewId="0"><selection activeCell="C7" sqref="C7"/></sheetView></sheetViews><sheetData/></worksheet>"#,
+            &sheet,
+        );
+        assert!(out.contains(r#"tabSelected="1" zoomScale="90""#), "{out}");
+        assert!(
+            out.contains(r#"<pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/><selection activeCell="C7" sqref="C7" pane="bottomLeft"/>"#),
+            "the pane goes before the selection, and the selection moves into it: {out}"
+        );
+    }
+
+    #[test]
+    fn unfreezing_takes_the_pane_out_rather_than_leaving_an_empty_one() {
+        let sheet = Sheet::new("Data");
+        let out = written_from(
+            r#"<worksheet><sheetViews><sheetView workbookViewId="0"><pane ySplit="3" topLeftCell="A4" activePane="bottomLeft" state="frozen"/><selection pane="bottomLeft" activeCell="B9" sqref="B9"/></sheetView></sheetViews><sheetData/></worksheet>"#,
+            &sheet,
+        );
+        assert!(!out.contains("<pane"), "{out}");
+        assert!(
+            out.contains(r#"<selection activeCell="B9" sqref="B9"/>"#),
+            "the cursor stays where it was, in a sheet that now has one pane: {out}"
+        );
+    }
+
+    #[test]
+    fn a_sheet_nobody_split_is_not_touched_by_the_pane_writer() {
+        // The no-edit round trip is the whole contract: a `topLeftCell` we did
+        // not move, and a `state` spelled `frozenSplit`, both survive a save.
+        let mut sheet = Sheet::new("Data");
+        sheet.panes = Some(ss_model::Panes::frozen(CellRef::new(3, 5)));
+        sheet.view.top_left = Some(CellRef::from_a1("F4").unwrap());
+        let original = r#"<worksheet><sheetViews><sheetView workbookViewId="0"><pane xSplit="5" ySplit="3" topLeftCell="F4" activePane="bottomRight" state="frozenSplit"/><selection pane="topRight" activeCell="G1" sqref="G1"/><selection pane="bottomRight" activeCell="B5" sqref="B5"/></sheetView></sheetViews><sheetData/></worksheet>"#;
+        assert_eq!(written_from(original, &sheet), original);
+    }
+
+    #[test]
+    fn a_split_is_written_as_the_distance_excel_measures_it_in() {
+        let mut sheet = Sheet::new("Data");
+        sheet.panes = Some(ss_model::Panes::split(CellRef::new(0, 2)));
+        let out = written_from(r#"<worksheet><sheetData/></worksheet>"#, &sheet);
+        // Two default columns: 64 pixels each, and a pixel is fifteen twips.
+        assert!(
+            out.contains(r#"<pane xSplit="1920" topLeftCell="C1" activePane="topRight" state="split"/>"#),
+            "{out}"
+        );
     }
 
     #[test]

@@ -581,6 +581,9 @@ pub enum Action {
     Merge(bool),
     /// Freeze above and left of the cursor, or unfreeze.
     Freeze(bool),
+    /// Split the sheet at the cursor into panes that scroll on their own, or
+    /// put it back together.
+    Split(bool),
     /// Hide or show the selected rows or columns.
     Visibility {
         axis: Axis,
@@ -769,12 +772,33 @@ pub fn summarize(book: &Workbook, sheet: usize, ranges: &[CellRange]) -> Summary
     summary
 }
 
+/// Where a sheet is divided into panes, as a cell — `A1` when it is not.
+///
+/// The one place the model's `Option<Panes>` is flattened, because everything
+/// that lays panes out wants a corner to measure from and treats "no division"
+/// as a division at the sheet's own corner.
+pub(crate) fn division(sheet: &ss_model::Sheet) -> CellRef {
+    sheet.panes.map_or(CellRef::new(0, 0), |p| p.at)
+}
+
+/// Whether the sheet's division pins what is above and left of it.
+pub(crate) fn pins(sheet: &ss_model::Sheet) -> bool {
+    sheet.panes.is_none_or(|p| p.frozen)
+}
+
 /// The grid widget's own state, kept between frames.
 pub struct GridView {
     pub sheet_index: usize,
     pub selection: Selection,
     /// Scroll position in sheet pixels, for the scrolling pane.
     pub scroll: Scroll,
+    /// Where the *other* panes of a split sheet are scrolled to.
+    ///
+    /// Zero on a sheet that is frozen or undivided, and that is the whole
+    /// difference between the two: a freeze pins its bands, a split lets them
+    /// move on their own, which is how two distant parts of one sheet are read
+    /// beside each other.
+    pub(crate) pinned: Scroll,
     pub zoom: f64,
     /// The open cell editor, if any. The formula bar edits the same buffer.
     pub editor: Option<Editor>,
@@ -882,6 +906,10 @@ pub(crate) enum Drag {
         first: u32,
         last: u32,
     },
+    /// Dragging a split bar to divide the sheet somewhere else.
+    MoveSplit {
+        axis: Axis,
+    },
     /// Dragging a column's right edge, or a row's bottom edge.
     ResizeColumn {
         index: u32,
@@ -949,6 +977,7 @@ impl Default for GridView {
             sheet_index: 0,
             selection: Selection::default(),
             scroll: Scroll::default(),
+            pinned: Scroll::default(),
             zoom: 1.0,
             editor: None,
             actions: Vec::new(),
@@ -1017,7 +1046,8 @@ impl GridView {
         // nowhere". Not subtracting the split scrolls the sheet by the height
         // of everything above the freeze, twice over.
         let layout = Layout::for_sheet(book, sheet, self.zoom);
-        let frozen = sheet.frozen.unwrap_or(CellRef::new(0, 0));
+        let frozen = division(sheet);
+        self.pinned = Scroll::default();
         self.scroll = match sheet.view.top_left {
             Some(at) => Scroll {
                 x: layout.cols.offset(at.col) - layout.cols.offset(frozen.col),
@@ -1670,7 +1700,7 @@ mod tests {
         // everything the freeze was there to keep on screen.
         let mut book = Workbook::blank();
         let sheet = book.sheet_mut(0).expect("sheet 0");
-        sheet.frozen = Some(CellRef::new(3, 5));
+        sheet.panes = Some(ss_model::Panes::frozen(CellRef::new(3, 5)));
         sheet.view.top_left = Some(CellRef::new(3, 5));
         sheet.view.selection = Some(CellRef::new(4, 1));
 

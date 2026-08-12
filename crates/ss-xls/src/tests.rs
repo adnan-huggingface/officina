@@ -434,7 +434,7 @@ fn merges_column_widths_row_heights_and_the_freeze_all_survive() {
     assert_eq!(sheet.column_widths.get(&1), Some(&12.5));
     assert_eq!(sheet.column_widths.get(&2), Some(&12.5));
     assert_eq!(sheet.row_heights.get(&3), Some(&30.0));
-    assert_eq!(sheet.frozen, Some(CellRef::new(2, 1)));
+    assert_eq!(sheet.panes, Some(ss_model::Panes::frozen(CellRef::new(2, 1))));
 }
 
 #[test]

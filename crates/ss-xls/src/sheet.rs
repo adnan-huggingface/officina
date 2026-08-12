@@ -273,7 +273,9 @@ pub(crate) fn read(
     }
 
     if is_frozen {
-        sheet.frozen = frozen.filter(|at| at.row > 0 || at.col > 0);
+        sheet.panes = frozen
+            .filter(|at| at.row > 0 || at.col > 0)
+            .map(ss_model::Panes::frozen);
     }
     resolve(&mut sheet, group);
     Ok(sheet)

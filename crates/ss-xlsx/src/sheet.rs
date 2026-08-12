@@ -95,6 +95,9 @@ pub(crate) fn parse(
     // `<selection>` per pane, and taking any but the active one puts the cursor
     // in the wrong half of the split — usually in the frozen headings.
     let mut active_pane: Vec<u8> = Vec::new();
+    // A split pane's position, which cannot be turned into a boundary until the
+    // column widths further down the part have been read.
+    let mut split: Option<(u32, u32)> = None;
     let mut block: Option<ConditionalFormat> = None;
     let mut rule: Option<PartialRule> = None;
     let mut validation: Option<DataValidation> = None;
@@ -186,7 +189,7 @@ pub(crate) fn parse(
                         active_pane = attr_raw(e, b"activePane")
                             .map(|v| v.into_owned())
                             .unwrap_or_default();
-                        read_pane(e, sheet);
+                        split = read_pane(e, sheet);
                     }
                     b"sheetView" => read_sheet_view(e, sheet),
                     b"selection" => {
@@ -365,6 +368,10 @@ pub(crate) fn parse(
             },
         }
         buf.clear();
+    }
+
+    if let Some(twips) = split {
+        resolve_split(sheet, twips);
     }
 
     Ok(extras)
@@ -853,16 +860,14 @@ fn read_sheet_view(e: &BytesStart<'_>, sheet: &mut Sheet) {
     }
 }
 
-fn read_pane(e: &BytesStart<'_>, sheet: &mut Sheet) {
-    // Only frozen panes pin content. A `split` pane is a scrolling convenience
-    // and its position is in twips, not cells.
+/// Reads `<pane>`, returning a split's raw `(ySplit, xSplit)` in twips.
+fn read_pane(e: &BytesStart<'_>, sheet: &mut Sheet) -> Option<(u32, u32)> {
+    // The one attribute that decides what the numbers beside it mean: a frozen
+    // pane counts rows and columns, a split one measures twips.
     let frozen = matches!(
         attr_raw(e, b"state").as_deref(),
         Some(b"frozen") | Some(b"frozenSplit")
     );
-    if !frozen {
-        return;
-    }
     // On a frozen sheet this is the first cell of the *scrolling* pane, which
     // is what the scroll offset means here too — the frozen bands are not part
     // of it. It sits on `<pane>` rather than on `<sheetView>` whenever there is
@@ -876,9 +881,32 @@ fn read_pane(e: &BytesStart<'_>, sheet: &mut Sheet) {
     let x = attr_u32(e, b"xSplit").unwrap_or(0);
     let y = attr_u32(e, b"ySplit").unwrap_or(0);
     if x == 0 && y == 0 {
+        return None;
+    }
+    if !frozen {
+        // A split records where the divider *is*, in twentieths of a point,
+        // because Excel lets it be dragged anywhere. Turning that into a
+        // boundary needs the column widths, and `<sheetViews>` is read before
+        // `<cols>` — so the numbers are handed back to be resolved once the
+        // whole sheet has been seen.
+        return Some((y, x));
+    }
+    let at = CellRef::new(y.min(MAX_ROWS - 1), x.min(MAX_COLS - 1));
+    sheet.panes = Some(ss_model::Panes::frozen(at));
+    None
+}
+
+/// Places a split read as twips, now that the sheet's own widths are known.
+fn resolve_split(sheet: &mut Sheet, (y, x): (u32, u32)) {
+    let at = CellRef::new(
+        sheet.pane_boundary(ss_model::Axis::Rows, y),
+        sheet.pane_boundary(ss_model::Axis::Columns, x),
+    );
+    // A split that rounds to the sheet's own corner divides nothing.
+    if at.row == 0 && at.col == 0 {
         return;
     }
-    sheet.frozen = Some(CellRef::new(y.min(MAX_ROWS - 1), x.min(MAX_COLS - 1)));
+    sheet.panes = Some(ss_model::Panes::split(at));
 }
 
 /// Parses `A1` straight from attribute bytes, with no intermediate `String`.
@@ -1294,7 +1322,7 @@ mod tests {
         assert_eq!(sheet.view.selection, Some(CellRef::from_a1("B5").unwrap()));
         assert_eq!(sheet.view.zoom, 0.9);
         assert_eq!(sheet.view.top_left, Some(CellRef::from_a1("F4").unwrap()));
-        assert_eq!(sheet.frozen, Some(CellRef::new(3, 5)));
+        assert_eq!(sheet.panes, Some(ss_model::Panes::frozen(CellRef::new(3, 5))));
     }
 
     #[test]
@@ -1309,20 +1337,46 @@ mod tests {
     }
 
     #[test]
-    fn frozen_panes_read_but_split_panes_do_not() {
+    fn a_frozen_pane_counts_cells_and_a_split_one_measures_twips() {
         let (frozen, _) = read(
             r#"<worksheet><sheetViews><sheetView>
                  <pane xSplit="1" ySplit="2" topLeftCell="B3" state="frozen"/>
                </sheetView></sheetViews></worksheet>"#,
         );
-        assert_eq!(frozen.frozen, Some(CellRef::new(2, 1)));
+        assert_eq!(
+            frozen.panes,
+            Some(ss_model::Panes::frozen(CellRef::new(2, 1)))
+        );
 
+        // 1440 twips is a column and a half of the default width, and 720 is
+        // two rows and two fifths: both land on the boundary they are nearest.
         let (split, _) = read(
             r#"<worksheet><sheetViews><sheetView>
                  <pane xSplit="1440" ySplit="720" topLeftCell="B3" state="split"/>
                </sheetView></sheetViews></worksheet>"#,
         );
-        assert_eq!(split.frozen, None, "a split pane pins nothing");
+        assert_eq!(split.panes, Some(ss_model::Panes::split(CellRef::new(2, 1))));
+        assert!(
+            !split.panes.unwrap().frozen,
+            "a split pane pins nothing, and saying so is the whole difference"
+        );
+    }
+
+    #[test]
+    fn a_split_is_placed_against_the_sheets_own_widths_and_not_the_defaults() {
+        // `<cols>` comes after `<sheetViews>` in the part, so a split read
+        // before the widths would be placed against the default column.
+        let (sheet, _) = read(
+            r#"<worksheet><sheetViews><sheetView>
+                 <pane xSplit="2880" ySplit="0" topLeftCell="C1" state="split"/>
+               </sheetView></sheetViews>
+               <cols><col min="1" max="2" width="24" customWidth="1"/></cols>
+               </worksheet>"#,
+        );
+        // Two 24-character columns are 173 pixels each: 2880 twips is 192
+        // pixels, which is nearer the far edge of the first than either edge
+        // of the second.
+        assert_eq!(sheet.panes, Some(ss_model::Panes::split(CellRef::new(0, 1))));
     }
 
     #[test]

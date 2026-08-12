@@ -26,6 +26,12 @@ const FILL_HANDLE: f32 = 6.0;
 /// Thickness of the scrollbars along the right and bottom edges.
 const SCROLLBAR: f32 = 14.0;
 
+/// Thickness of a split bar: a line to take hold of rather than to look at.
+const SPLIT_BAR: f32 = 4.0;
+
+/// How far either side of a split bar counts as being on it.
+const SPLIT_GRAB: f32 = 4.0;
+
 /// The shortest a thumb may get. Proportional all the way down means a thumb
 /// one pixel tall on a long sheet, which is not something anyone can grab.
 const MIN_THUMB: f32 = 28.0;
@@ -327,6 +333,36 @@ fn selected_band(selection: &Selection, axis: Axis, index: u32) -> Option<(u32, 
     })
 }
 
+/// Which split bar the pointer is on, if either.
+///
+/// Only a split has one to take hold of. A freeze's line is a statement about
+/// the sheet rather than a control — it is moved by freezing somewhere else —
+/// and offering to drag it would promise something that does not happen.
+fn split_bar(
+    pins: bool,
+    frozen: CellRef,
+    split: egui::Vec2,
+    body: egui::Rect,
+    pos: egui::Pos2,
+) -> Option<Axis> {
+    if pins {
+        return None;
+    }
+    if frozen.row > 0
+        && pos.x >= body.left()
+        && (pos.y - (body.top() + split.y)).abs() <= SPLIT_GRAB
+    {
+        return Some(Axis::Rows);
+    }
+    if frozen.col > 0
+        && pos.y >= body.top()
+        && (pos.x - (body.left() + split.x)).abs() <= SPLIT_GRAB
+    {
+        return Some(Axis::Columns);
+    }
+    None
+}
+
 /// The boundary a drop at `pos` names: the index the band would sit before.
 ///
 /// The nearer edge of whatever is under the pointer, because a drop is
@@ -417,17 +453,22 @@ impl GridView {
             content.min + egui::vec2(layout.header_width as f32, layout.header_height as f32),
             content.max,
         );
-        let frozen = sheet.frozen.unwrap_or(CellRef::new(0, 0));
+        let frozen = super::division(sheet);
+        let pins = super::pins(sheet);
         let split = egui::vec2(
             layout.cols.offset(frozen.col) as f32,
             layout.rows.offset(frozen.row) as f32,
         );
+        if pins {
+            self.pinned = Scroll::default();
+        }
 
         let viewport = (body.size() - split).max(egui::Vec2::ZERO);
         self.bars = bars(full, layout, sheet, viewport, self.scroll);
         self.clamp_scroll(self.bars.extent);
         self.bars = bars(full, layout, sheet, viewport, self.scroll);
-        let panes = split_panes(body, split, self.scroll, layout, frozen);
+        self.pinned = self.pinned.clamped();
+        let panes = split_panes(body, split, self.scroll, self.pinned, layout, frozen);
 
         let frame = Frame {
             layout,
@@ -450,10 +491,15 @@ impl GridView {
         }
         paint_bars(ui, &self.bars, &palette);
 
-        // The frozen split is the one line that is not a gridline. Grey and
-        // solid rather than the selection colour: it is a property of the
-        // sheet, and it is still there when nothing is selected.
-        let seam = egui::Stroke::new(1.0, egui::Color32::from_gray(0x88));
+        // The division is the one line that is not a gridline. Grey and solid
+        // rather than the selection colour: it is a property of the sheet, and
+        // it is still there when nothing is selected. A split is drawn thicker
+        // than a freeze because it is a bar to take hold of and drag, and a
+        // hairline says the opposite.
+        let seam = egui::Stroke::new(
+            if pins { 1.0 } else { SPLIT_BAR },
+            egui::Color32::from_gray(0x88),
+        );
         if frozen.row > 0 {
             ui.painter()
                 .hline(content.x_range(), body.top() + split.y, seam);
@@ -516,6 +562,10 @@ impl GridView {
         // would drop back to a plain one halfway through the gesture — which
         // reads as the drag having been let go.
         let icon = match self.drag {
+            Some(Drag::MoveSplit { axis: Axis::Columns }) => {
+                Some(egui::CursorIcon::ResizeHorizontal)
+            }
+            Some(Drag::MoveSplit { axis: Axis::Rows }) => Some(egui::CursorIcon::ResizeVertical),
             Some(Drag::ResizeColumn { .. }) => Some(egui::CursorIcon::ResizeHorizontal),
             Some(Drag::ResizeRow { .. }) => Some(egui::CursorIcon::ResizeVertical),
             Some(Drag::MoveBand { .. }) => Some(egui::CursorIcon::Grabbing),
@@ -527,11 +577,16 @@ impl GridView {
             Some(Drag::MoveRange { .. }) => Some(egui::CursorIcon::Move),
             Some(_) => None,
             None => ui.ctx().pointer_hover_pos().and_then(|pos| {
-                header_edge(layout, content, body, &panes, pos)
-                    .map(|(axis, _)| match axis {
+                split_bar(pins, frozen, split, body, pos)
+                    .map(|axis| match axis {
                         Axis::Columns => egui::CursorIcon::ResizeHorizontal,
                         Axis::Rows => egui::CursorIcon::ResizeVertical,
                     })
+                    .or_else(|| header_edge(layout, content, body, &panes, pos)
+                    .map(|(axis, _)| match axis {
+                        Axis::Columns => egui::CursorIcon::ResizeHorizontal,
+                        Axis::Rows => egui::CursorIcon::ResizeVertical,
+                    }))
                     .or_else(|| self.movable_band(layout, content, body, &panes, pos))
                     .or_else(|| self.pointer_over(sheet, layout, &panes, pos))
                     .or_else(|| self.fill_hover(layout, &panes, pos))
@@ -1643,12 +1698,13 @@ impl GridView {
         };
         let cached = self.layout.take().expect("set by show");
         let layout = &cached.2;
-        let frozen = sheet.frozen.unwrap_or(CellRef::new(0, 0));
+        let frozen = super::division(sheet);
+        let pins = super::pins(sheet);
         let split = egui::vec2(
             layout.cols.offset(frozen.col) as f32,
             layout.rows.offset(frozen.row) as f32,
         );
-        let panes = split_panes(body, split, self.scroll, layout, frozen);
+        let panes = split_panes(body, split, self.scroll, self.pinned, layout, frozen);
         let palette = Palette::of(ui);
         let frame = Frame {
             layout,
@@ -1668,9 +1724,29 @@ impl GridView {
                 let zoom = self.zoom * f64::from(zoom_delta);
                 self.set_zoom(zoom);
             } else if scroll_delta != egui::Vec2::ZERO {
-                self.scroll.x -= f64::from(scroll_delta.x);
-                self.scroll.y -= f64::from(scroll_delta.y);
+                // On a split sheet the wheel moves the pane it is over, which
+                // is the point of a split: the top half is scrolled to one part
+                // of the sheet while the bottom half stays on another. A freeze
+                // has nothing to move but its scrolling pane.
+                let over = ui.ctx().pointer_latest_pos();
+                let band_x = !pins
+                    && over.is_some_and(|p| p.x < body.left() + split.x)
+                    && frozen.col > 0;
+                let band_y = !pins
+                    && over.is_some_and(|p| p.y < body.top() + split.y)
+                    && frozen.row > 0;
+                if band_x {
+                    self.pinned.x -= f64::from(scroll_delta.x);
+                } else {
+                    self.scroll.x -= f64::from(scroll_delta.x);
+                }
+                if band_y {
+                    self.pinned.y -= f64::from(scroll_delta.y);
+                } else {
+                    self.scroll.y -= f64::from(scroll_delta.y);
+                }
                 self.scroll = self.scroll.clamped();
+                self.pinned = self.pinned.clamped();
             }
         }
 
@@ -1684,6 +1760,15 @@ impl GridView {
         // and the second click would never be looked at.
         if response.double_clicked() {
             let pos = ui.ctx().pointer_interact_pos();
+            // Double-clicking a split bar takes the split out, which is the
+            // gesture Excel answers and the quickest way back to one pane.
+            if pos.is_some_and(|pos| split_bar(pins, frozen, split, body, pos).is_some()) {
+                self.drag = None;
+                self.before_resize = None;
+                self.actions.push(Action::Split(false));
+                self.layout = Some(cached);
+                return;
+            }
             let edge = pos.and_then(|pos| header_edge(layout, full, body, &panes, pos));
             if let Some((axis, index)) = edge {
                 // The drag it started never moved anything, so it is dropped
@@ -1903,6 +1988,19 @@ impl GridView {
             };
             self.drag = Some(Drag::ScrollThumb { axis, grab });
             self.scroll_to_thumb(axis, along - grab);
+            return;
+        }
+
+        // The split bar sits over the cells it divides, so a press on it is a
+        // press on the bar rather than on the cell underneath.
+        let frozen = super::division(sheet);
+        let split = egui::vec2(
+            layout.cols.offset(frozen.col) as f32,
+            layout.rows.offset(frozen.row) as f32,
+        );
+        if let Some(axis) = split_bar(super::pins(sheet), frozen, split, body, pos) {
+            self.before_resize = Some(Geometry::of(sheet));
+            self.drag = Some(Drag::MoveSplit { axis });
             return;
         }
 
@@ -2388,6 +2486,23 @@ impl GridView {
                 self.move_target =
                     (!(first..=last.saturating_add(1)).contains(&before)).then_some(before);
             }
+            Drag::MoveSplit { axis } => {
+                let index = drop_boundary(layout, panes, axis, pos);
+                if let Some(sheet) = book.sheet_mut(self.sheet_index) {
+                    if let Some(panes) = &mut sheet.panes {
+                        match axis {
+                            Axis::Rows => panes.at.row = index,
+                            Axis::Columns => panes.at.col = index,
+                        }
+                        // Dragged back onto the sheet's own corner, which is
+                        // how a split is thrown away.
+                        if panes.at.row == 0 && panes.at.col == 0 {
+                            sheet.panes = None;
+                        }
+                    }
+                }
+                self.invalidate();
+            }
             Drag::ResizeColumn {
                 index,
                 origin,
@@ -2433,7 +2548,7 @@ impl GridView {
                     }
                 }
             }
-            Drag::ResizeColumn { .. } | Drag::ResizeRow { .. } => {
+            Drag::ResizeColumn { .. } | Drag::ResizeRow { .. } | Drag::MoveSplit { .. } => {
                 if let Some(before) = self.before_resize.take() {
                     self.actions.push(Action::Resized(before));
                 }
@@ -3149,11 +3264,19 @@ fn pane_at(panes: &[Pane], pos: egui::Pos2) -> Option<&Pane> {
         .or_else(|| panes.last())
 }
 
-/// The up-to-four views a frozen sheet is drawn as.
+/// The up-to-four views a divided sheet is drawn as.
+///
+/// `pinned` is where the top and left bands are scrolled to — zero for a freeze,
+/// which is what pinning means, and free for a split. The panes come out of one
+/// function either way, because a freeze and a split differ in exactly that one
+/// number: both are two column bands crossed with two row bands, and every pane
+/// takes its horizontal offset from its column band and its vertical from its
+/// row band.
 fn split_panes(
     body: egui::Rect,
     split: egui::Vec2,
     scroll: Scroll,
+    pinned: Scroll,
     layout: &Layout,
     frozen: CellRef,
 ) -> Vec<Pane> {
@@ -3178,11 +3301,11 @@ fn split_panes(
         body.max,
     );
 
-    // The frozen bands are only panes when they exist.
+    // The bands before the division are only panes when they exist.
     if frozen.col > 0 && frozen.row > 0 {
         panes.push(Pane {
             rect: left,
-            scroll: Scroll { x: 0.0, y: 0.0 },
+            scroll: pinned,
         });
     }
     if frozen.row > 0 {
@@ -3190,7 +3313,7 @@ fn split_panes(
             rect: top,
             scroll: Scroll {
                 x: frozen_x + scroll.x,
-                y: 0.0,
+                y: pinned.y,
             },
         });
     }
@@ -3198,7 +3321,7 @@ fn split_panes(
         panes.push(Pane {
             rect: side,
             scroll: Scroll {
-                x: 0.0,
+                x: pinned.x,
                 y: frozen_y + scroll.y,
             },
         });
@@ -4037,6 +4160,154 @@ mod tests {
             &ctx,
         );
         assert_eq!(icon, egui::CursorIcon::ResizeHorizontal);
+    }
+
+    /// A sheet divided at `at`, and a view showing it.
+    fn divided(frozen: bool, at: CellRef) -> (Workbook, GridView) {
+        let mut book = Workbook::blank();
+        book.sheet_mut(0).expect("sheet 0").panes = Some(ss_model::Panes { at, frozen });
+        (book, GridView::default())
+    }
+
+    fn wheel(delta: egui::Vec2) -> egui::Event {
+        egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta,
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::default(),
+        }
+    }
+
+    #[test]
+    fn a_split_bar_can_be_taken_hold_of_and_a_frozen_line_cannot() {
+        let (_, _, _, body) = ruled();
+        let at = CellRef::new(3, 2);
+        let split = egui::vec2(128.0, 60.0);
+        let on_row_bar = egui::pos2(body.left() + 200.0, body.top() + 60.0);
+        let on_col_bar = egui::pos2(body.left() + 128.0, body.top() + 200.0);
+
+        assert_eq!(
+            split_bar(false, at, split, body, on_row_bar),
+            Some(Axis::Rows)
+        );
+        assert_eq!(
+            split_bar(false, at, split, body, on_col_bar),
+            Some(Axis::Columns)
+        );
+        assert_eq!(
+            split_bar(false, at, split, body, on_row_bar + egui::vec2(0.0, 20.0)),
+            None,
+            "well clear of the bar"
+        );
+        assert_eq!(
+            split_bar(true, at, split, body, on_row_bar),
+            None,
+            "a freeze's line is a statement about the sheet, not a control"
+        );
+    }
+
+    #[test]
+    fn the_wheel_moves_the_pane_it_is_over_on_a_split_sheet() {
+        let ctx = context();
+        let (mut book, mut view) = divided(false, CellRef::new(5, 0));
+        frame(&mut view, &mut book, vec![], &ctx);
+        let (_, _, layout) = view.layout.as_ref().expect("laid out");
+        let seam = 20.0 + layout.rows.offset(5) as f32;
+
+        // Over the top pane: only the top pane moves.
+        let over = egui::pos2(300.0, seam - 10.0);
+        frame(
+            &mut view,
+            &mut book,
+            vec![egui::Event::PointerMoved(over), wheel(egui::vec2(0.0, -60.0))],
+            &ctx,
+        );
+        assert!(view.pinned.y > 0.0, "the top pane scrolled");
+        assert_eq!(view.scroll.y, 0.0, "and the bottom one stayed put");
+
+        // Over the bottom pane: the other way round.
+        let pinned = view.pinned;
+        let over = egui::pos2(300.0, seam + 40.0);
+        frame(
+            &mut view,
+            &mut book,
+            vec![egui::Event::PointerMoved(over), wheel(egui::vec2(0.0, -60.0))],
+            &ctx,
+        );
+        assert!(view.scroll.y > 0.0, "the bottom pane scrolled");
+        assert_eq!(view.pinned, pinned, "and the top one stayed where it was");
+    }
+
+    #[test]
+    fn a_frozen_sheet_has_nothing_to_scroll_but_its_scrolling_pane() {
+        let ctx = context();
+        let (mut book, mut view) = divided(true, CellRef::new(5, 0));
+        frame(&mut view, &mut book, vec![], &ctx);
+        let (_, _, layout) = view.layout.as_ref().expect("laid out");
+        let seam = 20.0 + layout.rows.offset(5) as f32;
+
+        let over = egui::pos2(300.0, seam - 10.0);
+        frame(
+            &mut view,
+            &mut book,
+            vec![egui::Event::PointerMoved(over), wheel(egui::vec2(0.0, -60.0))],
+            &ctx,
+        );
+        assert_eq!(view.pinned, Scroll::default(), "frozen rows are frozen");
+        assert!(view.scroll.y > 0.0);
+    }
+
+    #[test]
+    fn dragging_the_split_bar_divides_the_sheet_somewhere_else() {
+        let ctx = context();
+        let (mut book, mut view) = divided(false, CellRef::new(5, 0));
+        frame(&mut view, &mut book, vec![], &ctx);
+        let (_, _, layout) = view.layout.as_ref().expect("laid out");
+        let seam = 20.0 + layout.rows.offset(5) as f32;
+        let row = layout.rows.size(0) as f32;
+
+        frame(
+            &mut view,
+            &mut book,
+            vec![press(egui::pos2(300.0, seam), true)],
+            &ctx,
+        );
+        assert!(matches!(view.drag, Some(Drag::MoveSplit { .. })));
+
+        // Three rows further down, and then let go.
+        let to = egui::pos2(300.0, seam + row * 3.0);
+        frame(&mut view, &mut book, vec![egui::Event::PointerMoved(to)], &ctx);
+        assert_eq!(
+            book.sheet(0).expect("sheet 0").panes,
+            Some(ss_model::Panes::split(CellRef::new(8, 0)))
+        );
+
+        frame(&mut view, &mut book, vec![press(to, false)], &ctx);
+        assert!(
+            view.actions
+                .iter()
+                .any(|a| matches!(a, Action::Resized(_))),
+            "the move is one undoable change, reported when the button comes up"
+        );
+    }
+
+    #[test]
+    fn dragging_the_split_bar_off_the_top_takes_the_split_away() {
+        let ctx = context();
+        let (mut book, mut view) = divided(false, CellRef::new(5, 0));
+        frame(&mut view, &mut book, vec![], &ctx);
+        let (_, _, layout) = view.layout.as_ref().expect("laid out");
+        let seam = 20.0 + layout.rows.offset(5) as f32;
+
+        frame(
+            &mut view,
+            &mut book,
+            vec![press(egui::pos2(300.0, seam), true)],
+            &ctx,
+        );
+        let to = egui::pos2(300.0, 22.0);
+        frame(&mut view, &mut book, vec![egui::Event::PointerMoved(to)], &ctx);
+        assert_eq!(book.sheet(0).expect("sheet 0").panes, None);
     }
 
     fn press(pos: egui::Pos2, pressed: bool) -> egui::Event {

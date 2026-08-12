@@ -1096,7 +1096,8 @@ impl Calx {
             Action::Format(command) => self.format(command),
             Action::StepSheet(step) => self.step_sheet(step),
             Action::Merge(join) => self.merge(join),
-            Action::Freeze(on) => self.freeze(on),
+            Action::Freeze(on) => self.divide(on, true),
+            Action::Split(on) => self.divide(on, false),
             Action::Visibility { axis, hide } => self.set_visibility(axis, hide),
             Action::Group { axis, ungroup } => self.group_selection(axis, ungroup),
             Action::ToggleOutline { axis, index } => self.toggle_outline(axis, index),
@@ -1544,20 +1545,33 @@ impl Calx {
         self.grid.invalidate();
     }
 
-    /// Freezes the rows above and the columns left of the cursor.
-    fn freeze(&mut self, on: bool) {
+    /// Divides the sheet at the cursor, or puts it back together.
+    ///
+    /// Freezing and splitting are one operation with one difference — whether
+    /// the bands before the division are pinned — and a sheet has one division,
+    /// so asking for either replaces the other rather than stacking on it.
+    fn divide(&mut self, on: bool, frozen: bool) {
         let sheet = self.grid.sheet_index;
         let Some(current) = self.doc.workbook.sheet(sheet) else {
             return;
         };
         let mut geometry = Geometry::of(current);
         let cursor = self.grid.selection.cursor();
-        geometry.frozen = on.then_some(cursor).filter(|at| at.row > 0 || at.col > 0);
-        if geometry.frozen == current.frozen {
+        geometry.panes = on
+            .then_some(cursor)
+            .filter(|at| at.row > 0 || at.col > 0)
+            .map(|at| ss_model::Panes { at, frozen });
+        if geometry.panes == current.panes {
             return;
         }
+        let label = match (on, frozen) {
+            (true, true) => "Freeze panes",
+            (true, false) => "Split panes",
+            (false, true) => "Unfreeze panes",
+            (false, false) => "Remove split",
+        };
         self.perform(Change::new(
-            if on { "Freeze panes" } else { "Unfreeze panes" },
+            label,
             vec![Patch::Geometry { sheet, geometry }],
         ));
         self.grid.invalidate();
@@ -2369,11 +2383,12 @@ impl Calx {
             if icons::button(ui, Icon::Merge, merged, "Merge cells").clicked() {
                 requested = Some(Action::Merge(!merged));
             }
-            let frozen = self
+            let panes = self
                 .doc
                 .workbook
                 .sheet(self.grid.sheet_index)
-                .is_some_and(|s| s.frozen.is_some());
+                .and_then(|s| s.panes);
+            let frozen = panes.is_some_and(|p| p.frozen);
             let tip = if frozen {
                 "Unfreeze panes"
             } else {
@@ -2381,6 +2396,15 @@ impl Calx {
             };
             if icons::button(ui, Icon::Freeze, frozen, tip).clicked() {
                 requested = Some(Action::Freeze(!frozen));
+            }
+            let split = panes.is_some_and(|p| !p.frozen);
+            let tip = if split {
+                "Remove the split"
+            } else {
+                "Split the sheet at the cursor, into panes that scroll on their own"
+            };
+            if ui.selectable_label(split, "Split").on_hover_text(tip).clicked() {
+                requested = Some(Action::Split(!split));
             }
             if icons::button(ui, Icon::Sum, false, "Sum the cells above").clicked() {
                 self.autosum();

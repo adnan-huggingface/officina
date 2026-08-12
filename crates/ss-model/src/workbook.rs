@@ -70,6 +70,41 @@ impl CellRange {
     }
 }
 
+/// How a sheet is divided into panes.
+///
+/// One value rather than a freeze and a split side by side, because a sheet has
+/// one division and Excel spells the two states with one `state` attribute. Two
+/// fields would let a sheet claim to be frozen at C3 and split at F9, which is
+/// not a thing any file can say.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Panes {
+    /// The first cell *below and right of* the division: the rows above it and
+    /// the columns left of it are the top and left panes. `row` or `col` may be
+    /// zero, which is a division along one axis only.
+    pub at: CellRef,
+    /// Frozen panes pin what is above and left of the division, so that headings
+    /// stay put. A plain split pins nothing: each pane scrolls over the whole
+    /// sheet on its own, which is how two distant parts of one sheet are read
+    /// side by side.
+    pub frozen: bool,
+}
+
+/// Excel's default column width, in the character units a file stores.
+pub const DEFAULT_COLUMN: f64 = 8.43;
+
+/// Excel's default row height, in points.
+pub const DEFAULT_ROW: f64 = 15.0;
+
+impl Panes {
+    pub fn frozen(at: CellRef) -> Self {
+        Panes { at, frozen: true }
+    }
+
+    pub fn split(at: CellRef) -> Self {
+        Panes { at, frozen: false }
+    }
+}
+
 /// How a sheet was last being looked at.
 ///
 /// Part of the document rather than of the application: it is stored in the
@@ -152,8 +187,8 @@ pub struct Sheet {
     pub column_widths: BTreeMap<u32, f64>,
     /// Row heights in points; absent means auto.
     pub row_heights: BTreeMap<u32, f64>,
-    /// Rows above and columns left of this stay pinned when scrolling.
-    pub frozen: Option<CellRef>,
+    /// How the sheet is divided into panes, if it is.
+    pub panes: Option<Panes>,
     pub hidden: bool,
     /// A column's style, applied to every cell in it that has none of its own.
     /// This is `<col style="..">`, and it is how a whole column gets shaded
@@ -285,6 +320,73 @@ impl Sheet {
         Some(trimmed)
     }
 
+    /// How far the division sits from the sheet's edge, in twips.
+    ///
+    /// A *split* pane records its position as a distance rather than as a
+    /// count of pinned rows, so writing one means adding up everything before
+    /// the boundary. Hidden rows and columns are zero-sized and add nothing,
+    /// which is exactly right: a split cannot sit inside something invisible.
+    pub fn pane_offset(&self, axis: Axis, index: u32) -> u32 {
+        let mut twips = 0.0;
+        for i in 0..index {
+            twips += self.axis_twips(axis, i);
+        }
+        twips.round().max(0.0).min(f64::from(u32::MAX)) as u32
+    }
+
+    /// The boundary a split `twips` from the sheet's edge falls on — the
+    /// inverse of [`Sheet::pane_offset`].
+    ///
+    /// Excel puts a split wherever the user dropped it, which is very often
+    /// part way across a column, so this lands on the nearest boundary rather
+    /// than pretending to a precision the model does not have. A split we wrote
+    /// ourselves comes back exactly where it was; one dragged in Excel comes
+    /// back within half a column of it.
+    pub fn pane_boundary(&self, axis: Axis, twips: u32) -> u32 {
+        let last = match axis {
+            Axis::Rows => crate::cell::MAX_ROWS,
+            Axis::Columns => crate::cell::MAX_COLS,
+        };
+        let target = f64::from(twips);
+        let mut before = 0.0;
+        for i in 0..last {
+            let size = self.axis_twips(axis, i);
+            let after = before + size;
+            if after >= target {
+                // Whichever edge of this row or column the split is closer to.
+                return if target - before <= after - target {
+                    i
+                } else {
+                    i + 1
+                };
+            }
+            before = after;
+        }
+        last
+    }
+
+    /// One row's height or one column's width, in twips.
+    fn axis_twips(&self, axis: Axis, index: u32) -> f64 {
+        match axis {
+            // Points, which are twentieths of a twip's namesake.
+            Axis::Rows => self.row_heights.get(&index).copied().unwrap_or(DEFAULT_ROW) * 20.0,
+            // Character units, by way of the pixels Excel lays a column out in:
+            // a digit is seven pixels wide and a cell has five of padding, and
+            // a pixel at 96 DPI is fifteen twips.
+            Axis::Columns => {
+                let chars = self
+                    .column_widths
+                    .get(&index)
+                    .copied()
+                    .unwrap_or(DEFAULT_COLUMN);
+                if chars <= 0.0 {
+                    return 0.0;
+                }
+                ((chars * 7.0).round() + 5.0) * 15.0
+            }
+        }
+    }
+
     /// The pivot table covering a cell, if any.
     ///
     /// Typing into one leaves the file self-contradictory — the cells say one
@@ -392,12 +494,12 @@ impl Sheet {
         }
         self.validations.retain(|dv| !dv.ranges.is_empty());
 
-        // The freeze is a boundary line, not content: deleting the rows it sits
-        // in pulls it up to where they were rather than removing it.
-        if let Some(frozen) = self.frozen {
-            let index = shift.axis.index(frozen);
+        // The division is a boundary line, not content: deleting the rows it
+        // sits in pulls it up to where they were rather than removing it.
+        if let Some(panes) = &mut self.panes {
+            let index = shift.axis.index(panes.at);
             let moved = shift.point(index).unwrap_or(shift.at);
-            self.frozen = Some(shift.axis.with(frozen, moved));
+            panes.at = shift.axis.with(panes.at, moved);
         }
 
         removed
@@ -489,8 +591,8 @@ impl Sheet {
         if let Some(filter) = &mut self.filter {
             filter.range = mv.range(filter.range);
         }
-        // The freeze is a boundary line rather than content, and a boundary
-        // does not travel with the rows that happened to be beside it.
+        // The pane division is a boundary line rather than content, and a
+        // boundary does not travel with the rows that happened to be beside it.
     }
 
     pub fn insert_rows(&mut self, at: u32, count: u32) -> Vec<(CellRef, Cell)> {
@@ -865,6 +967,43 @@ mod tests {
     }
 
     #[test]
+    fn a_split_written_as_a_distance_comes_back_to_the_same_boundary() {
+        let mut sheet = Sheet::new("S");
+        sheet.column_widths.insert(1, 30.0);
+        sheet.row_heights.insert(2, 40.0);
+        for (axis, index) in [(Axis::Columns, 4u32), (Axis::Rows, 6u32)] {
+            let twips = sheet.pane_offset(axis, index);
+            assert_eq!(
+                sheet.pane_boundary(axis, twips),
+                index,
+                "{axis:?} split at {index} came back somewhere else"
+            );
+        }
+    }
+
+    #[test]
+    fn a_split_dropped_part_way_across_a_column_lands_on_the_nearer_edge() {
+        let sheet = Sheet::new("S");
+        let third = sheet.pane_offset(Axis::Columns, 3);
+        let fourth = sheet.pane_offset(Axis::Columns, 4);
+        let width = fourth - third;
+        assert_eq!(sheet.pane_boundary(Axis::Columns, third + width / 4), 3);
+        assert_eq!(sheet.pane_boundary(Axis::Columns, third + width * 3 / 4), 4);
+    }
+
+    #[test]
+    fn a_hidden_column_takes_up_none_of_the_distance() {
+        let mut sheet = Sheet::new("S");
+        let two = sheet.pane_offset(Axis::Columns, 2);
+        sheet.column_widths.insert(0, 0.0);
+        assert_eq!(
+            sheet.pane_offset(Axis::Columns, 2),
+            two / 2,
+            "hiding the first of two columns should halve the distance"
+        );
+    }
+
+    #[test]
     fn inserting_rows_moves_cells_merges_sizes_and_the_freeze() {
         let mut sheet = Sheet::new("S");
         sheet.set(CellRef::new(0, 0), num(1.0));
@@ -873,7 +1012,7 @@ mod tests {
             .merges
             .push(CellRange::new(CellRef::new(5, 0), CellRef::new(5, 3)));
         sheet.row_heights.insert(5, 33.0);
-        sheet.frozen = Some(CellRef::new(3, 0));
+        sheet.panes = Some(Panes::frozen(CellRef::new(3, 0)));
 
         assert!(
             sheet.insert_rows(2, 2).is_empty(),
@@ -891,7 +1030,7 @@ mod tests {
         assert_eq!(sheet.get(CellRef::new(5, 0)), None);
         assert_eq!(sheet.merges[0].start, CellRef::new(7, 0));
         assert_eq!(sheet.row_heights.get(&7), Some(&33.0));
-        assert_eq!(sheet.frozen, Some(CellRef::new(5, 0)));
+        assert_eq!(sheet.panes, Some(Panes::frozen(CellRef::new(5, 0))));
     }
 
     #[test]
