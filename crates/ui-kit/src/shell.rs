@@ -61,12 +61,20 @@ pub fn run(app: impl DocumentApp + 'static) -> eframe::Result<()> {
             // was meant to fit on — and a window taller than the screen hides
             // its own bottom edge, which is where a spreadsheet keeps its
             // sheet tabs.
+            // Also the size the window returns to when it is un-maximized.
             .with_inner_size([1280.0, 800.0])
-            .with_min_inner_size([640.0, 400.0])
-            // A document window opens filling the screen, because a spreadsheet
-            // that shows twelve columns is a spreadsheet you have to scroll to
-            // read at all.
-            .with_maximized(true),
+            .with_min_inner_size([640.0, 400.0]),
+        // A document window opens filling the screen, because a spreadsheet
+        // that shows twelve columns is a spreadsheet you have to scroll to
+        // read at all — but *not* by asking for it here. Alongside an explicit
+        // inner size, `with_maximized(true)` gives a window that is marked
+        // maximized and sized as asked: 1280 by 800 on a screen half as big
+        // again. Which would merely be a smaller window than intended, except
+        // that the flag is already set, so the command to maximize it
+        // afterwards is a no-op — winit sees nothing to change — and the
+        // window stays small with its resize border, and the desktop behind
+        // it, showing down the side of the page. The shell asks after the
+        // window exists instead.
         ..Default::default()
     };
 
@@ -78,7 +86,7 @@ pub fn run(app: impl DocumentApp + 'static) -> eframe::Result<()> {
             theme(&cc.egui_ctx);
             Ok(Box::new(Host {
                 app,
-                maximize_for: 4,
+                maximize_for: 60,
                 title: id.display.to_string(),
             }))
         }),
@@ -154,8 +162,16 @@ struct Host<A: DocumentApp> {
     /// `ViewportBuilder::with_maximized` is a *request* made before the window
     /// exists, and it is quietly dropped when an explicit inner size is given
     /// alongside it. Sending the command afterwards works — but not on the
-    /// very first frame, before the window manager has finished placing the
-    /// window, so it is sent for a few frames and then never again.
+    /// first frames, before the window manager has finished placing the
+    /// window, and a fixed handful of frames was too few: the window opened at
+    /// its fallback size instead, which is where the black edge came from,
+    /// because an unmaximized window has a resize border and eframe clears
+    /// what it does not paint to near-black.
+    ///
+    /// So it asks until the window agrees that it is maximized, and gives up
+    /// after about a second in case it never will — a window that opened
+    /// smaller than intended is a shame, and one that fights the user for a
+    /// minute over the size they chose is a fault.
     maximize_for: u8,
     /// The last title sent to the window manager.
     ///
@@ -166,13 +182,32 @@ struct Host<A: DocumentApp> {
 }
 
 impl<A: DocumentApp> eframe::App for Host<A> {
+    /// What the window holds before anything is drawn over it.
+    ///
+    /// eframe clears to a near-black translucent grey by default, which suits
+    /// a demo floating over a desktop and not a document. Anything the panels
+    /// do not reach shows it: the resize border of a window that is not
+    /// maximized, and the moment between a resize and the frame that answers
+    /// it, both read as a black bar down the side of the page. Cleared to the
+    /// chrome colour instead, so the worst case is a seam nobody can see.
+    fn clear_color(&self, visuals: &egui::Visuals) -> [f32; 4] {
+        visuals.panel_fill.to_normalized_gamma_f32()
+    }
+
     // eframe 0.36 hands the app a `Ui` covering the whole window rather than a
     // `Context` to open panels on, so the panels are opened *inside* that `Ui`.
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         if self.maximize_for > 0 {
             self.maximize_for -= 1;
-            ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
+            if ctx.input(|i| i.viewport().maximized) == Some(true) {
+                self.maximize_for = 0;
+            } else {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
+                // Frames only arrive while something asks for them, and until
+                // the window is placed nothing else is asking.
+                ctx.request_repaint();
+            }
         }
 
         if ctx.input(|i| i.viewport().close_requested()) && !self.app.close_requested() {

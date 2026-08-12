@@ -361,3 +361,18 @@ anything); no function autocomplete; grouped sheet editing absent.
     mixing with it; a click on the overhanging part stays in the editor. A
     double click leaves the caret in the word it landed on. A merged cell is
     edited over the whole merge.
+
+23. **A dark bar down the right of the window at startup.** Two faults stacked.
+    The window never actually opened maximized: `with_maximized(true)` beside an
+    explicit inner size leaves Windows with the window *marked* maximized and
+    sized as asked, and because the flag is already set, the command sent
+    afterwards to maximize it is a no-op. So a window meant to fill the screen
+    opened at 1280x800 with its resize border showing — and eframe clears
+    whatever it does not paint to a near-black translucent grey, which is what
+    that border read as.
+
+    Fixed at both ends: the maximize is asked for after the window exists,
+    repeated until the window agrees it is maximized and given up on after
+    about a second; and the window is cleared to the chrome colour instead of
+    eframe's near-black, so the worst any uncovered sliver — during a resize,
+    say — can look like is a seam.
