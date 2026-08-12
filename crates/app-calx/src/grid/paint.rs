@@ -157,6 +157,44 @@ fn cell_rect(layout: &Layout, panes: &[Pane], at: CellRef) -> Option<egui::Rect>
     })
 }
 
+/// The same for a block of cells, which is what a merge is edited as: the
+/// editor covers the whole merge, because that is the shape the text will be
+/// drawn in the moment it is committed.
+fn range_rect(layout: &Layout, panes: &[Pane], range: CellRange) -> Option<egui::Rect> {
+    panes.iter().find_map(|pane| {
+        let rect = rect_of_range(layout, range, pane.rect, pane.scroll);
+        pane.rect.contains(rect.center()).then_some(rect)
+    })
+}
+
+fn of_rgb([r, g, b]: [u8; 3]) -> egui::Color32 {
+    egui::Color32::from_rgb(r, g, b)
+}
+
+/// Which way the text being edited is anchored in its cell.
+///
+/// The cell's own alignment, except for two cases where the raw entry is not
+/// the thing the cell displays. A formula reads left to right from its `=`
+/// whatever the number it works out to would have done; and under General —
+/// which is a rule about the *value* — what matters is the value the text
+/// would become if it were committed now, which is why `1/2/2026` swings to
+/// the right the moment it becomes a date.
+fn editing_align(look: &super::CellLook, text: &str) -> egui::Align {
+    if text.starts_with('=') {
+        return egui::Align::LEFT;
+    }
+    match look.horizontal {
+        HAlign::Right => egui::Align::RIGHT,
+        HAlign::Center | HAlign::CenterContinuous | HAlign::Distributed => egui::Align::Center,
+        HAlign::General => match ss_formula::edit::typed_value(text) {
+            ss_formula::Value::Number(_) => egui::Align::RIGHT,
+            ss_formula::Value::Bool(_) | ss_formula::Value::Error(_) => egui::Align::Center,
+            _ => egui::Align::LEFT,
+        },
+        _ => egui::Align::LEFT,
+    }
+}
+
 /// The rectangle a fill drag covers: the source, grown along one axis only.
 ///
 /// Excel fills in a single direction. Dragging diagonally still fills whichever
@@ -450,12 +488,17 @@ impl GridView {
             }
         }
 
-        // Resolved while the layout is still borrowed, painted after it goes
-        // back into `self`.
-        let editor_rect = self
-            .editor
-            .as_ref()
-            .and_then(|open| cell_rect(layout, &panes, open.at));
+        // The editor's cell, the whole merge if it is in one, and how that cell
+        // looks — resolved while the layout and the conditional formats are
+        // still borrowed, and used after they have gone back into `self`.
+        let editing = self.editor.as_ref().map(|open| open.at).and_then(|at| {
+            let rect = match sheet.merge_at(at) {
+                Some(merge) => range_rect(layout, &panes, *merge),
+                None => cell_rect(layout, &panes, at),
+            }?;
+            let effect = conditional.2.effect(book, self.sheet_index, at);
+            Some((rect, super::look_at(book, sheet, at, effect.as_ref())))
+        });
 
         // Chart selection moved into `begin_drag`, beside the pictures': a
         // press on a chart selects it and starts a move, exactly as one on a
@@ -509,7 +552,7 @@ impl GridView {
         self.layout = Some(cached);
         self.conditional = Some(conditional);
         self.paint_arrows(ui, &arrows, &response);
-        self.paint_editor(ui, editor_rect);
+        self.paint_editor(ui, editing, body);
         self.paint_dropdown(ui, book, cursor_rect);
         self.handle_input(ui, book, &response, content, body);
         response
@@ -714,41 +757,126 @@ impl GridView {
     }
 
     /// Draws the open editor over its cell.
-    fn paint_editor(&mut self, ui: &mut egui::Ui, rect: Option<egui::Rect>) {
-        let zoom = self.zoom;
+    ///
+    /// The editor is not a text box that happens to sit on a cell — it is meant
+    /// to look like the cell itself, still being written. It borrows the cell's
+    /// font, its colour, its fill and its alignment, so that entering edit mode
+    /// moves nothing on screen and nothing changes size or weight.
+    ///
+    /// What it will not do is stay inside a narrow column. A column two
+    /// characters wide is an ordinary thing to have, and typing into one that
+    /// wrapped every second character — which is what a box clipped to the cell
+    /// does — is unusable. Excel grows the box rightwards over its neighbours
+    /// as the text outgrows the cell, and only wraps once it reaches the edge
+    /// of the window; so does this. The neighbours are covered rather than
+    /// mixed with, which is why the background is painted here instead of being
+    /// left to the widget.
+    fn paint_editor(
+        &mut self,
+        ui: &mut egui::Ui,
+        editing: Option<(egui::Rect, super::CellLook)>,
+        limit: egui::Rect,
+    ) {
+        self.editor_box = None;
+        let zoom = self.zoom as f32;
+        let accent = Palette::of(ui).selection_edge;
         let Some(open) = &mut self.editor else {
             return;
         };
         // Scrolled out of view: the formula bar is still showing the same text,
         // so there is nothing to draw and nothing lost.
-        let Some(rect) = rect else {
+        let Some((cell, look)) = editing else {
             return;
         };
 
         let id = egui::Id::new("calx-cell-editor");
-        let font = egui::FontId::proportional((13.0 * zoom) as f32);
-        let plain = ui.visuals().text_color();
-        let mut layouter = |ui: &egui::Ui, text: &dyn egui::TextBuffer, wrap: f32| {
-            let mut job = editor::highlight(text.as_str(), font.clone(), plain);
+        let font = cell_font(&look, zoom);
+        let ink = look.text.map_or(egui::Color32::BLACK, of_rgb);
+        let paper = look.fill.map_or(egui::Color32::WHITE, of_rgb);
+
+        // How much room the text wants, and then how tall it is at the width it
+        // is going to get. Both are needed before anything is drawn: the
+        // background has to go down before the widget, or it covers it.
+        let measure = |ui: &egui::Ui, text: &str, wrap: f32, align: egui::Align| {
+            let mut job = editor::highlight(text, font.clone(), ink);
             job.wrap.max_width = wrap;
+            job.halign = align;
+            ui.fonts_mut(|f| f.layout_job(job)).size()
+        };
+
+        // The text's inset inside the box, and the room a caret sitting after
+        // the last character needs so that it is not drawn on the border.
+        const PAD: f32 = 2.0;
+        const TRAIL: f32 = 6.0;
+
+        let natural = measure(ui, &open.text, f32::INFINITY, egui::Align::LEFT).x;
+        let widest = (limit.right() - cell.left()).max(cell.width());
+        let width = (natural + PAD * 2.0 + TRAIL).clamp(cell.width(), widest);
+
+        // Alignment survives as long as the text fits: a number does not jump
+        // to the left of its cell because somebody pressed F2 on it. Once the
+        // box has to grow there is nothing to align against any more, and the
+        // text is anchored where it is being typed.
+        let grown = width > cell.width() + 0.5;
+        let align = if grown {
+            egui::Align::LEFT
+        } else {
+            editing_align(&look, &open.text)
+        };
+
+        let text_size = measure(ui, &open.text, width - PAD * 2.0, align);
+        let height = text_size
+            .y
+            .max(cell.height())
+            .min((limit.bottom() - cell.top()).max(cell.height()));
+
+        // Where the cell's text sat, so that it does not shift when the caret
+        // arrives. Text too tall for the row starts at the top instead and
+        // grows downward over the rows below, which is where the extra lines of
+        // an Alt+Enter entry go.
+        let slack = (cell.height() - text_size.y).max(0.0);
+        let top = cell.top()
+            + match look.vertical {
+                VAlign::Center => slack / 2.0,
+                VAlign::Bottom => slack,
+                _ => 0.0,
+            };
+
+        let outline = egui::Rect::from_min_size(cell.min, egui::vec2(width, height));
+        let painter = ui.painter().with_clip_rect(limit);
+        painter.rect_filled(outline, 0.0, paper);
+        painter.rect_stroke(
+            outline,
+            0.0,
+            egui::Stroke::new(2.0, accent),
+            egui::StrokeKind::Inside,
+        );
+        self.editor_box = Some(outline);
+
+        let mut layouter = |ui: &egui::Ui, text: &dyn egui::TextBuffer, wrap: f32| {
+            let mut job = editor::highlight(text.as_str(), font.clone(), ink);
+            job.wrap.max_width = wrap;
+            job.halign = align;
             ui.fonts_mut(|f| f.layout_job(job))
         };
 
         // Multiline, but Enter still commits: the editor's own return key is
-        // Alt+Enter, which is how Excel breaks a line inside a cell. The
-        // child gets room below the cell so added lines grow downward over
-        // the grid instead of being clipped at the first row boundary.
+        // Alt+Enter, which is how Excel breaks a line inside a cell. The room
+        // runs to the bottom of the grid so added lines grow downward instead
+        // of being clipped at the first row boundary.
         let room = egui::Rect::from_min_max(
-            rect.min - egui::vec2(1.0, 1.0),
-            egui::pos2(rect.max.x + 1.0, ui.max_rect().bottom()),
+            egui::pos2(cell.left() + PAD, top),
+            egui::pos2(cell.left() + width - PAD, limit.bottom()),
         );
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(room));
         let output = egui::TextEdit::multiline(&mut open.text)
             .id(id)
-            .margin(egui::Margin::symmetric(2, 0))
+            .frame(egui::Frame::NONE)
+            .margin(egui::Margin::ZERO)
             .layouter(&mut layouter)
-            .desired_width(rect.width().max(60.0))
+            .desired_width(room.width())
             .desired_rows(1)
+            .horizontal_align(align)
             .lock_focus(false)
             .return_key(Some(egui::KeyboardShortcut::new(
                 egui::Modifiers::ALT,
@@ -758,12 +886,25 @@ impl GridView {
 
         if open.fresh {
             output.response.request_focus();
-            // The caret belongs after what was seeded, not before it.
+            let at = match open.caret {
+                // After what was seeded, which is where typing and F2 leave it.
+                editor::Caret::End => egui::text::CCursor::new(open.text.chars().count()),
+                // Under the double click: the point of clicking into a word is
+                // to correct it, not to retype the entry from the end.
+                //
+                // The galley's own left edge comes into it because a galley
+                // that is not left-aligned starts at a negative x — the same
+                // correction the widget makes when *it* turns a click into a
+                // caret, and without it the caret misses by the slack in a
+                // right-aligned cell.
+                editor::Caret::At(pos) => output.galley.cursor_from_pos(
+                    pos - output.galley_pos + egui::vec2(output.galley.rect.left(), 0.0),
+                ),
+            };
             let mut state = output.state.clone();
-            let end = egui::text::CCursor::new(open.text.chars().count());
             state
                 .cursor
-                .set_char_range(Some(egui::text::CCursorRange::one(end)));
+                .set_char_range(Some(egui::text::CCursorRange::one(at)));
             state.store(ui.ctx(), id);
             open.fresh = false;
         }
@@ -1588,7 +1729,7 @@ impl GridView {
                 && pos.is_some_and(|pos| body.contains(pos))
             {
                 self.drag = None;
-                self.open_editor(book, Mode::Edit);
+                self.open_editor(book, Mode::Edit, pos);
                 self.layout = Some(cached);
                 return;
             }
@@ -1634,11 +1775,14 @@ impl GridView {
         // drag there begins one whose release has already happened.
         if let Some(pos) = response.interact_pointer_pos() {
             // A click inside the open editor is the user placing the caret, not
-            // leaving the cell.
+            // leaving the cell. The box, not the cell: the part of it hanging
+            // over the next column is still the text being edited, and
+            // committing from a click on your own second word would be a
+            // strange way to lose an entry.
             let inside_editor = self
                 .editor
                 .as_ref()
-                .and_then(|open| cell_rect(layout, &panes, open.at))
+                .and(self.editor_box)
                 .is_some_and(|rect| rect.expand(2.0).contains(pos));
             let (primary, secondary) = ui.input(|i| {
                 (
@@ -2336,14 +2480,20 @@ impl GridView {
     }
 
     /// Opens the editor on the cursor cell.
-    fn open_editor(&mut self, book: &Workbook, mode: Mode) {
+    ///
+    /// `pointer` is where the gesture that opened it landed, when it was a
+    /// gesture: a double click puts the caret in the text it clicked, and F2
+    /// puts it at the end.
+    fn open_editor(&mut self, book: &Workbook, mode: Mode, pointer: Option<egui::Pos2>) {
         if self.editor.is_some() {
             return;
         }
         let at = self.selection.cursor();
-        self.editor = Some(match mode {
-            Mode::Edit => Editor::editing(at, super::source_text(book, self.sheet_index, at)),
-            Mode::Enter => Editor::typing(at, String::new()),
+        let existing = || super::source_text(book, self.sheet_index, at);
+        self.editor = Some(match (mode, pointer) {
+            (Mode::Edit, Some(pos)) => Editor::editing_at(at, existing(), pos),
+            (Mode::Edit, None) => Editor::editing(at, existing()),
+            (Mode::Enter, _) => Editor::typing(at, String::new()),
         });
     }
 
@@ -2699,9 +2849,9 @@ impl GridView {
                     self.actions.push(Action::CancelClipboard);
                 }
             }
-            egui::Key::F2 => self.open_editor(book, Mode::Edit),
+            egui::Key::F2 => self.open_editor(book, Mode::Edit, None),
             // Backspace opens an editor on an emptied cell; Delete just empties.
-            egui::Key::Backspace => self.open_editor(book, Mode::Enter),
+            egui::Key::Backspace => self.open_editor(book, Mode::Enter, None),
             egui::Key::Delete => self.actions.push(Action::Clear),
             egui::Key::Z if modifiers.ctrl => self.actions.push(if modifiers.shift {
                 Action::Redo
@@ -3682,6 +3832,171 @@ mod tests {
         let editor = view.editor.as_ref().expect("the cell opened");
         assert_eq!(editor.at, at);
         assert!(view.drag.is_none(), "the sweep does not outlive the pair");
+    }
+
+    /// Puts text in a cell and gives back its address.
+    fn wrote(book: &mut Workbook, a1: &str, text: &str) -> CellRef {
+        let id = book.strings.intern(text);
+        let at = CellRef::from_a1(a1).expect("test address");
+        book.sheet_mut(0).expect("a sheet").set(
+            at,
+            ss_model::Cell {
+                value: ss_model::CellValue::Text(id),
+                ..Default::default()
+            },
+        );
+        at
+    }
+
+    /// Double clicks a cell open and returns the editor's box.
+    fn open_at(
+        view: &mut GridView,
+        book: &mut Workbook,
+        ctx: &egui::Context,
+        at: CellRef,
+    ) -> egui::Rect {
+        frame(view, book, vec![], ctx);
+        let pos = cell_of(view, at);
+        for _ in 0..2 {
+            frame(view, book, vec![press(pos, true)], ctx);
+            frame(view, book, vec![press(pos, false)], ctx);
+        }
+        frame(view, book, vec![], ctx);
+        view.editor_box.expect("the editor was drawn")
+    }
+
+    #[test]
+    fn a_narrow_column_gets_an_editor_wide_enough_to_read() {
+        // A two-character column is an ordinary thing to have, and an editor
+        // clipped to one wraps every second character. Excel grows the box
+        // over its neighbours instead.
+        let ctx = context();
+        let mut book = Workbook::blank();
+        let mut view = GridView::default();
+        let at = wrote(&mut book, "B2", "a reasonably long sentence");
+        book.sheet_mut(0)
+            .expect("a sheet")
+            .column_widths
+            .insert(1, 2.0);
+
+        let box_rect = open_at(&mut view, &mut book, &ctx, at);
+        let cell = {
+            let (_, _, layout) = view.layout.as_ref().expect("laid out");
+            layout.cols.size(1) as f32
+        };
+        assert!(
+            box_rect.width() > cell * 3.0,
+            "the box grew past the column: {} against {cell}",
+            box_rect.width()
+        );
+        assert!(
+            box_rect.height() < 40.0,
+            "and stayed one line rather than wrapping inside the column"
+        );
+    }
+
+    #[test]
+    fn the_editor_stops_at_the_edge_of_the_grid_and_wraps_downward() {
+        let ctx = context();
+        let mut book = Workbook::blank();
+        let mut view = GridView::default();
+        let at = wrote(&mut book, "A1", &"long ".repeat(200));
+
+        let box_rect = open_at(&mut view, &mut book, &ctx, at);
+        let (grid, row) = {
+            let (_, _, layout) = view.layout.as_ref().expect("laid out");
+            (1000.0 - SCROLLBAR, layout.rows.size(0) as f32)
+        };
+        assert!(
+            box_rect.right() <= grid + 0.5,
+            "the box never runs off the grid: {}",
+            box_rect.right()
+        );
+        assert!(
+            box_rect.height() > row * 2.0,
+            "text that cannot fit across wraps and grows downward"
+        );
+    }
+
+    #[test]
+    fn a_double_click_leaves_the_caret_where_it_landed() {
+        // Clicking into the middle of a word is a request to fix that word.
+        // Landing the caret at the end of the text instead turns every
+        // correction into a retype.
+        let ctx = context();
+        let mut book = Workbook::blank();
+        let mut view = GridView::default();
+        let at = wrote(&mut book, "A1", "abcdefghij");
+        open_at(&mut view, &mut book, &ctx, at);
+
+        let state = egui::TextEdit::load_state(&ctx, egui::Id::new("calx-cell-editor"))
+            .expect("the editor stored its state");
+        let range = state.cursor.char_range().expect("a caret");
+        assert!(
+            range.primary.index.0 > 0 && range.primary.index.0 < 10,
+            "the caret landed mid-text, not at either end: {}",
+            range.primary.index.0
+        );
+    }
+
+    #[test]
+    fn f2_leaves_the_caret_at_the_end() {
+        let ctx = context();
+        let mut book = Workbook::blank();
+        let mut view = GridView::default();
+        wrote(&mut book, "A1", "abcdefghij");
+        frame(&mut view, &mut book, vec![], &ctx);
+        frame(&mut view, &mut book, vec![plain(egui::Key::F2)], &ctx);
+        frame(&mut view, &mut book, vec![], &ctx);
+
+        let state = egui::TextEdit::load_state(&ctx, egui::Id::new("calx-cell-editor"))
+            .expect("the editor stored its state");
+        let range = state.cursor.char_range().expect("a caret");
+        assert_eq!(range.primary.index.0, 10);
+    }
+
+    #[test]
+    fn the_editor_keeps_the_alignment_the_cell_was_showing() {
+        // Nothing should move when editing starts. A right-aligned number that
+        // jumps to the left of its cell on F2 is the sort of thing that makes a
+        // clone feel like a toy.
+        let mut look = super::super::CellLook::default();
+        assert_eq!(editing_align(&look, "hello"), egui::Align::LEFT);
+        assert_eq!(
+            editing_align(&look, "1234"),
+            egui::Align::RIGHT,
+            "General means numbers right"
+        );
+        assert_eq!(
+            editing_align(&look, "=1+1"),
+            egui::Align::LEFT,
+            "a formula reads from its equals sign"
+        );
+        look.horizontal = HAlign::Right;
+        assert_eq!(editing_align(&look, "hello"), egui::Align::RIGHT);
+        look.horizontal = HAlign::Center;
+        assert_eq!(editing_align(&look, "1234"), egui::Align::Center);
+    }
+
+    #[test]
+    fn a_click_on_the_overhanging_part_of_the_editor_stays_in_the_editor() {
+        // The box hangs over the next column. A click there is the user
+        // placing the caret in their own text, and committing instead would
+        // be a strange way to lose an entry.
+        let ctx = context();
+        let mut book = Workbook::blank();
+        let mut view = GridView::default();
+        let at = wrote(&mut book, "A1", "a reasonably long sentence");
+        let box_rect = open_at(&mut view, &mut book, &ctx, at);
+
+        let over = egui::pos2(box_rect.right() - 4.0, box_rect.center().y);
+        assert!(
+            over.x > cell_of(&view, at).x + 32.0,
+            "the test is clicking past the first column"
+        );
+        frame(&mut view, &mut book, vec![press(over, true)], &ctx);
+        assert!(view.editor.is_some(), "the editor is still open");
+        assert_eq!(view.selection.cursor(), at, "and still on its own cell");
     }
 
     #[test]

@@ -828,6 +828,11 @@ pub struct GridView {
     /// Set by the application on copy, dismissed by Escape, any edit, or the
     /// paste that spends a cut.
     pub marquee: Option<(usize, CellRange)>,
+    /// Where the open editor was drawn last frame, which is not its cell: it
+    /// grows over the neighbours to hold what is being typed. Kept so that a
+    /// click in the part hanging over column D counts as a click in the
+    /// editor rather than a click on D.
+    pub(crate) editor_box: Option<egui::Rect>,
 }
 
 /// What the status bar says about the selection.
@@ -964,6 +969,7 @@ impl Default for GridView {
             summarized: None,
             textures: picture::Textures::default(),
             marquee: None,
+            editor_box: None,
         }
     }
 }

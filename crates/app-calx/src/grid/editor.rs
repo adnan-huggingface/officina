@@ -19,6 +19,22 @@ pub enum Mode {
     Edit,
 }
 
+/// Where the caret goes on the frame the editor opens.
+///
+/// A double click is a request to edit *there* — the word you clicked, not the
+/// cell in general — and landing the caret at the end of the text instead is
+/// the difference between correcting a typo and retyping the entry. The
+/// position is in screen coordinates because it is a pointer position; it can
+/// only be turned into an offset in the text once the text has been laid out,
+/// which is a frame later and inside the painter.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Caret {
+    /// After everything, which is where typing and F2 leave it.
+    End,
+    /// At the character under this point.
+    At(egui::Pos2),
+}
+
 #[derive(Debug, Clone)]
 pub struct Editor {
     pub at: CellRef,
@@ -26,6 +42,8 @@ pub struct Editor {
     pub mode: Mode,
     /// Set for the frame the editor opens on, so focus can be claimed once.
     pub fresh: bool,
+    /// Where the caret should land on that frame.
+    pub caret: Caret,
     /// The reference the mouse or the arrow keys are writing, while they are.
     pub pointing: Option<Pointing>,
 }
@@ -56,6 +74,7 @@ impl Editor {
             text: seed,
             mode: Mode::Enter,
             fresh: true,
+            caret: Caret::End,
             pointing: None,
         }
     }
@@ -66,7 +85,16 @@ impl Editor {
             text: existing,
             mode: Mode::Edit,
             fresh: true,
+            caret: Caret::End,
             pointing: None,
+        }
+    }
+
+    /// The same, opened by a double click, which also says where in the text.
+    pub fn editing_at(at: CellRef, existing: String, pointer: egui::Pos2) -> Self {
+        Editor {
+            caret: Caret::At(pointer),
+            ..Editor::editing(at, existing)
         }
     }
 

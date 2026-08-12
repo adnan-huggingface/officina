@@ -344,3 +344,20 @@ anything); no function autocomplete; grouped sheet editing absent.
     axes, where blanks make no difference to the outcome, and refuses outright
     above 16M cells in the band, which is what a stray value out at column XFD
     would otherwise cost.
+
+22. **The in-cell editor did not look like a cell.** Double-clicking swapped the
+    cell's text for a rounded widget in a fixed 13-pixel font with its own
+    background and a focus ring, top-aligned regardless of the cell, and clipped
+    to the column — so editing anything in a narrow column wrapped every second
+    character into a growing stack. The caret always went to the end of the
+    text, which turns fixing a typo into retyping the entry.
+
+    Rebuilt to be the cell, still being written: the cell's font, size, weight,
+    colour and fill, its horizontal alignment (kept while the text still fits,
+    so a number does not jump left on F2), and its vertical alignment, so
+    nothing moves on screen when editing starts. The box grows rightwards over
+    its neighbours as the text outgrows the column and only wraps at the edge of
+    the grid, the way Excel's does, painting over what it covers rather than
+    mixing with it; a click on the overhanging part stays in the editor. A
+    double click leaves the caret in the word it landed on. A merged cell is
+    edited over the whole merge.
