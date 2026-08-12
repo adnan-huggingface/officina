@@ -52,29 +52,32 @@ pub trait DocumentApp {
 /// Boots a window for `app` and runs until the user closes it.
 pub fn run(app: impl DocumentApp + 'static) -> eframe::Result<()> {
     let id = app.id();
+    let remembered = Placement::load(id);
+    let placement = remembered.unwrap_or_default();
 
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title(id.display)
-            // Modest, and *logical*: at 150% scaling a "1440 x 900" window is
-            // 2160 x 1350 physical pixels, which is taller than the screen it
-            // was meant to fit on — and a window taller than the screen hides
-            // its own bottom edge, which is where a spreadsheet keeps its
-            // sheet tabs.
-            // Also the size the window returns to when it is un-maximized.
-            .with_inner_size([1280.0, 800.0])
-            .with_min_inner_size([640.0, 400.0]),
-        // A document window opens filling the screen, because a spreadsheet
-        // that shows twelve columns is a spreadsheet you have to scroll to
-        // read at all — but *not* by asking for it here. Alongside an explicit
-        // inner size, `with_maximized(true)` gives a window that is marked
-        // maximized and sized as asked: 1280 by 800 on a screen half as big
-        // again. Which would merely be a smaller window than intended, except
-        // that the flag is already set, so the command to maximize it
-        // afterwards is a no-op — winit sees nothing to change — and the
-        // window stays small with its resize border, and the desktop behind
-        // it, showing down the side of the page. The shell asks after the
-        // window exists instead.
+        viewport: {
+            let mut viewport = egui::ViewportBuilder::default()
+                .with_title(id.display)
+                .with_inner_size(placement.size)
+                .with_min_inner_size([640.0, 400.0]);
+            // Only where the window was left, and only when it was left
+            // somewhere: a window with no remembered position is placed by the
+            // window manager, which knows about the monitors and the taskbar.
+            if let Some(pos) = placement.pos {
+                viewport = viewport.with_position(pos);
+            }
+            viewport
+        },
+        // Nothing here asks for a maximized window, and that is deliberate.
+        // Alongside an explicit inner size, `with_maximized(true)` gives a
+        // window that is *marked* maximized and *sized* as asked: 1280 by 800
+        // on a screen half as big again. Which would merely be a smaller
+        // window than intended, except that the flag is already set, so the
+        // command to maximize it afterwards is a no-op — winit sees nothing to
+        // change — and the window stays small with its resize border, and the
+        // desktop behind it, showing down the side of the page. The shell asks
+        // after the window exists instead.
         ..Default::default()
     };
 
@@ -86,11 +89,143 @@ pub fn run(app: impl DocumentApp + 'static) -> eframe::Result<()> {
             theme(&cc.egui_ctx);
             Ok(Box::new(Host {
                 app,
-                maximize_for: 60,
+                // A document window fills the screen the *first* time it opens,
+                // because a spreadsheet showing twelve columns is one you have
+                // to scroll to read at all. After that it opens how it was
+                // left: a window that reclaims the whole screen every morning
+                // is not being helpful, it is overruling a decision the user
+                // already made.
+                maximize_for: if placement.maximized { 60 } else { 0 },
+                id,
+                placement,
                 title: id.display.to_string(),
             }))
         }),
     )
+}
+
+/// Where the window was when it was last closed.
+///
+/// Kept by the shell because eframe's own window persistence is part of a
+/// feature this workspace does not build, and it is four numbers in a file.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Placement {
+    maximized: bool,
+    /// The size to open at, and to return to when un-maximized — never the
+    /// size of a maximized window, which is the screen's and not a choice
+    /// anybody made.
+    size: [f32; 2],
+    pos: Option<[f32; 2]>,
+}
+
+impl Default for Placement {
+    /// A first run: modest, *logical* pixels, and maximized.
+    ///
+    /// At 150% scaling a "1440 x 900" window is 2160 x 1350 physical pixels,
+    /// which is taller than the screen it was meant to fit on — and a window
+    /// taller than the screen hides its own bottom edge, which is where a
+    /// spreadsheet keeps its sheet tabs. This is the size the window returns
+    /// to when the user un-maximizes it.
+    fn default() -> Self {
+        Placement {
+            maximized: true,
+            size: [1280.0, 800.0],
+            pos: None,
+        }
+    }
+}
+
+impl Placement {
+    fn file(app: AppId) -> Option<std::path::PathBuf> {
+        crate::paths::config_dir_path(app)
+            .ok()
+            .map(|dir| dir.join("window"))
+    }
+
+    fn load(app: AppId) -> Option<Self> {
+        Self::parse(&std::fs::read_to_string(Self::file(app)?).ok()?)
+    }
+
+    /// Best-effort, and silent about it: a window that will not remember where
+    /// it was is a small annoyance, and a dialog about it on startup is a
+    /// larger one.
+    fn store(&self, app: AppId) {
+        let Some(path) = Self::file(app) else { return };
+        if crate::paths::config_dir(app).is_err() {
+            return;
+        }
+        let _ = std::fs::write(path, self.text());
+    }
+
+    fn text(&self) -> String {
+        let mut out = format!(
+            "maximized {}\nsize {} {}\n",
+            u8::from(self.maximized),
+            self.size[0],
+            self.size[1]
+        );
+        if let Some([x, y]) = self.pos {
+            out.push_str(&format!("pos {x} {y}\n"));
+        }
+        out
+    }
+
+    /// Anything unreadable is treated as nothing remembered, which lands on the
+    /// defaults. A half-written file after a power cut should not be able to
+    /// open the window somewhere it cannot be seen.
+    fn parse(text: &str) -> Option<Self> {
+        let mut placement = Placement {
+            maximized: false,
+            ..Placement::default()
+        };
+        let mut sized = false;
+        for line in text.lines() {
+            let mut words = line.split_whitespace();
+            let (key, a, b) = (words.next()?, words.next(), words.next());
+            let pair = || Some([a?.parse::<f32>().ok()?, b?.parse::<f32>().ok()?]);
+            match key {
+                "maximized" => placement.maximized = a? == "1",
+                "size" => {
+                    let size = pair()?;
+                    // A window narrower than the minimum, or wider than any
+                    // real screen, is a corrupt file rather than a preference.
+                    if !(640.0..=32_768.0).contains(&size[0])
+                        || !(400.0..=32_768.0).contains(&size[1])
+                    {
+                        return None;
+                    }
+                    placement.size = size;
+                    sized = true;
+                }
+                "pos" => placement.pos = Some(pair()?),
+                _ => {}
+            }
+        }
+        sized.then_some(placement)
+    }
+
+    /// The window as it is now, keeping the un-maximized size when it is
+    /// maximized: that is the size it will be restored to, and the screen's
+    /// size is not a preference.
+    fn of(ctx: &egui::Context, restore: Placement) -> Self {
+        ctx.input(|i| {
+            let view = i.viewport();
+            let maximized = view.maximized.unwrap_or(false);
+            Placement {
+                maximized,
+                size: match (maximized, view.inner_rect) {
+                    (false, Some(rect)) if rect.width() >= 640.0 && rect.height() >= 400.0 => {
+                        [rect.width(), rect.height()]
+                    }
+                    _ => restore.size,
+                },
+                pos: match (maximized, view.outer_rect) {
+                    (false, Some(rect)) => Some([rect.min.x, rect.min.y]),
+                    _ => restore.pos,
+                },
+            }
+        })
+    }
 }
 
 /// Height of the strip below the document: one row of tabs and one of state.
@@ -173,6 +308,12 @@ struct Host<A: DocumentApp> {
     /// smaller than intended is a shame, and one that fights the user for a
     /// minute over the size they chose is a fault.
     maximize_for: u8,
+    /// Which app's config directory the window geometry belongs in.
+    id: AppId,
+    /// Where the window is, kept up to date so that it can be written down
+    /// when the window closes — and standing in, while the window is
+    /// maximized, for the size and place it will be restored to.
+    placement: Placement,
     /// The last title sent to the window manager.
     ///
     /// Remembered because the title is pushed with a viewport command rather
@@ -210,8 +351,19 @@ impl<A: DocumentApp> eframe::App for Host<A> {
             }
         }
 
-        if ctx.input(|i| i.viewport().close_requested()) && !self.app.close_requested() {
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        // Watched every frame rather than read at the end: by the time the
+        // window is closing it may already have been unmapped, and a window
+        // that is gone reports nothing about where it was.
+        if self.maximize_for == 0 {
+            self.placement = Placement::of(&ctx, self.placement);
+        }
+
+        if ctx.input(|i| i.viewport().close_requested()) {
+            if self.app.close_requested() {
+                self.placement.store(self.id);
+            } else {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            }
         }
 
         let id = self.app.id();
@@ -262,6 +414,69 @@ impl<A: DocumentApp> eframe::App for Host<A> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_window_is_written_down_and_read_back_the_same() {
+        let left = Placement {
+            maximized: false,
+            size: [1024.0, 768.0],
+            pos: Some([120.0, -8.0]),
+        };
+        assert_eq!(Placement::parse(&left.text()), Some(left));
+
+        let full = Placement {
+            maximized: true,
+            size: [1280.0, 800.0],
+            pos: None,
+        };
+        assert_eq!(Placement::parse(&full.text()), Some(full));
+    }
+
+    #[test]
+    fn a_damaged_file_is_no_memory_rather_than_a_window_nobody_can_see() {
+        // Anything unparseable lands on the defaults, which are a window the
+        // window manager places. The sizes are the ones that would open a
+        // window too small to use or larger than any screen.
+        for text in [
+            "",
+            "maximized 1\n",
+            "size 40 30\n",
+            "size 99999 99999\n",
+            "size wide tall\n",
+            "size 1024\n",
+        ] {
+            assert_eq!(Placement::parse(text), None, "{text:?} should not parse");
+        }
+    }
+
+    #[test]
+    fn the_size_kept_while_maximized_is_the_one_to_come_back_to() {
+        // The screen's size is not a preference. A window maximized at close
+        // has to reopen maximized *and* remember what un-maximizing means.
+        let ctx = egui::Context::default();
+        let restore = Placement {
+            maximized: false,
+            size: [1024.0, 768.0],
+            pos: Some([64.0, 64.0]),
+        };
+        let mut out = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1920.0, 1080.0),
+                )),
+                ..Default::default()
+            },
+            |_ui| {},
+        );
+        out.textures_delta.clear();
+        // No window manager here, so the viewport reports nothing about being
+        // maximized: the answer must still be the size handed in, never a
+        // guess made from the screen.
+        let now = Placement::of(&ctx, restore);
+        assert_eq!(now.size, restore.size);
+        assert_eq!(now.pos, restore.pos);
+    }
 
     /// The bug this whole arrangement exists to prevent: a document surface
     /// that takes the whole window and leaves the sheet tabs and the status

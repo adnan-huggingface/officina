@@ -376,3 +376,16 @@ anything); no function autocomplete; grouped sheet editing absent.
     about a second; and the window is cleared to the chrome colour instead of
     eframe's near-black, so the worst any uncovered sliver — during a resize,
     say — can look like is a seam.
+
+24. **Then it opened maximized every time.** Fixing the maximize is only half
+    the answer: a window that reclaims the whole screen every morning is not
+    being helpful, it is overruling a decision the user already made. The shell
+    now remembers where the window was — maximized or not, the size to come
+    back to, and the position — in `~/.config/<app>/window`, and fills the
+    screen only on a first run, when there is nothing to remember.
+
+    The size kept while maximized is the *un-maximized* one, because the
+    screen's size is not a preference: a window maximized at close reopens
+    maximized and still knows what un-maximizing means. A file that cannot be
+    read, or that names a window too small to use or larger than any screen,
+    counts as nothing remembered rather than as a window nobody can find.
