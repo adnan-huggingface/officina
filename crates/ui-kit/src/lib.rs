@@ -8,10 +8,12 @@
 
 pub mod fonts;
 pub mod paths;
+pub mod recent;
 pub mod shell;
 
 pub use eframe::{self, egui};
 pub use fonts::Family;
+pub use recent::Recent;
 pub use shell::{run, DocumentApp};
 
 /// Identity of a host application, used for window titles and config paths.

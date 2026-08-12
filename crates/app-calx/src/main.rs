@@ -13,7 +13,7 @@ use ss_formula::cond;
 use ss_formula::edit::{self, Change, Geometry, Patch};
 use ss_model::style::{BorderStyle, Pattern, Underline, VAlign};
 use ss_model::{Axis, CellRange, CellRef, Color, Fill, HAlign, Shift, Workbook};
-use ui_kit::{egui, paths, AppId, DocumentApp, CALX};
+use ui_kit::{egui, paths, AppId, DocumentApp, Recent, CALX};
 
 use calx::grid::{self, Action, BorderPreset, Editor, Format, GridView, Mode};
 use calx::icons::{self, Icon};
@@ -61,6 +61,8 @@ struct Calx {
     /// keeping the two apart is an invitation for them to drift.
     doc: ss_xlsx::XlsxDocument,
     path: Option<PathBuf>,
+    /// The files opened and saved before this one, most recent first.
+    recent: Recent,
     grid: GridView,
     status: String,
     /// Changes that undo what has been done, most recent last.
@@ -248,6 +250,7 @@ impl Calx {
             config_dir: paths::config_dir(CALX).map_err(|e| e.to_string()),
             doc: blank(),
             path: None,
+            recent: Recent::load(CALX),
             grid: GridView::default(),
             status: "Ready".to_string(),
             undo: Vec::new(),
@@ -280,6 +283,7 @@ impl Calx {
                 let cells: usize = self.doc.workbook.sheets.iter().map(|s| s.cells.len()).sum();
                 self.status = format!("{} sheet(s), {cells} cells", self.doc.workbook.sheets.len());
                 self.path = Some(path.to_path_buf());
+                self.recent.remember(CALX, path);
                 self.reset();
                 // The sheet the workbook was saved on, at the zoom it was saved
                 // at. Opening every file on sheet one at 100% is opening a
@@ -316,6 +320,10 @@ impl Calx {
             }
         };
         self.path = None;
+        // Listed even though it is not the document's own path: the list is of
+        // files the user opened, and a read-only workbook is one they will want
+        // to get back to as much as any other.
+        self.recent.remember(CALX, path);
         self.reset();
         self.recalculate();
         // Opened but not saveable in place: the same state a csv import leaves,
@@ -386,6 +394,7 @@ impl Calx {
                     }
                 };
                 self.path = None;
+                self.recent.remember(CALX, path);
                 self.reset();
                 self.recalculate();
                 // Imported, not opened: the user has an unsaved workbook.
@@ -581,7 +590,7 @@ impl Calx {
             .add_filter("Excel workbook", &["xlsx"])
             .add_filter("Comma-separated values", &["csv"])
             .add_filter("Tab-separated values", &["tsv", "txt"]);
-        if let Some(current) = self.path.as_ref().and_then(|p| p.parent()) {
+        if let Some(current) = self.start_directory() {
             dialog = dialog.set_directory(current);
         }
         if let Some(name) = self.path.as_ref().and_then(|p| p.file_name()) {
@@ -608,6 +617,7 @@ impl Calx {
         match self.doc.save(path) {
             Ok(()) => {
                 self.path = Some(path.to_path_buf());
+                self.recent.remember(CALX, path);
                 self.edited = false;
                 self.status = format!("Saved {}", name_of(path));
             }
@@ -626,12 +636,34 @@ impl Calx {
             .add_filter("Excel workbook", &["xlsx", "xlsm"])
             .add_filter("Excel 97-2003 workbook", &["xls", "xlt"])
             .add_filter("Delimited text", &["csv", "tsv", "txt"]);
-        if let Some(current) = self.path.as_ref().and_then(|p| p.parent()) {
+        if let Some(current) = self.start_directory() {
             dialog = dialog.set_directory(current);
         }
         if let Some(path) = dialog.pick_file() {
             self.guard(Pending::Open(path));
         }
+    }
+
+    /// Where a file dialog should start: this document's own directory, or —
+    /// for a workbook that has no file yet — wherever the last one came from,
+    /// which beats whatever the process happens to be running in.
+    fn start_directory(&self) -> Option<&Path> {
+        match self.path.as_deref().and_then(Path::parent) {
+            Some(dir) => Some(dir),
+            None => self.recent.directory(),
+        }
+    }
+
+    /// Opens a file from the recent list, dropping the entry if it has since
+    /// been moved or deleted — a menu that offers a file nobody has is worse
+    /// than one that is a line shorter.
+    fn open_recent(&mut self, path: PathBuf) {
+        if !path.exists() {
+            self.status = format!("{} is no longer there", path.display());
+            self.recent.forget(CALX, &path);
+            return;
+        }
+        self.guard(Pending::Open(path));
     }
 
     /// Runs `what` now, or holds it behind the unsaved-changes prompt.
@@ -2164,6 +2196,8 @@ impl Calx {
         let mut names_dialog = false;
         let mut validation_dialog = false;
         let mut cond_dialog = false;
+        let mut reopen: Option<PathBuf> = None;
+        let mut forget_all = false;
 
         ui.horizontal(|ui| {
             if icons::button(ui, Icon::New, false, "New workbook (Ctrl+N)").clicked() {
@@ -2172,6 +2206,33 @@ impl Calx {
             if icons::button(ui, Icon::Open, false, "Open (Ctrl+O)").clicked() {
                 file = Some(Pending::Browse);
             }
+            // Excel's File ▸ Recent, next to Open because that is what it is: a
+            // shortcut past the file dialog for the handful of workbooks
+            // somebody actually works in.
+            ui.add_enabled_ui(!self.recent.is_empty(), |ui| {
+                ui.menu_button("Recent", |ui| {
+                    for (n, path) in self.recent.paths().iter().enumerate() {
+                        // Numbered so that the list is a place rather than an
+                        // order that shuffles under the pointer, and titled with
+                        // the full path because two directories can hold a
+                        // "budget.xlsx" and only one of them is the right one.
+                        let entry = ui
+                            .button(format!("{}  {}", n + 1, name_of(path)))
+                            .on_hover_text(path.display().to_string());
+                        if entry.clicked() {
+                            reopen = Some(path.clone());
+                            ui.close();
+                        }
+                    }
+                    ui.separator();
+                    if ui.button("Clear list").clicked() {
+                        forget_all = true;
+                        ui.close();
+                    }
+                })
+                .response
+                .on_hover_text("Files opened recently");
+            });
             ui.add_enabled_ui(self.edited || self.path.is_none(), |ui| {
                 save = icons::button(ui, Icon::Save, false, "Save (Ctrl+S)").clicked();
             });
@@ -2629,6 +2690,13 @@ impl Calx {
         }
         if let Some(what) = file {
             self.guard(what);
+        }
+        if let Some(path) = reopen {
+            self.open_recent(path);
+        }
+        if forget_all {
+            self.recent.clear(CALX);
+            self.status = "Recent file list cleared".to_string();
         }
     }
 

@@ -389,3 +389,23 @@ anything); no function autocomplete; grouped sheet editing absent.
     maximized and still knows what un-maximizing means. A file that cannot be
     read, or that names a window too small to use or larger than any screen,
     counts as nothing remembered rather than as a window nobody can find.
+
+25. **No file history.** The Open dialog was the only way back to a workbook,
+    which for anybody who works in the same handful of files every day is a
+    file browser between them and their work — and, with nothing remembered,
+    it opened in whatever directory the process happened to start in.
+
+    Calx now keeps the last ten files opened or saved, most recent first, in
+    `~/.config/calx/recent`, beside the window geometry: one path per line, a
+    list that can be read, edited, or deleted by hand. A `Recent` menu sits
+    next to Open, numbered so that entries are a place rather than an order
+    that shuffles under the pointer, each showing its full path on hover
+    because two directories can hold a `budget.xlsx`. Choosing one that has
+    since been moved or deleted says so and drops it from the list rather than
+    offering it again. The list also gives the file dialogs somewhere sensible
+    to start when the document has no directory of its own.
+
+    Imports and read-only opens are listed too — a `.csv` or a legacy `.xls`
+    is a file the user opened, even though neither becomes the document's own
+    path — while a csv *export* is not, since that is a copy sent elsewhere
+    rather than the workbook being worked in.
