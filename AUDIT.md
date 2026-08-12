@@ -324,3 +324,23 @@ wording. Noted, accepted for now: column autofit is estimated not measured;
 hide/resize caps at 4096 indices; one generic context menu for all regions;
 chart sheets unreachable from the tab strip (needs a chart-sheet view to mean
 anything); no function autocomplete; grouped sheet editing absent.
+
+## Reported after the fix pass
+
+21. **Select all, then sort, and the process dies.** The corner box selects
+    A1:XFD1048576, and a sort of it asked the store to lift out a band of every
+    column of every row at once — seventeen billion cells, which is not a slow
+    operation but an allocation failure. Two more of the same shape were sitting
+    next to it: Ctrl+A then Ctrl+C built a dense clip of the same size (and
+    overflowed the `u32` that sized it), and Ctrl+A then Delete asked every
+    address on the sheet whether it held anything, one at a time.
+
+    Fixed by trimming the range to the data before walking it, which is also
+    what Excel reports back: the Sort dialog now names the real range instead of
+    A1:XFD1048576. A range the user actually drew is left alone — copying ten
+    rows of which three hold anything still carries the seven blanks, because
+    pasting them is meant to clear what they land on — so only axes covering the
+    sheet end to end are trimmed (`Sheet::drawn_range`). Sort is trimmed on both
+    axes, where blanks make no difference to the outcome, and refuses outright
+    above 16M cells in the band, which is what a stray value out at column XFD
+    would otherwise cost.

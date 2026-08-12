@@ -126,7 +126,12 @@ impl Clip {
 /// Lifts a rectangle out of a sheet.
 pub fn copy(book: &Workbook, sheet: usize, range: CellRange) -> Option<Clip> {
     let source = book.sheet(sheet)?;
-    let mut cells = Vec::with_capacity((range.rows() * range.cols()) as usize);
+    // A clip is dense — every cell of the rectangle, blanks included, because
+    // pasting one has to clear what it lands on. That makes a whole-sheet
+    // selection a seventeen-billion-entry allocation, so a range covering an
+    // axis end to end is taken as what it describes: the data.
+    let range = source.drawn_range(range)?;
+    let mut cells = Vec::with_capacity((range.rows() as usize) * (range.cols() as usize));
     for row in range.start.row..=range.end.row {
         for col in range.start.col..=range.end.col {
             let at = CellRef::new(row, col);
@@ -675,6 +680,44 @@ mod tests {
 
     fn formula(book: &Workbook, a1: &str) -> Option<String> {
         Some(book.sheets[0].formula_at(at(a1))?.text.clone())
+    }
+
+    #[test]
+    fn copying_a_selection_that_covers_the_sheet_copies_the_data_in_it() {
+        // Not an optimization: a clip holds every cell of its rectangle, and
+        // the corner box selects seventeen billion of them.
+        let book = book_with(&[("B2", 1.0), ("C3", 2.0)]);
+        let everything = CellRange::new(
+            CellRef::new(0, 0),
+            CellRef::new(ss_model::cell::MAX_ROWS - 1, ss_model::cell::MAX_COLS - 1),
+        );
+        let clip = copy(&book, 0, everything).expect("copies");
+        assert_eq!(clip.origin, at("B2"));
+        assert_eq!((clip.rows, clip.cols), (2, 2));
+        assert_eq!(clip.cells.len(), 4);
+    }
+
+    #[test]
+    fn copying_a_column_keeps_the_column_and_trims_the_rows() {
+        let book = book_with(&[("B2", 1.0), ("B4", 2.0)]);
+        let whole_column = CellRange::new(
+            CellRef::new(0, 1),
+            CellRef::new(ss_model::cell::MAX_ROWS - 1, 1),
+        );
+        let clip = copy(&book, 0, whole_column).expect("copies");
+        assert_eq!(clip.origin, at("B2"));
+        assert_eq!((clip.rows, clip.cols), (3, 1), "B2:B4, blank row and all");
+    }
+
+    #[test]
+    fn a_range_drawn_around_blank_cells_still_carries_them() {
+        // The trim is only for ranges nobody drew cell by cell. Copying ten
+        // rows of which one holds anything and pasting them elsewhere is meant
+        // to clear the other nine, and a clip that forgot them would not.
+        let book = book_with(&[("A1", 1.0)]);
+        let clip = copy(&book, 0, range("A1", "B5")).expect("copies");
+        assert_eq!((clip.rows, clip.cols), (5, 2));
+        assert_eq!(clip.cells.len(), 10);
     }
 
     /// A1:A2 hold 3 and 4; A3 is `=A1*A2` with its answer cached.

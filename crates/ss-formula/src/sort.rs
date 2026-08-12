@@ -47,6 +47,17 @@ pub struct SortKey {
 /// select-all asking for a comparison key on a million empty rows.
 pub const MAX_SORT_ROWS: u32 = 1 << 20;
 
+/// The most cells a single sort will lift out of the store at once.
+///
+/// Reordering rows means holding the whole band — every column of every row
+/// that moves — in memory before any of it is written back, so the band's area
+/// is the operation's cost whether or not the cells in it hold anything. The
+/// data is normally a tight rectangle and the area is small, but one stray
+/// value out at column XFD stretches the used range across the sheet, and a
+/// sort of a few thousand rows becomes a request for a couple of gigabytes.
+/// Refusing is not much of an answer; aborting the process is a worse one.
+const MAX_SORT_CELLS: u64 = 1 << 24;
+
 /// Sorts the rows of `range` by `keys`.
 ///
 /// `header` keeps the first row where it is, which is what "my data has
@@ -68,8 +79,19 @@ pub fn sort(
     if model.merges.iter().any(|m| overlaps(*m, range)) {
         return Err("That range holds merged cells, which cannot be sorted".to_string());
     }
+    // Whatever was asked for, only the part of it that holds anything can
+    // change. Sorting the asked-for rectangle instead is not merely slower: a
+    // select-all is sixteen thousand columns by a million rows, and lifting
+    // that band out of the store to put it back in a different order asks for
+    // seventeen billion cells at once.
+    let Some(range) = clamped(model, range) else {
+        return Ok(Change::default());
+    };
     if range.rows() > MAX_SORT_ROWS {
         return Err("That is too many rows to sort at once".to_string());
+    }
+    if u64::from(range.rows()) * u64::from(range.cols()) > MAX_SORT_CELLS {
+        return Err("That is too much of the sheet to sort at once".to_string());
     }
 
     let first = range.start.row + u32::from(header);
@@ -275,6 +297,22 @@ fn overlaps(a: CellRange, b: CellRange) -> bool {
         && b.start.row <= a.end.row
         && a.start.col <= b.end.col
         && b.start.col <= a.end.col
+}
+
+/// `range` with everything that could not possibly hold anything trimmed off,
+/// or `None` when that leaves nothing at all.
+///
+/// Selecting the whole sheet and sorting is an ordinary thing to do, and it is
+/// how Excel is used on an export whose extent nobody knows. Excel answers it
+/// against the data rather than against the grid, and so must anything that
+/// walks a selection cell by cell: the difference between the two is a factor
+/// of ten thousand, which is the difference between an operation and a hang.
+///
+/// Trimming cannot change the outcome. Every row and column removed here is
+/// vacant along its whole length inside the range, so reordering it moves
+/// nothing, and a blank row sorts to the bottom — which is where it already is.
+pub fn clamped(sheet: &Sheet, range: CellRange) -> Option<CellRange> {
+    range.intersect(sheet.used_range()?)
 }
 
 /// The block of data around `at` — what Excel calls the current region.
@@ -635,6 +673,77 @@ mod tests {
         let column: Vec<String> = (1..=3).map(|r| shown(&book, &format!("A{r}"))).collect();
         assert_eq!(column, ["a", "b", ""]);
         assert_eq!(book.sheets[0].cells.len(), 2, "nothing was duplicated");
+    }
+
+    #[test]
+    fn selecting_the_whole_sheet_sorts_the_data_and_not_the_grid() {
+        // The bug this test exists for: clicking the corner box selects
+        // A1:XFD1048576, and sorting it asked the store for a band of
+        // seventeen billion cells, which is an allocation failure and a dead
+        // process rather than an error message.
+        let mut book = book();
+        for (row, name) in ["carol", "alice", "bob"].into_iter().enumerate() {
+            text(&mut book, &format!("A{}", row + 1), name);
+            put(
+                &mut book,
+                &format!("B{}", row + 1),
+                CellValue::Number(row as f64),
+            );
+        }
+
+        let everything = CellRange::new(
+            CellRef::new(0, 0),
+            CellRef::new(ss_model::cell::MAX_ROWS - 1, ss_model::cell::MAX_COLS - 1),
+        );
+        let change = sort(&mut book, 0, everything, &ascending(0), false).expect("sortable");
+        match change.patches.as_slice() {
+            [Patch::Permute {
+                order, cols, first, ..
+            }] => {
+                assert_eq!(*first, 0);
+                assert_eq!(*cols, (0, 1), "only the columns that hold anything");
+                assert_eq!(order.len(), 3, "and only the rows that do");
+            }
+            other => panic!("expected one small permutation, got {other:?}"),
+        }
+
+        apply(&mut book, change);
+        let column: Vec<String> = (1..=3).map(|r| shown(&book, &format!("A{r}"))).collect();
+        assert_eq!(column, ["alice", "bob", "carol"]);
+        assert_eq!(shown(&book, "B1"), "1", "the whole row still travelled");
+    }
+
+    #[test]
+    fn sorting_a_sheet_with_nothing_in_it_does_nothing() {
+        let mut book = book();
+        let everything = CellRange::new(
+            CellRef::new(0, 0),
+            CellRef::new(ss_model::cell::MAX_ROWS - 1, ss_model::cell::MAX_COLS - 1),
+        );
+        let change = sort(&mut book, 0, everything, &ascending(0), false).expect("sortable");
+        assert!(change.is_empty());
+    }
+
+    #[test]
+    fn a_band_too_wide_to_hold_is_refused_rather_than_attempted() {
+        // A single value out at the far edge stretches the used range across
+        // the sheet. Nothing can be done with a band that size, but saying so
+        // is an answer and running out of memory is not.
+        let mut book = book();
+        put(&mut book, "A1", CellValue::Number(2.0));
+        put(&mut book, "A2", CellValue::Number(1.0));
+        book.sheets[0].set(
+            CellRef::new(4000, ss_model::cell::MAX_COLS - 1),
+            Cell {
+                value: CellValue::Number(1.0),
+                ..Default::default()
+            },
+        );
+        let everything = CellRange::new(
+            CellRef::new(0, 0),
+            CellRef::new(ss_model::cell::MAX_ROWS - 1, ss_model::cell::MAX_COLS - 1),
+        );
+        assert!(sort(&mut book, 0, everything, &ascending(0), false).is_err());
     }
 
     #[test]

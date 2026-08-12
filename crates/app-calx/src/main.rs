@@ -1213,11 +1213,16 @@ impl Calx {
     /// standing in, which is what Excel does and what makes A→Z a one-click
     /// operation on a table rather than a way to scramble one column against
     /// its neighbours.
+    ///
+    /// Either way the answer is trimmed to the data. Whole rows, whole columns
+    /// and select-all are selections of a million cells that hold a hundred,
+    /// and everything downstream — the dialog's range, its column list, the
+    /// header guess, the status line — should be about the hundred.
     fn data_range(&self) -> Option<CellRange> {
         let sheet = self.doc.workbook.sheet(self.grid.sheet_index)?;
         let selected = self.grid.selection.active_range();
         if selected.rows() > 1 || selected.cols() > 1 {
-            return Some(selected);
+            return ss_formula::sort::clamped(sheet, selected);
         }
         Some(ss_formula::sort::region(
             sheet,

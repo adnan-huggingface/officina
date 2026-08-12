@@ -41,6 +41,33 @@ impl CellRange {
     pub fn cols(&self) -> u32 {
         self.end.col - self.start.col + 1
     }
+
+    /// Whether this range covers its axis end to end — a whole-column or
+    /// whole-row selection, or the corner box, which is both.
+    ///
+    /// Worth asking before walking a range cell by cell: a selection like this
+    /// is a million cells or sixteen thousand of them, and almost always
+    /// describes a handful.
+    pub fn spans_all_rows(&self) -> bool {
+        self.rows() == crate::cell::MAX_ROWS
+    }
+
+    pub fn spans_all_cols(&self) -> bool {
+        self.cols() == crate::cell::MAX_COLS
+    }
+
+    /// The rectangle both ranges cover, or `None` when they miss each other.
+    pub fn intersect(self, other: Self) -> Option<Self> {
+        let start = CellRef::new(
+            self.start.row.max(other.start.row),
+            self.start.col.max(other.start.col),
+        );
+        let end = CellRef::new(
+            self.end.row.min(other.end.row),
+            self.end.col.min(other.end.col),
+        );
+        (start.row <= end.row && start.col <= end.col).then_some(Self { start, end })
+    }
 }
 
 /// How a sheet was last being looked at.
@@ -221,6 +248,41 @@ impl Sheet {
             .get(&at.col)
             .copied()
             .unwrap_or(crate::StyleId::DEFAULT)
+    }
+
+    /// The box around everything the sheet holds, or `None` when it holds
+    /// nothing.
+    ///
+    /// The bound to trim a selection against before walking it: a range the
+    /// user drew with one click can name every cell on the sheet, and outside
+    /// this box there is nothing for any of them to do.
+    pub fn used_range(&self) -> Option<CellRange> {
+        let (start, end) = self.cells.used_range()?;
+        Some(CellRange { start, end })
+    }
+
+    /// `range` with each axis it covers end to end trimmed to the data.
+    ///
+    /// Bounded axes are left exactly as drawn, because there the blank cells
+    /// are part of what the user picked out — copying ten rows of which three
+    /// hold anything and pasting them elsewhere is meant to clear the other
+    /// seven. An axis spanning the whole sheet was never drawn cell by cell,
+    /// and Excel reads it as the data too.
+    pub fn drawn_range(&self, range: CellRange) -> Option<CellRange> {
+        if !range.spans_all_rows() && !range.spans_all_cols() {
+            return Some(range);
+        }
+        let used = self.used_range()?;
+        let mut trimmed = range;
+        if range.spans_all_rows() {
+            trimmed.start.row = used.start.row;
+            trimmed.end.row = used.end.row;
+        }
+        if range.spans_all_cols() {
+            trimmed.start.col = used.start.col;
+            trimmed.end.col = used.end.col;
+        }
+        Some(trimmed)
     }
 
     /// The pivot table covering a cell, if any.

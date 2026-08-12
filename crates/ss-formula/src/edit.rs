@@ -638,8 +638,14 @@ pub fn clear_contents(book: &Workbook, sheet: usize, ranges: &[CellRange]) -> Ch
     let Some(target) = book.sheet(sheet) else {
         return Change::default();
     };
+    // Only cells that exist can be cleared, so a range is worth no more than
+    // its overlap with the data. Without the trim, Delete over a whole-sheet
+    // selection asks about seventeen billion cells one at a time.
+    let Some(used) = target.used_range() else {
+        return Change::default();
+    };
     let mut cells = Vec::new();
-    for range in ranges {
+    for range in ranges.iter().filter_map(|r| r.intersect(used)) {
         for row in range.start.row..=range.end.row {
             for col in range.start.col..=range.end.col {
                 let at = CellRef::new(row, col);
@@ -1640,5 +1646,38 @@ mod tests {
         let cell = book.sheets[0].get(CellRef::new(0, 0)).expect("still there");
         assert_eq!(cell.value, CellValue::Blank);
         assert_eq!(cell.style, StyleId(3), "Delete clears contents, not format");
+    }
+
+    #[test]
+    fn deleting_over_the_whole_sheet_is_the_cells_that_exist() {
+        // Delete after a Ctrl+A is an everyday thing to do, and asking every
+        // address on the sheet whether it holds something is seventeen billion
+        // questions with two answers in them.
+        let mut book = book();
+        for (row, col) in [(0, 0), (3, 2)] {
+            book.sheets[0].set(
+                CellRef::new(row, col),
+                Cell {
+                    value: CellValue::Number(1.0),
+                    ..Default::default()
+                },
+            );
+        }
+        let everything = CellRange::new(
+            CellRef::new(0, 0),
+            CellRef::new(ss_model::cell::MAX_ROWS - 1, ss_model::cell::MAX_COLS - 1),
+        );
+        let change = clear_contents(&book, 0, &[everything]);
+        match change.patches.as_slice() {
+            [Patch::Cells { cells, .. }] => assert_eq!(cells.len(), 2),
+            other => panic!("expected two cells, got {other:?}"),
+        }
+        apply(&mut book, change);
+        assert!(
+            book.sheets[0]
+                .get(CellRef::new(3, 2))
+                .is_none_or(|c| c.value.is_blank()),
+            "and the sheet came out empty"
+        );
     }
 }
