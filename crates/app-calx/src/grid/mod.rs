@@ -579,6 +579,9 @@ pub enum Action {
     StepSheet(i32),
     /// Merge the selection into one cell, or take a merge apart.
     Merge(bool),
+    /// An edit the sheet's protection turned away, so the application can say
+    /// so. The grid does not own the status line.
+    Refused(CellRef),
     /// Freeze above and left of the cursor, or unfreeze.
     Freeze(bool),
     /// Split the sheet at the cursor into panes that scroll on their own, or
@@ -770,6 +773,14 @@ pub fn summarize(book: &Workbook, sheet: usize, ranges: &[CellRange]) -> Summary
         summary.max = max;
     }
     summary
+}
+
+/// Whether protection stands between the user and typing in this cell.
+pub(crate) fn locked_against_editing(book: &Workbook, sheet: usize, at: CellRef) -> bool {
+    let Some(target) = book.sheet(sheet) else {
+        return false;
+    };
+    target.protection.is_some() && book.styles.locked(target.style_at(at))
 }
 
 /// Where a sheet is divided into panes, as a cell — `A1` when it is not.

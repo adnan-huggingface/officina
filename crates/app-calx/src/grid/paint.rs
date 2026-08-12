@@ -2604,6 +2604,14 @@ impl GridView {
             return;
         }
         let at = self.selection.cursor();
+        // A locked cell on a protected sheet refuses at the first keystroke
+        // rather than after a whole entry has been typed. The change would be
+        // turned away either way; being told now is the difference between a
+        // sheet that is protected and one that wastes your time.
+        if super::locked_against_editing(book, self.sheet_index, at) {
+            self.actions.push(Action::Refused(at));
+            return;
+        }
         let existing = || super::source_text(book, self.sheet_index, at);
         self.editor = Some(match (mode, pointer) {
             (Mode::Edit, Some(pos)) => Editor::editing_at(at, existing(), pos),

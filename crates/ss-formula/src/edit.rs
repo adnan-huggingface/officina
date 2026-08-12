@@ -210,6 +210,11 @@ pub enum Patch {
         names: Vec<ss_model::DefinedName>,
     },
     /// A sheet's autofilter — the rule, not the hidden rows it produces.
+    /// A sheet protected, unprotected, or protected differently.
+    Protection {
+        sheet: usize,
+        protection: Option<ss_model::Protection>,
+    },
     Filter {
         sheet: usize,
         filter: Option<ss_model::AutoFilter>,
@@ -484,6 +489,17 @@ fn apply_patch(book: &mut Workbook, patch: Patch) -> Vec<Patch> {
         Patch::DefinedNames { names } => {
             let before = std::mem::replace(&mut book.defined_names, names);
             vec![Patch::DefinedNames { names: before }]
+        }
+
+        Patch::Protection { sheet, protection } => {
+            let Some(target) = book.sheet_mut(sheet) else {
+                return Vec::new();
+            };
+            let before = std::mem::replace(&mut target.protection, protection);
+            vec![Patch::Protection {
+                sheet,
+                protection: before,
+            }]
         }
 
         Patch::Filter { sheet, filter } => {

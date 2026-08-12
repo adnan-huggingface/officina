@@ -409,3 +409,24 @@ anything); no function autocomplete; grouped sheet editing absent.
     is a file the user opened, even though neither becomes the document's own
     path — while a csv *export* is not, since that is a copy sent elsewhere
     rather than the workbook being worked in.
+
+26. **Freezing a sheet did not survive saving it.** The toolbar has frozen
+    panes and the model has carried them since the grid was written, but
+    `<sheetView>` had no writer at all — every worksheet's view element was
+    copied through verbatim. So freezing a sheet, saving, and reopening gave
+    back the sheet unfrozen, with nothing said about it.
+
+    The writer now authors the pane, for a freeze and for a split alike, and
+    authors the whole `<sheetViews>` block for a file that never had one. It
+    compares only the division itself, so a `topLeftCell` nobody moved and a
+    `state` spelled `frozenSplit` still come back byte for byte.
+
+27. **A sheet's own default row height and column width are never read.**
+    `<sheetFormatPr defaultRowHeight="14.4" defaultColWidth="…"/>` is ignored,
+    and the grid lays every sheet out at Excel's 15-point row and 8.43-character
+    column. Most files Excel writes declare 14.4, so rows are drawn about four
+    percent too tall — invisible on one row, half a row over a screenful, and
+    it also shifts where a split bar's saved position lands.
+
+    Not fixed here: it belongs with the layout rather than with panes, and it
+    wants its own pass over the reader, `Layout::for_sheet`, and the writer.

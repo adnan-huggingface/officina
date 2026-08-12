@@ -722,6 +722,12 @@ impl StyleTable {
         self.entries.get(style.0 as usize)
     }
 
+    /// Whether protecting the sheet would stop this style's cells being
+    /// edited. A style nobody defined is locked, as everything else is.
+    pub fn locked(&self, style: StyleId) -> bool {
+        self.format_of(style).is_none_or(|xf| xf.locked)
+    }
+
     pub fn font(&self, style: StyleId) -> &Font {
         self.format_of(style)
             .and_then(|xf| self.fonts.get(xf.font as usize))

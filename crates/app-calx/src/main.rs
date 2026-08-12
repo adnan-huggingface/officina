@@ -144,6 +144,10 @@ enum Dialog {
         look: Box<ss_model::style::Look>,
         tab: FormatTab,
     },
+    /// Excel's Protect Sheet: what a protected sheet will still allow.
+    Protect {
+        allow: Box<ss_model::Protection>,
+    },
     /// Excel's Paste Special: which parts of the clipboard to bring across.
     PasteSpecial {
         how: ss_formula::clip::PasteSpecial,
@@ -212,15 +216,17 @@ enum FormatTab {
     Font,
     Border,
     Fill,
+    Protection,
 }
 
 impl FormatTab {
-    const ALL: [(FormatTab, &'static str); 5] = [
+    const ALL: [(FormatTab, &'static str); 6] = [
         (FormatTab::Number, "Number"),
         (FormatTab::Alignment, "Alignment"),
         (FormatTab::Font, "Font"),
         (FormatTab::Border, "Border"),
         (FormatTab::Fill, "Fill"),
+        (FormatTab::Protection, "Protection"),
     ];
 }
 
@@ -838,6 +844,46 @@ impl Calx {
         });
     }
 
+    /// Opens Protect Sheet, or takes protection off a sheet that has it.
+    ///
+    /// Excel's own toggle: one control that asks what to allow on the way in
+    /// and asks nothing on the way out.
+    fn toggle_protection(&mut self) {
+        let Some(sheet) = self.doc.workbook.sheet(self.grid.sheet_index) else {
+            return;
+        };
+        match &sheet.protection {
+            // Calx implements none of Excel's password hashes, so it cannot
+            // tell the right password from the wrong one. Refusing is the only
+            // honest answer: quietly unprotecting would throw away a decision
+            // somebody deliberately made, and asking for a password we cannot
+            // check would be theatre.
+            Some(p) if p.has_password() => {
+                self.status =
+                    "This sheet is protected with a password, which Calx cannot check".to_string();
+            }
+            Some(_) => self.protect(None),
+            None => {
+                self.dialog = Some(Dialog::Protect {
+                    allow: Box::new(ss_model::Protection::as_excel_protects()),
+                });
+            }
+        }
+    }
+
+    fn protect(&mut self, protection: Option<ss_model::Protection>) {
+        let sheet = self.grid.sheet_index;
+        let label = if protection.is_some() {
+            "Protect sheet"
+        } else {
+            "Unprotect sheet"
+        };
+        self.perform(Change::new(
+            label,
+            vec![Patch::Protection { sheet, protection }],
+        ));
+    }
+
     /// Opens Find, or turns an open one into Replace.
     fn open_find(&mut self, replacing: bool) {
         if let Some(Dialog::Find { replacing: on, .. }) = &mut self.dialog {
@@ -915,6 +961,10 @@ impl Calx {
         if change.is_empty() {
             return;
         }
+        if let Some(refusal) = self.protection_refuses(&change) {
+            self.status = refusal;
+            return;
+        }
         // Any edit dismisses the marching ants, as Excel's does. A paste that
         // wants to keep them (copy can be pasted repeatedly) puts them back.
         self.grid.marquee = None;
@@ -923,6 +973,145 @@ impl Calx {
         self.redo.clear();
         self.edited = true;
         self.recalculate();
+    }
+
+    /// Why a protected sheet will not take this change, or `None` if it will.
+    ///
+    /// One test at the one place every change passes through, rather than a
+    /// check at each of the thirty commands that can make one. A guard per
+    /// command is a guard somebody forgets to add, and the patches say exactly
+    /// what is about to happen — which is more than the command's name does.
+    ///
+    /// Undo and redo deliberately do not come through here: they apply their
+    /// changes directly. Protecting a sheet must stay undoable, and nothing can
+    /// be undone that protection did not already allow to happen.
+    fn protection_refuses(&self, change: &Change) -> Option<String> {
+        for patch in &change.patches {
+            let refusal = match patch {
+                Patch::Cells { sheet, cells } => self.cells_refusal(*sheet, cells),
+                // A formula's *text* rewritten in place: the cells that hold
+                // it are what protection is about, and the sheet's own
+                // permission to be edited at all is the closest question.
+                Patch::Formulas { sheet, .. } => {
+                    self.refuse(*sheet, |p| p.format_cells, "edited")
+                }
+                Patch::Permute { sheet, .. } => self.refuse(*sheet, |p| p.sort, "sorted"),
+                Patch::Shift { sheet, shift } => {
+                    let inserting = shift.count > 0;
+                    match (shift.axis, inserting) {
+                        (Axis::Rows, true) => self.refuse(*sheet, |p| p.insert_rows, "added"),
+                        (Axis::Rows, false) => self.refuse(*sheet, |p| p.delete_rows, "deleted"),
+                        (Axis::Columns, true) => self.refuse(*sheet, |p| p.insert_columns, "added"),
+                        (Axis::Columns, false) => {
+                            self.refuse(*sheet, |p| p.delete_columns, "deleted")
+                        }
+                    }
+                }
+                // A move is an insert and a delete at once, and needs both.
+                Patch::Rearrange { sheet, rearrange } => match rearrange.axis {
+                    Axis::Rows => self.refuse(*sheet, |p| p.insert_rows && p.delete_rows, "moved"),
+                    Axis::Columns => {
+                        self.refuse(*sheet, |p| p.insert_columns && p.delete_columns, "moved")
+                    }
+                },
+                Patch::Geometry { sheet, geometry } => self.geometry_refusal(*sheet, geometry),
+                Patch::AxisStyles { sheet, axis, .. } => match axis {
+                    Axis::Rows => self.refuse(*sheet, |p| p.format_rows, "formatted"),
+                    Axis::Columns => self.refuse(*sheet, |p| p.format_columns, "formatted"),
+                },
+                Patch::Validations { sheet, .. } | Patch::ConditionalFormats { sheet, .. } => {
+                    self.refuse(*sheet, |p| p.format_cells, "formatted")
+                }
+                Patch::Pictures { sheet, .. }
+                | Patch::Charts { sheet, .. }
+                | Patch::ChartTitle { sheet, .. } => {
+                    self.refuse(*sheet, |p| p.objects, "changed")
+                }
+                Patch::Filter { sheet, .. } => self.refuse(*sheet, |p| p.filter, "filtered"),
+                // Protecting and unprotecting, and everything that belongs to
+                // the workbook rather than to a sheet: a protected sheet can
+                // still be renamed, hidden, or dragged to another position,
+                // because sheet protection is about the cells in it.
+                _ => None,
+            };
+            if refusal.is_some() {
+                return refusal;
+            }
+        }
+        None
+    }
+
+    /// Whether protection stands in the way — `Some` when it does.
+    fn forbidden(
+        &self,
+        sheet: usize,
+        allowed: impl Fn(&ss_model::Protection) -> bool,
+    ) -> Option<()> {
+        let protection = self.doc.workbook.sheet(sheet)?.protection.as_ref()?;
+        (!allowed(protection)).then_some(())
+    }
+
+    fn refuse(
+        &self,
+        sheet: usize,
+        allowed: impl Fn(&ss_model::Protection) -> bool,
+        verb: &str,
+    ) -> Option<String> {
+        self.forbidden(sheet, allowed)
+            .map(|()| format!("A protected sheet cannot have that {verb}"))
+    }
+
+    /// Whether a protected sheet takes these cells.
+    ///
+    /// A cell's *value* may only change when the cell is unlocked, and its
+    /// *look* only when the sheet allows formatting — which are different
+    /// permissions on the same patch, so the two are told apart by comparing
+    /// with what is there now.
+    fn cells_refusal(&self, sheet: usize, cells: &[(CellRef, Option<ss_model::Cell>)]) -> Option<String> {
+        let target = self.doc.workbook.sheet(sheet)?;
+        let protection = target.protection.as_ref()?;
+        for (at, after) in cells {
+            let before = target.get(*at);
+            let value_changed = match (before, after) {
+                (Some(a), Some(b)) => a.value != b.value || a.formula != b.formula,
+                (None, Some(b)) => !b.value.is_blank() || b.formula.is_some(),
+                (Some(a), None) => !a.value.is_blank() || a.formula.is_some(),
+                (None, None) => false,
+            };
+            if value_changed {
+                if !self.doc.workbook.styles.locked(target.style_at(*at)) {
+                    continue;
+                }
+                return Some(format!(
+                    "{} is locked, and the sheet is protected",
+                    at.to_a1()
+                ));
+            }
+            if !protection.format_cells {
+                return Some("A protected sheet cannot have its cells formatted".to_string());
+            }
+        }
+        None
+    }
+
+    /// Whether a protected sheet takes this geometry.
+    fn geometry_refusal(&self, sheet: usize, wanted: &Geometry) -> Option<String> {
+        let target = self.doc.workbook.sheet(sheet)?;
+        let now = Geometry::of(target);
+        // A division is a way of looking at the sheet rather than a change to
+        // it, and Excel lets a protected sheet be frozen and split freely.
+        if now.row_heights != wanted.row_heights || now.row_outlines != wanted.row_outlines {
+            self.refuse(sheet, |p| p.format_rows, "resized")?;
+        }
+        if now.column_widths != wanted.column_widths
+            || now.column_outlines != wanted.column_outlines
+        {
+            self.refuse(sheet, |p| p.format_columns, "resized")?;
+        }
+        if now.merges != wanted.merges {
+            self.refuse(sheet, |p| p.format_cells, "merged")?;
+        }
+        None
     }
 
     fn recalculate(&mut self) {
@@ -1096,6 +1285,9 @@ impl Calx {
             Action::Format(command) => self.format(command),
             Action::StepSheet(step) => self.step_sheet(step),
             Action::Merge(join) => self.merge(join),
+            Action::Refused(at) => {
+                self.status = format!("{} is locked, and the sheet is protected", at.to_a1());
+            }
             Action::Freeze(on) => self.divide(on, true),
             Action::Split(on) => self.divide(on, false),
             Action::Visibility { axis, hide } => self.set_visibility(axis, hide),
@@ -2212,6 +2404,7 @@ impl Calx {
         let mut cond_dialog = false;
         let mut reopen: Option<PathBuf> = None;
         let mut forget_all = false;
+        let mut protect = false;
 
         ui.horizontal(|ui| {
             if icons::button(ui, Icon::New, false, "New workbook (Ctrl+N)").clicked() {
@@ -2396,6 +2589,22 @@ impl Calx {
             };
             if icons::button(ui, Icon::Freeze, frozen, tip).clicked() {
                 requested = Some(Action::Freeze(!frozen));
+            }
+            let protected = self
+                .doc
+                .workbook
+                .sheet(self.grid.sheet_index)
+                .is_some_and(|s| s.protection.is_some());
+            if ui
+                .selectable_label(protected, "Protect")
+                .on_hover_text(if protected {
+                    "Unprotect this sheet"
+                } else {
+                    "Protect this sheet against edits to its locked cells"
+                })
+                .clicked()
+            {
+                protect = true;
             }
             let split = panes.is_some_and(|p| !p.frozen);
             let tip = if split {
@@ -2721,6 +2930,9 @@ impl Calx {
         if forget_all {
             self.recent.clear(CALX);
             self.status = "Recent file list cleared".to_string();
+        }
+        if protect {
+            self.toggle_protection();
         }
     }
 
@@ -4002,6 +4214,7 @@ impl Calx {
                             FormatTab::Font => font_tab(ui, &theme, look),
                             FormatTab::Border => border_tab(ui, &theme, look),
                             FormatTab::Fill => fill_tab(ui, &theme, look),
+                            FormatTab::Protection => protection_tab(ui, look),
                         });
                     ui.separator();
                     ui.horizontal(|ui| {
@@ -4012,6 +4225,43 @@ impl Calx {
                 if apply {
                     let look = look.clone();
                     self.format(Format::Whole(look));
+                    keep = false;
+                }
+            }
+
+            Dialog::Protect { allow } => {
+                let mut go = false;
+                modal(ctx, "Protect sheet", |ui| {
+                    ui.set_width(340.0);
+                    ui.label("Allow everyone who uses this sheet to:");
+                    ui.add_space(4.0);
+                    egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+                        for (label, field) in protection_fields(allow) {
+                            ui.checkbox(field, label);
+                        }
+                    });
+                    ui.add_space(6.0);
+                    // Broken by hand and laid out left to right explicitly: a
+                    // modal stretches its children and centres what is in them,
+                    // which turns a paragraph into a monument.
+                    ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                        for line in [
+                            "Protection guards against accidents rather than",
+                            "against anyone determined: Calx sets no password,",
+                            "and a sheet protected here can be unprotected here.",
+                        ] {
+                            ui.small(line);
+                        }
+                    });
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        go = ui.button("Protect").clicked();
+                        keep &= !ui.button("Cancel").clicked();
+                    });
+                });
+                if go {
+                    let allow = (**allow).clone();
+                    self.protect(Some(allow));
                     keep = false;
                 }
             }
@@ -5127,6 +5377,50 @@ fn border_style_name(style: BorderStyle) -> &'static str {
 }
 
 /// Format Cells ▸ Fill.
+/// The Protect Sheet checkboxes, in the order Excel lists them.
+///
+/// Borrowed rather than copied so the dialog edits the model value directly:
+/// fifteen `checkbox` calls with fifteen field names is fifteen chances to
+/// wire one to the wrong flag.
+fn protection_fields(p: &mut ss_model::Protection) -> Vec<(&'static str, &mut bool)> {
+    vec![
+        ("Select locked cells", &mut p.select_locked),
+        ("Select unlocked cells", &mut p.select_unlocked),
+        ("Format cells", &mut p.format_cells),
+        ("Format columns", &mut p.format_columns),
+        ("Format rows", &mut p.format_rows),
+        ("Insert columns", &mut p.insert_columns),
+        ("Insert rows", &mut p.insert_rows),
+        ("Insert hyperlinks", &mut p.insert_hyperlinks),
+        ("Delete columns", &mut p.delete_columns),
+        ("Delete rows", &mut p.delete_rows),
+        ("Sort", &mut p.sort),
+        ("Use AutoFilter", &mut p.filter),
+        ("Use PivotTable reports", &mut p.pivot_tables),
+        ("Edit objects", &mut p.objects),
+        ("Edit scenarios", &mut p.scenarios),
+    ]
+}
+
+/// Format Cells ▸ Protection: the tab that does nothing until the sheet is
+/// protected, which is the single most confusing thing about it in Excel too.
+fn protection_tab(ui: &mut egui::Ui, look: &mut ss_model::Look) {
+    ui.checkbox(&mut look.locked, "Locked");
+    ui.add_space(6.0);
+    // A line per widget rather than one label with newlines in it: a modal
+    // centres a multi-line galley, and a centred paragraph is a monument.
+    ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+        for line in [
+            "Locking a cell has no effect until the sheet is protected.",
+            "Every cell starts locked, so protecting a sheet with nothing",
+            "unlocked locks all of it — unlock the cells people are meant",
+            "to type in first.",
+        ] {
+            ui.small(line);
+        }
+    });
+}
+
 fn fill_tab(ui: &mut egui::Ui, theme: &ss_model::color::Theme, look: &mut ss_model::Look) {
     // The hatches are kept by name and drawn as a blend, so the list here is
     // the handful anybody picks; a file's own `lightTrellis` survives being
@@ -5590,6 +5884,108 @@ fn delimiter_name(byte: u8) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A workbook with one protected sheet, and B1 unlocked in it.
+    fn protected(allow: ss_model::Protection) -> Calx {
+        let mut app = Calx::new();
+        let book = &mut app.doc.workbook;
+        let open = {
+            let mut look = book.styles.look(ss_model::StyleId::DEFAULT);
+            look.locked = false;
+            book.styles.style_for(&look)
+        };
+        let sheet = book.sheet_mut(0).expect("sheet 0");
+        sheet.set(
+            CellRef::new(0, 1),
+            ss_model::Cell {
+                style: open,
+                ..Default::default()
+            },
+        );
+        sheet.protection = Some(allow);
+        app
+    }
+
+    fn type_into(app: &mut Calx, at: &str, text: &str) {
+        let at = CellRef::from_a1(at).expect("valid");
+        let change = edit::input(&mut app.doc.workbook, 0, at, text);
+        app.perform(change);
+    }
+
+    fn value_at(app: &Calx, at: &str) -> Option<ss_model::CellValue> {
+        let at = CellRef::from_a1(at).expect("valid");
+        app.doc.workbook.sheet(0)?.get(at).map(|c| c.value)
+    }
+
+    #[test]
+    fn a_protected_sheet_takes_typing_only_where_it_is_unlocked() {
+        let mut app = protected(ss_model::Protection::as_excel_protects());
+
+        type_into(&mut app, "A1", "42");
+        assert_eq!(value_at(&app, "A1"), None, "A1 is locked");
+        assert!(app.status.contains("A1 is locked"), "{}", app.status);
+        assert!(app.undo.is_empty(), "a refused edit is not an undo entry");
+
+        type_into(&mut app, "B1", "42");
+        assert_eq!(
+            value_at(&app, "B1"),
+            Some(ss_model::CellValue::Number(42.0)),
+            "B1 was unlocked before the sheet was protected"
+        );
+    }
+
+    #[test]
+    fn an_unprotected_sheet_takes_typing_into_locked_cells() {
+        // Every cell in a workbook is locked. Locking means nothing until the
+        // sheet is protected, and a guard that forgot this would make a fresh
+        // workbook read-only.
+        let mut app = Calx::new();
+        type_into(&mut app, "A1", "42");
+        assert_eq!(value_at(&app, "A1"), Some(ss_model::CellValue::Number(42.0)));
+    }
+
+    #[test]
+    fn what_a_protected_sheet_allows_is_what_it_allows() {
+        let mut app = protected(ss_model::Protection {
+            insert_rows: true,
+            ..ss_model::Protection::as_excel_protects()
+        });
+        let rows = |app: &Calx| app.doc.workbook.sheet(0).expect("sheet 0").cells.len();
+
+        app.status.clear();
+        app.structural(Axis::Rows, false);
+        assert_eq!(app.status, "", "inserting rows was allowed");
+        app.structural(Axis::Columns, false);
+        assert!(
+            app.status.contains("protected sheet"),
+            "inserting columns was not: {}",
+            app.status
+        );
+        let _ = rows;
+    }
+
+    #[test]
+    fn taking_protection_off_is_never_refused_by_the_protection() {
+        let mut app = protected(ss_model::Protection::as_excel_protects());
+        app.toggle_protection();
+        assert!(app.doc.workbook.sheet(0).expect("sheet 0").protection.is_none());
+        type_into(&mut app, "A1", "42");
+        assert_eq!(value_at(&app, "A1"), Some(ss_model::CellValue::Number(42.0)));
+    }
+
+    #[test]
+    fn a_password_nobody_can_check_is_a_sheet_nobody_can_unprotect() {
+        let mut app = protected(ss_model::Protection {
+            password: vec![("password".to_string(), "CC3D".to_string())],
+            ..ss_model::Protection::as_excel_protects()
+        });
+        app.toggle_protection();
+        assert!(
+            app.doc.workbook.sheet(0).expect("sheet 0").protection.is_some(),
+            "the sheet stays protected"
+        );
+        assert!(app.status.contains("password"), "{}", app.status);
+    }
 
     #[test]
     fn a_typed_size_is_taken_only_where_the_file_could_hold_it() {
