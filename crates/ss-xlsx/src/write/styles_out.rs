@@ -602,7 +602,15 @@ fn push_styles(out: &mut Vec<u8>, prefix: &[u8], styles: &[CellFormat]) {
         if xf.quote_prefix {
             sets.push(Set::to(b"quotePrefix", "1"));
         }
-        open(out, prefix, b"xf", &sets, !aligned);
+        // Only an *unlocked* cell needs saying: locked is what an xf means
+        // when it says nothing, and writing it out everywhere would put a
+        // `<protection>` on every style in the workbook to no effect.
+        let unlocked = !xf.locked;
+        if unlocked {
+            sets.push(Set::to(b"applyProtection", "1"));
+        }
+        let body = aligned || unlocked;
+        open(out, prefix, b"xf", &sets, !body);
         if aligned {
             let a = xf.alignment;
             let mut align = Vec::new();
@@ -625,6 +633,11 @@ fn push_styles(out: &mut Vec<u8>, prefix: &[u8], styles: &[CellFormat]) {
                 align.push(Set::to(b"shrinkToFit", "1"));
             }
             open(out, prefix, b"alignment", &align, true);
+        }
+        if unlocked {
+            open(out, prefix, b"protection", &[Set::to(b"locked", "0")], true);
+        }
+        if body {
             close(out, prefix, b"xf");
         }
     }

@@ -276,6 +276,16 @@ pub(crate) fn parse(part: &str, data: &[u8], theme: Theme) -> Result<StyleTable>
                 b"alignment" => {
                     xf.alignment = read_alignment(e);
                 }
+                // Guarded by section because `<protection>` is also a child of
+                // `<dxf>`, and a conditional format's rule must not decide
+                // whether the cell it lands on can be typed in.
+                b"protection"
+                    if matches!(section, Section::CellXfs | Section::CellStyleXfs) =>
+                {
+                    if let Some(raw) = attr_raw(e, b"locked") {
+                        xf.locked = parse_bool(&raw).unwrap_or(true);
+                    }
+                }
 
                 b"cellStyle" if section == Section::CellStyles => {
                     parts.named.push(NamedStyle {

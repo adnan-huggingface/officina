@@ -41,4 +41,6 @@ pub use style::{
     StyleId, StyleTable, Underline, VAlign,
 };
 pub use table::{Band, Table, TableStyle};
-pub use workbook::{CellRange, DefinedName, Panes, Sheet, SheetKind, SheetView, Workbook};
+pub use workbook::{
+    CellRange, DefinedName, Panes, Protection, Sheet, SheetKind, SheetView, Workbook,
+};

@@ -109,6 +109,9 @@ impl Styles {
     pub fn xf(&mut self, data: &[u8]) {
         let ifnt = u16_at(data, 0).unwrap_or(0);
         let ifmt = u16_at(data, 2).unwrap_or(0);
+        // Byte 4 carries the protection bits: locked, hidden, and whether this
+        // XF is a style rather than a cell format.
+        let locked = u16_at(data, 4).unwrap_or(0) & 0x0001 != 0;
         let align = data.get(6).copied().unwrap_or(0);
         let rotation = data.get(7).copied().unwrap_or(0);
         let indent = data.get(8).copied().unwrap_or(0);
@@ -172,6 +175,7 @@ impl Styles {
             alignment,
             xf_id: 0,
             quote_prefix: false,
+            locked,
         });
     }
 

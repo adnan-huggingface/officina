@@ -424,7 +424,7 @@ impl Alignment {
 }
 
 /// One entry of `cellXfs`: everything a cell's `s` attribute selects.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct CellFormat {
     /// The `numFmtId`, kept as the file wrote it so a save can put it back
     /// rather than inventing an equivalent one.
@@ -438,6 +438,32 @@ pub struct CellFormat {
     /// `quotePrefix="1"` — a leading apostrophe the user typed, which forces
     /// text. Not part of the value, so it has to live in the format.
     pub quote_prefix: bool,
+    /// `<protection locked="0"/>` — whether protecting the sheet would stop
+    /// this cell being edited.
+    ///
+    /// Locked by default, as every cell in a new workbook is: locking is the
+    /// state a cell starts in, and unlocking the input cells is the deliberate
+    /// act. It means nothing at all until the sheet is protected, which is why
+    /// a workbook can be full of locked cells nobody has ever noticed.
+    pub locked: bool,
+}
+
+impl Default for CellFormat {
+    /// The unformatted cell — which is locked, because every cell is until
+    /// somebody says otherwise. An `<xf>` with no `<protection>` child inherits
+    /// exactly this, so the default is also what parsing starts from.
+    fn default() -> Self {
+        CellFormat {
+            num_fmt_id: 0,
+            font: 0,
+            fill: 0,
+            border: 0,
+            alignment: Alignment::default(),
+            xf_id: 0,
+            quote_prefix: false,
+            locked: true,
+        }
+    }
 }
 
 /// A named cell style, as the Styles gallery lists them.
@@ -487,6 +513,7 @@ pub struct Look {
     pub border: Border,
     pub alignment: Alignment,
     pub quote_prefix: bool,
+    pub locked: bool,
 }
 
 impl Default for Look {
@@ -498,6 +525,7 @@ impl Default for Look {
             border: Border::default(),
             alignment: Alignment::default(),
             quote_prefix: false,
+            locked: true,
         }
     }
 }
@@ -779,6 +807,7 @@ impl StyleTable {
                 .unwrap_or_default(),
             alignment: xf.alignment,
             quote_prefix: xf.quote_prefix,
+            locked: xf.locked,
         }
     }
 
@@ -805,6 +834,7 @@ impl StyleTable {
             alignment: look.alignment,
             xf_id: 0,
             quote_prefix: look.quote_prefix,
+            locked: look.locked,
         };
         if let Some(index) = self.entries.iter().position(|xf| {
             xf.num_fmt_id == wanted.num_fmt_id
@@ -813,6 +843,7 @@ impl StyleTable {
                 && xf.border == wanted.border
                 && xf.alignment == wanted.alignment
                 && xf.quote_prefix == wanted.quote_prefix
+                && xf.locked == wanted.locked
         }) {
             return StyleId(index as u32);
         }

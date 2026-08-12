@@ -125,6 +125,13 @@ pub(crate) fn rewrite(part: &str, data: &[u8], ctx: &mut Context<'_>) -> Result<
     let old_active = file_pane.as_ref().map(|p| p.active.clone()).unwrap_or_default();
     let mut kept_selection = false;
 
+    // Sheet protection, on the filter's pattern: untouched files keep their own
+    // bytes, so a password hash and any flag this crate does not model survive
+    // a save of a sheet nobody unprotected.
+    let protect_untouched = file_protection(part, data)? == ctx.sheet.protection;
+    let mut wrote_protection = protect_untouched;
+    let mut skip_protection = 0usize;
+
     while let Some((event, span)) = splicer.next()? {
         if !tab_settled {
             match &event {
@@ -262,6 +269,40 @@ pub(crate) fn rewrite(part: &str, data: &[u8], ctx: &mut Context<'_>) -> Result<
                 Event::End(e) if !views_done && end_local_name(e) == b"worksheet" => {
                     write_sheet_views(&mut out, &prefix, pane_wanted.as_ref());
                     views_done = true;
+                }
+                _ => {}
+            }
+        }
+
+        if skip_protection > 0 {
+            match &event {
+                Event::Start(e) if local_name(e) == b"sheetProtection" => skip_protection += 1,
+                Event::End(e) if end_local_name(e) == b"sheetProtection" => skip_protection -= 1,
+                _ => {}
+            }
+            continue;
+        }
+        if !protect_untouched {
+            match &event {
+                Event::Start(e) | Event::Empty(e) if local_name(e) == b"sheetProtection" => {
+                    write_protection(&mut out, &prefix_of(e), ctx.sheet.protection.as_ref());
+                    wrote_protection = true;
+                    if matches!(event, Event::Start(_)) {
+                        skip_protection = 1;
+                    }
+                    continue;
+                }
+                // Its schema slot is straight after `</sheetData>`, before the
+                // protected ranges and the autofilter.
+                Event::Start(e) | Event::Empty(e)
+                    if !wrote_protection && after_protection(local_name(e)) =>
+                {
+                    write_protection(&mut out, &prefix_of(e), ctx.sheet.protection.as_ref());
+                    wrote_protection = true;
+                }
+                Event::End(e) if !wrote_protection && end_local_name(e) == b"worksheet" => {
+                    write_protection(&mut out, &prefix, ctx.sheet.protection.as_ref());
+                    wrote_protection = true;
                 }
                 _ => {}
             }
@@ -711,6 +752,59 @@ fn write_sheet_views(out: &mut Vec<u8>, prefix: &[u8], pane: Option<&PaneTag>) {
     write_pane(out, prefix, pane);
     close(out, prefix, b"sheetView");
     close(out, prefix, b"sheetViews");
+}
+
+/// The protection the file already states, read back the way the model does.
+fn file_protection(part: &str, data: &[u8]) -> Result<Option<ss_model::Protection>> {
+    let mut scratch = Sheet::new("scratch");
+    let mut strings = StringTable::default();
+    crate::sheet::parse(part, data, &mut scratch, &[], &mut strings)?;
+    Ok(scratch.protection)
+}
+
+/// Writes `<sheetProtection>`, or nothing when the sheet is not protected.
+///
+/// Nothing at all is the important half, as it is for the autofilter:
+/// unprotecting a sheet has to *remove* the element, and a writer that only
+/// ever replaced it would leave the sheet locked.
+fn write_protection(out: &mut Vec<u8>, prefix: &[u8], protection: Option<&ss_model::Protection>) {
+    let Some(p) = protection else { return };
+    let mut sets = vec![Set::to(b"sheet", "1")];
+    // The password attributes go back exactly as they came, in the order the
+    // file wrote them. Calx cannot check a password and does not invent one.
+    for (name, value) in &p.password {
+        sets.push(Set::to(name.as_bytes(), value.clone()));
+    }
+    // Each flag says what is *forbidden*, and is written only when it differs
+    // from what the schema already assumes — which is how Excel writes them,
+    // and keeps the element down to the handful of choices somebody made.
+    for (name, forbidden, default_forbidden) in [
+        (&b"objects"[..], !p.objects, false),
+        (&b"scenarios"[..], !p.scenarios, false),
+        (&b"formatCells"[..], !p.format_cells, true),
+        (&b"formatColumns"[..], !p.format_columns, true),
+        (&b"formatRows"[..], !p.format_rows, true),
+        (&b"insertColumns"[..], !p.insert_columns, true),
+        (&b"insertRows"[..], !p.insert_rows, true),
+        (&b"insertHyperlinks"[..], !p.insert_hyperlinks, true),
+        (&b"deleteColumns"[..], !p.delete_columns, true),
+        (&b"deleteRows"[..], !p.delete_rows, true),
+        (&b"selectLockedCells"[..], !p.select_locked, false),
+        (&b"sort"[..], !p.sort, true),
+        (&b"autoFilter"[..], !p.filter, true),
+        (&b"pivotTables"[..], !p.pivot_tables, true),
+        (&b"selectUnlockedCells"[..], !p.select_unlocked, false),
+    ] {
+        if forbidden != default_forbidden {
+            sets.push(Set::to(name, if forbidden { "1" } else { "0" }));
+        }
+    }
+    open(out, prefix, b"sheetProtection", &sets, true);
+}
+
+/// The worksheet children the schema puts *after* `<sheetProtection>`.
+fn after_protection(name: &[u8]) -> bool {
+    matches!(name, b"protectedRanges" | b"scenarios" | b"autoFilter") || after_filter(name)
 }
 
 /// The worksheet children the schema puts *after* `<sheetViews>`.
@@ -2558,6 +2652,73 @@ mod tests {
     }
 
     #[test]
+    fn protecting_a_sheet_writes_only_the_choices_somebody_made() {
+        let mut sheet = Sheet::new("Data");
+        sheet.protection = Some(ss_model::Protection {
+            sort: true,
+            ..ss_model::Protection::default()
+        });
+        let out = written_from(r#"<worksheet><sheetData/></worksheet>"#, &sheet);
+        assert_eq!(
+            out,
+            r#"<worksheet><sheetData/><sheetProtection sheet="1" sort="0"/></worksheet>"#,
+            "the defaults are the schema's; only sorting was allowed"
+        );
+    }
+
+    #[test]
+    fn unprotecting_a_sheet_takes_the_element_out() {
+        let sheet = Sheet::new("Data");
+        let out = written_from(
+            r#"<worksheet><sheetData/><sheetProtection sheet="1" objects="1"/><mergeCells count="1"><mergeCell ref="D1:E1"/></mergeCells></worksheet>"#,
+            &sheet,
+        );
+        assert_eq!(
+            out,
+            r#"<worksheet><sheetData/><mergeCells count="1"><mergeCell ref="D1:E1"/></mergeCells></worksheet>"#
+        );
+    }
+
+    #[test]
+    fn a_password_goes_back_exactly_as_it_came() {
+        // Calx cannot check a password and must never quietly drop one. The
+        // sheet here is re-protected with one more allowance, which is an edit
+        // to the flags and not to the credential.
+        let mut sheet = Sheet::new("Data");
+        sheet.protection = Some(ss_model::Protection {
+            format_cells: true,
+            objects: false,
+            scenarios: false,
+            password: vec![
+                ("algorithmName".to_string(), "SHA-512".to_string()),
+                ("hashValue".to_string(), "abc=".to_string()),
+                ("saltValue".to_string(), "xyz=".to_string()),
+                ("spinCount".to_string(), "100000".to_string()),
+            ],
+            ..ss_model::Protection::default()
+        });
+        let out = written_from(
+            r#"<worksheet><sheetData/><sheetProtection algorithmName="SHA-512" hashValue="abc=" saltValue="xyz=" spinCount="100000" sheet="1"/></worksheet>"#,
+            &sheet,
+        );
+        assert!(
+            out.contains(
+                r#"<sheetProtection sheet="1" algorithmName="SHA-512" hashValue="abc=" saltValue="xyz=" spinCount="100000" objects="1" scenarios="1" formatCells="0"/>"#
+            ),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn a_sheet_nobody_reprotected_keeps_its_own_bytes() {
+        let mut sheet = Sheet::new("Data");
+        sheet.protection = Some(ss_model::Protection::as_excel_protects());
+        let original =
+            r#"<worksheet><sheetData/><sheetProtection sheet="1" objects="1" scenarios="1"/></worksheet>"#;
+        assert_eq!(written_from(original, &sheet), original);
+    }
+
+    #[test]
     fn a_tab_colour_is_written_where_the_schema_puts_it() {
         let mut sheet = Sheet::new("Data");
         sheet.view.tab_color = Some(ss_model::Color::rgb(0, 0xB0, 0x50));
@@ -2648,6 +2809,7 @@ mod tests {
             CellRef::from_a1("A1").expect("valid"),
             CellRef::from_a1("B4").expect("valid"),
         )));
+        sheet.protection = Some(ss_model::Protection::default());
         let out = written_from(
             r#"<worksheet><sheetData/><sheetProtection sheet="1"/><mergeCells count="1"><mergeCell ref="D1:E1"/></mergeCells></worksheet>"#,
             &sheet,

@@ -192,6 +192,7 @@ pub(crate) fn parse(
                         split = read_pane(e, sheet);
                     }
                     b"sheetView" => read_sheet_view(e, sheet),
+                    b"sheetProtection" => sheet.protection = read_protection(e),
                     b"selection" => {
                         let pane = attr_raw(e, b"pane").unwrap_or_default();
                         // An unfrozen sheet has one selection and no pane on it.
@@ -860,6 +861,60 @@ fn read_sheet_view(e: &BytesStart<'_>, sheet: &mut Sheet) {
     }
 }
 
+/// `<sheetProtection>`: what a protected sheet still allows.
+///
+/// Every flag in the file says what is *forbidden* and defaults to allowed for
+/// the two selection flags and forbidden for the rest — so the model's
+/// "may the user do this" is the file's flag inverted, against the schema's own
+/// default when the attribute is absent.
+fn read_protection(e: &BytesStart<'_>) -> Option<ss_model::Protection> {
+    // `sheet="0"`, or the attribute missing, is an element that protects
+    // nothing: it may still be carrying `objects` or `scenarios`, but the sheet
+    // itself is not protected and Excel shows it as unprotected.
+    if !attr_raw(e, b"sheet")
+        .and_then(|v| parse_bool(&v))
+        .unwrap_or(false)
+    {
+        return None;
+    }
+    let forbids = |name: &[u8], default_forbidden: bool| {
+        attr_raw(e, name)
+            .and_then(|v| parse_bool(&v))
+            .unwrap_or(default_forbidden)
+    };
+    let mut password = Vec::new();
+    for a in attributes(e) {
+        let name = strip_prefix(a.key.as_ref());
+        if matches!(
+            name,
+            b"password" | b"algorithmName" | b"hashValue" | b"saltValue" | b"spinCount"
+        ) {
+            password.push((
+                String::from_utf8_lossy(name).into_owned(),
+                String::from_utf8_lossy(&a.value).into_owned(),
+            ));
+        }
+    }
+    Some(ss_model::Protection {
+        select_locked: !forbids(b"selectLockedCells", false),
+        select_unlocked: !forbids(b"selectUnlockedCells", false),
+        format_cells: !forbids(b"formatCells", true),
+        format_columns: !forbids(b"formatColumns", true),
+        format_rows: !forbids(b"formatRows", true),
+        insert_columns: !forbids(b"insertColumns", true),
+        insert_rows: !forbids(b"insertRows", true),
+        insert_hyperlinks: !forbids(b"insertHyperlinks", true),
+        delete_columns: !forbids(b"deleteColumns", true),
+        delete_rows: !forbids(b"deleteRows", true),
+        sort: !forbids(b"sort", true),
+        filter: !forbids(b"autoFilter", true),
+        pivot_tables: !forbids(b"pivotTables", true),
+        objects: !forbids(b"objects", false),
+        scenarios: !forbids(b"scenarios", false),
+        password,
+    })
+}
+
 /// Reads `<pane>`, returning a split's raw `(ySplit, xSplit)` in twips.
 fn read_pane(e: &BytesStart<'_>, sheet: &mut Sheet) -> Option<(u32, u32)> {
     // The one attribute that decides what the numbers beside it mean: a frozen
@@ -1323,6 +1378,37 @@ mod tests {
         assert_eq!(sheet.view.zoom, 0.9);
         assert_eq!(sheet.view.top_left, Some(CellRef::from_a1("F4").unwrap()));
         assert_eq!(sheet.panes, Some(ss_model::Panes::frozen(CellRef::new(3, 5))));
+    }
+
+    #[test]
+    fn a_protected_sheet_says_what_it_still_allows() {
+        let (sheet, _) = read(
+            r#"<worksheet><sheetProtection sheet="1" objects="1" scenarios="1"
+                 formatCells="0" sort="0" selectLockedCells="1"
+                 password="CC3D"/></worksheet>"#,
+        );
+        let p = sheet.protection.expect("protected");
+        assert!(p.format_cells, "formatCells=\"0\" forbids nothing");
+        assert!(p.sort);
+        assert!(!p.objects, "objects=\"1\" is a forbidding");
+        assert!(!p.select_locked, "and so is selectLockedCells");
+        assert!(
+            p.select_unlocked,
+            "unstated: the schema lets unlocked cells be selected"
+        );
+        assert!(!p.insert_rows, "unstated: forbidden by default");
+        assert!(p.has_password());
+        assert_eq!(p.password, [("password".to_string(), "CC3D".to_string())]);
+    }
+
+    #[test]
+    fn an_element_that_protects_nothing_is_not_protection() {
+        // `sheet="0"` — or no `sheet` at all — leaves the sheet editable, and
+        // Excel shows it as unprotected however many other flags are set.
+        let (sheet, _) = read(
+            r#"<worksheet><sheetProtection objects="1" scenarios="1"/></worksheet>"#,
+        );
+        assert_eq!(sheet.protection, None);
     }
 
     #[test]

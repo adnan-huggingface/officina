@@ -70,6 +70,93 @@ impl CellRange {
     }
 }
 
+/// What a protected sheet still allows.
+///
+/// The fields are "may the user do this", which is the opposite of how the file
+/// spells them — `<sheetProtection formatCells="1"/>` means formatting is
+/// *not* allowed. The inversion is done once, at the edges, because code that
+/// asks "may I?" and reads a field called `format_cells` should not have to
+/// remember that true means no.
+///
+/// Protection is a guard rail rather than a lock: it stops the accidental edit
+/// to a formula column, and Excel's own documentation says as much. A password
+/// on it is checked by the application that opens the file, not by the file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Protection {
+    pub select_locked: bool,
+    pub select_unlocked: bool,
+    pub format_cells: bool,
+    pub format_columns: bool,
+    pub format_rows: bool,
+    pub insert_columns: bool,
+    pub insert_rows: bool,
+    pub insert_hyperlinks: bool,
+    pub delete_columns: bool,
+    pub delete_rows: bool,
+    pub sort: bool,
+    pub filter: bool,
+    pub pivot_tables: bool,
+    pub objects: bool,
+    pub scenarios: bool,
+    /// Whether a password guards it, and how the file spells that password.
+    ///
+    /// Kept verbatim and never interpreted. Calx cannot check a password — it
+    /// implements none of the hashes — so what it can do is refuse to take
+    /// protection off a sheet whose owner set one, and hand the attributes back
+    /// to the file untouched. Silently dropping somebody's password would be
+    /// the worst of the three options.
+    pub password: Vec<(String, String)>,
+}
+
+impl Default for Protection {
+    /// What a bare `<sheetProtection sheet="1"/>` means.
+    ///
+    /// The schema's own defaults rather than Excel's: cells can be selected,
+    /// objects and scenarios are open, and everything else is shut. Being the
+    /// same thing the file's silence means is what lets the writer tell a sheet
+    /// somebody re-protected from one nobody touched.
+    fn default() -> Self {
+        Protection {
+            select_locked: true,
+            select_unlocked: true,
+            objects: true,
+            scenarios: true,
+            format_cells: false,
+            format_columns: false,
+            format_rows: false,
+            insert_columns: false,
+            insert_rows: false,
+            insert_hyperlinks: false,
+            delete_columns: false,
+            delete_rows: false,
+            sort: false,
+            filter: false,
+            pivot_tables: false,
+            password: Vec::new(),
+        }
+    }
+}
+
+impl Protection {
+    /// What Excel's own Protect Sheet dialog produces when nothing is ticked:
+    /// the cells can be selected and nothing else can be done.
+    ///
+    /// Excel goes further than the schema and shuts objects and scenarios too,
+    /// which is why this is not [`Protection::default`].
+    pub fn as_excel_protects() -> Self {
+        Protection {
+            objects: false,
+            scenarios: false,
+            ..Protection::default()
+        }
+    }
+
+    /// Whether a password guards this protection.
+    pub fn has_password(&self) -> bool {
+        !self.password.is_empty()
+    }
+}
+
 /// How a sheet is divided into panes.
 ///
 /// One value rather than a freeze and a split side by side, because a sheet has
@@ -233,6 +320,8 @@ pub struct Sheet {
     pub view: crate::SheetView,
     /// The sheet's autofilter, if it has one.
     pub filter: Option<crate::filter::AutoFilter>,
+    /// Sheet protection, if the sheet is protected.
+    pub protection: Option<Protection>,
     /// Where each dynamic-array formula last spilled to, by its anchor.
     ///
     /// Derived at recalculation and never read from a file: it exists so that a
