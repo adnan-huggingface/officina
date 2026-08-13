@@ -44,17 +44,33 @@ impl Textures {
     /// painting itself only reads.
     pub fn ensure(&mut self, ctx: &egui::Context, pictures: &[Picture]) {
         for picture in pictures {
-            if self.loaded.contains_key(&picture.part) {
+            let key = key(picture);
+            if self.loaded.contains_key(&key) {
                 continue;
             }
             let handle = decode(&picture.data)
-                .map(|image| ctx.load_texture(&picture.part, image, egui::TextureOptions::LINEAR));
-            self.loaded.insert(picture.part.clone(), handle);
+                .map(|image| ctx.load_texture(&key, image, egui::TextureOptions::LINEAR));
+            self.loaded.insert(key, handle);
         }
     }
 
     pub fn get(&self, part: &str) -> Option<&egui::TextureHandle> {
         self.loaded.get(part).and_then(|slot| slot.as_ref())
+    }
+}
+
+/// What a picture's texture is cached under.
+///
+/// The package part, which is where two anchors sharing one image — a logo
+/// repeated on every sheet — decode once. A picture the user has just inserted
+/// has no part until the workbook is saved, so it is keyed on the address of
+/// its bytes instead: two new pictures would otherwise share the empty name
+/// and the second would be drawn as the first.
+fn key(picture: &Picture) -> String {
+    if picture.part.is_empty() {
+        format!("unsaved:{:p}", std::sync::Arc::as_ptr(&picture.data))
+    } else {
+        picture.part.clone()
     }
 }
 
@@ -88,7 +104,7 @@ pub fn draw(
     textures: &Textures,
     outline: egui::Color32,
 ) {
-    let Some(texture) = textures.get(&picture.part) else {
+    let Some(texture) = textures.get(&key(picture)) else {
         // Something is anchored here and we cannot show it. A box says so;
         // nothing at all would read as an empty sheet.
         painter.rect_stroke(

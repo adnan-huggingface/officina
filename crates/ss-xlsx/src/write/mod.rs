@@ -22,6 +22,7 @@ mod blank;
 mod cells;
 mod chart_out;
 mod drawing_out;
+mod insert;
 mod sheet_out;
 mod splice;
 mod strings_out;
@@ -131,6 +132,23 @@ impl XlsxDocument {
             let Some(name) = name.clone() else {
                 continue;
             };
+            if self.package.part(&name).is_none() {
+                continue;
+            }
+            // Charts and pictures the application made, which have no parts
+            // yet. Done before the worksheet is written, because authoring a
+            // drawing for a sheet that had none is the one case where the
+            // worksheet itself gains an element — and the sheet has to be
+            // re-borrowed afterwards, since materializing writes into it.
+            let drawing_rel = insert::materialize(
+                &mut self.package,
+                &mut self.workbook,
+                index,
+                &name,
+            )?;
+            let Some(sheet) = self.workbook.sheet(index) else {
+                continue;
+            };
             let Some(part) = self.package.part(&name) else {
                 continue;
             };
@@ -140,6 +158,7 @@ impl XlsxDocument {
                 strings: &self.workbook.strings,
                 sst: &mut sst,
                 regenerate,
+                drawing_rel: drawing_rel.as_deref(),
             };
             let data = sheet_out::rewrite(name.as_str(), part.data(), &mut ctx)?;
             written.push((name.clone(), content_type, data));

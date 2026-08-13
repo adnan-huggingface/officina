@@ -565,6 +565,214 @@ impl Calx {
         self.edited = true;
     }
 
+    /// Puts a chart of `kind` on the sheet, plotting whatever is selected.
+    ///
+    /// Excel's own reading of a selection: the first column labels the points
+    /// when it holds text, the first row names the series when it looks like a
+    /// heading, and every remaining column is a series. Getting this wrong in
+    /// either direction is recoverable — the chart is there to be looked at and
+    /// undone — and guessing is what makes the button worth pressing.
+    fn insert_chart(&mut self, kind: ss_model::ChartKind) {
+        let Some(range) = self.data_range() else {
+            self.status = "Select the cells to plot first".to_string();
+            return;
+        };
+        let index = self.grid.sheet_index;
+        let Some(sheet) = self.doc.workbook.sheet(index) else {
+            return;
+        };
+        let header = ss_formula::sort::looks_like_headers(sheet, range);
+        let name = sheet.name.clone();
+        let labelled = matches!(
+            sheet.get(CellRef::new(range.start.row + u32::from(header), range.start.col))
+                .map(|c| c.value),
+            Some(ss_model::CellValue::Text(_))
+        ) && range.cols() > 1;
+
+        let first_row = range.start.row + u32::from(header);
+        let categories: Vec<String> = if labelled {
+            (first_row..=range.end.row)
+                .map(|row| self.display_text(index, CellRef::new(row, range.start.col)))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let categories_ref = labelled.then(|| {
+            reference(&name, range.start.col, first_row, range.start.col, range.end.row)
+        });
+
+        let first_col = range.start.col + u32::from(labelled);
+        let mut series = Vec::new();
+        for col in first_col..=range.end.col {
+            let values: Vec<Option<f64>> = (first_row..=range.end.row)
+                .map(|row| match sheet.get(CellRef::new(row, col)).map(|c| c.value) {
+                    Some(ss_model::CellValue::Number(n)) => Some(n),
+                    _ => None,
+                })
+                .collect();
+            if values.iter().all(Option::is_none) {
+                continue;
+            }
+            series.push(ss_model::chart::Series {
+                name: header.then(|| self.display_text(index, CellRef::new(range.start.row, col))),
+                name_ref: header
+                    .then(|| reference(&name, col, range.start.row, col, range.start.row)),
+                values_ref: Some(reference(&name, col, first_row, col, range.end.row)),
+                values,
+                categories_ref: categories_ref.clone(),
+                categories: categories.clone(),
+                color: None,
+            });
+        }
+        if series.is_empty() {
+            self.status = "There are no numbers in the selection to plot".to_string();
+            return;
+        }
+
+        // Beside the data rather than over it, and about the size Excel makes
+        // one: fifteen rows tall and seven columns wide.
+        let corner = |col: u32, row: u32| ss_model::chart::AnchorPoint {
+            col,
+            row,
+            ..Default::default()
+        };
+        let left = range.end.col.saturating_add(2).min(ss_model::cell::MAX_COLS - 8);
+        let chart = ss_model::Chart {
+            part: String::new(),
+            drawing_part: String::new(),
+            anchor_index: 0,
+            anchor: ss_model::chart::Anchor::TwoCell {
+                from: corner(left, range.start.row),
+                to: corner(left + 7, range.start.row.saturating_add(15)),
+            },
+            kind,
+            grouping: ss_model::chart::Grouping::Clustered,
+            horizontal: false,
+            title: None,
+            title_ref: None,
+            legend: (series.len() > 1).then_some(ss_model::chart::LegendPosition::Right),
+            series,
+        };
+
+        let Some(target) = self.doc.workbook.sheet_mut(index) else {
+            return;
+        };
+        let before = target.charts.clone();
+        target.charts.push(chart);
+        self.grid.selected_chart = Some(target.charts.len() - 1);
+        self.undo.push(Change::new(
+            "Insert chart",
+            vec![Patch::Charts {
+                sheet: index,
+                charts: before,
+            }],
+        ));
+        self.redo.clear();
+        self.edited = true;
+        self.status = "Chart inserted".to_string();
+    }
+
+    /// Puts an image on the sheet at the cursor.
+    ///
+    /// Anchored to one cell at its natural size rather than stretched over the
+    /// selection: a logo dropped onto a sheet should look like itself, and a
+    /// picture is resized afterwards by dragging its corner.
+    fn insert_picture(&mut self) {
+        let mut dialog = rfd::FileDialog::new().add_filter(
+            "Images",
+            &["png", "jpg", "jpeg", "gif", "bmp"],
+        );
+        if let Some(directory) = self.start_directory() {
+            dialog = dialog.set_directory(directory);
+        }
+        let Some(path) = dialog.pick_file() else {
+            return;
+        };
+        let data = match std::fs::read(&path) {
+            Ok(data) => data,
+            Err(e) => {
+                self.status = format!("could not read {}: {e}", path.display());
+                return;
+            }
+        };
+        // Decoded here and thrown away: what is wanted is the size, and a file
+        // that will not decode is one the grid could not draw either, which is
+        // better said now than as a blank rectangle later.
+        let Ok(decoded) = image::load_from_memory(&data) else {
+            self.status = format!("{} is not an image Calx can read", name_of(&path));
+            return;
+        };
+        let (pixels_wide, pixels_high) = image::GenericImageView::dimensions(&decoded);
+        let emu = |pixels: u32| {
+            // A pixel at 96 DPI is three quarters of a point, and a point is
+            // 12,700 EMUs.
+            (f64::from(pixels) * 0.75 * ss_model::chart::EMU_PER_POINT) as i64
+        };
+
+        let index = self.grid.sheet_index;
+        let at = self.grid.selection.cursor();
+        let Some(sheet) = self.doc.workbook.sheet(index) else {
+            return;
+        };
+        let before = sheet.pictures.clone();
+        let number = sheet.pictures.len() + 1;
+        let picture = ss_model::Picture {
+            part: String::new(),
+            drawing_part: String::new(),
+            anchor_index: 0,
+            name: format!("Picture {number}"),
+            anchor: ss_model::chart::Anchor::OneCell {
+                from: ss_model::chart::AnchorPoint {
+                    col: at.col,
+                    row: at.row,
+                    ..Default::default()
+                },
+                width: emu(pixels_wide),
+                height: emu(pixels_high),
+            },
+            data: std::sync::Arc::from(data.into_boxed_slice()),
+            content_type: content_type_of(&path).to_string(),
+        };
+        let Some(target) = self.doc.workbook.sheet_mut(index) else {
+            return;
+        };
+        target.pictures.push(picture);
+        self.grid.selected_picture = Some(target.pictures.len() - 1);
+        self.grid.selected_chart = None;
+        self.undo.push(Change::new(
+            "Insert picture",
+            vec![Patch::Pictures {
+                sheet: index,
+                pictures: before,
+            }],
+        ));
+        self.redo.clear();
+        self.edited = true;
+        self.status = format!("{} inserted", name_of(&path));
+    }
+
+    /// A cell as the grid shows it, which is what a chart label should say.
+    fn display_text(&self, sheet: usize, at: CellRef) -> String {
+        let book = &self.doc.workbook;
+        let Some(target) = book.sheet(sheet) else {
+            return String::new();
+        };
+        let Some(cell) = target.get(at) else {
+            return String::new();
+        };
+        let value = match cell.value {
+            ss_model::CellValue::Blank => return String::new(),
+            ss_model::CellValue::Number(n) => ss_model::FormatValue::Number(n),
+            ss_model::CellValue::Bool(b) => ss_model::FormatValue::Bool(b),
+            ss_model::CellValue::Error(e) => ss_model::FormatValue::Error(e),
+            ss_model::CellValue::Text(id) => ss_model::FormatValue::Text(book.strings.resolve(id)),
+        };
+        book.styles
+            .number_format(target.style_at(at))
+            .format(value)
+            .text
+    }
+
     /// Records a finished chart drag, or drops it if nothing actually moved.
     fn charts_moved(&mut self, sheet: usize, before: Vec<ss_model::Chart>) {
         let unchanged = self
@@ -2505,6 +2713,8 @@ impl Calx {
         let mut forget_all = false;
         let mut protect = false;
         let mut data_tool: Option<DataTool> = None;
+        let mut chart: Option<ss_model::ChartKind> = None;
+        let mut picture = false;
 
         ui.horizontal(|ui| {
             if icons::button(ui, Icon::New, false, "New workbook (Ctrl+N)").clicked() {
@@ -2779,6 +2989,28 @@ impl Calx {
                 }
             });
             separate(ui);
+            ui.menu_button("Insert", |ui| {
+                for (label, kind) in [
+                    ("Column chart", ss_model::ChartKind::Bar),
+                    ("Line chart", ss_model::ChartKind::Line),
+                    ("Pie chart", ss_model::ChartKind::Pie),
+                    ("Area chart", ss_model::ChartKind::Area),
+                ] {
+                    if ui.button(label).clicked() {
+                        chart = Some(kind);
+                        ui.close();
+                    }
+                }
+                ui.separator();
+                if ui
+                    .button("Picture…")
+                    .on_hover_text("Put an image on the sheet")
+                    .clicked()
+                {
+                    picture = true;
+                    ui.close();
+                }
+            });
             ui.menu_button("Data", |ui| {
                 if ui
                     .button("Text to Columns…")
@@ -3056,6 +3288,12 @@ impl Calx {
             Some(DataTool::TextToColumns) => self.open_text_to_columns(),
             Some(DataTool::RemoveDuplicates) => self.open_remove_duplicates(),
             None => {}
+        }
+        if let Some(kind) = chart {
+            self.insert_chart(kind);
+        }
+        if picture {
+            self.insert_picture();
         }
     }
 
@@ -5611,6 +5849,52 @@ fn border_style_name(style: BorderStyle) -> &'static str {
 }
 
 /// Format Cells ▸ Fill.
+/// What the package should call an image, from the name it came in under.
+///
+/// The extension rather than the bytes: the package's content type is what
+/// Excel reads, an extension is what the user chose, and a mismatch between
+/// them is a file that was renamed rather than converted.
+fn content_type_of(path: &Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("bmp") => "image/bmp",
+        _ => "image/png",
+    }
+}
+
+/// A chart's idea of a range: `'Sales figures'!$B$2:$B$9`.
+///
+/// Absolute and sheet-qualified, always, because a chart lives outside the
+/// grid: there is no cell for a relative reference to be relative to.
+fn reference(sheet: &str, first_col: u32, first_row: u32, last_col: u32, last_row: u32) -> String {
+    let name = if sheet
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '_' || c == '.')
+    {
+        sheet.to_string()
+    } else {
+        // A name holding a space or a punctuation mark is quoted, and a quote
+        // inside one is doubled.
+        format!("'{}'", sheet.replace('\'', "''"))
+    };
+    let cell = |col: u32, row: u32| format!("${}${}", ss_model::column_name(col), row + 1);
+    if first_col == last_col && first_row == last_row {
+        format!("{name}!{}", cell(first_col, first_row))
+    } else {
+        format!(
+            "{name}!{}:{}",
+            cell(first_col, first_row),
+            cell(last_col, last_row)
+        )
+    }
+}
+
 /// The Protect Sheet checkboxes, in the order Excel lists them.
 ///
 /// Borrowed rather than copied so the dialog edits the model value directly:

@@ -228,3 +228,83 @@ fn a_real_workbooks_pivot_table_is_found_with_its_fields() {
         .iter()
         .any(|s| s.pivot_at(inside).is_some()));
 }
+
+/// A chart the application made, saved into a workbook that never had one.
+///
+/// The end-to-end question, and the only one that matters for inserting: not
+/// "did we write plausible XML" but "does a reader find a chart where we put
+/// one" — three parts, two relationship hops, and a content type, any of which
+/// being wrong means Excel reports the file as damaged.
+#[test]
+fn a_chart_inserted_into_a_blank_workbook_comes_back_as_a_chart() {
+    use ss_model::chart::{Anchor, AnchorPoint, LegendPosition, Series};
+    use ss_model::{Chart, StyleId, Workbook};
+
+    let mut book = Workbook::blank();
+    for (row, (month, sales)) in [("Jan", 10.0), ("Feb", 12.5), ("Mar", 9.0)]
+        .into_iter()
+        .enumerate()
+    {
+        let row = row as u32 + 1;
+        let cell = ss_formula::edit::typed_cell(&mut book, 0, StyleId::DEFAULT, month);
+        book.sheets[0].set(ss_model::CellRef::new(row, 0), cell);
+        let cell = ss_formula::edit::typed_cell(&mut book, 0, StyleId::DEFAULT, &sales.to_string());
+        book.sheets[0].set(ss_model::CellRef::new(row, 1), cell);
+    }
+    let corner = |col, row| AnchorPoint {
+        col,
+        row,
+        ..Default::default()
+    };
+    book.sheets[0].charts.push(Chart {
+        part: String::new(),
+        drawing_part: String::new(),
+        anchor_index: 0,
+        anchor: Anchor::TwoCell {
+            from: corner(3, 1),
+            to: corner(9, 16),
+        },
+        kind: ChartKind::Bar,
+        grouping: ss_model::chart::Grouping::Clustered,
+        horizontal: false,
+        title: Some("Sales".to_string()),
+        title_ref: None,
+        legend: Some(LegendPosition::Right),
+        series: vec![Series {
+            name: Some("Sales".to_string()),
+            name_ref: Some("Sheet1!$B$1".to_string()),
+            values_ref: Some("Sheet1!$B$2:$B$4".to_string()),
+            values: vec![Some(10.0), Some(12.5), Some(9.0)],
+            categories_ref: Some("Sheet1!$A$2:$A$4".to_string()),
+            categories: vec!["Jan".into(), "Feb".into(), "Mar".into()],
+            color: None,
+        }],
+    });
+
+    let mut doc = XlsxDocument::new(book).expect("authors a package");
+    let mut buffer = Cursor::new(Vec::new());
+    doc.write_to(&mut buffer).expect("writes");
+
+    let reopened = XlsxDocument::read(Cursor::new(buffer.into_inner())).expect("reads back");
+    let charts = &reopened.workbook.sheets[0].charts;
+    assert_eq!(charts.len(), 1, "one chart, found by a reader that is not us");
+    let chart = &charts[0];
+    assert_eq!(chart.kind, ChartKind::Bar);
+    assert_eq!(chart.title.as_deref(), Some("Sales"));
+    assert_eq!(chart.legend, Some(LegendPosition::Right));
+    assert_eq!(chart.series.len(), 1);
+    assert_eq!(chart.series[0].values, [Some(10.0), Some(12.5), Some(9.0)]);
+    assert_eq!(chart.series[0].categories, ["Jan", "Feb", "Mar"]);
+    assert_eq!(
+        chart.anchor,
+        Anchor::TwoCell {
+            from: corner(3, 1),
+            to: corner(9, 16)
+        },
+        "and it is where it was put"
+    );
+    assert!(
+        !chart.part.is_empty() && !chart.drawing_part.is_empty(),
+        "the model now names the parts it lives in"
+    );
+}

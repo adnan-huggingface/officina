@@ -261,3 +261,68 @@ fn a_picture_left_alone_leaves_its_drawing_byte_for_byte() {
         "an untouched anchor is not worth rewriting, and rewriting it is a          chance to get it wrong"
     );
 }
+
+/// A picture the application put on a sheet, through a save and back.
+///
+/// The bytes are a one-pixel PNG written out here rather than read from the
+/// corpus: what is being tested is the package plumbing — a media part, a
+/// drawing, two relationships and a content type — and the smallest possible
+/// image makes the failure about that rather than about decoding.
+#[test]
+fn a_picture_inserted_into_a_blank_workbook_comes_back_with_its_bytes() {
+    use ss_model::chart::{Anchor, AnchorPoint};
+    use ss_model::{Picture, Workbook};
+
+    // An 8-bit greyscale 1x1 PNG.
+    const PNG: &[u8] = &[
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x00, 0x00, 0x00, 0x00, 0x3A,
+        0x7E, 0x9B, 0x55, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x63, 0x00,
+        0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00, 0x00, 0x00, 0x00, 0x49,
+        0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+    ];
+
+    let mut book = Workbook::blank();
+    book.sheets[0].pictures.push(Picture {
+        part: String::new(),
+        drawing_part: String::new(),
+        anchor_index: 0,
+        name: "Logo".to_string(),
+        anchor: Anchor::OneCell {
+            from: AnchorPoint {
+                col: 2,
+                row: 3,
+                ..Default::default()
+            },
+            width: 914_400,
+            height: 457_200,
+        },
+        data: std::sync::Arc::from(PNG.to_vec().into_boxed_slice()),
+        content_type: "image/png".to_string(),
+    });
+
+    let mut doc = ss_xlsx::XlsxDocument::new(book).expect("authors a package");
+    let mut buffer = std::io::Cursor::new(Vec::new());
+    doc.write_to(&mut buffer).expect("writes");
+
+    let reopened =
+        ss_xlsx::XlsxDocument::read(std::io::Cursor::new(buffer.into_inner()))
+            .expect("reads back");
+    let pictures = &reopened.workbook.sheets[0].pictures;
+    assert_eq!(pictures.len(), 1, "one picture, found by a fresh reader");
+    assert_eq!(&*pictures[0].data, PNG, "byte for byte what went in");
+    assert_eq!(pictures[0].name, "Logo");
+    assert_eq!(pictures[0].content_type, "image/png");
+    assert_eq!(
+        pictures[0].anchor,
+        Anchor::OneCell {
+            from: AnchorPoint {
+                col: 2,
+                row: 3,
+                ..Default::default()
+            },
+            width: 914_400,
+            height: 457_200,
+        }
+    );
+}

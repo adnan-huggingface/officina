@@ -24,7 +24,9 @@ use crate::error::Result;
 use crate::write::cells::{number, Content, Val};
 use crate::write::splice::{close, escape_text, open, prefix_of, raw_attr, retag, Set, Splicer};
 use crate::write::strings_out::Sst;
-use crate::xml::{end_local_name, local_name, parse_bool, parse_f64, parse_u32, push_text};
+use crate::xml::{
+    attributes, end_local_name, local_name, parse_bool, parse_f64, parse_u32, push_text,
+};
 
 /// Everything the cell writer needs that is not the cell.
 pub(crate) struct Context<'a> {
@@ -36,6 +38,10 @@ pub(crate) struct Context<'a> {
     /// A save never does this. The harness does, to ask the stronger question:
     /// not "did the bytes we copied survive" but "could we have written them".
     pub regenerate: bool,
+    /// The relationship id of a drawing part authored for this sheet during
+    /// this save, which the worksheet has to name for the drawing to exist as
+    /// far as Excel is concerned. `None` on every other save.
+    pub drawing_rel: Option<&'a str>,
 }
 
 /// Rewrites a worksheet part so its cells match `ctx.sheet`.
@@ -131,6 +137,11 @@ pub(crate) fn rewrite(part: &str, data: &[u8], ctx: &mut Context<'_>) -> Result<
     let protect_untouched = file_protection(part, data)? == ctx.sheet.protection;
     let mut wrote_protection = protect_untouched;
     let mut skip_protection = 0usize;
+
+    // A `<drawing>` naming a drawing part authored during this save. Only a
+    // sheet that gained its first drawing has one to declare; every other save
+    // leaves this alone, and the file's own `<drawing>` with it.
+    let mut wrote_drawing = ctx.drawing_rel.is_none();
 
     while let Some((event, span)) = splicer.next()? {
         if !tab_settled {
@@ -269,6 +280,40 @@ pub(crate) fn rewrite(part: &str, data: &[u8], ctx: &mut Context<'_>) -> Result<
                 Event::End(e) if !views_done && end_local_name(e) == b"worksheet" => {
                     write_sheet_views(&mut out, &prefix, pane_wanted.as_ref());
                     views_done = true;
+                }
+                _ => {}
+            }
+        }
+
+        if !wrote_drawing {
+            match &event {
+                // A worksheet this crate authored declares no `r:` namespace,
+                // because nothing in an empty sheet needs one. A drawing
+                // reference does, so the root grows the declaration on the way
+                // past.
+                Event::Start(e)
+                    if local_name(e) == b"worksheet"
+                        && !attributes(e).any(|a| a.key.as_ref() == b"xmlns:r") =>
+                {
+                    out.extend_from_slice(&retag(
+                        e,
+                        &[Set::to(
+                            b"xmlns:r",
+                            "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+                        )],
+                        false,
+                    ));
+                    continue;
+                }
+                // Its schema slot: after the page setup, before the objects
+                // that a drawing precedes.
+                Event::Start(e) | Event::Empty(e) if after_drawing(local_name(e)) => {
+                    write_drawing(&mut out, &prefix_of(e), ctx.drawing_rel);
+                    wrote_drawing = true;
+                }
+                Event::End(e) if end_local_name(e) == b"worksheet" => {
+                    write_drawing(&mut out, &prefix, ctx.drawing_rel);
+                    wrote_drawing = true;
                 }
                 _ => {}
             }
@@ -752,6 +797,28 @@ fn write_sheet_views(out: &mut Vec<u8>, prefix: &[u8], pane: Option<&PaneTag>) {
     write_pane(out, prefix, pane);
     close(out, prefix, b"sheetView");
     close(out, prefix, b"sheetViews");
+}
+
+/// Writes the `<drawing>` element naming a sheet's drawing part.
+fn write_drawing(out: &mut Vec<u8>, prefix: &[u8], rel_id: Option<&str>) {
+    let Some(id) = rel_id else { return };
+    open(out, prefix, b"drawing", &[Set::to(b"r:id", id)], true);
+}
+
+/// The worksheet children the schema puts *after* `<drawing>`.
+fn after_drawing(name: &[u8]) -> bool {
+    matches!(
+        name,
+        b"legacyDrawing"
+            | b"legacyDrawingHF"
+            | b"drawingHF"
+            | b"picture"
+            | b"oleObjects"
+            | b"controls"
+            | b"webPublishItems"
+            | b"tableParts"
+            | b"extLst"
+    )
 }
 
 /// The protection the file already states, read back the way the model does.
@@ -2336,6 +2403,7 @@ mod tests {
             strings: &fixture.strings,
             sst: &mut fixture.sst,
             regenerate: false,
+            drawing_rel: None,
         };
         let out = rewrite("sheet1.xml", SHEET.as_bytes(), &mut ctx).expect("writes");
         String::from_utf8(out).expect("utf-8")
@@ -2360,6 +2428,7 @@ mod tests {
             strings: &strings,
             sst: &mut sst,
             regenerate: false,
+            drawing_rel: None,
         };
         String::from_utf8(rewrite("sheet1.xml", source.as_bytes(), &mut ctx).expect("writes"))
             .expect("utf-8")
@@ -2937,6 +3006,7 @@ mod tests {
             strings: &f.strings,
             sst: &mut f.sst,
             regenerate: false,
+            drawing_rel: None,
         };
         let out = String::from_utf8(rewrite("s.xml", empty.as_bytes(), &mut ctx).expect("writes"))
             .expect("utf-8");
