@@ -191,7 +191,7 @@ fn carries_formulas(sheet: &Sheet, rows: (u32, u32), cols: (u32, u32)) -> bool {
 }
 
 /// A cell as it should look `delta` rows further down, formula and all.
-fn moved(book: &mut Workbook, sheet: usize, cell: Cell, delta: i64) -> Cell {
+pub(crate) fn moved(book: &mut Workbook, sheet: usize, cell: Cell, delta: i64) -> Cell {
     let Some(id) = cell.formula else {
         return cell;
     };

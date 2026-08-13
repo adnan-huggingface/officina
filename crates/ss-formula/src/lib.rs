@@ -25,6 +25,7 @@ pub mod lexer;
 pub mod parser;
 pub mod sheets;
 pub mod sort;
+pub mod tools;
 pub mod translate;
 pub mod value;
 pub mod workbook;

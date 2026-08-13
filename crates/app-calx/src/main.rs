@@ -144,6 +144,23 @@ enum Dialog {
         look: Box<ss_model::style::Look>,
         tab: FormatTab,
     },
+    /// Excel's Text to Columns: how to cut one column of text into several.
+    TextToColumns {
+        how: ss_formula::tools::Split,
+        /// The "Other" box, kept as typed so that clearing it is possible.
+        other: String,
+    },
+    /// Excel's Remove Duplicates: which columns decide that two rows are one.
+    RemoveDuplicates {
+        /// The rows and columns that will move. Held here rather than read from
+        /// the selection when the button is pressed, because it may have been
+        /// widened to the block around it and the user is owed the range they
+        /// are about to change.
+        range: CellRange,
+        /// The range's columns, and whether each is being compared.
+        columns: Vec<(u32, bool)>,
+        header: bool,
+    },
     /// Excel's Protect Sheet: what a protected sheet will still allow.
     Protect {
         allow: Box<ss_model::Protection>,
@@ -236,6 +253,13 @@ struct SortLevel {
     /// `None` for "none", else an absolute sheet column.
     col: Option<u32>,
     descending: bool,
+}
+
+/// Which of the Data menu's two tools was asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DataTool {
+    TextToColumns,
+    RemoveDuplicates,
 }
 
 /// An action held up by the "you have unsaved changes" prompt.
@@ -842,6 +866,81 @@ impl Calx {
             look: Box::new(self.cursor_look()),
             tab: FormatTab::default(),
         });
+    }
+
+    fn open_text_to_columns(&mut self) {
+        self.dialog = Some(Dialog::TextToColumns {
+            how: ss_formula::tools::Split::default(),
+            other: String::new(),
+        });
+    }
+
+    fn open_remove_duplicates(&mut self) {
+        let range = self.grid.selection.active_range();
+        let Some(sheet) = self.doc.workbook.sheet(self.grid.sheet_index) else {
+            return;
+        };
+        // The selection trimmed to the data, so that a whole-column selection
+        // offers the columns somebody has actually used rather than sixteen
+        // thousand checkboxes.
+        let Some(range) = ss_formula::sort::clamped(sheet, range) else {
+            self.status = "There is nothing there to look through".to_string();
+            return;
+        };
+        // Widened to the block it sits in, which is what Excel's "expand the
+        // selection" prompt offers and always the right answer: removing rows
+        // from column A alone, while B stays where it is, silently tears every
+        // row of the table in half.
+        let block = ss_formula::sort::region(sheet, range.start);
+        let range = CellRange::new(
+            CellRef::new(range.start.row.min(block.start.row), range.start.col.min(block.start.col)),
+            CellRef::new(range.end.row.max(block.end.row), range.end.col.max(block.end.col)),
+        );
+        self.dialog = Some(Dialog::RemoveDuplicates {
+            range,
+            columns: (range.start.col..=range.end.col).map(|c| (c, true)).collect(),
+            // The same guess the sort dialog makes, and for the same reason:
+            // a first row of text over columns of numbers is a heading row.
+            header: ss_formula::sort::looks_like_headers(sheet, range),
+        });
+    }
+
+    fn text_to_columns(&mut self, how: &ss_formula::tools::Split) {
+        let sheet = self.grid.sheet_index;
+        let range = self.grid.selection.active_range();
+        match ss_formula::tools::text_to_columns(&mut self.doc.workbook, sheet, range, how) {
+            Ok(change) => {
+                if change.is_empty() {
+                    self.status = "There is no text there to split".to_string();
+                    return;
+                }
+                self.perform(change);
+                self.grid.invalidate();
+            }
+            Err(why) => self.status = why,
+        }
+    }
+
+    fn remove_duplicates(&mut self, range: CellRange, columns: &[u32], header: bool) {
+        let sheet = self.grid.sheet_index;
+        match ss_formula::tools::remove_duplicates(
+            &mut self.doc.workbook,
+            sheet,
+            range,
+            columns,
+            header,
+        ) {
+            Ok((change, count)) => {
+                self.perform(change);
+                self.grid.invalidate();
+                self.status = match count.removed {
+                    0 => format!("No repeated rows found; {} rows kept", count.kept),
+                    1 => format!("1 repeated row removed; {} rows kept", count.kept),
+                    n => format!("{n} repeated rows removed; {} rows kept", count.kept),
+                };
+            }
+            Err(why) => self.status = why,
+        }
     }
 
     /// Opens Protect Sheet, or takes protection off a sheet that has it.
@@ -2405,6 +2504,7 @@ impl Calx {
         let mut reopen: Option<PathBuf> = None;
         let mut forget_all = false;
         let mut protect = false;
+        let mut data_tool: Option<DataTool> = None;
 
         ui.horizontal(|ui| {
             if icons::button(ui, Icon::New, false, "New workbook (Ctrl+N)").clicked() {
@@ -2679,6 +2779,24 @@ impl Calx {
                 }
             });
             separate(ui);
+            ui.menu_button("Data", |ui| {
+                if ui
+                    .button("Text to Columns…")
+                    .on_hover_text("Cut one column of text into several")
+                    .clicked()
+                {
+                    data_tool = Some(DataTool::TextToColumns);
+                    ui.close();
+                }
+                if ui
+                    .button("Remove Duplicates…")
+                    .on_hover_text("Keep the first of every repeated row")
+                    .clicked()
+                {
+                    data_tool = Some(DataTool::RemoveDuplicates);
+                    ui.close();
+                }
+            });
             if ui
                 .button("Validate…")
                 .on_hover_text("Data validation for the selection")
@@ -2933,6 +3051,11 @@ impl Calx {
         }
         if protect {
             self.toggle_protection();
+        }
+        match data_tool {
+            Some(DataTool::TextToColumns) => self.open_text_to_columns(),
+            Some(DataTool::RemoveDuplicates) => self.open_remove_duplicates(),
+            None => {}
         }
     }
 
@@ -4225,6 +4348,117 @@ impl Calx {
                 if apply {
                     let look = look.clone();
                     self.format(Format::Whole(look));
+                    keep = false;
+                }
+            }
+
+            Dialog::TextToColumns { how, other } => {
+                let mut go = false;
+                modal(ctx, "Text to columns", |ui| {
+                    ui.set_width(340.0);
+                    ui.label("Split the selected column at:");
+                    ui.add_space(4.0);
+                    for (label, ch) in [
+                        ("Tab", '\t'),
+                        ("Semicolon", ';'),
+                        ("Comma", ','),
+                        ("Space", ' '),
+                    ] {
+                        let mut on = how.delimiters.contains(&ch);
+                        if ui.checkbox(&mut on, label).changed() {
+                            if on {
+                                how.delimiters.push(ch);
+                            } else {
+                                how.delimiters.retain(|d| *d != ch);
+                            }
+                        }
+                    }
+                    ui.horizontal(|ui| {
+                        ui.label("Other");
+                        // One character, because a delimiter is one: a box
+                        // holding `, ` would quietly split on neither.
+                        if ui
+                            .add(egui::TextEdit::singleline(other).desired_width(40.0))
+                            .changed()
+                        {
+                            other.truncate(other.chars().count().min(1));
+                        }
+                    });
+                    ui.add_space(6.0);
+                    ui.checkbox(&mut how.merge, "Treat consecutive delimiters as one");
+                    let mut quoted = how.quote.is_some();
+                    if ui.checkbox(&mut quoted, "Text in quotes stays together").changed() {
+                        how.quote = quoted.then_some('"');
+                    }
+                    ui.add_space(6.0);
+                    ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                        for line in [
+                            "The fields land in the column itself and the ones",
+                            "to its right, over whatever is already there.",
+                        ] {
+                            ui.small(line);
+                        }
+                    });
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        go = ui.button("Split").clicked();
+                        keep &= !ui.button("Cancel").clicked();
+                    });
+                });
+                if go {
+                    let mut how = how.clone();
+                    if let Some(c) = other.chars().next() {
+                        if !how.delimiters.contains(&c) {
+                            how.delimiters.push(c);
+                        }
+                    }
+                    self.text_to_columns(&how);
+                    keep = false;
+                }
+            }
+
+            Dialog::RemoveDuplicates {
+                range,
+                columns,
+                header,
+            } => {
+                let mut go = false;
+                let where_ = format!("{}:{}", range.start.to_a1(), range.end.to_a1());
+                modal(ctx, "Remove duplicates", |ui| {
+                    ui.set_width(300.0);
+                    ui.label(format!("Looking through {where_}"));
+                    ui.add_space(4.0);
+                    ui.checkbox(header, "My data has headers");
+                    ui.add_space(4.0);
+                    ui.label("Rows repeat when these columns match:");
+                    ui.horizontal(|ui| {
+                        if ui.small_button("Select all").clicked() {
+                            for (_, on) in columns.iter_mut() {
+                                *on = true;
+                            }
+                        }
+                        if ui.small_button("Select none").clicked() {
+                            for (_, on) in columns.iter_mut() {
+                                *on = false;
+                            }
+                        }
+                    });
+                    egui::ScrollArea::vertical().max_height(280.0).show(ui, |ui| {
+                        for (col, on) in columns.iter_mut() {
+                            ui.checkbox(on, ss_model::column_name(*col));
+                        }
+                    });
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        go = ui.button("Remove").clicked();
+                        keep &= !ui.button("Cancel").clicked();
+                    });
+                });
+                if go {
+                    let chosen: Vec<u32> =
+                        columns.iter().filter(|(_, on)| *on).map(|(c, _)| *c).collect();
+                    let (range, header) = (*range, *header);
+                    self.remove_duplicates(range, &chosen, header);
                     keep = false;
                 }
             }
