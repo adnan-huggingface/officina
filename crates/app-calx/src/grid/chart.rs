@@ -387,9 +387,15 @@ fn draw_axes_chart(
                     } else {
                         (0.0f64.clamp(low, high), *value)
                     };
-                    let rect = egui::Rect::from_x_y_ranges(
-                        x..=x + bar,
-                        y_of(from.min(to))..=y_of(from.max(to)),
+                    // From the two corners rather than from two ranges: a
+                    // bigger value is a *smaller* y, so a range written low to
+                    // high is upside down, and egui fills a negative rectangle
+                    // with nothing at all. Every bar chart drew its axes, its
+                    // gridlines and no bars. `from_two_pos` sorts the corners,
+                    // so the mistake cannot come back.
+                    let rect = egui::Rect::from_two_pos(
+                        egui::pos2(x, y_of(from)),
+                        egui::pos2(x + bar, y_of(to)),
                     );
                     painter.rect_filled(rect, 0.0, entry.color);
                 }
@@ -531,6 +537,65 @@ mod tests {
                 ..Default::default()
             }],
         }
+    }
+
+    /// Every shape a chart draws into a 400x300 box, so a test can look for
+    /// the ones that matter rather than at a screenshot.
+    fn painted(chart: &Chart, series: &[Plotted]) -> Vec<egui::Shape> {
+        let ctx = egui::Context::default();
+        ui_kit::fonts::register(&ctx, &[]);
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(500.0, 400.0),
+            )),
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| {
+            let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 300.0));
+            let style = Style {
+                background: egui::Color32::WHITE,
+                outline: egui::Color32::GRAY,
+                text: egui::Color32::BLACK,
+                grid: egui::Color32::GRAY,
+                zoom: 1.0,
+            };
+            draw(ui.painter(), rect, chart, series, &style);
+        });
+        out.textures_delta.clear();
+        out.shapes.into_iter().map(|s| s.shape).collect()
+    }
+
+    #[test]
+    fn a_bar_chart_draws_a_bar_for_every_point() {
+        // It did not, for as long as bar charts have been drawn: the bar was
+        // built from a y range written low to high, which is upside down on a
+        // screen, and egui fills an upside-down rectangle with nothing. The
+        // axes and the gridlines were all anyone ever saw.
+        let mut chart = chart(ChartKind::Bar);
+        chart.series[0].values_ref = None;
+        let series = vec![Plotted {
+            name: "Sales".to_string(),
+            values: vec![Some(1.0), Some(2.0), Some(3.0)],
+            color: egui::Color32::RED,
+        }];
+        let bars: Vec<egui::Rect> = painted(&chart, &series)
+            .iter()
+            .filter_map(|shape| match shape {
+                egui::Shape::Rect(r) if r.fill == egui::Color32::RED => Some(r.rect),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(bars.len(), 3, "one bar per point");
+        for bar in &bars {
+            assert!(
+                bar.height() > 1.0 && bar.width() > 1.0,
+                "a bar nobody can see is not a bar: {bar:?}"
+            );
+        }
+        // Taller values, taller bars — and all of them stand on one baseline.
+        assert!(bars[0].height() < bars[1].height() && bars[1].height() < bars[2].height());
+        assert!(bars.windows(2).all(|w| w[0].bottom() == w[1].bottom()));
     }
 
     #[test]

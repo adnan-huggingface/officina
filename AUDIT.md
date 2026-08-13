@@ -430,3 +430,18 @@ anything); no function autocomplete; grouped sheet editing absent.
 
     Not fixed here: it belongs with the layout rather than with panes, and it
     wants its own pass over the reader, `Layout::for_sheet`, and the writer.
+
+28. **No bar chart has ever drawn a bar.** Every bar and column chart drew its
+    frame, its gridlines, its axis labels and its legend, and nothing in the
+    plot area — which is not obvious from a screenshot of a chart whose bars
+    would have been short anyway, and is why it survived the chart chunk, the
+    audit, and the insert-a-chart task. It was found by inserting a chart over
+    10, 20, 30, 40 and looking at what came out.
+
+    One bar was built from a y range written low value to high value. A bigger
+    value is a *smaller* y on a screen, so every one of those rectangles was
+    upside down, and egui fills a negative rectangle with nothing at all. The
+    corners are now handed to `Rect::from_two_pos`, which sorts them, so the
+    mistake cannot come back. The regression test reads the shapes the painter
+    emitted and asserts a visible rectangle per point, taller for a larger
+    number, all standing on one baseline — it fails on the old code.

@@ -10,10 +10,30 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[-]` deferred
 ## Current state
 
 **Chunk:** C16 — the Word model (C0–C15 done, plus a UX pass, a sheets /
-sort / filter pass, and a row-and-column resizing pass)
+sort / filter pass, a row-and-column resizing pass, a parity audit against
+Excel, and the twelve tasks that closed what the audit found)
 **Status:** not started
 **Handoff note:**
 
+- **Calx is feature-complete for daily use as far as the audit reaches**, with
+  one exception recorded on purpose: printing, which is out of scope by
+  instruction. `AUDIT.md` holds every claim and every finding; findings 1–26
+  and 28 are fixed, and 27 (a sheet's own `defaultRowHeight` /
+  `defaultColWidth` are never read, so rows draw about 4% too tall) is
+  deliberately open and belongs with the layout rather than with any one
+  feature.
+- Watch item: **finding 28 was a chart drawing every bar upside down**, which
+  egui fills with nothing, so no bar chart had ever shown a bar. It survived
+  C12, the audit and the insert-a-chart task because every test asked the
+  model and none asked the painter. `grid::chart::tests::painted` is the
+  answer to that: it runs a frame and reads the shapes back.
+- Workspace total is **893 tests**, all green; `cargo clippy --workspace
+  --all-targets -- -D warnings` and `cargo fmt --all --check` are both clean;
+  `cargo xtask fidelity` is check 1, 27 of 27 and check 2, 12 of 12.
+- The release binary at `target/release/calx.exe` is current with this state.
+- Watch item: **`cargo fmt` had drifted across twenty files** before this was
+  last checked. Edits made by script rather than by hand are the reason — they
+  do not run the formatter. Run `cargo fmt --all` after any scripted edit.
 - Rust 1.97.1 `x86_64-pc-windows-gnu` installed at `~/.cargo/bin` (not on PATH —
   installed with `--no-modify-path`). Links against MSYS2 mingw-w64 GCC 12.1.0,
   so no Visual Studio is needed.
@@ -50,9 +70,6 @@ sort / filter pass, and a row-and-column resizing pass)
   reprinting them; `write::splice` is the primitive that makes that possible, and
   everything else in the module is built on it. `rfd` is Calx's file dialog, on
   default features so a Linux build needs the XDG portal rather than GTK headers.
-- Workspace total is **744 tests**, all green;
-  `cargo clippy --workspace --all-targets -- -D warnings` and
-  `cargo fmt --all --check` are both clean.
 - `ss-model` grew four modules across C11–C14: `color` (the four spellings of
   a colour), `cond` (conditional formatting and data validation), `chart`, and
   `pivot`. `ss-formula` grew `cond` (evaluating those rules) and four function
@@ -557,6 +574,84 @@ undo stack. It is now about 120 ms and half a megabyte.
   Any eframe example found online will be for the older API.
 - Watch item: `cargo build 2>&1 | tail` reports *tail's* exit code, not cargo's.
   Check `${PIPESTATUS[0]}` or the "Finished"/"error" line, not `$?`.
+
+### The parity audit (after the sorting pass)
+
+`AUDIT.md` is the whole of it: eighteen areas — selection, navigation, editing,
+the fill handle, the clipboard, formatting, sorting, formulas in the UI, undo,
+sheets, view, cursors, find, objects, files, the status bar, context menus —
+written as concrete claims about **what Excel does**, before looking at what
+Calx did. Twenty mismatches came out of the first pass and are logged with the
+task that fixed each; seven more were found afterwards and logged the same way.
+
+- **Most of them were about the mouse and the keyboard, not the file format.**
+  Right-click collapsed the selection; the active cell was filled instead of
+  left white inside its range; a selection sweep did not auto-scroll past the
+  edge; Ctrl+A always took the whole sheet; End and Ctrl+End did nothing; there
+  was no Go To, no formula point mode, no F4, no Alt+Enter, no marching ants,
+  no drag-move of a range by its border, no fill-handle double-click. None of
+  that is visible from a test of the model, and all of it is what using a
+  spreadsheet *is*.
+- **A context menu's Paste pasted the wrong thing.** It replayed the text Calx
+  remembered rather than asking the system clipboard, so anything copied in
+  another application arrived as whatever had been copied here last.
+- **Select all, then sort, and the process died.** The corner box hands the
+  sort a selection 1,048,576 rows tall, and the sort tried to allocate the
+  rectangle it was given. A selection is now intersected with the used range
+  before anything sizes an array from it.
+- **The in-cell editor did not look like a cell**, and the window opened with a
+  dark bar down its right, then opened maximized every morning once that was
+  fixed. Three separate faults in the shell, all recorded in the log; the last
+  one is why `~/.config/calx/window` exists.
+
+### Completing the spreadsheet (tasks #39–#50)
+
+Everything the audit found missing that was a *feature* rather than a fix,
+taken one at a time. Each is in the toolbar where Excel keeps it, on the
+right-click menu where Excel offers it, and under Excel's own key.
+
+- **Find and Replace, Paste Special, Format Cells, the Name Manager**, and the
+  data-validation and conditional-formatting dialogs. Find and Replace is one
+  window with a row hidden rather than two windows, so Ctrl+H over an open Find
+  keeps what has been typed.
+- **Group and ungroup rows and columns**, with the outline bar and its
+  collapse controls drawn beside the headers, under Excel's Shift+Alt+arrow.
+- **Split panes**, which found a real bug on the way in: `<sheetView>` had *no
+  writer at all*, so freezing a sheet never survived its own save. Both halves
+  are fixed, and a file whose panes nobody touched still goes back byte for
+  byte. The split bar drags and can be dropped back off the edge to remove it.
+- **Protect Sheet**, read and written — the password attributes are preserved
+  verbatim and never interpreted, because a hash we cannot check is not a lock
+  we may open — and enforced at `perform`, the one place every change lands.
+  Every flag in `<sheetProtection>` states what is *forbidden*, so the model
+  stores the inverse and the dialog reads the way Excel's does.
+- **Text to Columns and Remove Duplicates.** Both read everything before
+  writing anything and rewrite the formulas that move. Remove Duplicates
+  widens the selection to the block it sits in, because removing rows from one
+  column while its neighbours stay put tears every row of the table in half.
+- **Insert a chart, insert a picture** — the first time this crate *authors*
+  parts rather than editing ones it was handed. Four things have to line up for
+  one object to exist: the object part, a drawing part with the anchor and a
+  relationship, a worksheet relationship and a `<drawing>` element, and a
+  content type for each new part. Any one missing is a workbook Excel calls
+  damaged. An empty part name is what marks an object as new, since anything
+  read from a file names where it came from.
+- **Notes on cells**, which live in three places at once: the comments part,
+  the VML part that draws the box — deprecated in 2007 and still required — and
+  the `<legacyDrawing>` naming it. A comments part with no VML beside it opens,
+  and then Excel offers to repair the file, which is worse than no note at all.
+- **The keys.** Alt+F1 charts the selection where it stands; F9 recalculates,
+  which is only for the volatile functions since everything else recalculates
+  on every edit; Ctrl+Shift+O selects every cell carrying a note, the only way
+  to find one on a sheet bigger than the screen; Ctrl+Shift+7 outlines the
+  selection and Ctrl+Shift+minus takes its borders off — that last one has to
+  be answered before Ctrl+minus deletes rows, since shift is the only thing
+  telling them apart. Split panes, protection and the two data tools get no key,
+  because Excel gives them none: they are ribbon paths, and this has no ribbon.
+- Known limit, stated rather than hidden: **Excel itself has not opened the
+  files with authored charts, pictures or notes.** The evidence is our own
+  reader agreeing with the writer, plus the schema order checked against the
+  spec. That is real, and it is not the same as Excel's verdict.
 
 ---
 

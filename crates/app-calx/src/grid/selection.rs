@@ -276,14 +276,36 @@ impl Selection {
         self.lead = range.end;
     }
 
+    /// A list of single cells as one disjoint selection, the cursor on the
+    /// first. Ctrl+Shift+O asks for this; nothing else does, because every
+    /// other multi-area selection is built a click at a time by `add`.
+    pub fn select_cells(&mut self, cells: &[CellRef], sheet: &Sheet) {
+        let Some(&first) = cells.first() else { return };
+        self.move_to(first, sheet);
+        for &at in &cells[1..] {
+            let at = anchor_of_merge(sheet, at);
+            let range = expand(sheet, CellRange::new(at, at));
+            if !self.ranges.contains(&range) {
+                self.ranges.push(range);
+            }
+        }
+    }
+
     /// End: the last filled cell of the row, the mirror of Home.
     pub fn end_of_row(&mut self, sheet: &Sheet, extend: bool) {
-        let row = if extend { self.lead.row } else { self.cursor.row };
+        let row = if extend {
+            self.lead.row
+        } else {
+            self.cursor.row
+        };
         let Some((_, used_end)) = sheet.cells.used_range() else {
             return;
         };
-        let filled =
-            |col: u32| sheet.get(CellRef::new(row, col)).is_some_and(|c| !c.is_vacant());
+        let filled = |col: u32| {
+            sheet
+                .get(CellRef::new(row, col))
+                .is_some_and(|c| !c.is_vacant())
+        };
         // The last filled column of this row; an empty row answers with the
         // sheet's own last used column, so End still goes *somewhere* useful.
         let mut col = used_end.col;
@@ -319,9 +341,17 @@ pub fn current_region(sheet: &Sheet, at: CellRef) -> CellRange {
         let mut grown = range;
         // Probe columns one past each side, clamped to the used range so an
         // island near the edge does not walk a million empty cells.
-        let c0 = range.start.col.saturating_sub(1).max(used_start.col.saturating_sub(1));
+        let c0 = range
+            .start
+            .col
+            .saturating_sub(1)
+            .max(used_start.col.saturating_sub(1));
         let c1 = (range.end.col + 1).min(used_end.col);
-        let r0 = range.start.row.saturating_sub(1).max(used_start.row.saturating_sub(1));
+        let r0 = range
+            .start
+            .row
+            .saturating_sub(1)
+            .max(used_start.row.saturating_sub(1));
         let r1 = (range.end.row + 1).min(used_end.row);
         if range.start.row > 0 && (c0..=c1).any(|c| filled(range.start.row - 1, c)) {
             grown.start.row -= 1;
@@ -608,10 +638,16 @@ mod tests {
             "diagonal contact joins D4; F8 stays out"
         );
         // From an isolated cell the region is just that cell.
-        assert_eq!(current_region(&sheet, a1("F8")), CellRange::new(a1("F8"), a1("F8")));
+        assert_eq!(
+            current_region(&sheet, a1("F8")),
+            CellRange::new(a1("F8"), a1("F8"))
+        );
         // From an empty cell far away, likewise — the caller decides that
         // means select-all.
-        assert_eq!(current_region(&sheet, a1("H20")), CellRange::new(a1("H20"), a1("H20")));
+        assert_eq!(
+            current_region(&sheet, a1("H20")),
+            CellRange::new(a1("H20"), a1("H20"))
+        );
     }
 
     #[test]

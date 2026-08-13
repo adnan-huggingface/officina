@@ -14,8 +14,8 @@ use ui_kit::egui;
 
 use super::editor::{self, Editor, Mode};
 use super::{
-    plan, rect_of, rect_of_range, Action, Direction, Drag, Format, GridView, Layout, PaintEdge,
-    Scroll, Selection, BOTTOM, LEFT, RESIZE_GRAB, RIGHT, TOP,
+    plan, rect_of, rect_of_range, Action, BorderPreset, Direction, Drag, Format, GridView, Layout,
+    PaintEdge, Scroll, Selection, BOTTOM, LEFT, RESIZE_GRAB, RIGHT, TOP,
 };
 use ss_formula::cond::{Formatting, Overlay};
 use ss_model::style::{BorderStyle, HAlign, VAlign};
@@ -349,11 +349,7 @@ fn paint_notes(ui: &mut egui::Ui, notes: &[(egui::Rect, String)], body: egui::Re
             egui::pos2(rect.right(), rect.top() + MARKER),
         );
         painter.add(egui::Shape::convex_polygon(
-            vec![
-                corner.left_top(),
-                corner.right_top(),
-                corner.right_bottom(),
-            ],
+            vec![corner.left_top(), corner.right_top(), corner.right_bottom()],
             egui::Color32::from_rgb(0xC0, 0x39, 0x2B),
             egui::Stroke::NONE,
         ));
@@ -609,9 +605,9 @@ impl GridView {
         // would drop back to a plain one halfway through the gesture — which
         // reads as the drag having been let go.
         let icon = match self.drag {
-            Some(Drag::MoveSplit { axis: Axis::Columns }) => {
-                Some(egui::CursorIcon::ResizeHorizontal)
-            }
+            Some(Drag::MoveSplit {
+                axis: Axis::Columns,
+            }) => Some(egui::CursorIcon::ResizeHorizontal),
             Some(Drag::MoveSplit { axis: Axis::Rows }) => Some(egui::CursorIcon::ResizeVertical),
             Some(Drag::ResizeColumn { .. }) => Some(egui::CursorIcon::ResizeHorizontal),
             Some(Drag::ResizeRow { .. }) => Some(egui::CursorIcon::ResizeVertical),
@@ -629,11 +625,14 @@ impl GridView {
                         Axis::Columns => egui::CursorIcon::ResizeHorizontal,
                         Axis::Rows => egui::CursorIcon::ResizeVertical,
                     })
-                    .or_else(|| header_edge(layout, content, body, &panes, pos)
-                    .map(|(axis, _)| match axis {
-                        Axis::Columns => egui::CursorIcon::ResizeHorizontal,
-                        Axis::Rows => egui::CursorIcon::ResizeVertical,
-                    }))
+                    .or_else(|| {
+                        header_edge(layout, content, body, &panes, pos).map(
+                            |(axis, _)| match axis {
+                                Axis::Columns => egui::CursorIcon::ResizeHorizontal,
+                                Axis::Rows => egui::CursorIcon::ResizeVertical,
+                            },
+                        )
+                    })
                     .or_else(|| self.movable_band(layout, content, body, &panes, pos))
                     .or_else(|| self.pointer_over(sheet, layout, &panes, pos))
                     .or_else(|| self.fill_hover(layout, &panes, pos))
@@ -662,8 +661,7 @@ impl GridView {
                 let text = if note.author.is_empty() {
                     note.body().to_string()
                 } else {
-                    format!("{}
-{}", note.author, note.body())
+                    format!("{}\n{}", note.author, note.body())
                 };
                 Some((rect, text))
             })
@@ -719,7 +717,10 @@ impl GridView {
     /// line of every expanded group, a boxed + where one is collapsed.
     fn paint_outline_margin(&self, painter: &egui::Painter, sheet: &Sheet, frame: &Frame) {
         let Frame {
-            layout, full, panes, ..
+            layout,
+            full,
+            panes,
+            ..
         } = *frame;
         let ink = egui::Color32::from_gray(0x55);
         let rm = layout.outline_row_margin as f32;
@@ -766,12 +767,7 @@ impl GridView {
                         egui::pos2(x + w / 2.0, full.top() + cm / 2.0),
                         egui::vec2(side, side),
                     );
-                    draw_outline_button(
-                        painter,
-                        rect,
-                        !sheet.column_collapsed.contains(&col),
-                        ink,
-                    );
+                    draw_outline_button(painter, rect, !sheet.column_collapsed.contains(&col), ink);
                 }
             }
         }
@@ -847,14 +843,24 @@ impl GridView {
     }
 
     /// The move cursor over that border.
-    fn border_hover(&self, layout: &Layout, panes: &[Pane], pos: egui::Pos2) -> Option<egui::CursorIcon> {
+    fn border_hover(
+        &self,
+        layout: &Layout,
+        panes: &[Pane],
+        pos: egui::Pos2,
+    ) -> Option<egui::CursorIcon> {
         self.on_selection_border(layout, panes, pos)
             .then_some(egui::CursorIcon::Move)
     }
 
     /// The thin cross over the fill handle. The square is six pixels wide, so
     /// the cursor changing is most of what says it exists at all.
-    fn fill_hover(&self, layout: &Layout, panes: &[Pane], pos: egui::Pos2) -> Option<egui::CursorIcon> {
+    fn fill_hover(
+        &self,
+        layout: &Layout,
+        panes: &[Pane],
+        pos: egui::Pos2,
+    ) -> Option<egui::CursorIcon> {
         if self.editor.is_some() || self.selected_picture.is_some() || self.selected_chart.is_some()
         {
             return None;
@@ -1343,8 +1349,7 @@ impl GridView {
         }
 
         // Where a dragged block would land, as an outline the size of it.
-        if let (Some(Drag::MoveRange { .. }), Some(target)) = (self.drag, self.move_range_target)
-        {
+        if let (Some(Drag::MoveRange { .. }), Some(target)) = (self.drag, self.move_range_target) {
             let rect = rect_of_range(layout, target, pane.rect, pane.scroll);
             if rect.intersect(pane.rect).is_positive() {
                 painter.rect_stroke(
@@ -1795,12 +1800,10 @@ impl GridView {
                 // of the sheet while the bottom half stays on another. A freeze
                 // has nothing to move but its scrolling pane.
                 let over = ui.ctx().pointer_latest_pos();
-                let band_x = !pins
-                    && over.is_some_and(|p| p.x < body.left() + split.x)
-                    && frozen.col > 0;
-                let band_y = !pins
-                    && over.is_some_and(|p| p.y < body.top() + split.y)
-                    && frozen.row > 0;
+                let band_x =
+                    !pins && over.is_some_and(|p| p.x < body.left() + split.x) && frozen.col > 0;
+                let band_y =
+                    !pins && over.is_some_and(|p| p.y < body.top() + split.y) && frozen.row > 0;
                 if band_x {
                     self.pinned.x -= f64::from(scroll_delta.x);
                 } else {
@@ -1850,9 +1853,9 @@ impl GridView {
             // state: the double-click arrives on the second *press*, before
             // that press has begun its own drag.
             let on_handle = pos.is_some_and(|pos| {
-                panes
-                    .iter()
-                    .any(|pane| pane.rect.contains(pos) && self.fill_handle(layout, pane).contains(pos))
+                panes.iter().any(|pane| {
+                    pane.rect.contains(pos) && self.fill_handle(layout, pane).contains(pos)
+                })
             });
             if on_handle && self.editor.is_none() && self.selected_picture.is_none() {
                 let from = self.selection.active_range();
@@ -1983,7 +1986,10 @@ impl GridView {
             return;
         };
         let Frame {
-            layout, body, panes, ..
+            layout,
+            body,
+            panes,
+            ..
         } = *frame;
         let in_column_header = pos.y < body.top() && pos.x >= body.left();
         let in_row_header = pos.x < body.left() && pos.y >= body.top();
@@ -2938,6 +2944,31 @@ impl GridView {
             // Ctrl+Shift+~ ! @ # $ % ^: Excel's number-format row, using the
             // same codes the toolbar combo names, so the combo agrees.
             if modifiers.shift {
+                // & and _ continue that row with the two border commands.
+                // The underscore has to be answered before Ctrl+minus below
+                // deletes rows: shift is the only thing telling them apart.
+                if hit(egui::Key::Num7) {
+                    self.actions
+                        .push(Action::Format(Format::Border(BorderPreset::Outline)));
+                    return None;
+                }
+                if hit(egui::Key::Minus) {
+                    self.actions
+                        .push(Action::Format(Format::Border(BorderPreset::None)));
+                    return None;
+                }
+                // Ctrl+Shift+O selects every cell on the sheet carrying a
+                // note, which is the only way to find one on a sheet bigger
+                // than the screen. No notes selects nothing, as in Excel:
+                // the answer to "show me them all" is already on the screen.
+                if hit(egui::Key::O) {
+                    let cells: Vec<CellRef> = sheet.comments.iter().map(|c| c.at).collect();
+                    if !cells.is_empty() {
+                        self.selection.select_cells(&cells, sheet);
+                        return Some(self.selection.cursor());
+                    }
+                    return None;
+                }
                 let code = if hit(egui::Key::Backtick) {
                     Some("General")
                 } else if hit(egui::Key::Num1) {
@@ -3056,8 +3087,7 @@ impl GridView {
             egui::Key::A if modifiers.ctrl => {
                 // First press selects the island of data around the cursor;
                 // pressed again — or on an empty patch — the whole sheet.
-                let region =
-                    super::selection::current_region(sheet, self.selection.cursor());
+                let region = super::selection::current_region(sheet, self.selection.cursor());
                 let lone = region.rows() == 1 && region.cols() == 1;
                 if lone || self.selection.ranges() == [region] {
                     self.selection.select_all();
@@ -4296,7 +4326,10 @@ mod tests {
         frame(
             &mut view,
             &mut book,
-            vec![egui::Event::PointerMoved(over), wheel(egui::vec2(0.0, -60.0))],
+            vec![
+                egui::Event::PointerMoved(over),
+                wheel(egui::vec2(0.0, -60.0)),
+            ],
             &ctx,
         );
         assert!(view.pinned.y > 0.0, "the top pane scrolled");
@@ -4308,7 +4341,10 @@ mod tests {
         frame(
             &mut view,
             &mut book,
-            vec![egui::Event::PointerMoved(over), wheel(egui::vec2(0.0, -60.0))],
+            vec![
+                egui::Event::PointerMoved(over),
+                wheel(egui::vec2(0.0, -60.0)),
+            ],
             &ctx,
         );
         assert!(view.scroll.y > 0.0, "the bottom pane scrolled");
@@ -4327,7 +4363,10 @@ mod tests {
         frame(
             &mut view,
             &mut book,
-            vec![egui::Event::PointerMoved(over), wheel(egui::vec2(0.0, -60.0))],
+            vec![
+                egui::Event::PointerMoved(over),
+                wheel(egui::vec2(0.0, -60.0)),
+            ],
             &ctx,
         );
         assert_eq!(view.pinned, Scroll::default(), "frozen rows are frozen");
@@ -4353,7 +4392,12 @@ mod tests {
 
         // Three rows further down, and then let go.
         let to = egui::pos2(300.0, seam + row * 3.0);
-        frame(&mut view, &mut book, vec![egui::Event::PointerMoved(to)], &ctx);
+        frame(
+            &mut view,
+            &mut book,
+            vec![egui::Event::PointerMoved(to)],
+            &ctx,
+        );
         assert_eq!(
             book.sheet(0).expect("sheet 0").panes,
             Some(ss_model::Panes::split(CellRef::new(8, 0)))
@@ -4361,9 +4405,7 @@ mod tests {
 
         frame(&mut view, &mut book, vec![press(to, false)], &ctx);
         assert!(
-            view.actions
-                .iter()
-                .any(|a| matches!(a, Action::Resized(_))),
+            view.actions.iter().any(|a| matches!(a, Action::Resized(_))),
             "the move is one undoable change, reported when the button comes up"
         );
     }
@@ -4383,7 +4425,12 @@ mod tests {
             &ctx,
         );
         let to = egui::pos2(300.0, 22.0);
-        frame(&mut view, &mut book, vec![egui::Event::PointerMoved(to)], &ctx);
+        frame(
+            &mut view,
+            &mut book,
+            vec![egui::Event::PointerMoved(to)],
+            &ctx,
+        );
         assert_eq!(book.sheet(0).expect("sheet 0").panes, None);
     }
 
@@ -4419,7 +4466,12 @@ mod tests {
         let from = cell_of(&view, CellRef::new(1, 1));
         let to = cell_of(&view, CellRef::new(3, 2));
         frame(&mut view, &mut book, vec![press(from, true)], &ctx);
-        frame(&mut view, &mut book, vec![egui::Event::PointerMoved(to)], &ctx);
+        frame(
+            &mut view,
+            &mut book,
+            vec![egui::Event::PointerMoved(to)],
+            &ctx,
+        );
         frame(&mut view, &mut book, vec![press(to, false)], &ctx);
         let range = CellRange::new(CellRef::new(1, 1), CellRef::new(3, 2));
         assert_eq!(view.selection.ranges(), [range]);
@@ -4428,7 +4480,11 @@ mod tests {
         frame(&mut view, &mut book, vec![right_press(inside, true)], &ctx);
         frame(&mut view, &mut book, vec![right_press(inside, false)], &ctx);
         assert_eq!(view.selection.ranges(), [range], "the selection is kept");
-        assert_eq!(view.selection.cursor(), CellRef::new(1, 1), "so is the cursor");
+        assert_eq!(
+            view.selection.cursor(),
+            CellRef::new(1, 1),
+            "so is the cursor"
+        );
 
         // Outside the selection it moves there first, as Excel's does.
         let outside = cell_of(&view, CellRef::new(6, 4));
@@ -4448,7 +4504,12 @@ mod tests {
         let from = cell_of(&view, CellRef::new(1, 1));
         let to = cell_of(&view, CellRef::new(4, 3));
         frame(&mut view, &mut book, vec![press(from, true)], &ctx);
-        frame(&mut view, &mut book, vec![egui::Event::PointerMoved(to)], &ctx);
+        frame(
+            &mut view,
+            &mut book,
+            vec![egui::Event::PointerMoved(to)],
+            &ctx,
+        );
         frame(&mut view, &mut book, vec![press(to, false)], &ctx);
         assert_eq!(
             view.selection.active_range(),
@@ -4473,7 +4534,12 @@ mod tests {
         // Park the pointer below the bottom edge and let frames pass. Each
         // one nudges the scroll further, even with no new pointer events.
         let below = egui::pos2(from.x, 5000.0);
-        frame(&mut view, &mut book, vec![egui::Event::PointerMoved(below)], &ctx);
+        frame(
+            &mut view,
+            &mut book,
+            vec![egui::Event::PointerMoved(below)],
+            &ctx,
+        );
         let after_one = view.scroll.y;
         assert!(after_one > 0.0, "the view moved: {after_one}");
         frame(&mut view, &mut book, vec![], &ctx);
@@ -4597,16 +4663,25 @@ mod tests {
         let sheet = book.sheet(0).expect("a sheet").clone();
         let layout = Layout::for_sheet(&book, &sheet, view.zoom);
         let origin = egui::vec2(layout.header_width as f32, layout.header_height as f32);
-        let rect = crate::grid::picture::sheet_rect(&layout, &sheet.charts[0].anchor)
-            .translate(origin);
+        let rect =
+            crate::grid::picture::sheet_rect(&layout, &sheet.charts[0].anchor).translate(origin);
         let inside = rect.center();
         frame(&mut view, &mut book, vec![press(inside, true)], &ctx);
         assert_eq!(view.selected_chart, Some(0));
-        assert!(matches!(view.drag, Some(Drag::MoveChart { .. })), "{:?}", view.drag);
+        assert!(
+            matches!(view.drag, Some(Drag::MoveChart { .. })),
+            "{:?}",
+            view.drag
+        );
 
         // Dragging it moves the anchor; releasing reports one undo entry.
         let further = inside + egui::vec2(96.0, 40.0);
-        frame(&mut view, &mut book, vec![egui::Event::PointerMoved(further)], &ctx);
+        frame(
+            &mut view,
+            &mut book,
+            vec![egui::Event::PointerMoved(further)],
+            &ctx,
+        );
         frame(&mut view, &mut book, vec![press(further, false)], &ctx);
         assert_ne!(
             book.sheet(0).expect("sheet").charts[0].anchor,
@@ -4857,11 +4932,113 @@ mod tests {
         frame(
             &mut view,
             &mut book,
-            vec![key(egui::Key::Space, egui::Modifiers::CTRL | egui::Modifiers::SHIFT)],
+            vec![key(
+                egui::Key::Space,
+                egui::Modifiers::CTRL | egui::Modifiers::SHIFT,
+            )],
             &ctx,
         );
         let all = view.selection.active_range();
         assert_eq!((all.rows(), all.cols()), (MAX_ROWS, MAX_COLS));
+    }
+
+    #[test]
+    fn ctrl_shift_o_gathers_every_cell_with_a_note() {
+        let (ctx, mut book, mut view) = typing();
+        let sheet = book.sheet_mut(0).expect("a sheet");
+        sheet.comments.push(ss_model::Comment::new(
+            CellRef::new(1, 1),
+            "Ada",
+            "check this",
+        ));
+        sheet.comments.push(ss_model::Comment::new(
+            CellRef::new(9, 4),
+            "Ada",
+            "and this",
+        ));
+        frame(&mut view, &mut book, vec![], &ctx);
+        frame(
+            &mut view,
+            &mut book,
+            vec![key(
+                egui::Key::O,
+                egui::Modifiers::CTRL | egui::Modifiers::SHIFT,
+            )],
+            &ctx,
+        );
+        assert_eq!(
+            view.selection.ranges(),
+            [
+                CellRange::new(CellRef::new(1, 1), CellRef::new(1, 1)),
+                CellRange::new(CellRef::new(9, 4), CellRef::new(9, 4)),
+            ]
+        );
+        assert_eq!(
+            view.selection.cursor(),
+            CellRef::new(1, 1),
+            "the active cell lands on the first note"
+        );
+    }
+
+    #[test]
+    fn ctrl_shift_o_on_a_sheet_with_no_notes_changes_nothing() {
+        let (ctx, mut book, mut view) = typing();
+        frame(&mut view, &mut book, vec![], &ctx);
+        let before = view.selection.clone();
+        frame(
+            &mut view,
+            &mut book,
+            vec![key(
+                egui::Key::O,
+                egui::Modifiers::CTRL | egui::Modifiers::SHIFT,
+            )],
+            &ctx,
+        );
+        assert_eq!(view.selection, before);
+    }
+
+    #[test]
+    fn the_border_keys_are_told_apart_from_the_delete_key() {
+        let (ctx, mut book, mut view) = typing();
+        frame(&mut view, &mut book, vec![], &ctx);
+
+        frame(
+            &mut view,
+            &mut book,
+            vec![key(
+                egui::Key::Minus,
+                egui::Modifiers::CTRL | egui::Modifiers::SHIFT,
+            )],
+            &ctx,
+        );
+        assert_eq!(
+            view.actions,
+            [Action::Format(Format::Border(BorderPreset::None))],
+            "Ctrl+Shift+minus clears borders rather than deleting rows"
+        );
+
+        view.actions.clear();
+        frame(
+            &mut view,
+            &mut book,
+            vec![key(
+                egui::Key::Num7,
+                egui::Modifiers::CTRL | egui::Modifiers::SHIFT,
+            )],
+            &ctx,
+        );
+        assert_eq!(
+            view.actions,
+            [Action::Format(Format::Border(BorderPreset::Outline))]
+        );
+
+        view.actions.clear();
+        frame(&mut view, &mut book, vec![ctrl(egui::Key::Minus)], &ctx);
+        assert_eq!(
+            view.actions,
+            [Action::Delete(Axis::Rows)],
+            "without shift it is still the delete key"
+        );
     }
 
     #[test]
@@ -4895,7 +5072,10 @@ mod tests {
         frame(
             &mut view,
             &mut book,
-            vec![key(egui::Key::Num9, egui::Modifiers::CTRL | egui::Modifiers::SHIFT)],
+            vec![key(
+                egui::Key::Num9,
+                egui::Modifiers::CTRL | egui::Modifiers::SHIFT,
+            )],
             &ctx,
         );
         assert_eq!(
@@ -4925,7 +5105,10 @@ mod tests {
         frame(
             &mut view,
             &mut book,
-            vec![key(egui::Key::Num5, egui::Modifiers::CTRL | egui::Modifiers::SHIFT)],
+            vec![key(
+                egui::Key::Num5,
+                egui::Modifiers::CTRL | egui::Modifiers::SHIFT,
+            )],
             &ctx,
         );
         frame(&mut view, &mut book, vec![ctrl(egui::Key::Num5)], &ctx);
@@ -4941,7 +5124,12 @@ mod tests {
     #[test]
     fn clicking_a_cell_mid_formula_points_at_it() {
         let (ctx, mut book, mut view) = typing();
-        frame(&mut view, &mut book, vec![egui::Event::Text("=".into())], &ctx);
+        frame(
+            &mut view,
+            &mut book,
+            vec![egui::Event::Text("=".into())],
+            &ctx,
+        );
 
         // Click C3: the reference goes into the formula, the editor stays.
         let c3 = cell_of(&view, CellRef::new(2, 2));
@@ -4949,9 +5137,17 @@ mod tests {
         assert_eq!(view.editor.as_ref().map(|e| e.text.as_str()), Some("=C3"));
         // Dragging stretches it into a range before the button comes up.
         let d4 = cell_of(&view, CellRef::new(3, 3));
-        frame(&mut view, &mut book, vec![egui::Event::PointerMoved(d4)], &ctx);
+        frame(
+            &mut view,
+            &mut book,
+            vec![egui::Event::PointerMoved(d4)],
+            &ctx,
+        );
         frame(&mut view, &mut book, vec![press(d4, false)], &ctx);
-        assert_eq!(view.editor.as_ref().map(|e| e.text.as_str()), Some("=C3:D4"));
+        assert_eq!(
+            view.editor.as_ref().map(|e| e.text.as_str()),
+            Some("=C3:D4")
+        );
 
         // An operator locks it; the next click starts the second reference.
         view.editor.as_mut().expect("open").text.push('+');
@@ -4985,11 +5181,26 @@ mod tests {
         let b2 = cell_of(&view, CellRef::new(1, 1));
         frame(&mut view, &mut book, vec![press(b2, true)], &ctx);
         frame(&mut view, &mut book, vec![press(b2, false)], &ctx);
-        frame(&mut view, &mut book, vec![egui::Event::Text("=".into())], &ctx);
+        frame(
+            &mut view,
+            &mut book,
+            vec![egui::Event::Text("=".into())],
+            &ctx,
+        );
 
-        frame(&mut view, &mut book, vec![plain(egui::Key::ArrowDown)], &ctx);
+        frame(
+            &mut view,
+            &mut book,
+            vec![plain(egui::Key::ArrowDown)],
+            &ctx,
+        );
         assert_eq!(view.editor.as_ref().map(|e| e.text.as_str()), Some("=B3"));
-        frame(&mut view, &mut book, vec![plain(egui::Key::ArrowRight)], &ctx);
+        frame(
+            &mut view,
+            &mut book,
+            vec![plain(egui::Key::ArrowRight)],
+            &ctx,
+        );
         assert_eq!(
             view.editor.as_ref().map(|e| e.text.as_str()),
             Some("=C3"),
@@ -5024,9 +5235,19 @@ mod tests {
         let from = cell_of(&view, CellRef::new(1, 1));
         let to = cell_of(&view, CellRef::new(3, 1));
         frame(&mut view, &mut book, vec![press(from, true)], &ctx);
-        frame(&mut view, &mut book, vec![egui::Event::PointerMoved(to)], &ctx);
+        frame(
+            &mut view,
+            &mut book,
+            vec![egui::Event::PointerMoved(to)],
+            &ctx,
+        );
         frame(&mut view, &mut book, vec![press(to, false)], &ctx);
-        frame(&mut view, &mut book, vec![egui::Event::Text("7".into())], &ctx);
+        frame(
+            &mut view,
+            &mut book,
+            vec![egui::Event::Text("7".into())],
+            &ctx,
+        );
         frame(
             &mut view,
             &mut book,
@@ -5086,8 +5307,7 @@ mod tests {
         // The top edge of the block, over the middle of column B.
         let (_, _, layout) = view.layout.as_ref().expect("laid out");
         let edge = egui::pos2(
-            layout.header_width as f32
-                + (layout.cols.offset(1) + layout.cols.size(1) / 2.0) as f32,
+            layout.header_width as f32 + (layout.cols.offset(1) + layout.cols.size(1) / 2.0) as f32,
             layout.header_height as f32 + layout.rows.offset(1) as f32,
         );
         // Hovering it shows the move cursor.
@@ -5106,7 +5326,12 @@ mod tests {
             view.drag
         );
         let drop = cell_of(&view, CellRef::new(5, 4));
-        frame(&mut view, &mut book, vec![egui::Event::PointerMoved(drop)], &ctx);
+        frame(
+            &mut view,
+            &mut book,
+            vec![egui::Event::PointerMoved(drop)],
+            &ctx,
+        );
         frame(&mut view, &mut book, vec![press(drop, false)], &ctx);
         assert_eq!(
             view.actions,

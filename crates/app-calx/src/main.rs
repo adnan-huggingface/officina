@@ -590,7 +590,11 @@ impl Calx {
         let header = ss_formula::sort::looks_like_headers(sheet, range);
         let name = sheet.name.clone();
         let labelled = matches!(
-            sheet.get(CellRef::new(range.start.row + u32::from(header), range.start.col))
+            sheet
+                .get(CellRef::new(
+                    range.start.row + u32::from(header),
+                    range.start.col
+                ))
                 .map(|c| c.value),
             Some(ss_model::CellValue::Text(_))
         ) && range.cols() > 1;
@@ -604,17 +608,25 @@ impl Calx {
             Vec::new()
         };
         let categories_ref = labelled.then(|| {
-            reference(&name, range.start.col, first_row, range.start.col, range.end.row)
+            reference(
+                &name,
+                range.start.col,
+                first_row,
+                range.start.col,
+                range.end.row,
+            )
         });
 
         let first_col = range.start.col + u32::from(labelled);
         let mut series = Vec::new();
         for col in first_col..=range.end.col {
             let values: Vec<Option<f64>> = (first_row..=range.end.row)
-                .map(|row| match sheet.get(CellRef::new(row, col)).map(|c| c.value) {
-                    Some(ss_model::CellValue::Number(n)) => Some(n),
-                    _ => None,
-                })
+                .map(
+                    |row| match sheet.get(CellRef::new(row, col)).map(|c| c.value) {
+                        Some(ss_model::CellValue::Number(n)) => Some(n),
+                        _ => None,
+                    },
+                )
                 .collect();
             if values.iter().all(Option::is_none) {
                 continue;
@@ -642,7 +654,11 @@ impl Calx {
             row,
             ..Default::default()
         };
-        let left = range.end.col.saturating_add(2).min(ss_model::cell::MAX_COLS - 8);
+        let left = range
+            .end
+            .col
+            .saturating_add(2)
+            .min(ss_model::cell::MAX_COLS - 8);
         let chart = ss_model::Chart {
             part: String::new(),
             drawing_part: String::new(),
@@ -684,10 +700,8 @@ impl Calx {
     /// selection: a logo dropped onto a sheet should look like itself, and a
     /// picture is resized afterwards by dragging its corner.
     fn insert_picture(&mut self) {
-        let mut dialog = rfd::FileDialog::new().add_filter(
-            "Images",
-            &["png", "jpg", "jpeg", "gif", "bmp"],
-        );
+        let mut dialog =
+            rfd::FileDialog::new().add_filter("Images", &["png", "jpg", "jpeg", "gif", "bmp"]);
         if let Some(directory) = self.start_directory() {
             dialog = dialog.set_directory(directory);
         }
@@ -1020,6 +1034,22 @@ impl Calx {
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::ALT, egui::Key::Equals)) {
             self.autosum();
         }
+        // Alt+F1 charts the selection where it stands. Excel's F11 puts the
+        // same chart on a sheet of its own, which needs a chart sheet — a
+        // sheet kind this workbook model keeps a slot for but cannot draw —
+        // so only the embedded half of that pair is here.
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::ALT, egui::Key::F1)) {
+            self.insert_chart(ss_model::ChartKind::Bar);
+        }
+        // F9 recalculates. Everything here recalculates after every edit, so
+        // the key is for the volatile functions — NOW, TODAY, RAND — whose
+        // answers go stale on their own with nothing having been typed.
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::F9)) {
+            self.recalculate();
+            if !self.status.starts_with("circular") {
+                self.status = "Recalculated".to_string();
+            }
+        }
     }
 
     /// Opens Data Validation on the rule covering the cursor, or on a fresh
@@ -1113,8 +1143,10 @@ impl Calx {
             comments.push(ss_model::Comment::new(
                 at,
                 author,
-                format!("{author}:
-{text}"),
+                format!(
+                    "{author}:
+{text}"
+                ),
             ));
             comments.sort_by_key(|note| (note.at.row, note.at.col));
         }
@@ -1157,12 +1189,20 @@ impl Calx {
         // row of the table in half.
         let block = ss_formula::sort::region(sheet, range.start);
         let range = CellRange::new(
-            CellRef::new(range.start.row.min(block.start.row), range.start.col.min(block.start.col)),
-            CellRef::new(range.end.row.max(block.end.row), range.end.col.max(block.end.col)),
+            CellRef::new(
+                range.start.row.min(block.start.row),
+                range.start.col.min(block.start.col),
+            ),
+            CellRef::new(
+                range.end.row.max(block.end.row),
+                range.end.col.max(block.end.col),
+            ),
         );
         self.dialog = Some(Dialog::RemoveDuplicates {
             range,
-            columns: (range.start.col..=range.end.col).map(|c| (c, true)).collect(),
+            columns: (range.start.col..=range.end.col)
+                .map(|c| (c, true))
+                .collect(),
             // The same guess the sort dialog makes, and for the same reason:
             // a first row of text over columns of numbers is a heading row.
             header: ss_formula::sort::looks_like_headers(sheet, range),
@@ -1355,9 +1395,7 @@ impl Calx {
                 // A formula's *text* rewritten in place: the cells that hold
                 // it are what protection is about, and the sheet's own
                 // permission to be edited at all is the closest question.
-                Patch::Formulas { sheet, .. } => {
-                    self.refuse(*sheet, |p| p.format_cells, "edited")
-                }
+                Patch::Formulas { sheet, .. } => self.refuse(*sheet, |p| p.format_cells, "edited"),
                 Patch::Permute { sheet, .. } => self.refuse(*sheet, |p| p.sort, "sorted"),
                 Patch::Shift { sheet, shift } => {
                     let inserting = shift.count > 0;
@@ -1387,9 +1425,7 @@ impl Calx {
                 }
                 Patch::Pictures { sheet, .. }
                 | Patch::Charts { sheet, .. }
-                | Patch::ChartTitle { sheet, .. } => {
-                    self.refuse(*sheet, |p| p.objects, "changed")
-                }
+                | Patch::ChartTitle { sheet, .. } => self.refuse(*sheet, |p| p.objects, "changed"),
                 Patch::Filter { sheet, .. } => self.refuse(*sheet, |p| p.filter, "filtered"),
                 // Protecting and unprotecting, and everything that belongs to
                 // the workbook rather than to a sheet: a protected sheet can
@@ -1430,7 +1466,11 @@ impl Calx {
     /// *look* only when the sheet allows formatting — which are different
     /// permissions on the same patch, so the two are told apart by comparing
     /// with what is there now.
-    fn cells_refusal(&self, sheet: usize, cells: &[(CellRef, Option<ss_model::Cell>)]) -> Option<String> {
+    fn cells_refusal(
+        &self,
+        sheet: usize,
+        cells: &[(CellRef, Option<ss_model::Cell>)],
+    ) -> Option<String> {
         let target = self.doc.workbook.sheet(sheet)?;
         let protection = target.protection.as_ref()?;
         for (at, after) in cells {
@@ -1582,12 +1622,10 @@ impl Calx {
                         }
                     }
                 }
-                let change =
-                    edit::input_many(&mut self.doc.workbook, sheet, at, &targets, &text);
+                let change = edit::input_many(&mut self.doc.workbook, sheet, at, &targets, &text);
                 self.perform(change);
                 if clipped {
-                    self.status =
-                        format!("Filled the first {MOST} cells of the selection");
+                    self.status = format!("Filled the first {MOST} cells of the selection");
                 }
             }
             Action::Clear => {
@@ -2708,9 +2746,7 @@ impl Calx {
         // workbook that pointed into the block follows the data. Cross-sheet
         // cuts and partial pastes fall through to the clear-and-paste below.
         if let Some((from_sheet, from_range)) = self.cut_from {
-            if from_sheet == sheet
-                && text == self.clip_text
-                && how == clip::PasteSpecial::default()
+            if from_sheet == sheet && text == self.clip_text && how == clip::PasteSpecial::default()
             {
                 self.cut_from = None;
                 let change =
@@ -2979,7 +3015,11 @@ impl Calx {
             } else {
                 "Split the sheet at the cursor, into panes that scroll on their own"
             };
-            if ui.selectable_label(split, "Split").on_hover_text(tip).clicked() {
+            if ui
+                .selectable_label(split, "Split")
+                .on_hover_text(tip)
+                .clicked()
+            {
                 requested = Some(Action::Split(!split));
             }
             if icons::button(ui, Icon::Sum, false, "Sum the cells above").clicked() {
@@ -3047,13 +3087,25 @@ impl Calx {
             });
             separate(ui);
             ui.menu_button("Insert", |ui| {
-                for (label, kind) in [
-                    ("Column chart", ss_model::ChartKind::Bar),
-                    ("Line chart", ss_model::ChartKind::Line),
-                    ("Pie chart", ss_model::ChartKind::Pie),
-                    ("Area chart", ss_model::ChartKind::Area),
+                for (label, tip, kind) in [
+                    (
+                        "Column chart",
+                        "Chart the selection (Alt+F1)",
+                        ss_model::ChartKind::Bar,
+                    ),
+                    (
+                        "Line chart",
+                        "Chart the selection",
+                        ss_model::ChartKind::Line,
+                    ),
+                    ("Pie chart", "Chart the selection", ss_model::ChartKind::Pie),
+                    (
+                        "Area chart",
+                        "Chart the selection",
+                        ss_model::ChartKind::Area,
+                    ),
                 ] {
-                    if ui.button(label).clicked() {
+                    if ui.button(label).on_hover_text(tip).clicked() {
                         chart = Some(kind);
                         ui.close();
                     }
@@ -4186,17 +4238,11 @@ impl Calx {
                                             ui.selectable_value(operator, op, cf_op_name(op));
                                         }
                                     });
-                                ui.add(
-                                    egui::TextEdit::singleline(value1).desired_width(80.0),
-                                );
-                                if matches!(
-                                    operator,
-                                    CfOperator::Between | CfOperator::NotBetween
-                                ) {
+                                ui.add(egui::TextEdit::singleline(value1).desired_width(80.0));
+                                if matches!(operator, CfOperator::Between | CfOperator::NotBetween)
+                                {
                                     ui.label("and");
-                                    ui.add(
-                                        egui::TextEdit::singleline(value2).desired_width(80.0),
-                                    );
+                                    ui.add(egui::TextEdit::singleline(value2).desired_width(80.0));
                                 }
                             }
                             1 => {
@@ -4259,23 +4305,22 @@ impl Calx {
                         .min()
                         .unwrap_or(2)
                         - 1;
-                    let dxf = if *kind <= 6
-                        && (*bold || *italic || *use_text_color || *use_fill)
-                    {
-                        let [r, g, b] = *text_color;
-                        let [fr, fg, fb] = *fill_color;
-                        Some(self.doc.workbook.styles.add_dxf(ss_model::style::Dxf {
-                            bold: bold.then_some(true),
-                            italic: italic.then_some(true),
-                            color: use_text_color.then_some(Color::rgb(r, g, b)),
-                            fill: use_fill.then_some(ss_model::style::Fill::solid(
-                                Color::rgb(fr, fg, fb),
-                            )),
-                            ..Default::default()
-                        }))
-                    } else {
-                        None
-                    };
+                    let dxf =
+                        if *kind <= 6 && (*bold || *italic || *use_text_color || *use_fill) {
+                            let [r, g, b] = *text_color;
+                            let [fr, fg, fb] = *fill_color;
+                            Some(self.doc.workbook.styles.add_dxf(ss_model::style::Dxf {
+                                bold: bold.then_some(true),
+                                italic: italic.then_some(true),
+                                color: use_text_color.then_some(Color::rgb(r, g, b)),
+                                fill: use_fill.then_some(ss_model::style::Fill::solid(Color::rgb(
+                                    fr, fg, fb,
+                                ))),
+                                ..Default::default()
+                            }))
+                        } else {
+                            None
+                        };
                     let [fr, fg, fb] = *fill_color;
                     let visual_color = Color::rgb(fr, fg, fb);
                     let stop = |kind: CfValueKind| CfValue {
@@ -4285,8 +4330,7 @@ impl Calx {
                     let rule_kind = match *kind {
                         0 => {
                             let mut formulas = vec![value1.clone()];
-                            if matches!(operator, CfOperator::Between | CfOperator::NotBetween)
-                            {
+                            if matches!(operator, CfOperator::Between | CfOperator::NotBetween) {
                                 formulas.push(value2.clone());
                             }
                             CfKind::CellIs {
@@ -4714,7 +4758,10 @@ impl Calx {
                     ui.add_space(6.0);
                     ui.checkbox(&mut how.merge, "Treat consecutive delimiters as one");
                     let mut quoted = how.quote.is_some();
-                    if ui.checkbox(&mut quoted, "Text in quotes stays together").changed() {
+                    if ui
+                        .checkbox(&mut quoted, "Text in quotes stays together")
+                        .changed()
+                    {
                         how.quote = quoted.then_some('"');
                     }
                     ui.add_space(6.0);
@@ -4770,11 +4817,13 @@ impl Calx {
                             }
                         }
                     });
-                    egui::ScrollArea::vertical().max_height(280.0).show(ui, |ui| {
-                        for (col, on) in columns.iter_mut() {
-                            ui.checkbox(on, ss_model::column_name(*col));
-                        }
-                    });
+                    egui::ScrollArea::vertical()
+                        .max_height(280.0)
+                        .show(ui, |ui| {
+                            for (col, on) in columns.iter_mut() {
+                                ui.checkbox(on, ss_model::column_name(*col));
+                            }
+                        });
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
                         go = ui.button("Remove").clicked();
@@ -4782,8 +4831,11 @@ impl Calx {
                     });
                 });
                 if go {
-                    let chosen: Vec<u32> =
-                        columns.iter().filter(|(_, on)| *on).map(|(c, _)| *c).collect();
+                    let chosen: Vec<u32> = columns
+                        .iter()
+                        .filter(|(_, on)| *on)
+                        .map(|(c, _)| *c)
+                        .collect();
                     let (range, header) = (*range, *header);
                     self.remove_duplicates(range, &chosen, header);
                     keep = false;
@@ -4796,11 +4848,13 @@ impl Calx {
                     ui.set_width(340.0);
                     ui.label("Allow everyone who uses this sheet to:");
                     ui.add_space(4.0);
-                    egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
-                        for (label, field) in protection_fields(allow) {
-                            ui.checkbox(field, label);
-                        }
-                    });
+                    egui::ScrollArea::vertical()
+                        .max_height(360.0)
+                        .show(ui, |ui| {
+                            for (label, field) in protection_fields(allow) {
+                                ui.checkbox(field, label);
+                            }
+                        });
                     ui.add_space(6.0);
                     // Broken by hand and laid out left to right explicitly: a
                     // modal stretches its children and centres what is in them,
@@ -5550,9 +5604,12 @@ fn cf_rule_label(rule: &ss_model::cond::CfRule) -> String {
             if *bottom { "bottom" } else { "top" },
             if *percent { "%" } else { "" }
         ),
-        CfKind::AboveAverage { above, .. } => {
-            if *above { "above average" } else { "below average" }.to_string()
+        CfKind::AboveAverage { above, .. } => if *above {
+            "above average"
+        } else {
+            "below average"
         }
+        .to_string(),
         CfKind::TimePeriod { period } => format!("time period {period}"),
         CfKind::Duplicates { unique } => if *unique {
             "unique values"
@@ -6583,7 +6640,10 @@ mod tests {
         // workbook read-only.
         let mut app = Calx::new();
         type_into(&mut app, "A1", "42");
-        assert_eq!(value_at(&app, "A1"), Some(ss_model::CellValue::Number(42.0)));
+        assert_eq!(
+            value_at(&app, "A1"),
+            Some(ss_model::CellValue::Number(42.0))
+        );
     }
 
     #[test]
@@ -6610,9 +6670,18 @@ mod tests {
     fn taking_protection_off_is_never_refused_by_the_protection() {
         let mut app = protected(ss_model::Protection::as_excel_protects());
         app.toggle_protection();
-        assert!(app.doc.workbook.sheet(0).expect("sheet 0").protection.is_none());
+        assert!(app
+            .doc
+            .workbook
+            .sheet(0)
+            .expect("sheet 0")
+            .protection
+            .is_none());
         type_into(&mut app, "A1", "42");
-        assert_eq!(value_at(&app, "A1"), Some(ss_model::CellValue::Number(42.0)));
+        assert_eq!(
+            value_at(&app, "A1"),
+            Some(ss_model::CellValue::Number(42.0))
+        );
     }
 
     #[test]
@@ -6623,7 +6692,12 @@ mod tests {
         });
         app.toggle_protection();
         assert!(
-            app.doc.workbook.sheet(0).expect("sheet 0").protection.is_some(),
+            app.doc
+                .workbook
+                .sheet(0)
+                .expect("sheet 0")
+                .protection
+                .is_some(),
             "the sheet stays protected"
         );
         assert!(app.status.contains("password"), "{}", app.status);
@@ -6640,7 +6714,8 @@ mod tests {
         assert_eq!(notes[0].at, at);
         assert_eq!(notes[0].author, "Ada");
         assert_eq!(
-            notes[0].text, "Ada:
+            notes[0].text,
+            "Ada:
 check the ledger",
             "the author's name goes into the body too, as Excel writes it"
         );
