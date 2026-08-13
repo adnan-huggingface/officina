@@ -18,7 +18,7 @@ Excel, and the twelve tasks that closed what the audit found)
 - **Calx is feature-complete for daily use as far as the audit reaches**, with
   one exception recorded on purpose: printing, which is out of scope by
   instruction. `AUDIT.md` holds every claim and every finding; findings 1–26
-  and 28–29 are fixed, and 27 (a sheet's own `defaultRowHeight` /
+  and 28–32 are fixed, and 27 (a sheet's own `defaultRowHeight` /
   `defaultColWidth` are never read, so rows draw about 4% too tall) is
   deliberately open and belongs with the layout rather than with any one
   feature.
@@ -31,6 +31,11 @@ Excel, and the twelve tasks that closed what the audit found)
   --all-targets -- -D warnings` and `cargo fmt --all --check` are both clean;
   `cargo xtask fidelity` is check 1, 27 of 27 and check 2, 12 of 12.
 - The release binary at `target/release/calx.exe` is current with this state.
+- **A save can be refused by Windows and that is not a bug in the save.** A
+  workbook open in Excel cannot be written by anything else. Calx now says so
+  in a box at the moment it happens *and* when the file is opened, and writes
+  beside the target and renames over it so a refusal, or a crash mid-write,
+  cannot leave a half-written workbook. Findings 30 and 31.
 - Watch item: **`cargo fmt` had drifted across twenty files** before this was
   last checked. Edits made by script rather than by hand are the reason — they
   do not run the formatter. Run `cargo fmt --all` after any scripted edit.

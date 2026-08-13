@@ -2693,6 +2693,13 @@ impl GridView {
     }
 
     fn handle_keys(&mut self, ui: &egui::Ui, book: &Workbook, body: egui::Rect, layout: &Layout) {
+        // A dialog owns the keyboard while it is up. The grid takes raw key
+        // events rather than waiting to be given focus, so egui's modal — which
+        // does stop the pointer — never stopped these: typing at an open box
+        // was putting characters into the cells behind it.
+        if self.blocked {
+            return;
+        }
         let Some(sheet) = book.sheet(self.sheet_index) else {
             return;
         };
@@ -5451,6 +5458,39 @@ mod tests {
         let open = view.editor.as_ref().expect("editor opened");
         assert_eq!(open.text, "5");
         assert_eq!(open.mode, Mode::Enter, "typed edits commit on arrow keys");
+    }
+
+    #[test]
+    fn a_grid_behind_a_dialog_takes_no_keys() {
+        // egui's modal stops the pointer, and the grid does not wait to be
+        // focused before reading keys — so typing at an error box was going
+        // into the cells behind it, several characters of a cell's contents at
+        // a time.
+        let (ctx, mut book, mut view) = typing();
+        view.blocked = true;
+        frame(
+            &mut view,
+            &mut book,
+            vec![
+                egui::Event::Text("5".into()),
+                plain(egui::Key::ArrowDown),
+                plain(egui::Key::Delete),
+            ],
+            &ctx,
+        );
+        assert!(view.editor.is_none(), "nothing was typed into a cell");
+        assert_eq!(view.selection.cursor(), CellRef::new(0, 0), "nothing moved");
+        assert!(view.actions.is_empty(), "and nothing was asked of the app");
+
+        // And it wakes up again when the dialog closes.
+        view.blocked = false;
+        frame(
+            &mut view,
+            &mut book,
+            vec![egui::Event::Text("5".into())],
+            &ctx,
+        );
+        assert!(view.editor.is_some());
     }
 
     #[test]

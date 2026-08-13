@@ -260,10 +260,34 @@ impl Package {
         self.parts.remove(name).is_some()
     }
 
+    /// Writes the package to `path`, all of it or none of it.
+    ///
+    /// Beside the target first, then renamed over it. Writing straight to the
+    /// target truncates it before the first byte arrives, so a disk that fills
+    /// up, a drive pulled out, or a process killed halfway leaves the user with
+    /// neither the old workbook nor the new one. The rename is the one step
+    /// that is atomic, so the file on disk is only ever one whole package or
+    /// the other.
+    ///
+    /// The temporary sits in the target's own directory because a rename across
+    /// volumes is a copy, and a copy is what this is avoiding. It is removed on
+    /// every path out — including the one where the rename is refused because
+    /// another program is holding the target open, which is the common failure
+    /// and the one that must leave the original untouched.
     pub fn save(&self, path: impl AsRef<Path>) -> Result<()> {
+        let path = path.as_ref();
         let mut buf = Vec::new();
         self.write(Cursor::new(&mut buf))?;
-        std::fs::write(path.as_ref(), &buf)?;
+
+        let temporary = temporary_beside(path);
+        if let Err(e) = std::fs::write(&temporary, &buf) {
+            let _ = std::fs::remove_file(&temporary);
+            return Err(e.into());
+        }
+        if let Err(e) = std::fs::rename(&temporary, path) {
+            let _ = std::fs::remove_file(&temporary);
+            return Err(e.into());
+        }
         Ok(())
     }
 
@@ -290,6 +314,19 @@ impl Package {
             .map_err(|e| Error::NotAPackage(e.to_string()))?;
         Ok(())
     }
+}
+
+/// A name beside `path` for the half-written file to live under.
+///
+/// Hidden from a directory listing by the leading dot, told apart from another
+/// save of the same file by the process id, and in the same directory so the
+/// rename that follows stays on one volume.
+fn temporary_beside(path: &Path) -> std::path::PathBuf {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "workbook".to_string());
+    path.with_file_name(format!(".{name}.calx-{}", std::process::id()))
 }
 
 #[cfg(test)]
@@ -427,6 +464,61 @@ mod tests {
             Package::read(Cursor::new(buf)),
             Err(Error::MissingContentTypes)
         ));
+    }
+
+    /// A directory of our own under the system temp, removed at the end.
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("calx-pkg-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        dir
+    }
+
+    #[test]
+    fn a_saved_package_leaves_no_temporary_beside_it() {
+        let dir = scratch("clean");
+        let target = dir.join("book.xlsx");
+        Package::read(Cursor::new(sample_package()))
+            .expect("reads")
+            .save(&target)
+            .expect("saves");
+
+        let names: Vec<String> = std::fs::read_dir(&dir)
+            .expect("lists")
+            .map(|e| e.expect("entry").file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, ["book.xlsx"], "{names:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_save_that_fails_leaves_the_file_that_was_there_alone() {
+        // The failure is provoked by making the target a *directory*: the
+        // rename cannot replace it, which is the same shape as the failure
+        // that matters — another program holding the file open — without
+        // needing a second process to hold it.
+        let dir = scratch("refused");
+        let target = dir.join("book.xlsx");
+        std::fs::create_dir(&target).expect("a directory in the way");
+        std::fs::write(target.join("evidence"), b"still here").expect("writes");
+
+        let package = Package::read(Cursor::new(sample_package())).expect("reads");
+        assert!(package.save(&target).is_err(), "the save cannot succeed");
+
+        assert!(
+            target.join("evidence").exists(),
+            "what was at the path was not touched"
+        );
+        let strays: Vec<String> = std::fs::read_dir(&dir)
+            .expect("lists")
+            .map(|e| e.expect("entry").file_name().to_string_lossy().into_owned())
+            .filter(|n| n != "book.xlsx")
+            .collect();
+        assert!(
+            strays.is_empty(),
+            "the half-written file is gone: {strays:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

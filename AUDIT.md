@@ -469,3 +469,48 @@ anything); no function autocomplete; grouped sheet editing absent.
     the file changing on disk. What the save produced was checked as well as
     timed: every row and every cell still there, and everything below the
     edited row byte-for-byte identical to the file that was opened.
+
+30. **A save that could not happen said so in grey, at the bottom, in six
+    point.** Windows will not let one program write over a file another
+    program is holding open, and Excel holds a workbook open for as long as it
+    is on screen. So a save over a file already open in Excel is refused — by
+    the operating system, correctly — and all Calx did about it was set the
+    status line. To anyone working in the window, a save that did nothing and
+    a save that worked looked exactly alike. Reported as "the save feature does
+    not work", and that is a fair description of what it looked like.
+
+    The refusal is now a box in the middle of the window that names the file,
+    names the program holding it, says the work has not been lost, and offers
+    Save As on the box itself. Opening errors get the same treatment, which is
+    audit item P4 — errors reported in a dialog rather than in silence — and
+    that had never actually been done.
+
+    And the same thing is said at the *door*, as Excel says it: opening a
+    workbook that another program is holding puts up a box explaining that
+    editing is fine and Ctrl+S will be refused until it is closed there. Being
+    told an hour later, with the hour's work in memory, is the outcome worth
+    engineering away.
+
+31. **A save wrote straight over the file it was replacing.** `Package::save`
+    built the whole package in memory and then called `fs::write`, which
+    truncates the target before the first byte lands. A disk that fills, a
+    drive pulled out, or a process killed halfway through leaves neither the
+    old workbook nor the new one. The window for that is short and the loss is
+    total, which is the worst combination.
+
+    It now writes beside the target and renames over it — the rename is the
+    only step that is atomic, so what is on disk is one whole package or the
+    other. The temporary lives in the target's own directory, because a rename
+    across volumes is a copy, and it is removed on every path out, including
+    the one where the rename is refused. Two tests: a save leaves nothing
+    beside it, and a save that fails leaves what was there untouched.
+
+32. **A dialog did not own the keyboard.** egui's modal stops the pointer, and
+    the grid does not wait to be focused before reading key events — it takes
+    them from the frame's input directly. So typing while an error box was up
+    put characters into the cells behind it. Found by driving the program: a
+    box appeared, the test typed anyway, and the letters landed in A1.
+
+    The application now tells the grid when a dialog is up, and the grid takes
+    no keys while it is. Drawing carries on, because a grid that blanks behind
+    a dialog is worse than one that is merely inert.

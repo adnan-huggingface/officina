@@ -813,6 +813,12 @@ pub struct GridView {
     /// beside each other.
     pub(crate) pinned: Scroll,
     pub zoom: f64,
+    /// Set while a dialog is up: the grid draws, and takes no keys.
+    ///
+    /// The application owns this because the application owns the dialogs. It
+    /// exists because the grid reads raw key events instead of waiting to be
+    /// focused, which is what let typing reach the cells behind a modal.
+    pub blocked: bool,
     /// The open cell editor, if any. The formula bar edits the same buffer.
     pub editor: Option<Editor>,
     /// What the last frame asked the application to do. Drained by the caller.
@@ -992,6 +998,7 @@ impl Default for GridView {
             scroll: Scroll::default(),
             pinned: Scroll::default(),
             zoom: 1.0,
+            blocked: false,
             editor: None,
             actions: Vec::new(),
             layout: None,

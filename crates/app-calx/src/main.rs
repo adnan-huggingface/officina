@@ -40,6 +40,67 @@ fn name_of(path: &Path) -> String {
         .into_owned()
 }
 
+/// Who is holding a file open, if anyone, in words rather than in error codes.
+///
+/// Asked by *trying*, because that is the only answer Windows gives that is
+/// worth anything: a file it will not open for writing now is a file it will
+/// not let a save write later. Opening for write and closing again changes
+/// nothing — no truncation, no timestamp.
+///
+/// The name comes from the owner file Office leaves beside an open workbook —
+/// `~$book.xlsx` — which is what lets this say "Excel" instead of "another
+/// program". `None` means the file can be written, or does not exist yet.
+fn locked_by(path: &Path) -> Option<String> {
+    if !path.exists() {
+        return None;
+    }
+    if std::fs::OpenOptions::new().write(true).open(path).is_ok() {
+        return None;
+    }
+    let owner = path.file_name().map(|n| {
+        let mut name = std::ffi::OsString::from("~$");
+        name.push(n);
+        path.with_file_name(name)
+    });
+    match owner {
+        Some(owner) if owner.exists() => Some("Excel".to_string()),
+        _ => Some("another program".to_string()),
+    }
+}
+
+/// What to say when a save was refused, in a sentence that names the way out.
+fn save_trouble(path: &Path, error: &dyn std::fmt::Display) -> String {
+    let name = name_of(path);
+    if let Some(holder) = locked_by(path) {
+        return format!(
+            "{name} was not saved: it is open in {holder}.\n\
+             \n\
+             Windows will not let one program write over a file another one is \
+             holding open. Close it there and press Ctrl+S again — nothing has \
+             been lost, the changes are still here — or use Save As to write a \
+             different file.\n\
+             \n\
+             {error}"
+        );
+    }
+    if path.exists() && std::fs::metadata(path).is_ok_and(|m| m.permissions().readonly()) {
+        return format!(
+            "{name} was not saved: the file is marked read-only.\n\
+             \n\
+             Clear the read-only tick in its Windows properties, or use Save As \
+             to write a different file. The changes are still here either way.\n\
+             \n\
+             {error}"
+        );
+    }
+    format!(
+        "{name} was not saved. The changes are still here — try Save As to write \
+         a different file.\n\
+         \n\
+         {error}"
+    )
+}
+
 fn main() -> ui_kit::eframe::Result<()> {
     let mut app = Calx::new();
     // A path on the command line opens straight into the document, which is what
@@ -174,6 +235,18 @@ enum Dialog {
     /// Excel's Paste Special: which parts of the clipboard to bring across.
     PasteSpecial {
         how: ss_formula::clip::PasteSpecial,
+    },
+    /// Something went wrong and the user has to know.
+    ///
+    /// Every failure here used to go to the status line, where a save that did
+    /// not happen looks exactly like a save that did. This is for the ones a
+    /// person has to act on: the file could not be written, or could not be
+    /// read. `offer_save_as` puts the way out on the box itself, because the
+    /// answer to "that file is locked" is usually "then write a different one".
+    Trouble {
+        title: &'static str,
+        message: String,
+        offer_save_as: bool,
     },
     /// Excel's Find and Replace, which are one window with a row hidden.
     ///
@@ -326,8 +399,36 @@ impl Calx {
                 // different document than the one that was closed.
                 let active = self.doc.workbook.active_sheet;
                 self.grid.open_sheet(&self.doc.workbook, active);
+                // Excel says at the door that a workbook is open elsewhere,
+                // and it is right to: a person who is not told now finds out
+                // an hour later, when Ctrl+S is refused and the hour is
+                // sitting in memory. This does not open the file read-only —
+                // the edits are real and Save As will write them — it says
+                // which of the two saves is available.
+                if let Some(holder) = locked_by(path) {
+                    self.dialog = Some(Dialog::Trouble {
+                        title: "Open in another program",
+                        message: format!(
+                            "{} is open in {holder}.\n\
+                             \n\
+                             You can read and edit it here, but Windows will not let \
+                             Calx write over a file another program is holding, so \
+                             Ctrl+S will be refused until it is closed there.\n\
+                             Save As will write a copy at any time.",
+                            name_of(path)
+                        ),
+                        offer_save_as: false,
+                    });
+                }
             }
-            Err(e) => self.status = format!("could not open {}: {e}", path.display()),
+            Err(e) => {
+                self.status = format!("could not open {}: {e}", path.display());
+                self.dialog = Some(Dialog::Trouble {
+                    title: "Not opened",
+                    message: format!("{} could not be opened.\n\n{e}", name_of(path)),
+                    offer_save_as: false,
+                });
+            }
         }
     }
 
@@ -468,6 +569,11 @@ impl Calx {
             Ok(file) => file,
             Err(e) => {
                 self.status = format!("could not save {}: {e}", path.display());
+                self.dialog = Some(Dialog::Trouble {
+                    title: "Not saved",
+                    message: save_trouble(path, &e),
+                    offer_save_as: true,
+                });
                 return;
             }
         };
@@ -498,7 +604,14 @@ impl Calx {
                 // own file, and `edited` stays as it was.
                 self.status = format!("exported {} to {}", sheet.name, name_of(path));
             }
-            Err(e) => self.status = format!("could not save {}: {e}", path.display()),
+            Err(e) => {
+                self.status = format!("could not save {}: {e}", path.display());
+                self.dialog = Some(Dialog::Trouble {
+                    title: "Not saved",
+                    message: save_trouble(path, &e),
+                    offer_save_as: true,
+                });
+            }
         }
     }
 
@@ -881,7 +994,21 @@ impl Calx {
             }
             // Deliberately not clearing `edited`: the document is still
             // unsaved, and the next Ctrl+S should try again.
-            Err(e) => self.status = format!("could not save {}: {e}", path.display()),
+            //
+            // And said in a box rather than on the status line. A save that
+            // did not happen is the one failure a person must not be allowed
+            // to walk away from, and a grey line along the bottom of the
+            // window is something anyone can miss — which is exactly what
+            // happened: "the save feature does not work", when the save was
+            // refused by Windows because Excel had the file open.
+            Err(e) => {
+                self.status = format!("could not save {}: {e}", path.display());
+                self.dialog = Some(Dialog::Trouble {
+                    title: "Not saved",
+                    message: save_trouble(path, &e),
+                    offer_save_as: true,
+                });
+            }
         }
     }
 
@@ -4905,6 +5032,42 @@ impl Calx {
                 }
             }
 
+            Dialog::Trouble {
+                title,
+                message,
+                offer_save_as,
+            } => {
+                let title = *title;
+                let offer = *offer_save_as;
+                let mut save_as = false;
+                // One `small` label per line: a modal offers a wrapped label
+                // the whole window's width, and a paragraph laid out that way
+                // comes back centred in columns.
+                let lines: Vec<String> = message.lines().map(str::to_owned).collect();
+                modal(ctx, title, |ui| {
+                    ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                        for line in &lines {
+                            if line.is_empty() {
+                                ui.add_space(6.0);
+                            } else {
+                                ui.small(line);
+                            }
+                        }
+                    });
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        keep &= !ui.button("OK").clicked();
+                        if offer {
+                            save_as = ui.button("Save As…").clicked();
+                        }
+                    });
+                });
+                if save_as {
+                    keep = false;
+                    self.save_as();
+                }
+            }
+
             Dialog::Find {
                 query,
                 with,
@@ -6412,7 +6575,12 @@ impl DocumentApp for Calx {
         // The grid fills the panel. It is the only thing in it, which is the
         // point of the panel: nothing here has to work out how much room the
         // tabs below need, so nothing here can get that wrong.
+        //
+        // It draws while a dialog is up and takes no keys: a modal stops the
+        // pointer by itself, but the grid reads key events straight out of the
+        // input rather than waiting to be focused, so it has to be told.
         self.last_body = ui.available_size();
+        self.grid.blocked = self.dialog.is_some() || self.pending.is_some();
         let response = self.grid.show(ui, &mut self.doc.workbook);
         response.context_menu(|ui| self.context_menu(ui));
 
@@ -6583,6 +6751,39 @@ fn delimiter_name(byte: u8) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_file_that_can_be_written_is_held_by_nobody() {
+        let path = std::env::temp_dir().join(format!("calx-lock-{}.xlsx", std::process::id()));
+        std::fs::write(&path, b"not really a workbook").expect("writes");
+        assert_eq!(locked_by(&path), None);
+        // Nor is a file that does not exist yet — that is a Save As, not a lock.
+        let missing = path.with_file_name("calx-nothing-here.xlsx");
+        assert_eq!(locked_by(&missing), None);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_refused_save_says_what_to_do_about_it() {
+        // A directory cannot be opened for writing, which is the same answer
+        // Windows gives for a file another program is holding.
+        let dir = std::env::temp_dir().join(format!("calx-refused-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a directory");
+        let message = save_trouble(&dir, &"os error 32");
+
+        let name = name_of(&dir);
+        assert!(message.contains(&name), "{message}");
+        assert!(message.contains("open in"), "{message}");
+        assert!(
+            message.contains("Save As"),
+            "the way out is on the box: {message}"
+        );
+        assert!(
+            message.contains("still here"),
+            "and it says the work is not lost: {message}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// A workbook with one protected sheet, and B1 unlocked in it.
     fn protected(allow: ss_model::Protection) -> Calx {
