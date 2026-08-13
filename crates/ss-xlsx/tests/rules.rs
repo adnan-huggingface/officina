@@ -73,7 +73,11 @@ fn authored_rules_survive_a_save_and_come_back_the_same() {
 
     assert_eq!(reopened.workbook.sheets[0].conditional_formats, cf);
     assert_eq!(reopened.workbook.sheets[0].validations, dv);
-    let dxf = reopened.workbook.styles.dxf(dxf_id).expect("the dxf landed");
+    let dxf = reopened
+        .workbook
+        .styles
+        .dxf(dxf_id)
+        .expect("the dxf landed");
     assert_eq!(dxf.bold, Some(true));
     assert_eq!(
         dxf.fill

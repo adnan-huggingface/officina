@@ -306,8 +306,7 @@ fn a_picture_inserted_into_a_blank_workbook_comes_back_with_its_bytes() {
     doc.write_to(&mut buffer).expect("writes");
 
     let reopened =
-        ss_xlsx::XlsxDocument::read(std::io::Cursor::new(buffer.into_inner()))
-            .expect("reads back");
+        ss_xlsx::XlsxDocument::read(std::io::Cursor::new(buffer.into_inner())).expect("reads back");
     let pictures = &reopened.workbook.sheets[0].pictures;
     assert_eq!(pictures.len(), 1, "one picture, found by a fresh reader");
     assert_eq!(&*pictures[0].data, PNG, "byte for byte what went in");

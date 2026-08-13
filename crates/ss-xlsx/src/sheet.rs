@@ -1377,7 +1377,10 @@ mod tests {
         assert_eq!(sheet.view.selection, Some(CellRef::from_a1("B5").unwrap()));
         assert_eq!(sheet.view.zoom, 0.9);
         assert_eq!(sheet.view.top_left, Some(CellRef::from_a1("F4").unwrap()));
-        assert_eq!(sheet.panes, Some(ss_model::Panes::frozen(CellRef::new(3, 5))));
+        assert_eq!(
+            sheet.panes,
+            Some(ss_model::Panes::frozen(CellRef::new(3, 5)))
+        );
     }
 
     #[test]
@@ -1405,9 +1408,8 @@ mod tests {
     fn an_element_that_protects_nothing_is_not_protection() {
         // `sheet="0"` — or no `sheet` at all — leaves the sheet editable, and
         // Excel shows it as unprotected however many other flags are set.
-        let (sheet, _) = read(
-            r#"<worksheet><sheetProtection objects="1" scenarios="1"/></worksheet>"#,
-        );
+        let (sheet, _) =
+            read(r#"<worksheet><sheetProtection objects="1" scenarios="1"/></worksheet>"#);
         assert_eq!(sheet.protection, None);
     }
 
@@ -1441,7 +1443,10 @@ mod tests {
                  <pane xSplit="1440" ySplit="720" topLeftCell="B3" state="split"/>
                </sheetView></sheetViews></worksheet>"#,
         );
-        assert_eq!(split.panes, Some(ss_model::Panes::split(CellRef::new(2, 1))));
+        assert_eq!(
+            split.panes,
+            Some(ss_model::Panes::split(CellRef::new(2, 1)))
+        );
         assert!(
             !split.panes.unwrap().frozen,
             "a split pane pins nothing, and saying so is the whole difference"
@@ -1462,7 +1467,10 @@ mod tests {
         // Two 24-character columns are 173 pixels each: 2880 twips is 192
         // pixels, which is nearer the far edge of the first than either edge
         // of the second.
-        assert_eq!(sheet.panes, Some(ss_model::Panes::split(CellRef::new(0, 1))));
+        assert_eq!(
+            sheet.panes,
+            Some(ss_model::Panes::split(CellRef::new(0, 1)))
+        );
     }
 
     #[test]

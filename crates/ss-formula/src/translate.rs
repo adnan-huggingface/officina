@@ -307,12 +307,14 @@ pub fn follow_move(
             let travels = on_target && inside(a) && inside(b);
             (
                 3,
-                travels.then(|| match (carry_cell(*a, rows, cols), carry_cell(*b, rows, cols)) {
-                    (Some(a2), Some(b2)) => {
-                        format!("{}:{}", write_cell(&a2), write_cell(&b2))
-                    }
-                    _ => REF_ERROR.to_string(),
-                }),
+                travels.then(
+                    || match (carry_cell(*a, rows, cols), carry_cell(*b, rows, cols)) {
+                        (Some(a2), Some(b2)) => {
+                            format!("{}:{}", write_cell(&a2), write_cell(&b2))
+                        }
+                        _ => REF_ERROR.to_string(),
+                    },
+                ),
             )
         } else if let Tok::Cell(cell) = &tokens[i].kind {
             let travels = on_target && inside(cell);

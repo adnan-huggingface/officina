@@ -181,7 +181,10 @@ impl Editor {
         let refch = |c: char| c.is_ascii_alphanumeric() || c == '$' || c == ':';
         // The last run of reference-shaped characters, wherever it ends —
         // `=SUM(A1:B2)` keeps its closing paren.
-        let Some(end) = self.text.rfind(|c: char| refch(c)).map(|i| i + c_len(&self.text, i))
+        let Some(end) = self
+            .text
+            .rfind(|c: char| refch(c))
+            .map(|i| i + c_len(&self.text, i))
         else {
             return;
         };
@@ -417,7 +420,10 @@ mod tests {
         e.point_to(a1("E6"));
         assert_eq!(e.text, "=C3+D4:E6", "a drag stretches the live reference");
         e.point_to(a1("B2"));
-        assert_eq!(e.text, "=C3+B2:D4", "corners normalize whichever way it is pulled");
+        assert_eq!(
+            e.text, "=C3+B2:D4",
+            "corners normalize whichever way it is pulled"
+        );
     }
 
     #[test]

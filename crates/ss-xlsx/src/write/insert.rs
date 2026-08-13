@@ -143,11 +143,7 @@ pub(crate) fn materialize(
         let picture = workbook.sheets[sheet_index].pictures[index].clone();
         let extension = extension_for(&picture.content_type);
         let name = free_name(package, "xl/media", "image", extension)?;
-        package.put_part(
-            name.clone(),
-            &picture.content_type,
-            picture.data.to_vec(),
-        );
+        package.put_part(name.clone(), &picture.content_type, picture.data.to_vec());
 
         let rel_id = rels.next_id();
         rels.insert(Relationship {
@@ -291,10 +287,8 @@ fn append_anchors(data: &[u8], anchors: &[u8]) -> Vec<u8> {
 }
 
 fn empty_drawing() -> Vec<u8> {
-    format!(
-        r#"{DECL}<xdr:wsDr xmlns:xdr="{XDR_NS}" xmlns:a="{A_NS}" xmlns:r="{R_NS}"/>"#
-    )
-    .into_bytes()
+    format!(r#"{DECL}<xdr:wsDr xmlns:xdr="{XDR_NS}" xmlns:a="{A_NS}" xmlns:r="{R_NS}"/>"#)
+        .into_bytes()
 }
 
 /// The `<xdr:from>`/`<xdr:to>` pair, or the `<xdr:ext>` a one-cell anchor uses.
@@ -553,12 +547,7 @@ fn extension_for(content_type: &str) -> &'static str {
 }
 
 /// `<directory>/<stem>N.<extension>` for the lowest `N` nobody has taken.
-fn free_name(
-    package: &Package,
-    directory: &str,
-    stem: &str,
-    extension: &str,
-) -> Result<PartName> {
+fn free_name(package: &Package, directory: &str, stem: &str, extension: &str) -> Result<PartName> {
     for n in 1..=10_000u32 {
         let candidate = PartName::new(&format!("/{directory}/{stem}{n}.{extension}"))?;
         if package.part(&candidate).is_none() {

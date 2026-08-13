@@ -140,16 +140,11 @@ impl XlsxDocument {
             // drawing for a sheet that had none is the one case where the
             // worksheet itself gains an element — and the sheet has to be
             // re-borrowed afterwards, since materializing writes into it.
-            let drawing_rel = insert::materialize(
-                &mut self.package,
-                &mut self.workbook,
-                index,
-                &name,
-            )?;
+            let drawing_rel =
+                insert::materialize(&mut self.package, &mut self.workbook, index, &name)?;
             // Notes, which live in a part of their own and need a VML shape
             // beside them for Excel to draw the box.
-            let legacy_rel =
-                insert::comments(&mut self.package, &self.workbook, index, &name)?;
+            let legacy_rel = insert::comments(&mut self.package, &self.workbook, index, &name)?;
             let Some(sheet) = self.workbook.sheet(index) else {
                 continue;
             };

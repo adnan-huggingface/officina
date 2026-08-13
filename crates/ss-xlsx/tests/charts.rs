@@ -287,7 +287,11 @@ fn a_chart_inserted_into_a_blank_workbook_comes_back_as_a_chart() {
 
     let reopened = XlsxDocument::read(Cursor::new(buffer.into_inner())).expect("reads back");
     let charts = &reopened.workbook.sheets[0].charts;
-    assert_eq!(charts.len(), 1, "one chart, found by a reader that is not us");
+    assert_eq!(
+        charts.len(),
+        1,
+        "one chart, found by a reader that is not us"
+    );
     let chart = &charts[0];
     assert_eq!(chart.kind, ChartKind::Bar);
     assert_eq!(chart.title.as_deref(), Some("Sales"));

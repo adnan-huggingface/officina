@@ -149,7 +149,9 @@ pub(crate) fn vml(comments: &[Comment]) -> Vec<u8> {
             r##"<v:shape id="_x0000_s{id}" type="#_x0000_t202" style="position:absolute;width:108pt;height:59.25pt;z-index:{};visibility:hidden" fillcolor="#ffffe1" o:insetmode="auto">"##,
             index + 1
         ));
-        out.push_str(r##"<v:fill color2="#ffffe1"/><v:shadow on="t" color="black" obscured="t"/>"##);
+        out.push_str(
+            r##"<v:fill color2="#ffffe1"/><v:shadow on="t" color="black" obscured="t"/>"##,
+        );
         out.push_str(r#"<v:path o:connecttype="none"/><v:textbox style="mso-direction-alt:auto"><div style="text-align:left"></div></v:textbox>"#);
         out.push_str(r#"<x:ClientData ObjectType="Note"><x:MoveWithCells/><x:SizeWithCells/>"#);
         // The eight numbers are the box's corners: column, offset, row, offset

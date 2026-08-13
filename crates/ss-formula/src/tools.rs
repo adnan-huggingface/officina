@@ -190,7 +190,13 @@ pub fn remove_duplicates(
     header: bool,
 ) -> Result<(Change, Removed), String> {
     let Some(model) = book.sheet(sheet) else {
-        return Ok((Change::default(), Removed { removed: 0, kept: 0 }));
+        return Ok((
+            Change::default(),
+            Removed {
+                removed: 0,
+                kept: 0,
+            },
+        ));
     };
     if columns.is_empty() {
         return Err("Choose at least one column to compare".to_string());
@@ -199,11 +205,23 @@ pub fn remove_duplicates(
         return Err("That range holds merged cells, which cannot be moved".to_string());
     }
     let Some(range) = crate::sort::clamped(model, range) else {
-        return Ok((Change::default(), Removed { removed: 0, kept: 0 }));
+        return Ok((
+            Change::default(),
+            Removed {
+                removed: 0,
+                kept: 0,
+            },
+        ));
     };
     let first = range.start.row + u32::from(header);
     if first > range.end.row {
-        return Ok((Change::default(), Removed { removed: 0, kept: 0 }));
+        return Ok((
+            Change::default(),
+            Removed {
+                removed: 0,
+                kept: 0,
+            },
+        ));
     }
 
     let mut seen: HashSet<Vec<Key>> = HashSet::new();
@@ -424,11 +442,7 @@ mod tests {
 
     #[test]
     fn comparing_one_column_ignores_what_the_others_say() {
-        let mut book = book_with(&[
-            &["Ann", "Leeds"],
-            &["Ann", "York"],
-            &["Bob", "Hull"],
-        ]);
+        let mut book = book_with(&[&["Ann", "Leeds"], &["Ann", "York"], &["Bob", "Hull"]]);
         let (_, count) =
             remove_duplicates(&mut book, 0, range("A1", "B3"), &[0], false).expect("dedup");
         assert_eq!(count.removed, 1, "two Anns, whatever town they live in");
@@ -436,11 +450,7 @@ mod tests {
 
     #[test]
     fn a_formula_that_comes_up_says_what_it_means_where_it_lands() {
-        let mut book = book_with(&[
-            &["Ann", "1"],
-            &["Ann", "2"],
-            &["Bob", "3"],
-        ]);
+        let mut book = book_with(&[&["Ann", "1"], &["Ann", "2"], &["Bob", "3"]]);
         // C3 doubles the number beside it; when its row moves up to row 2 the
         // reference has to come with it.
         let cell = crate::edit::typed_cell(&mut book, 0, StyleId::DEFAULT, "=B3*2");

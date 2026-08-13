@@ -741,13 +741,19 @@ mod tests {
         let mut book = book_with(&[("A1", 5.0)]);
         let change = fill_series(&mut book, 0, range("A1", "A1"), range("A1", "A3"), true);
         apply(&mut book, change);
-        assert_eq!((shown(&book, "A2"), shown(&book, "A3")), ("6".into(), "7".into()));
+        assert_eq!(
+            (shown(&book, "A2"), shown(&book, "A3")),
+            ("6".into(), "7".into())
+        );
 
         // Two numbers count; Ctrl makes them tile as copies.
         let mut book = book_with(&[("B1", 1.0), ("B2", 2.0)]);
         let change = fill_series(&mut book, 0, range("B1", "B2"), range("B1", "B4"), true);
         apply(&mut book, change);
-        assert_eq!((shown(&book, "B3"), shown(&book, "B4")), ("1".into(), "2".into()));
+        assert_eq!(
+            (shown(&book, "B3"), shown(&book, "B4")),
+            ("1".into(), "2".into())
+        );
 
         // And a weekday holds still under Ctrl instead of walking the week.
         let mut book = Workbook::blank();
@@ -780,8 +786,7 @@ mod tests {
         );
         let change = fill(&mut book, 0, range("A1", "A1"), range("A1", "A3"));
         apply(&mut book, change);
-        let serial = |book: &Workbook, a1: &str| match book.sheets[0].get(at(a1)).map(|c| c.value)
-        {
+        let serial = |book: &Workbook, a1: &str| match book.sheets[0].get(at(a1)).map(|c| c.value) {
             Some(CellValue::Number(n)) => n,
             other => panic!("expected a number, got {other:?}"),
         };

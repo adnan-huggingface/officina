@@ -741,7 +741,8 @@ pub fn move_range(book: &mut Workbook, sheet: usize, from: CellRange, to: CellRe
     }
     let end_row = i64::from(from.end.row) + rows;
     let end_col = i64::from(from.end.col) + cols;
-    if end_row >= i64::from(ss_model::cell::MAX_ROWS) || end_col >= i64::from(ss_model::cell::MAX_COLS)
+    if end_row >= i64::from(ss_model::cell::MAX_ROWS)
+        || end_col >= i64::from(ss_model::cell::MAX_COLS)
     {
         return Change::default();
     }
@@ -802,8 +803,14 @@ pub fn move_range(book: &mut Workbook, sheet: usize, from: CellRange, to: CellRe
             .enumerate()
             .filter(|(_, f)| !f.text.is_empty())
             .filter_map(|(i, f)| {
-                let moved =
-                    crate::translate::follow_move(&f.text, &other.name, &moved_name, from, rows, cols)?;
+                let moved = crate::translate::follow_move(
+                    &f.text,
+                    &other.name,
+                    &moved_name,
+                    from,
+                    rows,
+                    cols,
+                )?;
                 Some((FormulaId::from_index(i as u32), moved))
             })
             .collect();

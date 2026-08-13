@@ -124,14 +124,18 @@ pub(crate) fn rewrite(part: &str, data: &[u8], ctx: &mut Context<'_>) -> Result<
     // would put a diff in every file that was merely opened.
     let pane_wanted = wanted_pane(ctx.sheet);
     let file_pane = file_pane(part, data)?;
-    let pane_settled = file_pane.as_ref().map(PaneTag::division) == pane_wanted.as_ref().map(PaneTag::division);
+    let pane_settled =
+        file_pane.as_ref().map(PaneTag::division) == pane_wanted.as_ref().map(PaneTag::division);
     let mut views_done = pane_settled;
     let mut in_sheet_view = false;
     let mut skip_pane = 0usize;
     let mut skip_selection = 0usize;
     // The pane whose `<selection>` the file called active, so that the one kept
     // is the one the cursor was actually in.
-    let old_active = file_pane.as_ref().map(|p| p.active.clone()).unwrap_or_default();
+    let old_active = file_pane
+        .as_ref()
+        .map(|p| p.active.clone())
+        .unwrap_or_default();
     let mut kept_selection = false;
 
     // Sheet protection, on the filter's pattern: untouched files keep their own
@@ -2772,7 +2776,9 @@ mod tests {
         let out = written_from(r#"<worksheet><sheetData/></worksheet>"#, &sheet);
         // Two default columns: 64 pixels each, and a pixel is fifteen twips.
         assert!(
-            out.contains(r#"<pane xSplit="1920" topLeftCell="C1" activePane="topRight" state="split"/>"#),
+            out.contains(
+                r#"<pane xSplit="1920" topLeftCell="C1" activePane="topRight" state="split"/>"#
+            ),
             "{out}"
         );
     }
@@ -2786,8 +2792,7 @@ mod tests {
         });
         let out = written_from(r#"<worksheet><sheetData/></worksheet>"#, &sheet);
         assert_eq!(
-            out,
-            r#"<worksheet><sheetData/><sheetProtection sheet="1" sort="0"/></worksheet>"#,
+            out, r#"<worksheet><sheetData/><sheetProtection sheet="1" sort="0"/></worksheet>"#,
             "the defaults are the schema's; only sorting was allowed"
         );
     }
@@ -2839,8 +2844,7 @@ mod tests {
     fn a_sheet_nobody_reprotected_keeps_its_own_bytes() {
         let mut sheet = Sheet::new("Data");
         sheet.protection = Some(ss_model::Protection::as_excel_protects());
-        let original =
-            r#"<worksheet><sheetData/><sheetProtection sheet="1" objects="1" scenarios="1"/></worksheet>"#;
+        let original = r#"<worksheet><sheetData/><sheetProtection sheet="1" objects="1" scenarios="1"/></worksheet>"#;
         assert_eq!(written_from(original, &sheet), original);
     }
 

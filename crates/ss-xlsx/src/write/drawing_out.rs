@@ -53,7 +53,10 @@ pub(crate) fn rewrite(part: &str, data: &[u8], wanted: &Wanted) -> Result<Vec<u8
 
     while let Some((event, span)) = splicer.next()? {
         let is_anchor_tag = |name: &[u8]| {
-            matches!(name, b"twoCellAnchor" | b"oneCellAnchor" | b"absoluteAnchor")
+            matches!(
+                name,
+                b"twoCellAnchor" | b"oneCellAnchor" | b"absoluteAnchor"
+            )
         };
         // The depth of *this* element, measured before it opens.
         let at_depth = inside;
@@ -135,9 +138,7 @@ pub(crate) fn rewrite(part: &str, data: &[u8], wanted: &Wanted) -> Result<Vec<u8
             // `<xdr:ext cx cy>` on a one-cell or absolute anchor, and
             // `<xdr:pos x y>` on an absolute one. Both are attribute-only.
             Event::Empty(e) | Event::Start(e)
-                if local_name(e) == b"ext"
-                    && matches!(editing, Some(Some(_)))
-                    && at_depth == 0 =>
+                if local_name(e) == b"ext" && matches!(editing, Some(Some(_))) && at_depth == 0 =>
             {
                 let Some(Some(anchor)) = &editing else {
                     unreachable!("guarded above")
@@ -159,9 +160,7 @@ pub(crate) fn rewrite(part: &str, data: &[u8], wanted: &Wanted) -> Result<Vec<u8
                 }
             }
             Event::Empty(e) | Event::Start(e)
-                if local_name(e) == b"pos"
-                    && matches!(editing, Some(Some(_)))
-                    && at_depth == 0 =>
+                if local_name(e) == b"pos" && matches!(editing, Some(Some(_))) && at_depth == 0 =>
             {
                 let Some(Some(anchor)) = &editing else {
                     unreachable!("guarded above")
