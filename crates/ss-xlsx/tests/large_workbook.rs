@@ -84,6 +84,53 @@ fn a_fifty_megabyte_workbook_opens_within_the_budget() {
     );
 }
 
+/// Where the time goes when a real workbook is opened, edited and saved.
+///
+/// Point it at a file: `CALX_BIG=path cargo test --release -p ss-xlsx --
+/// --ignored --nocapture save_a_real_workbook`. It is skipped with a note when
+/// the variable is unset, because the file it is meant for is a user's own
+/// workbook and not something the repository carries.
+#[test]
+#[ignore = "diagnostic; needs CALX_BIG and --release"]
+fn save_a_real_workbook() {
+    let Ok(path) = std::env::var("CALX_BIG") else {
+        println!("CALX_BIG is not set; nothing to measure");
+        return;
+    };
+    let bytes = std::fs::read(&path).expect("the workbook is readable");
+    println!("\n  file          {:>9.1} MB", mb(bytes.len()));
+
+    let started = Instant::now();
+    let mut doc = XlsxDocument::read(Cursor::new(bytes)).expect("opens");
+    println!("  read          {:>9.3} s", started.elapsed().as_secs_f64());
+
+    let cells: usize = doc.workbook.sheets.iter().map(|s| s.cells.len()).sum();
+    println!("  cells         {cells:>9}");
+
+    // One edit, the way a user makes one: a word typed into the first cell.
+    let text = doc.workbook.strings.intern("CALX-EDITED");
+    doc.workbook.sheet_mut(0).expect("a sheet").set(
+        ss_model::CellRef::new(0, 0),
+        ss_model::Cell {
+            value: ss_model::CellValue::Text(text),
+            ..Default::default()
+        },
+    );
+
+    let started = Instant::now();
+    doc.flush().expect("flushes");
+    println!("  flush         {:>9.3} s", started.elapsed().as_secs_f64());
+
+    let started = Instant::now();
+    let mut out = Cursor::new(Vec::new());
+    doc.write_to(&mut out).expect("writes");
+    println!(
+        "  flush + zip   {:>9.3} s   ({:.1} MB out)\n",
+        started.elapsed().as_secs_f64(),
+        mb(out.into_inner().len())
+    );
+}
+
 /// What the XML scan alone costs, with no model built.
 ///
 /// This is the floor: no amount of tuning in `sheet.rs` can beat walking the

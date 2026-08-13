@@ -18,7 +18,7 @@ Excel, and the twelve tasks that closed what the audit found)
 - **Calx is feature-complete for daily use as far as the audit reaches**, with
   one exception recorded on purpose: printing, which is out of scope by
   instruction. `AUDIT.md` holds every claim and every finding; findings 1–26
-  and 28 are fixed, and 27 (a sheet's own `defaultRowHeight` /
+  and 28–29 are fixed, and 27 (a sheet's own `defaultRowHeight` /
   `defaultColWidth` are never read, so rows draw about 4% too tall) is
   deliberately open and belongs with the layout rather than with any one
   feature.
@@ -535,10 +535,26 @@ undo stack. It is now about 120 ms and half a megabyte.
   sitting in the middle of the data is obvious from the screen and a row
   quietly left out of the sort is not. A number or a date at the top still
   vetoes the guess outright.
-- Watch item: **saving this workbook takes 5 s, and it is not the compression.**
-  Deflate level 1 saved 20% of the time for 78% more file, so the cost is
-  authoring 53 MB of `sheetData` in `write::sheet_out`. Untouched, unmeasured
-  in detail, and the next thing to look at if saving becomes the complaint.
+- **Saving this workbook took 5 s. It is now about 3.** Measured rather than
+  guessed, with `save_a_real_workbook` in `ss-xlsx/tests/large_workbook.rs`:
+  point `CALX_BIG` at a file and it prints where the time goes.
+
+  Two of those five seconds were spent asking the *file* what it already says —
+  its tab colour, its pane, its autofilter, its protection, its conditional
+  formats — and each of those five questions walked all 1.33M cells to reach an
+  element that cannot be among them. `sheet_out::without_cells` makes one copy
+  of the part with `<sheetData>` emptied, and every one of those questions is
+  now asked of a few kilobytes. Finding the two tags costs nothing because of
+  where it looks: forwards from the start for the opening one, backwards from
+  the end for the closing one.
+
+  Remaining, measured and not yet done: **1.6 s of the rest is `collect_cell`**,
+  which allocates twice for every cell in the file — an owned copy of the start
+  tag, and a `String` for the value — to compare each against the model and
+  throw both away. `Val::Text(String)` is what forces it. A borrowing `Val`, or
+  a shared-string cell compared by index instead of by text, is the next move.
+  Deflate is about 1 s of the 3 and is not worth trading: level 1 saved 20% of
+  the time for 78% more file.
 
 
 - Watch item: **a `t="s"` cell points at an `<si>`, and an `<si>` can be rich

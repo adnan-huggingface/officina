@@ -47,8 +47,46 @@ pub(crate) struct Context<'a> {
     pub legacy_rel: Option<&'a str>,
 }
 
+/// The part with its cells taken out: `<sheetData>…</sheetData>` emptied and
+/// everything else left exactly where it was.
+///
+/// Every question this writer asks of the file before it starts — what colour
+/// is the tab, is there a pane, an autofilter, a protection element, which
+/// rules does it carry — is about something *outside* `<sheetData>`, and each
+/// answer used to cost a walk over every cell in the sheet. On a workbook of a
+/// million cells that was four seconds of a five-second save, spent parsing
+/// cells five times over to find elements that cannot be among them.
+///
+/// The two searches are cheap because of where they look: the opening tag is
+/// within the first few hundred bytes, and the closing one is found by
+/// searching backwards from the end, where it sits a few hundred bytes from
+/// the tail. Neither reads the middle, which is the whole file.
+///
+/// `None` when the shape is not the expected one — a prefixed `<x:sheetData>`,
+/// a self-closing one, no cells at all — and then the caller asks the original
+/// bytes, which is what it always did.
+fn without_cells(data: &[u8]) -> Option<Vec<u8>> {
+    const OPEN: &[u8] = b"<sheetData";
+    const CLOSE: &[u8] = b"</sheetData>";
+    let open = data.windows(OPEN.len()).position(|w| w == OPEN)?;
+    // Backwards: the tail is short, the body is not.
+    let close = data.windows(CLOSE.len()).rposition(|w| w == CLOSE)?;
+    if close < open {
+        return None;
+    }
+    let mut out = Vec::with_capacity(open + (data.len() - close) + OPEN.len() + CLOSE.len());
+    out.extend_from_slice(&data[..open]);
+    out.extend_from_slice(b"<sheetData></sheetData>");
+    out.extend_from_slice(&data[close + CLOSE.len()..]);
+    Some(out)
+}
+
 /// Rewrites a worksheet part so its cells match `ctx.sheet`.
 pub(crate) fn rewrite(part: &str, data: &[u8], ctx: &mut Context<'_>) -> Result<Vec<u8>> {
+    // Every "what does the file already say" question below is asked of this
+    // rather than of `data`: none of them is about a cell. See `without_cells`.
+    let bare = without_cells(data);
+    let bare: &[u8] = bare.as_deref().unwrap_or(data);
     let mut out = Vec::with_capacity(data.len() + data.len() / 8);
     let mut splicer = Splicer::new(part, data);
     let mut pending = Rows::new(ctx.sheet);
@@ -63,7 +101,7 @@ pub(crate) fn rewrite(part: &str, data: &[u8], ctx: &mut Context<'_>) -> Result<
     // elements do not speak for. Worked out ahead of the rewrite, because a
     // `<col>` that has to be added belongs *in* the sequence and there is no
     // way to know where until every span in the file has been seen.
-    let missing = missing_columns(ctx.sheet, &file_columns(part, data)?);
+    let missing = missing_columns(ctx.sheet, &file_columns(part, bare)?);
     let mut next_missing = 0usize;
     // The autofilter, which sits between `</sheetData>` and `<mergeCells>` and
     // may have to be inserted into a file that never had one.
@@ -75,8 +113,8 @@ pub(crate) fn rewrite(part: &str, data: &[u8], ctx: &mut Context<'_>) -> Result<
     // back and every one of those survives. Only a filter the user actually
     // changed is rewritten from the model, and losing what we cannot represent
     // is then a consequence of the edit rather than of the save.
-    let untouched = crate::autofilter::present(data)
-        && crate::autofilter::parse(part, data)? == ctx.sheet.filter;
+    let untouched = crate::autofilter::present(bare)
+        && crate::autofilter::parse(part, bare)? == ctx.sheet.filter;
     let mut wrote_filter = false;
     let mut skip_filter = 0usize;
 
@@ -86,7 +124,7 @@ pub(crate) fn rewrite(part: &str, data: &[u8], ctx: &mut Context<'_>) -> Result<
     // kinds we do not model alive across a save. Only an actual edit
     // rewrites them from the model, and losing what we cannot represent is
     // then a consequence of the edit rather than of the save.
-    let (file_cf, file_dv) = file_rules(part, data)?;
+    let (file_cf, file_dv) = file_rules(part, bare)?;
     let cf_untouched = file_cf == ctx.sheet.conditional_formats;
     let dv_untouched = file_dv == ctx.sheet.validations;
     let mut wrote_cf = false;
@@ -113,7 +151,7 @@ pub(crate) fn rewrite(part: &str, data: &[u8], ctx: &mut Context<'_>) -> Result<
     // themed colour spelled `theme="4" tint="-0.2"` is not silently flattened
     // to the rgb it happens to resolve to on this workbook's palette.
     let tab_wanted = ctx.sheet.view.tab_color;
-    let tab_settled = file_tab_color(part, data)? == tab_wanted;
+    let tab_settled = file_tab_color(part, bare)? == tab_wanted;
     let mut tab_done = tab_settled;
     let mut in_sheet_pr = false;
 
@@ -123,7 +161,7 @@ pub(crate) fn rewrite(part: &str, data: &[u8], ctx: &mut Context<'_>) -> Result<
     // user never moved is none of this writer's business, and rewriting it
     // would put a diff in every file that was merely opened.
     let pane_wanted = wanted_pane(ctx.sheet);
-    let file_pane = file_pane(part, data)?;
+    let file_pane = file_pane(part, bare)?;
     let pane_settled =
         file_pane.as_ref().map(PaneTag::division) == pane_wanted.as_ref().map(PaneTag::division);
     let mut views_done = pane_settled;
@@ -141,7 +179,7 @@ pub(crate) fn rewrite(part: &str, data: &[u8], ctx: &mut Context<'_>) -> Result<
     // Sheet protection, on the filter's pattern: untouched files keep their own
     // bytes, so a password hash and any flag this crate does not model survive
     // a save of a sheet nobody unprotected.
-    let protect_untouched = file_protection(part, data)? == ctx.sheet.protection;
+    let protect_untouched = file_protection(part, bare)? == ctx.sheet.protection;
     let mut wrote_protection = protect_untouched;
     let mut skip_protection = 0usize;
 

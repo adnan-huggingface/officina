@@ -445,3 +445,27 @@ anything); no function autocomplete; grouped sheet editing absent.
     mistake cannot come back. The regression test reads the shapes the painter
     emitted and asserts a visible rectangle per point, taller for a larger
     number, all standing on one baseline — it fails on the old code.
+
+29. **A save asked the file five questions, and each one read every cell.**
+    Saving a 139,868-row export took five seconds, of which two went on
+    deciding whether the tab colour, the pane, the autofilter, the sheet
+    protection and the conditional formats still matched what the file said.
+    Every one of those elements lives outside `<sheetData>` — the schema puts
+    them before the cells or after them, never among them — and every one of
+    those checks parsed all 1.33M cells to reach it. The conditional-format
+    check was the worst of them: it built a whole second `Sheet` from the part,
+    cells and all, to read two fields off the end of it.
+
+    `sheet_out::without_cells` makes one copy of the part with `<sheetData>`
+    emptied and asks all five of that. Locating the two tags is free because of
+    where each is looked for: the opening one forwards from the start, the
+    closing one backwards from the end, so the body is never touched. A part
+    whose shape is not the expected one — a prefixed `<x:sheetData>`, no cells
+    at all — falls back to the original bytes, which is what every check read
+    before.
+
+    Flush went from 4.6 s to 2.6 s and the whole save from about 5 s to about
+    3, verified end to end by editing a cell in the running program and timing
+    the file changing on disk. What the save produced was checked as well as
+    timed: every row and every cell still there, and everything below the
+    edited row byte-for-byte identical to the file that was opened.
