@@ -144,6 +144,12 @@ enum Dialog {
         look: Box<ss_model::style::Look>,
         tab: FormatTab,
     },
+    /// A note on a cell: Excel's Insert Comment, which it now calls a note.
+    Note {
+        at: CellRef,
+        author: String,
+        text: String,
+    },
     /// Excel's Text to Columns: how to cut one column of text into several.
     TextToColumns {
         how: ss_formula::tools::Split,
@@ -1076,6 +1082,56 @@ impl Calx {
         });
     }
 
+    /// Opens the note on the cursor cell, or a blank one to write.
+    fn open_note(&mut self) {
+        let at = self.grid.selection.cursor();
+        let existing = self
+            .doc
+            .workbook
+            .sheet(self.grid.sheet_index)
+            .and_then(|s| s.comments.iter().find(|c| c.at == at));
+        self.dialog = Some(Dialog::Note {
+            at,
+            author: existing.map_or_else(author_name, |c| c.author.clone()),
+            text: existing.map(|c| c.body().to_string()).unwrap_or_default(),
+        });
+    }
+
+    /// Writes a note onto a cell, or takes one off when the text is empty.
+    fn set_note(&mut self, at: CellRef, author: &str, text: &str) {
+        let sheet = self.grid.sheet_index;
+        let Some(target) = self.doc.workbook.sheet(sheet) else {
+            return;
+        };
+        let mut comments = target.comments.clone();
+        comments.retain(|note| note.at != at);
+        let text = text.trim();
+        if !text.is_empty() {
+            // The author's name goes into the body as well as into the author
+            // list, which is what Excel writes and what every other reader
+            // expects to find at the top of the box.
+            comments.push(ss_model::Comment::new(
+                at,
+                author,
+                format!("{author}:
+{text}"),
+            ));
+            comments.sort_by_key(|note| (note.at.row, note.at.col));
+        }
+        if comments == target.comments {
+            return;
+        }
+        let label = if text.is_empty() {
+            "Delete note"
+        } else {
+            "Edit note"
+        };
+        self.perform(Change::new(
+            label,
+            vec![Patch::Comments { sheet, comments }],
+        ));
+    }
+
     fn open_text_to_columns(&mut self) {
         self.dialog = Some(Dialog::TextToColumns {
             how: ss_formula::tools::Split::default(),
@@ -1592,6 +1648,7 @@ impl Calx {
             Action::Format(command) => self.format(command),
             Action::StepSheet(step) => self.step_sheet(step),
             Action::Merge(join) => self.merge(join),
+            Action::EditNote => self.open_note(),
             Action::Refused(at) => {
                 self.status = format!("{} is locked, and the sheet is protected", at.to_a1());
             }
@@ -4590,6 +4647,38 @@ impl Calx {
                 }
             }
 
+            Dialog::Note { at, author, text } => {
+                let mut apply = false;
+                let title = format!("Note on {}", at.to_a1());
+                modal(ctx, &title, |ui| {
+                    ui.set_width(360.0);
+                    ui.horizontal(|ui| {
+                        ui.label("Author");
+                        ui.add(egui::TextEdit::singleline(author).desired_width(220.0));
+                    });
+                    ui.add_space(4.0);
+                    ui.add(
+                        egui::TextEdit::multiline(text)
+                            .desired_width(f32::INFINITY)
+                            .desired_rows(5),
+                    );
+                    ui.add_space(4.0);
+                    ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                        ui.small("An empty note is no note: clearing the text removes it.");
+                    });
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        apply = ui.button("OK").clicked();
+                        keep &= !ui.button("Cancel").clicked();
+                    });
+                });
+                if apply {
+                    let (at, author, text) = (*at, author.clone(), text.clone());
+                    self.set_note(at, &author, &text);
+                    keep = false;
+                }
+            }
+
             Dialog::TextToColumns { how, other } => {
                 let mut go = false;
                 modal(ctx, "Text to columns", |ui| {
@@ -5099,6 +5188,24 @@ impl Calx {
                 })
             }
             None => {}
+        }
+        ui.separator();
+        let has_note = self
+            .doc
+            .workbook
+            .sheet(self.grid.sheet_index)
+            .is_some_and(|s| s.comments.iter().any(|note| note.at == cursor));
+        let mut note = false;
+        if ui
+            .button(if has_note { "Edit note" } else { "Insert note" })
+            .on_hover_text("Shift+F2")
+            .clicked()
+        {
+            note = true;
+            ui.close();
+        }
+        if note {
+            self.open_note();
         }
         ui.separator();
         for (label, action) in [
@@ -5849,6 +5956,23 @@ fn border_style_name(style: BorderStyle) -> &'static str {
 }
 
 /// Format Cells ▸ Fill.
+/// Who to sign a new note as.
+///
+/// The account name the machine already knows, because asking for it in the
+/// note dialog is a question nobody wants to answer twice — and a note signed
+/// "Unknown" is worse than one signed with the name on the login.
+fn author_name() -> String {
+    for key in ["USERNAME", "USER", "LOGNAME"] {
+        if let Some(name) = std::env::var_os(key) {
+            let name = name.to_string_lossy().trim().to_string();
+            if !name.is_empty() {
+                return name;
+            }
+        }
+    }
+    "Author".to_string()
+}
+
 /// What the package should call an image, from the name it came in under.
 ///
 /// The extension rather than the bytes: the package's content type is what
@@ -6503,6 +6627,57 @@ mod tests {
             "the sheet stays protected"
         );
         assert!(app.status.contains("password"), "{}", app.status);
+    }
+
+    #[test]
+    fn a_note_is_written_signed_and_taken_off_again() {
+        let mut app = Calx::new();
+        let at = CellRef::from_a1("B2").expect("valid");
+        app.set_note(at, "Ada", "check the ledger");
+
+        let notes = &app.doc.workbook.sheets[0].comments;
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].at, at);
+        assert_eq!(notes[0].author, "Ada");
+        assert_eq!(
+            notes[0].text, "Ada:
+check the ledger",
+            "the author's name goes into the body too, as Excel writes it"
+        );
+        assert_eq!(notes[0].body(), "check the ledger");
+
+        // Editing replaces rather than adds.
+        app.set_note(at, "Ada", "checked");
+        assert_eq!(app.doc.workbook.sheets[0].comments.len(), 1);
+
+        // And an empty note is no note.
+        app.set_note(at, "Ada", "   ");
+        assert!(app.doc.workbook.sheets[0].comments.is_empty());
+
+        app.undo();
+        assert_eq!(
+            app.doc.workbook.sheets[0].comments.len(),
+            1,
+            "deleting a note is undoable"
+        );
+    }
+
+    #[test]
+    fn notes_are_kept_in_the_order_the_cells_come_in() {
+        // The file lists them in reading order and so should the model: a
+        // reader that renumbers author ids by position would otherwise write a
+        // different file every time a note was added above another one.
+        let mut app = Calx::new();
+        for a1 in ["C3", "A1", "B2"] {
+            let at = CellRef::from_a1(a1).expect("valid");
+            app.set_note(at, "Ada", a1);
+        }
+        let order: Vec<String> = app.doc.workbook.sheets[0]
+            .comments
+            .iter()
+            .map(|note| note.at.to_a1())
+            .collect();
+        assert_eq!(order, ["A1", "B2", "C3"]);
     }
 
     #[test]

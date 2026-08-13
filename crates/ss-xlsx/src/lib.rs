@@ -12,6 +12,7 @@
 
 mod autofilter;
 mod chart;
+mod comments;
 mod drawing;
 mod error;
 mod parts;
@@ -132,6 +133,7 @@ fn build(package: &Package) -> Result<Workbook> {
                     let drawn = read_drawing(package, part_name, extras.drawing.as_deref())?;
                     sheet.charts = drawn.charts;
                     sheet.pictures = drawn.pictures;
+                    sheet.comments = read_comments(package, part_name)?;
                     sheet.tables = read_tables(package, part_name)?;
                     sheet.pivots = read_pivots(package, part_name)?;
                 }
@@ -241,6 +243,29 @@ pub(crate) fn drawing_of(
     let rels = package.relationships(sheet_part).ok()?;
     let rel = rels.iter().find(|r| r.rel_type.ends_with("/drawing"))?;
     rel.resolve(sheet_part)?.ok()
+}
+
+/// The notes on a sheet, which live in a part of their own.
+pub(crate) fn comments_part(
+    package: &Package,
+    sheet_part: &ooxml::PartName,
+) -> Option<ooxml::PartName> {
+    let rels = package.relationships(sheet_part).ok()?;
+    let rel = rels.iter().find(|r| r.rel_type.ends_with("/comments"))?;
+    rel.resolve(sheet_part)?.ok()
+}
+
+fn read_comments(
+    package: &Package,
+    sheet_part: &ooxml::PartName,
+) -> Result<Vec<ss_model::Comment>> {
+    let Some(name) = comments_part(package, sheet_part) else {
+        return Ok(Vec::new());
+    };
+    let Some(part) = package.part(&name) else {
+        return Ok(Vec::new());
+    };
+    comments::parse(name.as_str(), part.data())
 }
 
 /// The anchors in a drawing that hold a picture or a chart, and the geometry

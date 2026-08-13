@@ -965,7 +965,7 @@ fn resolve_split(sheet: &mut Sheet, (y, x): (u32, u32)) {
 }
 
 /// Parses `A1` straight from attribute bytes, with no intermediate `String`.
-fn parse_a1_bytes(bytes: &[u8]) -> Option<CellRef> {
+pub(crate) fn parse_a1_bytes(bytes: &[u8]) -> Option<CellRef> {
     let mut i = 0;
     if bytes.first() == Some(&b'$') {
         i += 1;

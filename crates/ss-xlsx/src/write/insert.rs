@@ -29,8 +29,10 @@ use ss_model::{Chart, Picture, Workbook};
 use crate::error::Result;
 use crate::write::REL_BASE;
 
-const DRAWING_TYPE: &str =
-    "application/vnd.openxmlformats-officedocument.drawing+xml";
+const DRAWING_TYPE: &str = "application/vnd.openxmlformats-officedocument.drawing+xml";
+const COMMENTS_TYPE: &str =
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.comments+xml";
+const VML_TYPE: &str = "application/vnd.openxmlformats-officedocument.vmlDrawing";
 const CHART_TYPE: &str = "application/vnd.openxmlformats-officedocument.drawingml.chart+xml";
 const RELS_TYPE: &str = "application/vnd.openxmlformats-package.relationships+xml";
 
@@ -174,6 +176,82 @@ pub(crate) fn materialize(
         package.put_part(drawing.rels_part(), RELS_TYPE, rels.to_xml());
     }
     Ok(new_rel)
+}
+
+/// Brings a sheet's notes in line with the model.
+///
+/// Returns the relationship id of a VML drawing authored here, which the
+/// worksheet then has to name with `<legacyDrawing>` — the same shape as a
+/// drawing, and for the same reason: a note Excel cannot draw a box for is a
+/// file Excel offers to repair.
+pub(crate) fn comments(
+    package: &mut Package,
+    workbook: &ss_model::Workbook,
+    sheet_index: usize,
+    sheet_part: &PartName,
+) -> Result<Option<String>> {
+    let Some(sheet) = workbook.sheet(sheet_index) else {
+        return Ok(None);
+    };
+    let existing = crate::comments_part(package, sheet_part);
+    let was = match existing.as_ref().and_then(|name| package.part(name)) {
+        Some(part) => crate::comments::parse(sheet_part.as_str(), part.data())?,
+        None => Vec::new(),
+    };
+    if was == sheet.comments {
+        return Ok(None);
+    }
+
+    // A sheet whose notes have all been deleted keeps its part, emptied. The
+    // alternative — removing the part, its relationship, the VML, and the
+    // `<legacyDrawing>` naming it — is four edits to undo one, and an empty
+    // comment list is what Excel itself leaves behind.
+    let name = match existing {
+        Some(name) => name,
+        None => free_name(package, "xl", "comments", "xml")?,
+    };
+    package.put_part(
+        name.clone(),
+        COMMENTS_TYPE,
+        crate::comments::write(&sheet.comments),
+    );
+
+    let mut rels = package.relationships(sheet_part)?;
+    let mut authored: Option<String> = None;
+    if !rels.iter().any(|r| r.rel_type.ends_with("/comments")) {
+        let id = rels.next_id();
+        rels.insert(Relationship {
+            id,
+            rel_type: format!("{REL_BASE}/comments"),
+            target: crate::write::relative_to(sheet_part, &name),
+            mode: TargetMode::Internal,
+        });
+    }
+    // The VML: authored when the sheet has none, rewritten when it has one,
+    // because a shape per note is what says which cells have boxes.
+    let vml_existing = rels
+        .iter()
+        .find(|r| r.rel_type.ends_with("/vmlDrawing"))
+        .and_then(|r| r.resolve(sheet_part))
+        .and_then(|r| r.ok());
+    let vml_name = match vml_existing {
+        Some(name) => name,
+        None => {
+            let name = free_name(package, "xl/drawings", "vmlDrawing", "vml")?;
+            let id = rels.next_id();
+            rels.insert(Relationship {
+                id: id.clone(),
+                rel_type: format!("{REL_BASE}/vmlDrawing"),
+                target: crate::write::relative_to(sheet_part, &name),
+                mode: TargetMode::Internal,
+            });
+            authored = Some(id);
+            name
+        }
+    };
+    package.put_part(vml_name, VML_TYPE, crate::comments::vml(&sheet.comments));
+    package.put_part(sheet_part.rels_part(), RELS_TYPE, rels.to_xml());
+    Ok(authored)
 }
 
 /// Puts new anchors in just before `</xdr:wsDr>`.

@@ -146,6 +146,10 @@ impl XlsxDocument {
                 index,
                 &name,
             )?;
+            // Notes, which live in a part of their own and need a VML shape
+            // beside them for Excel to draw the box.
+            let legacy_rel =
+                insert::comments(&mut self.package, &self.workbook, index, &name)?;
             let Some(sheet) = self.workbook.sheet(index) else {
                 continue;
             };
@@ -159,6 +163,7 @@ impl XlsxDocument {
                 sst: &mut sst,
                 regenerate,
                 drawing_rel: drawing_rel.as_deref(),
+                legacy_rel: legacy_rel.as_deref(),
             };
             let data = sheet_out::rewrite(name.as_str(), part.data(), &mut ctx)?;
             written.push((name.clone(), content_type, data));

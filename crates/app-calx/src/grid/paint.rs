@@ -333,6 +333,53 @@ fn selected_band(selection: &Selection, axis: Axis, index: u32) -> Option<(u32, 
     })
 }
 
+/// The little red corner that says a cell has a note, and the note itself
+/// while the pointer is over it.
+///
+/// A triangle in the top-right corner, which is where Excel puts it and where
+/// nothing else in a cell is drawn: a value sits on the baseline, and the
+/// marker has to survive being over a cell that is full.
+fn paint_notes(ui: &mut egui::Ui, notes: &[(egui::Rect, String)], body: egui::Rect) {
+    const MARKER: f32 = 5.0;
+    let painter = ui.painter().with_clip_rect(body);
+    let pointer = ui.ctx().pointer_hover_pos();
+    for (rect, text) in notes {
+        let corner = egui::Rect::from_min_max(
+            egui::pos2(rect.right() - MARKER, rect.top()),
+            egui::pos2(rect.right(), rect.top() + MARKER),
+        );
+        painter.add(egui::Shape::convex_polygon(
+            vec![
+                corner.left_top(),
+                corner.right_top(),
+                corner.right_bottom(),
+            ],
+            egui::Color32::from_rgb(0xC0, 0x39, 0x2B),
+            egui::Stroke::NONE,
+        ));
+        // Excel shows the note when the pointer is anywhere over the cell, not
+        // only over the five-pixel marker, and a note nobody can hit is a note
+        // nobody reads.
+        if pointer.is_some_and(|p| rect.contains(p) && body.contains(p)) {
+            // The box is drawn rather than handed to a tooltip: a tooltip
+            // belongs to a widget, the grid is one widget for the whole sheet,
+            // and this has to appear beside the cell the pointer is over —
+            // which is where Excel puts it, and on the same pale yellow.
+            egui::Area::new(egui::Id::new("calx-note-box"))
+                .order(egui::Order::Tooltip)
+                .fixed_pos(rect.right_top() + egui::vec2(8.0, -4.0))
+                .show(ui.ctx(), |ui| {
+                    egui::Frame::popup(ui.style())
+                        .fill(egui::Color32::from_rgb(0xFF, 0xFF, 0xE1))
+                        .show(ui, |ui| {
+                            ui.set_max_width(260.0);
+                            ui.label(text);
+                        });
+                });
+        }
+    }
+}
+
 /// Which split bar the pointer is on, if either.
 ///
 /// Only a split has one to take hold of. A freeze's line is a statement about
@@ -604,9 +651,28 @@ impl GridView {
         // after the cells because they sit on top of the heading text.
         let arrows = filter_arrows(sheet, layout, &panes);
 
+        // The notes on cells that are on screen, with the corner each marker
+        // goes in. Resolved here for the same reason the arrows are: the panes
+        // are known now and go back into `self` in a moment.
+        let notes: Vec<(egui::Rect, String)> = sheet
+            .comments
+            .iter()
+            .filter_map(|note| {
+                let rect = cell_rect(layout, &panes, note.at)?;
+                let text = if note.author.is_empty() {
+                    note.body().to_string()
+                } else {
+                    format!("{}
+{}", note.author, note.body())
+                };
+                Some((rect, text))
+            })
+            .collect();
+
         self.layout = Some(cached);
         self.conditional = Some(conditional);
         self.paint_arrows(ui, &arrows, &response);
+        paint_notes(ui, &notes, body);
         self.paint_editor(ui, editing, body);
         self.paint_dropdown(ui, book, cursor_rect);
         self.handle_input(ui, book, &response, content, body);
@@ -2972,6 +3038,9 @@ impl GridView {
                     self.actions.push(Action::CancelClipboard);
                 }
             }
+            // Shift+F2 is Excel's own key for the note on a cell, and F2 alone
+            // is the editor; the modifier is the whole difference.
+            egui::Key::F2 if modifiers.shift => self.actions.push(Action::EditNote),
             egui::Key::F2 => self.open_editor(book, Mode::Edit, None),
             // Backspace opens an editor on an emptied cell; Delete just empties.
             egui::Key::Backspace => self.open_editor(book, Mode::Enter, None),

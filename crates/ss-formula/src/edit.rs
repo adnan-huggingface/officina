@@ -210,6 +210,13 @@ pub enum Patch {
         names: Vec<ss_model::DefinedName>,
     },
     /// A sheet's autofilter — the rule, not the hidden rows it produces.
+    /// Every note on a sheet, replaced wholesale — the same shape as pictures
+    /// and for the same reason: a sheet holds a handful, and adding, editing
+    /// and deleting one then share an inverse, which is the list as it was.
+    Comments {
+        sheet: usize,
+        comments: Vec<ss_model::Comment>,
+    },
     /// A sheet protected, unprotected, or protected differently.
     Protection {
         sheet: usize,
@@ -489,6 +496,17 @@ fn apply_patch(book: &mut Workbook, patch: Patch) -> Vec<Patch> {
         Patch::DefinedNames { names } => {
             let before = std::mem::replace(&mut book.defined_names, names);
             vec![Patch::DefinedNames { names: before }]
+        }
+
+        Patch::Comments { sheet, comments } => {
+            let Some(target) = book.sheet_mut(sheet) else {
+                return Vec::new();
+            };
+            let before = std::mem::replace(&mut target.comments, comments);
+            vec![Patch::Comments {
+                sheet,
+                comments: before,
+            }]
         }
 
         Patch::Protection { sheet, protection } => {

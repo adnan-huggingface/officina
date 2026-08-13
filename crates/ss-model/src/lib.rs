@@ -10,6 +10,7 @@
 pub mod cell;
 pub mod chart;
 pub mod color;
+pub mod comment;
 pub mod cond;
 pub mod datetime;
 pub mod filter;
@@ -27,6 +28,7 @@ pub mod workbook;
 pub use cell::{column_index, column_name, Cell, CellError, CellRef, CellValue, FormulaId};
 pub use chart::{Anchor, Chart, ChartKind, Series};
 pub use color::{Color, Theme};
+pub use comment::Comment;
 pub use cond::{ConditionalFormat, DataValidation};
 pub use filter::{AutoFilter, Compare, Criterion, FilterColumn, FilterKind};
 pub use formula::{Formula, FormulaKind};

@@ -579,6 +579,8 @@ pub enum Action {
     StepSheet(i32),
     /// Merge the selection into one cell, or take a merge apart.
     Merge(bool),
+    /// Open the note on the cursor cell, or start one.
+    EditNote,
     /// An edit the sheet's protection turned away, so the application can say
     /// so. The grid does not own the status line.
     Refused(CellRef),

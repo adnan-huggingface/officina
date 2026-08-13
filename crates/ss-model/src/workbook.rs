@@ -322,6 +322,8 @@ pub struct Sheet {
     pub filter: Option<crate::filter::AutoFilter>,
     /// Sheet protection, if the sheet is protected.
     pub protection: Option<Protection>,
+    /// Notes on cells, in the order the file lists them.
+    pub comments: Vec<crate::Comment>,
     /// Where each dynamic-array formula last spilled to, by its anchor.
     ///
     /// Derived at recalculation and never read from a file: it exists so that a
@@ -583,6 +585,17 @@ impl Sheet {
         }
         self.validations.retain(|dv| !dv.ranges.is_empty());
 
+        // A note belongs to its cell and goes wherever the cell goes; one on a
+        // row being deleted goes with it.
+        for note in &mut self.comments {
+            note.at = match shift.point(shift.axis.index(note.at)) {
+                Some(moved) => shift.axis.with(note.at, moved),
+                None => CellRef::new(u32::MAX, u32::MAX),
+            };
+        }
+        self.comments
+            .retain(|note| note.at.row != u32::MAX || note.at.col != u32::MAX);
+
         // The division is a boundary line, not content: deleting the rows it
         // sits in pulls it up to where they were rather than removing it.
         if let Some(panes) = &mut self.panes {
@@ -679,6 +692,9 @@ impl Sheet {
         // filter has no way to describe.
         if let Some(filter) = &mut self.filter {
             filter.range = mv.range(filter.range);
+        }
+        for note in &mut self.comments {
+            note.at = mv.axis.with(note.at, mv.point(mv.axis.index(note.at)));
         }
         // The pane division is a boundary line rather than content, and a
         // boundary does not travel with the rows that happened to be beside it.

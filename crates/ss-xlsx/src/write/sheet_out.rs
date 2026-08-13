@@ -42,6 +42,9 @@ pub(crate) struct Context<'a> {
     /// this save, which the worksheet has to name for the drawing to exist as
     /// far as Excel is concerned. `None` on every other save.
     pub drawing_rel: Option<&'a str>,
+    /// The same for a VML drawing authored to hold this sheet's note boxes,
+    /// which the worksheet names with `<legacyDrawing>`.
+    pub legacy_rel: Option<&'a str>,
 }
 
 /// Rewrites a worksheet part so its cells match `ctx.sheet`.
@@ -142,6 +145,7 @@ pub(crate) fn rewrite(part: &str, data: &[u8], ctx: &mut Context<'_>) -> Result<
     // sheet that gained its first drawing has one to declare; every other save
     // leaves this alone, and the file's own `<drawing>` with it.
     let mut wrote_drawing = ctx.drawing_rel.is_none();
+    let mut wrote_legacy = ctx.legacy_rel.is_none();
 
     while let Some((event, span)) = splicer.next()? {
         if !tab_settled {
@@ -314,6 +318,36 @@ pub(crate) fn rewrite(part: &str, data: &[u8], ctx: &mut Context<'_>) -> Result<
                 Event::End(e) if end_local_name(e) == b"worksheet" => {
                     write_drawing(&mut out, &prefix, ctx.drawing_rel);
                     wrote_drawing = true;
+                }
+                _ => {}
+            }
+        }
+
+        // `<legacyDrawing>` follows `<drawing>` in the schema, so it is its own
+        // pass rather than a second arm of the one above.
+        if !wrote_legacy {
+            match &event {
+                Event::Start(e)
+                    if local_name(e) == b"worksheet"
+                        && !attributes(e).any(|a| a.key.as_ref() == b"xmlns:r") =>
+                {
+                    out.extend_from_slice(&retag(
+                        e,
+                        &[Set::to(
+                            b"xmlns:r",
+                            "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+                        )],
+                        false,
+                    ));
+                    continue;
+                }
+                Event::Start(e) | Event::Empty(e) if after_legacy_drawing(local_name(e)) => {
+                    write_legacy(&mut out, &prefix_of(e), ctx.legacy_rel);
+                    wrote_legacy = true;
+                }
+                Event::End(e) if end_local_name(e) == b"worksheet" => {
+                    write_legacy(&mut out, &prefix, ctx.legacy_rel);
+                    wrote_legacy = true;
                 }
                 _ => {}
             }
@@ -803,6 +837,27 @@ fn write_sheet_views(out: &mut Vec<u8>, prefix: &[u8], pane: Option<&PaneTag>) {
 fn write_drawing(out: &mut Vec<u8>, prefix: &[u8], rel_id: Option<&str>) {
     let Some(id) = rel_id else { return };
     open(out, prefix, b"drawing", &[Set::to(b"r:id", id)], true);
+}
+
+/// Writes the `<legacyDrawing>` naming a sheet's VML part.
+fn write_legacy(out: &mut Vec<u8>, prefix: &[u8], rel_id: Option<&str>) {
+    let Some(id) = rel_id else { return };
+    open(out, prefix, b"legacyDrawing", &[Set::to(b"r:id", id)], true);
+}
+
+/// The worksheet children the schema puts *after* `<legacyDrawing>`.
+fn after_legacy_drawing(name: &[u8]) -> bool {
+    matches!(
+        name,
+        b"legacyDrawingHF"
+            | b"drawingHF"
+            | b"picture"
+            | b"oleObjects"
+            | b"controls"
+            | b"webPublishItems"
+            | b"tableParts"
+            | b"extLst"
+    )
 }
 
 /// The worksheet children the schema puts *after* `<drawing>`.
@@ -2404,6 +2459,7 @@ mod tests {
             sst: &mut fixture.sst,
             regenerate: false,
             drawing_rel: None,
+            legacy_rel: None,
         };
         let out = rewrite("sheet1.xml", SHEET.as_bytes(), &mut ctx).expect("writes");
         String::from_utf8(out).expect("utf-8")
@@ -2429,6 +2485,7 @@ mod tests {
             sst: &mut sst,
             regenerate: false,
             drawing_rel: None,
+            legacy_rel: None,
         };
         String::from_utf8(rewrite("sheet1.xml", source.as_bytes(), &mut ctx).expect("writes"))
             .expect("utf-8")
@@ -3007,6 +3064,7 @@ mod tests {
             sst: &mut f.sst,
             regenerate: false,
             drawing_rel: None,
+            legacy_rel: None,
         };
         let out = String::from_utf8(rewrite("s.xml", empty.as_bytes(), &mut ctx).expect("writes"))
             .expect("utf-8");
