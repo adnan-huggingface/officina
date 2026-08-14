@@ -187,3 +187,23 @@ fn a_legacy_document_can_be_saved_as_a_modern_one() {
         .collect();
     assert_eq!(before, after);
 }
+
+#[test]
+fn the_page_setup_comes_from_the_file_rather_than_from_a_default() {
+    // A document written on A4 that opens as Letter reflows on its first line
+    // and paginates differently for the whole of its length.
+    let document = open("plain-paragraphs.doc");
+    assert!(
+        document.section.page.width.0 > 0,
+        "the paper has a width: {:?}",
+        document.section.page
+    );
+    assert!(
+        document.section.margins.start.0 > 0,
+        "and a left margin: {:?}",
+        document.section.margins
+    );
+    // Word's own default here, which is what these were written with.
+    assert_eq!(document.section.page.width, wp_model::Twips(12240));
+    assert_eq!(document.section.page.height, wp_model::Twips(15840));
+}

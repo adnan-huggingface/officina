@@ -15,18 +15,23 @@
 //! paragraphs, from the paragraph marks. Direct character formatting — bold,
 //! italic, underline, size, font, colour — and paragraph formatting —
 //! alignment, indents, spacing, the style it is in — from the bin tables of
-//! property exceptions. Tables, from the cell and row marks.
+//! property exceptions. Tables, from the cell and row marks. And the page setup
+//! of the first section, so that a document written on A4 does not open as US
+//! Letter and reflow from its first line.
 //!
 //! **What is not.** Pictures, drawings, fields, footnote *references* (the notes
 //! themselves are read, but not which character they hang off), revision marks,
-//! and the stylesheet's own definitions. A document opened here shows its words
-//! and its shape; it does not claim to be the same document.
+//! the stylesheet's own definitions, table geometry (column widths, borders and
+//! cell shading), and the second and later sections' page setup. A document
+//! opened here shows its words and its shape; it does not claim to be the same
+//! document, and it is opened as a copy rather than as itself.
 
 use std::path::Path;
 
 pub mod fib;
 pub mod fkp;
 pub mod piece;
+pub mod section;
 pub mod sprm;
 pub mod style;
 pub mod text;

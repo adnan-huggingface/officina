@@ -55,6 +55,9 @@ pub fn document(doc: &Doc) -> wp_model::Document {
     let mut document = wp_model::Document::new();
     document.body = blocks;
     document.styles = styles;
+    if let Some(section) = crate::section::read(&doc.fib, &doc.table, &doc.stream) {
+        document.section = section;
+    }
     document
 }
 
