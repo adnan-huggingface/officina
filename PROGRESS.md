@@ -9,12 +9,54 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[-]` deferred
 
 ## Current state
 
-**Chunk:** C16 — the Word model (C0–C15 done, plus a UX pass, a sheets /
-sort / filter pass, a row-and-column resizing pass, a parity audit against
-Excel, and the twelve tasks that closed what the audit found)
+**Chunk:** C17 — the docx reader (C0–C16 done: Calx complete through C15 plus
+a UX pass, a sheets / sort / filter pass, a row-and-column resizing pass, a
+parity audit against Excel, the twelve tasks that closed what the audit found,
+a menu bar with mnemonics — and now Scriva's document model)
 **Status:** not started
 **Handoff note:**
 
+- **`LEARNINGS.md` is the debrief from building Calx** — what generalises,
+  organised by preservation, reading, writing, modelling, what tests do not
+  catch, performance, UI and process, and ending with what it predicts about
+  Scriva. Read it before starting a Scriva chunk. The Excel-specific watch
+  items stay in this file; that one holds the rules that will be true again.
+- **C16 is done: `wp-model` is the Word document model.** 84 tests, and every
+  one of them is about a rule that is invisible until it is wrong. What a
+  reader (C17) must know before it starts:
+  - **Absent is not false.** Every property is an `Option`, and `None` means
+    inherit. A bare `<w:b/>` is *true*; `w:val="0"`, `"false"` and `"off"` are
+    false. `prop::on_off` is the one place that decides.
+  - **Thirteen properties toggle rather than override.** Bold applied by a
+    style on top of a style that is already bold comes out *not* bold — the
+    values XOR through the style hierarchy and only direct formatting is
+    absolute. That is why Word's Strong character style un-bolds a heading.
+    `prop::Toggles` and `prop::Toggle::ALL` are the closed list.
+  - **A paragraph with no `<w:pStyle>` is not unstyled** — it takes the style
+    marked `w:default="1"`. Skipping that layer loses the document's body font
+    and reads as a rendering bug.
+  - **A bare `<w:vMerge/>` means *continue*, not restart** — the opposite of
+    every other bare on/off element in the format. Read the usual way, every
+    vertically merged cell in a document becomes its own merge and the table
+    draws empty.
+  - **`<w:sectPr>` terminates a section rather than beginning one.** Read as a
+    container, every page setup lands one section late.
+  - **Word measures in five units**, and `w:sz` is half-points on a run and
+    eighths of a point on a border. `units` makes them five types that cannot
+    be added to each other.
+  - **Footnote ids 0 and −1 are the separators**, not notes.
+  - **`w14:paraId` is a paragraph's durable identity**, and it is what will
+    make a splice writer possible for `document.xml`. Absent in files from
+    producers other than Word, so nothing may depend on it.
+  - Recorded divergence: the numbering level's `<w:pPr>` is layered *above* the
+    paragraph style and below direct formatting. ECMA §17.7.2 orders it the
+    other way; Word plainly does not, or no bulleted list would sit at its
+    list's indent. Pinned by `a_list_level_moves_a_paragraph_its_style_did_not`
+    and worth re-checking once there is a renderer.
+  - Stated limit: `themeTint`/`themeShade` are blended toward white and black
+    in sRGB, which is *not* a spreadsheet's HSL `tint`. Checked against the
+    cached `w:val` Word writes beside the attributes, not against Word's screen.
+- Workspace total is now **995 tests**.
 - **Calx is feature-complete for daily use as far as the audit reaches**, with
   one exception recorded on purpose: printing, which is out of scope by
   instruction. `AUDIT.md` holds every claim and every finding; findings 1–26
@@ -62,7 +104,7 @@ Excel, and the twelve tasks that closed what the audit found)
   event that anything accepting typing reads (`Marked::taken`); and a submenu
   opened by key needs `MenuState::mark_shown` before its row is recorded as
   open, or the menu forgets a row whose submenu has not been drawn *yet*.
-- Workspace total is **911 tests**, all green; `cargo clippy --workspace
+- Workspace total is **995 tests**, all green; `cargo clippy --workspace
   --all-targets -- -D warnings` and `cargo fmt --all --check` are both clean;
   `cargo xtask fidelity` is check 1, 27 of 27 and check 2, 12 of 12.
 - The release binary at `target/release/calx.exe` is current with this state.
@@ -1093,8 +1135,40 @@ right-click menu where Excel offers it, and under Excel's own key.
 
 ## Phase 3 — Scriva (word processor) core
 
-- [ ] **C16. Word model** — paragraph/run tree, style inheritance resolution, sections,
-      numbering, tables, revision + comment layers.
+- [x] **C16. Word model** — paragraph/run tree, style inheritance resolution, sections,
+      numbering, tables, revision + comment layers. **84 tests.**
+
+  `wp-model` is nine modules: `units`, `color`, `prop`, `style`, `numbering`,
+  `section`, `table`, `revision`, `doc`. Nothing in it is resolved formatting —
+  a paragraph stores what its own `<w:pPr>` said and no more, because the file
+  records the difference between "this run is 12pt" and "this run inherits
+  12pt", and a user editing the style expects the second kind to move.
+
+  **The four-layer resolution is the heart of it.** Document defaults, then the
+  paragraph style and everything it is `basedOn` *root first*, then the
+  numbering level, then the character style chain, then the paragraph's own
+  properties, then the run's. Walking `basedOn` outward from the named style
+  and taking the first value found gives the right answer for ordinary
+  properties and the wrong one for every toggle. A `basedOn` cycle resolves
+  rather than hanging, because documents contain them and Word opens them.
+
+  **Numbering is two tables and a walk.** `<w:num>` is an instance and
+  `<w:abstractNum>` is a definition; collapsing them makes the second list in a
+  document continue the first. A number is a function of every numbered
+  paragraph before it, so `Counters` is walked forward once and rebuilt from
+  scratch after an edit rather than patched in the middle. Word repeats a
+  letter rather than carrying — 27 is `aa` and 28 is `bb`, not `ab` — which is
+  invisible until a list passes twenty-six items.
+
+  **The revision and comment layers are here rather than in C24** on purpose. A
+  reader that flattens a tracked deletion has destroyed it, and no later chunk
+  can bring the author back. `<w:delText>` is kept apart from `<w:t>` so a word
+  count, a search and the flowed length all skip what has been deleted while
+  the revision view still draws it.
+
+  Deliberately not modelled and carried whole: equations (`<m:oMath>`, with
+  their text extracted so search is not blind), VML and OLE objects, and every
+  compatibility flag in `settings.xml`.
 - [ ] **C17. docx reader** — document.xml, styles, numbering, settings, headers/footers.
 - [ ] **C18. Layout engine — inline** — itemization, shaping via cosmic-text/swash,
       UAX #14 line breaking, justification.
