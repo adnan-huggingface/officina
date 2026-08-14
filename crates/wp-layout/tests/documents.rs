@@ -81,6 +81,7 @@ fn lay(document: &Document) -> Vec<block::Page> {
         fallback_font: "test",
         show_revisions: true,
         show_hidden: false,
+        fields: &wp_layout::FieldValues::new(),
     };
     let mut shaper = Fixed;
     block::layout(document, &ctx, &mut shaper)

@@ -29,6 +29,7 @@ use wp_model::prop::{Justify, LineSpacing, RunProps, TabKind, TabLeader, TabStop
 use wp_model::style::Layers;
 use wp_model::units::Twips;
 
+use crate::field::{FieldMark, FieldValues};
 use crate::linebreak;
 use crate::resolve::{self, TextStyle};
 use crate::shape::{FontRequest, Metrics, Shaper};
@@ -76,6 +77,10 @@ pub struct Fragment {
     pub style: TextStyle,
     pub content: Content,
     pub source: Option<Source>,
+    /// Set when this is the *result* of a field, so a second pass can put the
+    /// page number in it. A field's instruction is never drawn and never
+    /// reaches here.
+    pub field: Option<FieldMark>,
 }
 
 /// One laid-out line.
@@ -139,6 +144,11 @@ pub struct Context<'a> {
     pub show_revisions: bool,
     /// Whether `w:vanish` text is drawn — the formatting-marks switch.
     pub show_hidden: bool,
+    /// What each field evaluates to, where it is known.
+    ///
+    /// Empty on the first pass — a page number cannot be known before the page
+    /// exists — and filled in for the second.
+    pub fields: &'a FieldValues,
 }
 
 impl Default for Context<'_> {
@@ -149,6 +159,7 @@ impl Default for Context<'_> {
             fallback_font: "Calibri",
             show_revisions: true,
             show_hidden: false,
+            fields: Box::leak(Box::new(FieldValues::default())),
         }
     }
 }
@@ -158,6 +169,7 @@ impl Default for Context<'_> {
 struct Unit {
     style: TextStyle,
     source: Option<Source>,
+    field: Option<FieldMark>,
     kind: UnitKind,
     /// Width of the part that must fit on the line.
     width: f64,
@@ -185,15 +197,17 @@ enum UnitKind {
 }
 
 /// Lays a paragraph out into lines of `width` points.
+#[allow(clippy::too_many_arguments)]
 pub fn layout(
     paragraph: &Paragraph,
+    index: usize,
     layers: &Layers,
     label: Option<&ListLabel>,
     ctx: &Context<'_>,
     width: f64,
     shaper: &mut dyn Shaper,
 ) -> LaidParagraph {
-    let units = units(paragraph, layers, label, ctx, shaper);
+    let units = units(paragraph, index, layers, label, ctx, shaper);
     let indent = &layers.para.indent;
     let start = indent.start.map(|t| t.points()).unwrap_or(0.0);
     let end = indent.end.map(|t| t.points()).unwrap_or(0.0);
@@ -259,8 +273,10 @@ fn next_tab(x: f64, stops: &[TabStop], default: Twips) -> (f64, TabKind, TabLead
 }
 
 /// Walks the paragraph into indivisible units.
+#[allow(clippy::too_many_arguments)]
 fn units(
     paragraph: &Paragraph,
+    index: usize,
     layers: &Layers,
     label: Option<&ListLabel>,
     ctx: &Context<'_>,
@@ -285,6 +301,7 @@ fn units(
         out.push(Unit {
             style,
             source: None,
+            field: None,
             kind: UnitKind::Label,
             width,
             trailing: 0.0,
@@ -298,6 +315,7 @@ fn units(
                 out.push(Unit {
                     style,
                     source: None,
+                    field: None,
                     kind: UnitKind::Text {
                         text: " ".to_string(),
                         advances,
@@ -313,19 +331,95 @@ fn units(
 
     let runs = paragraph.runs();
     let deleted = deleted_runs(paragraph);
-    for (index, run) in runs.iter().enumerate() {
-        if deleted.contains(&index) && !ctx.show_revisions {
+    // Field state runs *across* runs: a field's begin, its instruction, its
+    // separator and its result are very often four different `<w:r>` elements.
+    let mut fields = FieldWalk::new(index);
+    for (run_index, run) in runs.iter().enumerate() {
+        if deleted.contains(&run_index) && !ctx.show_revisions {
             continue;
         }
-        push_run(run, index, layers, ctx, shaper, &mut out);
+        push_run(run, run_index, layers, ctx, shaper, &mut fields, &mut out);
     }
     out
+}
+
+/// Where the walk is among a paragraph's fields.
+///
+/// Fields nest — a `TOC` holds a `PAGEREF` per row — so this is a stack rather
+/// than a flag, and the ordinal is handed out at the `begin` so it does not
+/// depend on how deeply the field sits.
+struct FieldWalk {
+    paragraph: usize,
+    next_ordinal: usize,
+    stack: Vec<OpenField>,
+}
+
+struct OpenField {
+    ordinal: usize,
+    instruction: String,
+    /// Before the separator everything is code; after it, everything is result.
+    in_result: bool,
+    kind: Option<wp_model::field::Kind>,
+}
+
+impl FieldWalk {
+    fn new(paragraph: usize) -> FieldWalk {
+        FieldWalk {
+            paragraph,
+            next_ordinal: 0,
+            stack: Vec::new(),
+        }
+    }
+
+    fn begin(&mut self) {
+        let ordinal = self.next_ordinal;
+        self.next_ordinal += 1;
+        self.stack.push(OpenField {
+            ordinal,
+            instruction: String::new(),
+            in_result: false,
+            kind: None,
+        });
+    }
+
+    fn instruction(&mut self, text: &str) {
+        if let Some(open) = self.stack.last_mut() {
+            open.instruction.push_str(text);
+        }
+    }
+
+    fn separate(&mut self) {
+        if let Some(open) = self.stack.last_mut() {
+            open.in_result = true;
+            open.kind = wp_model::Field::parse(&open.instruction).map(|field| field.kind());
+        }
+    }
+
+    fn end(&mut self) {
+        self.stack.pop();
+    }
+
+    /// Whether what is being read now is a field's code rather than its result.
+    fn in_instruction(&self) -> bool {
+        self.stack.last().is_some_and(|open| !open.in_result)
+    }
+
+    /// The innermost field whose result this is.
+    fn mark(&self) -> Option<FieldMark> {
+        let open = self.stack.last()?;
+        open.in_result.then(|| FieldMark {
+            paragraph: self.paragraph,
+            ordinal: open.ordinal,
+            kind: open.kind.unwrap_or(wp_model::field::Kind::Other),
+        })
+    }
 }
 
 fn tab_unit(style: &TextStyle, leader: TabLeader) -> Unit {
     Unit {
         style: style.clone(),
         source: None,
+        field: None,
         kind: UnitKind::Tab { leader },
         width: 0.0,
         trailing: 0.0,
@@ -361,12 +455,14 @@ fn deleted_runs(paragraph: &Paragraph) -> Vec<usize> {
     out
 }
 
+#[allow(clippy::too_many_arguments)]
 fn push_run(
     run: &Run,
     index: usize,
     layers: &Layers,
     ctx: &Context<'_>,
     shaper: &mut dyn Shaper,
+    fields: &mut FieldWalk,
     out: &mut Vec<Unit>,
 ) {
     // The run's own properties over the paragraph's — the last layer of the
@@ -381,30 +477,47 @@ fn push_run(
     // A field's instruction is never drawn; only its cached result is. Between
     // `begin` and `separate` everything is code, and a renderer that draws it
     // shows the user ` PAGE \* MERGEFORMAT ` in the middle of the sentence.
-    let mut in_instruction = false;
-
     for (piece_index, piece) in run.content.iter().enumerate() {
         match piece {
-            Piece::FieldStart { .. } => in_instruction = true,
-            Piece::FieldSeparate => in_instruction = false,
-            Piece::FieldEnd => in_instruction = false,
-            Piece::Instruction(_) | Piece::DeletedInstruction(_) => {}
-            _ if in_instruction => {}
+            Piece::FieldStart { .. } => fields.begin(),
+            Piece::FieldSeparate => fields.separate(),
+            Piece::FieldEnd => fields.end(),
+            Piece::Instruction(text) => fields.instruction(text),
+            Piece::DeletedInstruction(_) => {}
+            _ if fields.in_instruction() => {}
             Piece::Text(text) | Piece::Deleted(text) => {
                 if matches!(piece, Piece::Deleted(_)) && !ctx.show_revisions {
                     continue;
                 }
-                push_text(text, &props, index, piece_index, ctx, shaper, out);
+                // A field whose value is known draws that instead of what the
+                // file cached — and the *whole* result is replaced by the first
+                // piece of it, because a cached `12` is very often a run `1` and
+                // a run `2` and substituting into both would give `77`.
+                let mark = fields.mark();
+                match mark.and_then(|mark| ctx.fields.get(mark)) {
+                    Some(value) if !already_drawn(out, mark) => {
+                        push_text(value, &props, index, piece_index, ctx, shaper, out);
+                        mark_last(out, mark);
+                    }
+                    Some(_) => {}
+                    None => {
+                        push_text(text, &props, index, piece_index, ctx, shaper, out);
+                        mark_last(out, mark);
+                    }
+                }
             }
             Piece::Tab => {
                 let style = style_for('\t', &props, ctx);
-                out.push(tab_unit(&style, TabLeader::None));
+                let mut unit = tab_unit(&style, TabLeader::None);
+                unit.field = fields.mark();
+                out.push(unit);
             }
             Piece::Break(kind) => {
                 let style = style_for(' ', &props, ctx);
                 out.push(Unit {
                     style,
                     source: None,
+                    field: None,
                     kind: UnitKind::Break(*kind),
                     width: 0.0,
                     trailing: 0.0,
@@ -442,6 +555,7 @@ fn push_run(
                         start: 0,
                         end: 0,
                     }),
+                    field: None,
                     kind: UnitKind::Object {
                         height: drawing.extent.1.points(),
                     },
@@ -451,6 +565,20 @@ fn push_run(
             }
             _ => {}
         }
+    }
+}
+
+/// Whether this field's result has already been drawn once.
+fn already_drawn(out: &[Unit], mark: Option<FieldMark>) -> bool {
+    let Some(mark) = mark else {
+        return false;
+    };
+    out.iter().any(|unit| unit.field == Some(mark))
+}
+
+fn mark_last(out: &mut [Unit], mark: Option<FieldMark>) {
+    if let Some(unit) = out.last_mut() {
+        unit.field = mark;
     }
 }
 
@@ -543,6 +671,7 @@ fn push_text(
                 start,
                 end,
             }),
+            field: None,
             kind: UnitKind::Text {
                 text: drawn.to_string(),
                 advances,
@@ -609,6 +738,7 @@ fn fill(
                         },
                     },
                     source: unit.source,
+                    field: unit.field,
                 });
                 pen += advance;
                 used = pen;
@@ -693,6 +823,7 @@ fn fragment_of(unit: &Unit, x: f64) -> Fragment {
         style: unit.style.clone(),
         content,
         source: unit.source,
+        field: unit.field,
     }
 }
 
@@ -726,6 +857,7 @@ fn split_to_fit(unit: &Unit, limit: f64) -> Option<(Unit, Unit)> {
     let head = Unit {
         style: unit.style.clone(),
         source: unit.source,
+        field: unit.field,
         kind: UnitKind::Text {
             text: text[..split].to_string(),
             advances: advances[..chars].to_vec(),
@@ -741,6 +873,7 @@ fn split_to_fit(unit: &Unit, limit: f64) -> Option<(Unit, Unit)> {
             start: s.start + split,
             ..s
         }),
+        field: unit.field,
         kind: UnitKind::Text {
             text: text[split..].to_string(),
             advances: advances[chars..].to_vec(),
@@ -901,6 +1034,7 @@ mod tests {
             fallback_font: "test",
             show_revisions: true,
             show_hidden: false,
+            fields: Box::leak(Box::new(crate::field::FieldValues::default())),
         }
     }
 
@@ -923,7 +1057,7 @@ mod tests {
         let theme = theme();
         let ctx = ctx(&theme);
         let mut shaper = crate::shape::Fixed;
-        layout(&paragraph, &layers, None, &ctx, width, &mut shaper)
+        layout(&paragraph, 0, &layers, None, &ctx, width, &mut shaper)
     }
 
     fn texts(line: &Line) -> Vec<&str> {
@@ -1182,6 +1316,7 @@ mod tests {
 
         let showing = layout(
             &paragraph,
+            0,
             &layers(),
             None,
             &ctx(&theme),
@@ -1194,7 +1329,7 @@ mod tests {
             show_revisions: false,
             ..ctx(&theme)
         };
-        let hidden = layout(&paragraph, &layers(), None, &hiding, 500.0, &mut shaper);
+        let hidden = layout(&paragraph, 0, &layers(), None, &hiding, 500.0, &mut shaper);
         assert_eq!(texts(&hidden.lines[0]), ["kept "]);
     }
 
@@ -1210,6 +1345,7 @@ mod tests {
         let mut shaper = crate::shape::Fixed;
         let hidden = layout(
             &paragraph,
+            0,
             &layers(),
             None,
             &ctx(&theme),
@@ -1222,7 +1358,7 @@ mod tests {
             show_hidden: true,
             ..ctx(&theme)
         };
-        let shown = layout(&paragraph, &layers(), None, &showing, 500.0, &mut shaper);
+        let shown = layout(&paragraph, 0, &layers(), None, &showing, 500.0, &mut shaper);
         assert_eq!(texts(&shown.lines[0]), ["secret"]);
     }
 
@@ -1243,6 +1379,7 @@ mod tests {
         let mut shaper = crate::shape::Fixed;
         let laid = layout(
             &Paragraph::of("item"),
+            0,
             &layers(),
             Some(&label),
             &ctx(&theme),

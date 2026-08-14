@@ -48,6 +48,12 @@ pub enum Command {
     Zoom(f64),
     ShowMarks,
     ShowRevisions,
+    /// Put the caret at the start of a paragraph, and show it.
+    GoTo(usize),
+    /// Rebuild the table of contents from the headings that are there now.
+    UpdateToc,
+    /// The pane of headings and bookmarks down the left.
+    Navigator,
 }
 
 /// What the application is waiting for an answer to.
@@ -78,6 +84,12 @@ pub struct Scriva {
     focused: bool,
     /// Set while the pointer is sweeping out a selection.
     sweeping: bool,
+    /// What the fields that do not depend on pagination evaluate to. The page
+    /// numbers are worked out by the layout itself.
+    fields: wp_layout::FieldValues,
+    navigator: bool,
+    /// Where the view should scroll to, once it knows where that is.
+    reveal: Option<Caret>,
 }
 
 impl Default for Scriva {
@@ -104,6 +116,9 @@ impl Scriva {
             scroll: 0.0,
             focused: true,
             sweeping: false,
+            fields: wp_layout::FieldValues::new(),
+            navigator: false,
+            reveal: None,
         }
     }
 
@@ -112,6 +127,20 @@ impl Scriva {
         let mut app = Scriva::new();
         app.open_path(&path);
         app
+    }
+
+    /// What `{ FILENAME }`, `{ DATE }` and the rest show.
+    ///
+    /// Supplied rather than read inside the layout: a layout that read the clock
+    /// could not be tested, and the same document laid out twice would differ
+    /// for no reason the user caused.
+    fn refresh_fields(&mut self) {
+        self.fields.file_name = self
+            .path
+            .as_ref()
+            .and_then(|path| path.file_name())
+            .map(|name| name.to_string_lossy().into_owned().into());
+        self.fields.title = self.fields.file_name.clone();
     }
 
     fn changed(&mut self) {
@@ -144,6 +173,10 @@ impl Scriva {
             .unwrap_or_default()
     }
 
+    pub(crate) fn document_ref(&self) -> &Document {
+        &self.document
+    }
+
     pub(crate) fn recent_paths(&self) -> Vec<PathBuf> {
         self.recent.paths().to_vec()
     }
@@ -158,6 +191,10 @@ impl Scriva {
 
     pub(crate) fn showing_revisions(&self) -> bool {
         self.view.show_revisions
+    }
+
+    pub(crate) fn showing_navigator(&self) -> bool {
+        self.navigator
     }
 
     pub(crate) fn zoom(&self) -> f64 {
@@ -253,6 +290,7 @@ impl Scriva {
                 self.stamp = self.stamp.wrapping_add(1);
                 self.view.invalidate();
                 self.recent.remember(SCRIVA, path);
+                self.refresh_fields();
             }
             Err(error) => {
                 self.message = Some((
@@ -436,7 +474,72 @@ impl Scriva {
                 self.view.show_revisions = !self.view.show_revisions;
                 self.view.invalidate();
             }
+            Command::Navigator => self.navigator = !self.navigator,
+            Command::GoTo(paragraph) => {
+                let caret = clamp(
+                    &self.document,
+                    Caret {
+                        paragraph,
+                        offset: 0,
+                    },
+                );
+                self.selection = Selection::at(caret);
+                // Scrolled to on the next frame, when the layout knows where it
+                // is: a caret has no place on the page until the page exists.
+                self.reveal = Some(caret);
+            }
+            Command::UpdateToc => self.update_toc(),
         }
+    }
+
+    /// Rebuilds the table of contents from the headings the document has now.
+    ///
+    /// Only the paragraphs *between* the field's first and last are replaced:
+    /// those two carry the field characters, and a rebuild that took them with
+    /// it would leave a list of headings that is no longer a field at all.
+    fn update_toc(&mut self) {
+        let Some(span) = wp_model::outline::toc_span(&self.document) else {
+            self.message = Some((
+                "No table of contents".to_owned(),
+                "This document has no TOC field to rebuild. Word writes one from \
+                 References \u{203a} Table of Contents."
+                    .to_owned(),
+            ));
+            return;
+        };
+        let entries = wp_model::outline::table_of_contents(&self.document, span.levels.clone());
+        if entries.is_empty() {
+            self.message = Some((
+                "No headings".to_owned(),
+                "A table of contents is built from the paragraphs that have a \
+                 heading style or an outline level. This document has none."
+                    .to_owned(),
+            ));
+            return;
+        }
+        let rows: Vec<Paragraph> = entries
+            .iter()
+            .map(|entry| {
+                let mut paragraph = Paragraph::of(&entry.text);
+                // Word indents each level by a quarter inch, which is what makes
+                // a contents list read as an outline.
+                paragraph.props.indent.start =
+                    Some(Twips((entry.level.saturating_sub(1) as i32) * 360));
+                paragraph
+            })
+            .collect();
+        let range = span.entries();
+        edit::format_paragraphs(
+            &mut self.document,
+            &mut self.history,
+            Selection::at(Caret {
+                paragraph: span.first,
+                offset: 0,
+            }),
+            |_| {},
+        );
+        edit::replace_range(&mut self.document, range, rows);
+        self.changed();
     }
 
     fn toggle(&mut self, toggle: Toggle) {
@@ -556,6 +659,8 @@ impl Scriva {
             (ctrl, Key::M, Command::Indent(1)),
             (ctrl_shift, Key::M, Command::Indent(-1)),
             (ctrl, Key::Space, Command::ClearFormatting),
+            (ctrl, Key::F, Command::Navigator),
+            (egui::Modifiers::NONE, Key::F9, Command::UpdateToc),
             (ctrl_shift, Key::Z, Command::Redo),
         ] {
             if taken(ui, modifiers, key) {
@@ -887,8 +992,14 @@ impl DocumentApp for Scriva {
             self.shaper = Some(Egui::new(ui.ctx()));
         }
         let stamp = self.stamp;
+        let fields = self.fields.clone();
         if let Some(shaper) = &mut self.shaper {
-            self.view.refresh(&self.document, stamp, shaper);
+            self.view.refresh(&self.document, &fields, stamp, shaper);
+        }
+        if self.navigator {
+            if let Some(command) = self.navigation_pane(ui) {
+                self.run(command);
+            }
         }
 
         let blocked =
@@ -1184,6 +1295,45 @@ mod tests {
         app.run(Command::Bold);
         assert!(app.dirty);
         assert_ne!(app.stamp, stamp, "the view has to lay out again");
+    }
+
+    #[test]
+    fn go_to_puts_the_caret_at_a_paragraph_and_asks_to_be_shown_it() {
+        let mut app = app_with(&["one", "two", "three"]);
+        app.run(Command::GoTo(2));
+        assert_eq!(
+            app.caret(),
+            Caret {
+                paragraph: 2,
+                offset: 0
+            }
+        );
+        assert!(app.reveal.is_some(), "a caret has no place on the page yet");
+    }
+
+    #[test]
+    fn go_to_a_paragraph_that_is_not_there_lands_inside_the_document() {
+        let mut app = app_with(&["only"]);
+        app.run(Command::GoTo(99));
+        assert_eq!(app.caret().paragraph, 0);
+    }
+
+    #[test]
+    fn updating_a_table_of_contents_with_no_toc_field_says_so() {
+        // Silently doing nothing is the failure here: the user pressed a key and
+        // has to be told why nothing happened.
+        let mut app = app_with(&["body text"]);
+        app.run(Command::UpdateToc);
+        assert!(app.message.is_some());
+        assert!(!app.dirty, "and nothing was changed");
+    }
+
+    #[test]
+    fn a_document_with_a_path_answers_the_filename_field() {
+        let mut app = app_with(&["text"]);
+        app.path = Some(PathBuf::from("C:/reports/Q3.docx"));
+        app.refresh_fields();
+        assert_eq!(app.fields.file_name.as_deref(), Some("Q3.docx"));
     }
 
     #[test]

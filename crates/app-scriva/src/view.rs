@@ -60,7 +60,13 @@ impl View {
     }
 
     /// Lays the document out, if it has changed since the last time.
-    pub fn refresh(&mut self, document: &Document, stamp: u64, shaper: &mut Egui) {
+    pub fn refresh(
+        &mut self,
+        document: &Document,
+        fields: &wp_layout::FieldValues,
+        stamp: u64,
+        shaper: &mut Egui,
+    ) {
         if self.stamp == stamp {
             return;
         }
@@ -71,6 +77,7 @@ impl View {
             fallback_font: "Calibri",
             show_revisions: self.show_revisions,
             show_hidden: self.show_marks,
+            fields,
         };
         self.pages = wp_layout::block::layout(document, &ctx, shaper);
         self.stamp = stamp;
@@ -515,7 +522,12 @@ mod tests {
         let ctx = context();
         let mut shaper = Egui::new(&ctx);
         let mut view = View::default();
-        view.refresh(&document(texts), 1, &mut shaper);
+        view.refresh(
+            &document(texts),
+            &wp_layout::FieldValues::new(),
+            1,
+            &mut shaper,
+        );
         (view, shaper)
     }
 
@@ -534,10 +546,11 @@ mod tests {
         let mut shaper = Egui::new(&ctx);
         let mut view = View::default();
         let document = document(&["one", "two"]);
-        view.refresh(&document, 7, &mut shaper);
+        let fields = wp_layout::FieldValues::new();
+        view.refresh(&document, &fields, 7, &mut shaper);
         assert!(!view.is_stale(7));
         let pages = view.pages().len();
-        view.refresh(&document, 7, &mut shaper);
+        view.refresh(&document, &fields, 7, &mut shaper);
         assert_eq!(view.pages().len(), pages);
         assert!(view.is_stale(8), "a new revision needs laying out again");
     }

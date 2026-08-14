@@ -138,8 +138,69 @@ pub struct Frame<'a, 'b> {
     pub inline: &'a Context<'b>,
 }
 
-/// Lays a whole document out into pages.
+/// Lays a whole document out into pages, twice.
+///
+/// **A page number cannot be known before the page exists**, so the first pass
+/// draws whatever the file cached, the page each field landed on is read off the
+/// result, and the second pass draws the real numbers. Word does the same thing;
+/// it stops after a bounded number of passes too, because a document where the
+/// page number changes the pagination that changes the page number has no fixed
+/// point to reach.
+///
+/// A document with no page fields in it pays for one pass, not two.
 pub fn layout(document: &Document, ctx: &Context<'_>, shaper: &mut dyn Shaper) -> Vec<Page> {
+    let first = layout_once(document, ctx, shaper);
+    let values = evaluate(&first, ctx.fields);
+    if values.is_empty() {
+        return first;
+    }
+    let second = Context {
+        fields: &values,
+        theme: ctx.theme,
+        default_tab: ctx.default_tab,
+        fallback_font: ctx.fallback_font,
+        show_revisions: ctx.show_revisions,
+        show_hidden: ctx.show_hidden,
+    };
+    layout_once(document, &second, shaper)
+}
+
+/// Reads the page each field landed on off a laid-out document.
+fn evaluate(pages: &[Page], known: &crate::field::FieldValues) -> crate::field::FieldValues {
+    use wp_model::field::Kind;
+    let mut values = crate::field::FieldValues::carrying(known);
+    let total = pages.len();
+    for page in pages {
+        for placement in page.everything() {
+            let Placed::Line { line, .. } = &placement.kind else {
+                continue;
+            };
+            for fragment in &line.fragments {
+                let Some(mark) = fragment.field else {
+                    continue;
+                };
+                match mark.kind {
+                    Kind::Page => values.set(mark, page.number.to_string()),
+                    Kind::NumPages => values.set(mark, total.to_string()),
+                    // A section's own page count: how many pages carry its
+                    // number, which is what `{ SECTIONPAGES }` means and is not
+                    // the same as the document's total.
+                    Kind::SectionPages => {
+                        let in_section = pages
+                            .iter()
+                            .filter(|other| other.section == page.section)
+                            .count();
+                        values.set(mark, in_section.to_string());
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    values
+}
+
+fn layout_once(document: &Document, ctx: &Context<'_>, shaper: &mut dyn Shaper) -> Vec<Page> {
     let mut pages = Vec::new();
     let mut counters = Counters::new();
     let mut number = 1u32;
@@ -352,7 +413,16 @@ pub fn flow_paragraph(
         })
     });
 
-    let laid = inline::layout(paragraph, &layers, label.as_ref(), ctx, width, shaper);
+    let index = into.paragraphs;
+    let laid = inline::layout(
+        paragraph,
+        index,
+        &layers,
+        label.as_ref(),
+        ctx,
+        width,
+        shaper,
+    );
     push_paragraph(paragraph, &layers, laid, left, into);
 }
 
@@ -840,6 +910,7 @@ mod tests {
             fallback_font: "test",
             show_revisions: true,
             show_hidden: false,
+            fields: Box::leak(Box::new(crate::field::FieldValues::default())),
         }
     }
 
@@ -1274,6 +1345,73 @@ mod tests {
             })
             .count();
         assert_eq!(labelled, 12, "every item got a label");
+    }
+
+    #[test]
+    fn a_page_field_shows_the_page_it_is_on_rather_than_the_one_the_file_cached() {
+        // The whole point of laying out twice. The file says "1" because that is
+        // where the field was when Word last saved; the field is on page three.
+        let field = |cached: &str| {
+            Block::Paragraph(Paragraph {
+                content: vec![Inline::Run(Run {
+                    content: vec![
+                        Piece::FieldStart {
+                            dirty: false,
+                            lock: false,
+                        },
+                        Piece::Instruction(" PAGE ".into()),
+                        Piece::FieldSeparate,
+                        Piece::Text(cached.into()),
+                        Piece::FieldEnd,
+                    ],
+                    ..Run::new()
+                })],
+                ..Paragraph::new()
+            })
+        };
+        let mut blocks = paragraphs(10);
+        blocks.push(field("1"));
+        let mut document = document(blocks);
+        document.section = page_of(5);
+
+        let pages = pages(&document);
+        assert_eq!(pages.len(), 3);
+        let drawn: String = pages[2]
+            .content
+            .iter()
+            .filter_map(|p| match &p.kind {
+                Placed::Line { line, .. } => Some(
+                    line.fragments
+                        .iter()
+                        .filter_map(|f| match &f.content {
+                            crate::inline::Content::Text { text, .. } => Some(text.clone()),
+                            _ => None,
+                        })
+                        .collect::<String>(),
+                ),
+                _ => None,
+            })
+            .collect();
+        assert!(drawn.contains("3"), "the page it is on: {drawn:?}");
+        assert!(
+            !drawn.contains("1"),
+            "not the one the file cached: {drawn:?}"
+        );
+    }
+
+    #[test]
+    fn a_document_with_no_page_fields_is_laid_out_once() {
+        // The second pass is not free, and a document that cannot need it must
+        // not pay for it.
+        let mut document = document(paragraphs(3));
+        document.section = page_of(20);
+        let theme = document.theme.clone();
+        let mut shaper = crate::shape::Fixed;
+        let values = evaluate(
+            &layout_once(&document, &ctx(&theme), &mut shaper),
+            &Default::default(),
+        );
+        assert!(values.is_empty());
     }
 
     #[test]

@@ -30,6 +30,7 @@ impl Scriva {
         let revisions = self.showing_revisions();
         let zoom = self.zoom();
         let styles = self.quick_styles();
+        let navigator = self.showing_navigator();
 
         menu::bar(ui, |ui| {
             let mut chosen = None;
@@ -109,6 +110,9 @@ impl Scriva {
                 if menu::check(ui, "Tracked &Changes", "", revisions).clicked() {
                     chosen = Some(Command::ShowRevisions);
                 }
+                if menu::check(ui, "&Navigation Pane", "Ctrl+F", navigator).clicked() {
+                    chosen = Some(Command::Navigator);
+                }
             });
 
             menu::top(ui, "F&ormat", |ui| {
@@ -185,6 +189,12 @@ impl Scriva {
                 }
             });
 
+            menu::top(ui, "&Insert", |ui| {
+                if menu::item(ui, "&Update Table of Contents", "F9").clicked() {
+                    chosen = Some(Command::UpdateToc);
+                }
+            });
+
             menu::top(ui, "&Styles", |ui| {
                 for (id, name) in &styles {
                     if menu::item(ui, name, "").clicked() {
@@ -253,6 +263,72 @@ impl Scriva {
                 chosen = Some(Command::Grow);
             }
         });
+        chosen
+    }
+}
+
+impl Scriva {
+    /// The pane down the left: the document's headings and its bookmarks.
+    ///
+    /// Word calls it the navigation pane, and on a document longer than a screen
+    /// it is the only way to reach a heading without scrolling for it.
+    pub(crate) fn navigation_pane(&mut self, ui: &mut egui::Ui) -> Option<Command> {
+        let headings = wp_model::outline::headings(self.document_ref());
+        let bookmarks: Vec<_> = wp_model::outline::bookmarks(self.document_ref())
+            .into_iter()
+            .filter(|bookmark| !bookmark.is_internal())
+            .collect();
+        let mut chosen = None;
+
+        egui::Panel::left("scriva-navigator")
+            .default_size(230.0)
+            .show(ui, |ui| {
+                ui.add_space(6.0);
+                ui.label(egui::RichText::new("Navigation").strong());
+                ui.separator();
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    if headings.is_empty() {
+                        ui.add_space(8.0);
+                        ui.label(
+                            egui::RichText::new(
+                                "No headings. A paragraph becomes one by taking a \
+                                 heading style.",
+                            )
+                            .weak(),
+                        );
+                    }
+                    for heading in &headings {
+                        // Indented by level, so the pane reads as an outline
+                        // rather than as a list.
+                        ui.horizontal(|ui| {
+                            ui.add_space((heading.level.saturating_sub(1) as f32) * 12.0);
+                            if ui
+                                .add(
+                                    egui::Button::new(&heading.text)
+                                        .frame(false)
+                                        .wrap_mode(egui::TextWrapMode::Truncate),
+                                )
+                                .clicked()
+                            {
+                                chosen = Some(Command::GoTo(heading.paragraph));
+                            }
+                        });
+                    }
+                    if !bookmarks.is_empty() {
+                        ui.add_space(10.0);
+                        ui.label(egui::RichText::new("Bookmarks").strong());
+                        ui.separator();
+                        for bookmark in &bookmarks {
+                            if ui
+                                .add(egui::Button::new(bookmark.name.as_ref()).frame(false))
+                                .clicked()
+                            {
+                                chosen = Some(Command::GoTo(bookmark.paragraph));
+                            }
+                        }
+                    }
+                });
+            });
         chosen
     }
 }

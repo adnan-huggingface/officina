@@ -26,7 +26,9 @@
 
 pub mod color;
 pub mod doc;
+pub mod field;
 pub mod numbering;
+pub mod outline;
 pub mod prop;
 pub mod revision;
 pub mod section;
@@ -39,7 +41,9 @@ pub use doc::{
     Block, Break, Document, Drawing, HeaderFooter, Hyperlink, Inline, Note, NoteKind, Paragraph,
     Piece, Run, Sdt, SdtKind, Settings, Wrap,
 };
+pub use field::Field;
 pub use numbering::{AbstractNum, Counters, Level, Num, NumFormat, Numbering};
+pub use outline::{Bookmark, Heading, TocEntry};
 pub use prop::{
     Border, BorderStyle, Fonts, Indent, Justify, Lang, Layer, LineSpacing, NumRef, ParaBorders,
     ParaProps, RunProps, Script, Shading, ShadingPattern, Spacing, TabKind, TabLeader, TabStop,
