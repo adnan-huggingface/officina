@@ -586,7 +586,11 @@ pub(crate) fn section_props(
                         if let Some(rel) = attr(&e, b"id") {
                             let footer = local_name(&e) == b"footerReference";
                             let body = ctx.header_id(&rel, footer);
-                            let reference = HeaderRef { kind, body };
+                            let reference = HeaderRef {
+                                kind,
+                                body,
+                                rel: Some(rel.as_str().into()),
+                            };
                             if footer {
                                 section.footers.push(reference);
                             } else {

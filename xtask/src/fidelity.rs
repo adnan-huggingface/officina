@@ -66,12 +66,12 @@ pub fn run(corpus_dir: &Path) -> Result<Report, String> {
             }
         }
 
-        // Only spreadsheets have a writer to check. A .docx reaching here is
-        // *not* a pass on check 2, and is reported as neither.
-        if !is_spreadsheet(&path) {
-            continue;
-        }
-        match edit_round_trip(&path) {
+        let result = if is_spreadsheet(&path) {
+            edit_round_trip(&path)
+        } else {
+            document_edit_round_trip(&path)
+        };
+        match result {
             Ok(problems) if problems.is_empty() => report.edited.push(path),
             Ok(problems) => report.edit_failed.push((path, problems)),
             Err(e) => report.edit_failed.push((path, vec![e])),
@@ -152,6 +152,79 @@ fn saved(path: &Path, before: &Package, regenerate: bool) -> Result<Vec<Differen
 /// existing content would prove the writer can replace a cell, but not the
 /// harder and more important thing: that the cells *around* it came back
 /// untouched, cached values, unknown attributes, and all.
+/// Check 2 for a word processing document.
+///
+/// Open, change the text of one paragraph, save, reopen, and ask two questions:
+/// did the edit come back, and did anything else move. The second is the one
+/// with teeth — a writer that reprints `document.xml` passes the first and
+/// fails the second, and reprinting is exactly what would quietly drop the
+/// content controls, the rsids and the equations.
+fn document_edit_round_trip(path: &Path) -> Result<Vec<String>, String> {
+    use wp_model::doc::{Inline, Run};
+
+    let original = Package::open(path).map_err(|e| format!("open: {e}"))?;
+    let mut package = Package::open(path).map_err(|e| format!("open: {e}"))?;
+    let mut document = wp_docx::read(&package).map_err(|e| format!("read document: {e}"))?;
+
+    const MARKER: &str = "scriva fidelity harness";
+    // The first paragraph *anywhere* — one of the corpus documents is nothing
+    // but a content control, and its only paragraph is inside it.
+    {
+        let mut paragraphs = document.paragraphs_mut();
+        let Some(paragraph) = paragraphs.first_mut() else {
+            return Ok(vec!["no paragraph to edit".to_owned()]);
+        };
+        paragraph.content = vec![Inline::Run(Run::of(MARKER))];
+    }
+
+    let expected: Vec<String> = document
+        .paragraphs()
+        .iter()
+        .map(|paragraph| paragraph.text())
+        .collect();
+
+    wp_docx::flush(&document, &mut package).map_err(|e| format!("write: {e}"))?;
+    let mut buf = Vec::new();
+    package
+        .write(std::io::Cursor::new(&mut buf))
+        .map_err(|e| format!("write: {e}"))?;
+
+    let saved = Package::read(std::io::Cursor::new(buf)).map_err(|e| format!("reopen: {e}"))?;
+    let reopened = wp_docx::read(&saved).map_err(|e| format!("reread document: {e}"))?;
+
+    let mut problems = Vec::new();
+    let after: Vec<String> = reopened
+        .paragraphs()
+        .iter()
+        .map(|paragraph| paragraph.text())
+        .collect();
+    if after != expected {
+        problems.push(format!(
+            "the text changed on the way through: {} paragraphs before, {} after",
+            expected.len(),
+            after.len()
+        ));
+    }
+    if !reopened.text().contains(MARKER) {
+        problems.push("the edit did not come back".to_owned());
+    }
+
+    // Only the document part may have been rewritten.
+    let document_part = wp_docx::DocumentParts::locate_in(&original)
+        .map(|parts| parts.document)
+        .map_err(|e| format!("locate: {e}"))?;
+    for (name, before, after) in changed_parts(&original, &saved) {
+        if name == document_part {
+            continue;
+        }
+        problems.push(format!(
+            "{name} was rewritten though nothing in it was edited ({before} -> {after} bytes)"
+        ));
+    }
+
+    Ok(problems)
+}
+
 fn edit_round_trip(path: &Path) -> Result<Vec<String>, String> {
     let original = Package::open(path).map_err(|e| format!("open: {e}"))?;
     let mut doc = XlsxDocument::open(path).map_err(|e| format!("read workbook: {e}"))?;

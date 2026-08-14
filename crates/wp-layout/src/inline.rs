@@ -1303,6 +1303,7 @@ mod tests {
     #[test]
     fn an_inline_picture_makes_the_line_as_tall_as_itself() {
         let drawing = wp_model::Drawing {
+            source: Vec::new().into(),
             anchored: false,
             extent: (
                 wp_model::Emu::from_points(50.0),

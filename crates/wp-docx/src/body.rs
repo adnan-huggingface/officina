@@ -89,6 +89,58 @@ pub(crate) fn read_blocks(
     (blocks, section)
 }
 
+/// Reads a single `<w:p>` or `<w:tbl>` out of a fragment, for the writer's
+/// comparison.
+///
+/// The writer decides whether a block changed by *re-reading it* and comparing,
+/// which is the only definition of "changed" that cannot drift away from the
+/// reader.
+pub(crate) fn read_blocks_for_writer(
+    reader: &mut Reader<&[u8]>,
+    ctx: &mut Ctx<'_>,
+    name: &[u8],
+) -> (Vec<Block>, Option<SectionProps>) {
+    loop {
+        let start = start_of(reader);
+        let Ok(event) = reader.read_event() else {
+            return (Vec::new(), None);
+        };
+        match event {
+            Event::Start(e) if local_name(&e) == name => {
+                let _ = start;
+                return match name {
+                    b"p" => (
+                        vec![Block::Paragraph(read_paragraph(reader, ctx, &e))],
+                        None,
+                    ),
+                    b"tbl" => (vec![Block::Table(read_table(reader, ctx))], None),
+                    _ => (Vec::new(), None),
+                };
+            }
+            Event::Empty(e) if local_name(&e) == name && name == b"p" => {
+                return (
+                    vec![Block::Paragraph(Paragraph {
+                        id: hex_id(&e, b"paraId"),
+                        text_id: hex_id(&e, b"textId"),
+                        ..Paragraph::new()
+                    })],
+                    None,
+                );
+            }
+            Event::Eof => return (Vec::new(), None),
+            _ => {}
+        }
+    }
+}
+
+/// Where the next event will begin.
+///
+/// quick-xml reports the position *after* an event, so an element that has to be
+/// captured whole needs its start recorded before it is read.
+fn start_of(reader: &Reader<&[u8]>) -> usize {
+    reader.buffer_position() as usize
+}
+
 /// `w14:paraId="760D8500"` — eight hex digits, not a decimal number.
 fn hex_id(e: &BytesStart<'_>, want: &[u8]) -> Option<u32> {
     u32::from_str_radix(attr(e, want)?.trim(), 16).ok()
@@ -97,14 +149,18 @@ fn hex_id(e: &BytesStart<'_>, want: &[u8]) -> Option<u32> {
 fn read_paragraph(
     reader: &mut Reader<&[u8]>,
     ctx: &mut Ctx<'_>,
-    start: &BytesStart<'_>,
+    tag: &BytesStart<'_>,
 ) -> Paragraph {
     let mut paragraph = Paragraph {
-        id: hex_id(start, b"paraId"),
-        text_id: hex_id(start, b"textId"),
+        id: hex_id(tag, b"paraId"),
+        text_id: hex_id(tag, b"textId"),
         ..Paragraph::new()
     };
-    while let Ok(event) = reader.read_event() {
+    loop {
+        let start = start_of(reader);
+        let Ok(event) = reader.read_event() else {
+            break;
+        };
         match event {
             Event::Start(e) => {
                 let name = local_name(&e).to_vec();
@@ -114,7 +170,7 @@ fn read_paragraph(
                     paragraph.section = read.section;
                     paragraph.prop_change = read.change;
                     paragraph.mark_revision = read.mark_revision;
-                } else if let Some(inline) = read_inline(reader, ctx, &e, &name) {
+                } else if let Some(inline) = read_inline(reader, ctx, &e, &name, start) {
                     paragraph.content.push(inline);
                 } else {
                     let _ = skip_element(reader, &name);
@@ -144,6 +200,7 @@ fn read_inline(
     ctx: &mut Ctx<'_>,
     e: &BytesStart<'_>,
     name: &[u8],
+    start: usize,
 ) -> Option<Inline> {
     match name {
         b"r" => Some(Inline::Run(read_run(reader, ctx))),
@@ -180,7 +237,9 @@ fn read_inline(
         // mathematics and a reader that dropped it would destroy an equation the
         // moment the document was saved.
         b"oMath" | b"oMathPara" if prefix(e.name().into_inner()) == b"m" => {
-            Some(Inline::Math(Box::new(read_math(reader, name))))
+            let mut math = read_math(reader, name);
+            math.source = ctx.span(start, reader.buffer_position() as usize);
+            Some(Inline::Math(Box::new(math)))
         }
         b"bookmarkStart" | b"bookmarkEnd" | b"commentRangeStart" | b"commentRangeEnd"
         | b"permStart" | b"permEnd" => {
@@ -195,11 +254,15 @@ fn read_inline(
 
 fn read_inlines(reader: &mut Reader<&[u8]>, ctx: &mut Ctx<'_>, until: &[u8]) -> Vec<Inline> {
     let mut content = Vec::new();
-    while let Ok(event) = reader.read_event() {
+    loop {
+        let start = start_of(reader);
+        let Ok(event) = reader.read_event() else {
+            break;
+        };
         match event {
             Event::Start(e) => {
                 let name = local_name(&e).to_vec();
-                match read_inline(reader, ctx, &e, &name) {
+                match read_inline(reader, ctx, &e, &name, start) {
                     Some(inline) => content.push(inline),
                     None => {
                         let _ = skip_element(reader, &name);
@@ -249,7 +312,12 @@ fn read_anchor(e: &BytesStart<'_>) -> Option<Anchor> {
 
 fn read_run(reader: &mut Reader<&[u8]>, ctx: &mut Ctx<'_>) -> Run {
     let mut run = Run::new();
-    while let Ok(event) = reader.read_event() {
+    loop {
+        // Where this event began, for the elements that are captured whole.
+        let start = start_of(reader);
+        let Ok(event) = reader.read_event() else {
+            break;
+        };
         match event {
             Event::Start(e) => {
                 let name = local_name(&e).to_vec();
@@ -272,13 +340,17 @@ fn read_run(reader: &mut Reader<&[u8]>, ctx: &mut Ctx<'_>) -> Run {
                         read_text(reader, b"delInstrText").into(),
                     )),
                     b"drawing" => {
-                        if let Some(drawing) = read_drawing(reader) {
+                        // The whole element is captured, start tag included, so
+                        // a writer can put back what it does not understand.
+                        if let Some(mut drawing) = read_drawing(reader) {
+                            drawing.source = ctx.span(start, reader.buffer_position() as usize);
                             run.content.push(Piece::Drawing(Box::new(drawing)));
                         }
                     }
                     b"pict" | b"object" => {
                         let rel = find_embed(reader, &name).map(Into::into);
-                        run.content.push(Piece::Embedded { rel });
+                        let source = ctx.span(start, reader.buffer_position() as usize);
+                        run.content.push(Piece::Embedded { rel, source });
                     }
                     other => {
                         let owned = other.to_vec();
@@ -406,6 +478,7 @@ fn read_math(reader: &mut Reader<&[u8]>, until: &[u8]) -> MathBlob {
 /// `<w:drawing>`: an inline or anchored picture, chart, shape or diagram.
 fn read_drawing(reader: &mut Reader<&[u8]>) -> Option<Drawing> {
     let mut drawing = Drawing {
+        source: Vec::new().into(),
         anchored: false,
         extent: (Emu(0), Emu(0)),
         rel: None,
@@ -709,23 +782,45 @@ fn sdt_kind(name: &[u8]) -> Option<SdtKind> {
 
 fn read_table(reader: &mut Reader<&[u8]>, ctx: &mut Ctx<'_>) -> Table {
     let mut table = Table::new();
+    read_table_children(reader, ctx, b"tbl", &mut table);
+    table
+}
+
+/// Rows, and the rows inside a row-level content control.
+///
+/// **A `<w:sdt>` may wrap a `<w:tr>` or a `<w:tc>`**, which is how Word writes a
+/// repeating section and a date-picker cell — the templates it ships are full of
+/// them. A reader that skips the wrapper loses the row or the cell inside it,
+/// and the model then has fewer paragraphs than the file, which is invisible
+/// until a writer pairs them up and rewrites the wrong one. The wrapper itself is
+/// transparent here and survives in the file, because the writer copies
+/// everything that is not a `<w:p>`.
+fn read_table_children(
+    reader: &mut Reader<&[u8]>,
+    ctx: &mut Ctx<'_>,
+    until: &[u8],
+    table: &mut Table,
+) {
     while let Ok(event) = reader.read_event() {
         match event {
             Event::Start(e) => match local_name(&e) {
                 b"tblPr" => table.props = read_table_props(reader, ctx),
                 b"tblGrid" => table.grid = read_grid(reader),
                 b"tr" => table.rows.push(read_row(reader, ctx)),
+                b"sdt" | b"sdtContent" | b"customXml" => {
+                    let owned = local_name(&e).to_vec();
+                    read_table_children(reader, ctx, &owned, table);
+                }
                 other => {
                     let owned = other.to_vec();
                     let _ = skip_element(reader, &owned);
                 }
             },
-            Event::End(e) if end_local_name(&e) == b"tbl" => break,
+            Event::End(e) if end_local_name(&e) == until => break,
             Event::Eof => break,
             _ => {}
         }
     }
-    table
 }
 
 fn width(e: &BytesStart<'_>) -> Width {
@@ -901,11 +996,22 @@ fn read_grid(reader: &mut Reader<&[u8]>) -> Vec<Twips> {
 
 fn read_row(reader: &mut Reader<&[u8]>, ctx: &mut Ctx<'_>) -> Row {
     let mut row = Row::new();
+    read_row_children(reader, ctx, b"tr", &mut row);
+    row
+}
+
+fn read_row_children(reader: &mut Reader<&[u8]>, ctx: &mut Ctx<'_>, until: &[u8], row: &mut Row) {
     while let Ok(event) = reader.read_event() {
         match event {
             Event::Start(e) => match local_name(&e) {
                 b"trPr" => row.props = read_row_props(reader),
                 b"tc" => row.cells.push(read_cell(reader, ctx)),
+                // See `read_table_children`: a cell may be wrapped in a content
+                // control, and the cell inside it is a cell like any other.
+                b"sdt" | b"sdtContent" | b"customXml" => {
+                    let owned = local_name(&e).to_vec();
+                    read_row_children(reader, ctx, &owned, row);
+                }
                 // `<w:tblPrEx>` is a per-row override of the table's properties,
                 // written by Word into every row of a table that has ever been
                 // split. Not modelled; the element survives through the writer.
@@ -914,12 +1020,11 @@ fn read_row(reader: &mut Reader<&[u8]>, ctx: &mut Ctx<'_>) -> Row {
                     let _ = skip_element(reader, &owned);
                 }
             },
-            Event::End(e) if end_local_name(&e) == b"tr" => break,
+            Event::End(e) if end_local_name(&e) == until => break,
             Event::Eof => break,
             _ => {}
         }
     }
-    row
 }
 
 fn read_row_props(reader: &mut Reader<&[u8]>) -> RowProps {
@@ -982,8 +1087,15 @@ fn read_cell(reader: &mut Reader<&[u8]>, ctx: &mut Ctx<'_>) -> Cell {
                 }
             }
             Event::Empty(e) => {
+                // The ids matter as much here as at the body level: a `<w:p/>`
+                // read without its `w14:paraId` differs from the one in the file,
+                // so the writer would rewrite a paragraph nobody touched.
                 if local_name(&e) == b"p" {
-                    cell.content.push(Block::Paragraph(Paragraph::new()));
+                    cell.content.push(Block::Paragraph(Paragraph {
+                        id: hex_id(&e, b"paraId"),
+                        text_id: hex_id(&e, b"textId"),
+                        ..Paragraph::new()
+                    }));
                 } else if let Some(anchor) = read_anchor(&e) {
                     cell.content.push(Block::Anchor(anchor));
                 }
@@ -993,14 +1105,15 @@ fn read_cell(reader: &mut Reader<&[u8]>, ctx: &mut Ctx<'_>) -> Cell {
             _ => {}
         }
     }
-    // The format requires a cell to end with a paragraph, and a document whose
-    // cell holds only a table is one Word calls damaged. A reader that has been
-    // handed one repairs it rather than passing the fault on to the writer.
-    if !cell
-        .content
-        .last()
-        .is_some_and(|block| matches!(block, Block::Paragraph(_)))
-    {
+    // A cell with nothing in it at all is not a cell Word writes, and a layout
+    // that has to measure one needs something to measure.
+    //
+    // Only *that* case. An earlier version repaired every cell whose last block
+    // was not a paragraph — and a cell ending in a `<w:sdt>` is ordinary, so the
+    // reader invented a paragraph the file did not have, the model ran one ahead
+    // of the file, and the writer put every subsequent paragraph in the wrong
+    // cell. A reader must not add content: the file is what has to round-trip.
+    if cell.content.is_empty() {
         cell.content.push(Block::Paragraph(Paragraph::new()));
     }
     cell

@@ -4066,6 +4066,8 @@ dependencies = [
  "ooxml",
  "ss-model",
  "ss-xlsx",
+ "wp-docx",
+ "wp-model",
 ]
 
 [[package]]

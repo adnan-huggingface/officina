@@ -1175,6 +1175,7 @@ mod tests {
         document.section.headers.push(wp_model::HeaderRef {
             kind: HeaderKind::Default,
             body: wp_model::HeaderId(0),
+            rel: None,
         });
         document.headers.push(wp_model::HeaderFooter {
             id: wp_model::HeaderId(0),
@@ -1198,6 +1199,7 @@ mod tests {
         document.section.footers.push(wp_model::HeaderRef {
             kind: HeaderKind::Default,
             body: wp_model::HeaderId(0),
+            rel: None,
         });
         document.headers.push(wp_model::HeaderFooter {
             id: wp_model::HeaderId(0),

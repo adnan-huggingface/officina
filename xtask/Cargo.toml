@@ -9,3 +9,5 @@ publish = false
 ooxml.workspace = true
 ss-model.workspace = true
 ss-xlsx.workspace = true
+wp-model.workspace = true
+wp-docx.workspace = true

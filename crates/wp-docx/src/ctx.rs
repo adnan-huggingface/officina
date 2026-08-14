@@ -50,11 +50,49 @@ impl HeaderIndex {
 pub(crate) struct Ctx<'a> {
     pub styles: &'a mut StyleTable,
     headers: &'a mut HeaderIndex,
+    /// The bytes of the part being read.
+    ///
+    /// Needed so that an element the model does not fully understand — a
+    /// `<w:drawing>`, an `<m:oMath>`, a VML picture — can be captured verbatim
+    /// and written back by a writer that understands it no better. Empty when
+    /// the reader was handed events rather than a part, which only happens in
+    /// this crate's own tests.
+    part: &'a [u8],
 }
 
 impl<'a> Ctx<'a> {
     pub fn new(styles: &'a mut StyleTable, headers: &'a mut HeaderIndex) -> Ctx<'a> {
-        Ctx { styles, headers }
+        Ctx {
+            styles,
+            headers,
+            part: &[],
+        }
+    }
+
+    pub fn of_part(
+        styles: &'a mut StyleTable,
+        headers: &'a mut HeaderIndex,
+        part: &'a [u8],
+    ) -> Ctx<'a> {
+        Ctx {
+            styles,
+            headers,
+            part,
+        }
+    }
+
+    /// The part's bytes between two reader positions.
+    ///
+    /// A UTF-8 byte-order mark is added back: quick-xml does not count it, so a
+    /// position it reports is three bytes short in a part that has one.
+    pub fn span(&self, from: usize, to: usize) -> std::sync::Arc<[u8]> {
+        let offset = if self.part.starts_with(b"\xEF\xBB\xBF") {
+            3
+        } else {
+            0
+        };
+        let (from, to) = (from + offset, (to + offset).min(self.part.len()));
+        self.part.get(from..to).unwrap_or(&[]).into()
     }
 
     pub fn header_id(&mut self, rel: &str, footer: bool) -> HeaderId {

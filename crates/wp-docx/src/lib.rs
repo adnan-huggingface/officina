@@ -34,6 +34,7 @@ mod numbering;
 mod parts;
 mod props;
 mod styles;
+pub mod write;
 mod xml;
 
 use std::path::Path;
@@ -42,6 +43,7 @@ use ooxml::Package;
 
 pub use error::{Error, Result};
 pub use parts::DocumentParts;
+pub use write::{document_out, flush, save};
 
 use ctx::{Ctx, HeaderIndex};
 use quick_xml::events::Event;
@@ -98,8 +100,9 @@ pub fn read(package: &Package) -> Result<Document> {
             rel_id: "officeDocument".to_owned(),
         })?;
     {
-        let mut ctx = Ctx::new(&mut document.styles, &mut headers);
-        let (blocks, section) = read_body(main.data(), &mut ctx);
+        let data = main.data();
+        let mut ctx = Ctx::of_part(&mut document.styles, &mut headers, data);
+        let (blocks, section) = read_body(data, &mut ctx);
         document.body = blocks;
         if let Some(section) = section {
             document.section = section;
@@ -108,19 +111,19 @@ pub fn read(package: &Package) -> Result<Document> {
 
     if let Some(name) = &parts.footnotes {
         if let Some(part) = package.part(name) {
-            let mut ctx = Ctx::new(&mut document.styles, &mut headers);
+            let mut ctx = Ctx::of_part(&mut document.styles, &mut headers, part.data());
             document.footnotes = notes::read_notes(part.data(), &mut ctx, b"footnote");
         }
     }
     if let Some(name) = &parts.endnotes {
         if let Some(part) = package.part(name) {
-            let mut ctx = Ctx::new(&mut document.styles, &mut headers);
+            let mut ctx = Ctx::of_part(&mut document.styles, &mut headers, part.data());
             document.endnotes = notes::read_notes(part.data(), &mut ctx, b"endnote");
         }
     }
     if let Some(name) = &parts.comments {
         if let Some(part) = package.part(name) {
-            let mut ctx = Ctx::new(&mut document.styles, &mut headers);
+            let mut ctx = Ctx::of_part(&mut document.styles, &mut headers, part.data());
             document.comments = notes::read_comments(part.data(), &mut ctx);
         }
     }
@@ -149,7 +152,7 @@ pub fn read(package: &Package) -> Result<Document> {
             continue;
         };
         let content = {
-            let mut ctx = Ctx::new(&mut document.styles, &mut headers);
+            let mut ctx = Ctx::of_part(&mut document.styles, &mut headers, part.data());
             read_header(part.data(), &mut ctx, footer)
         };
         document.headers.push(HeaderFooter {
@@ -201,4 +204,33 @@ fn read_header(xml: &[u8], ctx: &mut Ctx<'_>, footer: bool) -> Vec<Block> {
         }
     }
     Vec::new()
+}
+
+#[cfg(test)]
+mod tests_support {
+    use std::io::{Cursor, Write};
+
+    /// The smallest package holding `document` as its main part.
+    pub(crate) fn package_with(document: &[u8]) -> ooxml::Package {
+        let mut buf = Vec::new();
+        {
+            let mut zip = zip::ZipWriter::new(Cursor::new(&mut buf));
+            let options = zip::write::SimpleFileOptions::default();
+            let mut put = |name: &str, data: &[u8]| {
+                zip.start_file(name, options).expect("an entry");
+                zip.write_all(data).expect("bytes");
+            };
+            put(
+                "[Content_Types].xml",
+                br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>"#,
+            );
+            put(
+                "_rels/.rels",
+                br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>"#,
+            );
+            put("word/document.xml", document);
+            zip.finish().expect("a package");
+        }
+        ooxml::Package::read(Cursor::new(buf)).expect("it opens")
+    }
 }

@@ -408,6 +408,8 @@ pub enum Piece {
     /// Preserved whole; the relationship names the part that draws it.
     Embedded {
         rel: Option<Arc<str>>,
+        /// The element exactly as it was read. See [`Drawing::source`].
+        source: Arc<[u8]>,
     },
 }
 
@@ -451,6 +453,19 @@ pub enum Clear {
 /// `<w:drawing>` — a picture, chart, shape or diagram.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Drawing {
+    /// **The element exactly as it was read**, so a writer can put it back
+    /// without understanding it.
+    ///
+    /// A `<w:drawing>` is a whole DrawingML document: effects, crops, rotations,
+    /// text boxes, SmartArt, an `<mc:AlternateContent>` with a VML fallback for
+    /// Word 2003. What is parsed out of it below is what the layout needs and
+    /// nothing more, so re-emitting from those fields would destroy the rest —
+    /// and *editing the paragraph that holds a picture* is an ordinary thing to
+    /// do. This is the Preservation Vault applied inside a modelled part.
+    ///
+    /// Empty for a drawing we authored, which by construction has nothing in it
+    /// that is not modelled.
+    pub source: Arc<[u8]>,
     /// Inline drawings sit in the text like a very large character. Anchored
     /// ones are positioned on the page and the text flows round them, which is
     /// an entirely different layout problem.
@@ -737,6 +752,18 @@ impl Document {
         out
     }
 
+    /// Every paragraph, mutably, in the same document order as
+    /// [`Document::paragraphs`].
+    ///
+    /// The order is what makes this usable: an editor and a writer both need to
+    /// name a paragraph, and its position in this walk is the only name that
+    /// works for a document whose paragraphs have no `w14:paraId`.
+    pub fn paragraphs_mut(&mut self) -> Vec<&mut Paragraph> {
+        let mut out = Vec::new();
+        walk_paragraphs_mut(&mut self.body, &mut out);
+        out
+    }
+
     /// The sections, in order, each with the range of body blocks it governs.
     ///
     /// A `<w:sectPr>` *terminates* the section containing its paragraph, so the
@@ -843,6 +870,23 @@ fn collect_authors(content: &[Inline], into: &mut People) {
             Inline::Wrapper { content, .. } => collect_authors(content, into),
             Inline::SimpleField { content, .. } => collect_authors(content, into),
             Inline::Anchor(_) | Inline::Math(_) => {}
+        }
+    }
+}
+
+fn walk_paragraphs_mut<'a>(blocks: &'a mut [Block], into: &mut Vec<&'a mut Paragraph>) {
+    for block in blocks {
+        match block {
+            Block::Paragraph(paragraph) => into.push(paragraph),
+            Block::Table(table) => {
+                for row in &mut table.rows {
+                    for cell in &mut row.cells {
+                        walk_paragraphs_mut(&mut cell.content, into);
+                    }
+                }
+            }
+            Block::Structured(sdt) => walk_paragraphs_mut(&mut sdt.content, into),
+            Block::Anchor(_) | Block::AltChunk { .. } => {}
         }
     }
 }

@@ -54,6 +54,11 @@ pub struct DocumentParts {
 }
 
 impl DocumentParts {
+    /// Where each part of `package` lives.
+    pub fn locate_in(package: &Package) -> Result<DocumentParts> {
+        locate(package)
+    }
+
     pub fn target(&self, rel_id: &str) -> Option<&PartName> {
         self.by_rel_id.get(rel_id).map(|(_, name)| name)
     }

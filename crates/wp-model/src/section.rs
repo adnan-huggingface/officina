@@ -259,7 +259,26 @@ pub struct HeaderId(pub u32);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeaderRef {
     pub kind: HeaderKind,
+    /// Which body it names, as an index into the document's list.
+    ///
+    /// Handed out in the order the references were *read*, so it is not stable
+    /// across two reads of the same document that reach the sections in a
+    /// different order — which is exactly what happens when a writer re-reads
+    /// one section on its own to compare it. [`HeaderRef::same`] is the
+    /// comparison that does not depend on it.
     pub body: HeaderId,
+    /// The relationship id the file names it by. This is the durable identity,
+    /// and it is what a writer puts back.
+    pub rel: Option<std::sync::Arc<str>>,
+}
+
+impl HeaderRef {
+    /// Whether two references name the same header, ignoring the index — which
+    /// is an artefact of the order things were read in rather than a property of
+    /// the document.
+    pub fn same(&self, other: &HeaderRef) -> bool {
+        self.kind == other.kind && self.rel == other.rel
+    }
 }
 
 /// `<w:lnNumType>` — line numbers down the margin.
@@ -626,6 +645,7 @@ mod tests {
             headers: vec![HeaderRef {
                 kind: HeaderKind::Default,
                 body: HeaderId(3),
+                rel: Some("rId4".into()),
             }],
             ..SectionProps::new()
         };
