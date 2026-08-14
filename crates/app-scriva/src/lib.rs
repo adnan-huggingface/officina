@@ -10,6 +10,7 @@ pub mod app;
 pub mod edit;
 mod icons;
 mod menus;
+pub mod revise;
 pub mod shaper;
 pub mod text;
 pub mod view;

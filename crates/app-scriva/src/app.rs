@@ -54,6 +54,19 @@ pub enum Command {
     UpdateToc,
     /// The pane of headings and bookmarks down the left.
     Navigator,
+    /// Record edits as tracked changes from now on.
+    TrackChanges,
+    AcceptAll,
+    RejectAll,
+    /// Settle the change the caret is nearest.
+    AcceptOne,
+    RejectOne,
+    /// Move the caret to the next tracked change or comment.
+    NextChange,
+    AddComment,
+    DeleteComment,
+    /// The pane of tracked changes and comments down the right.
+    Reviewer,
 }
 
 /// What the application is waiting for an answer to.
@@ -88,6 +101,14 @@ pub struct Scriva {
     /// numbers are worked out by the layout itself.
     fields: wp_layout::FieldValues,
     navigator: bool,
+    reviewer: bool,
+    /// Who a recorded change is attributed to. Word takes this from the
+    /// application's own settings; there is nowhere else to get it, and a
+    /// document full of changes by "Unknown" is worse than one by a name the
+    /// user can correct.
+    author: crate::revise::Author,
+    /// The comment being written, before it is added.
+    drafting: Option<String>,
     /// Where the view should scroll to, once it knows where that is.
     reveal: Option<Caret>,
 }
@@ -118,6 +139,9 @@ impl Scriva {
             sweeping: false,
             fields: wp_layout::FieldValues::new(),
             navigator: false,
+            reviewer: false,
+            author: crate::revise::Author::new("Scriva user"),
+            drafting: None,
             reveal: None,
         }
     }
@@ -195,6 +219,11 @@ impl Scriva {
 
     pub(crate) fn showing_navigator(&self) -> bool {
         self.navigator
+    }
+
+    /// Whether changes are being recorded, and whether the pane is showing.
+    pub(crate) fn reviewing(&self) -> (bool, bool) {
+        (self.document.settings.track_changes, self.reviewer)
     }
 
     pub(crate) fn zoom(&self) -> f64 {
@@ -475,6 +504,29 @@ impl Scriva {
                 self.view.invalidate();
             }
             Command::Navigator => self.navigator = !self.navigator,
+            Command::Reviewer => self.reviewer = !self.reviewer,
+            Command::TrackChanges => {
+                self.document.settings.track_changes = !self.document.settings.track_changes;
+                self.changed();
+            }
+            Command::AcceptAll => self.settle_all(crate::revise::Resolve::Accept),
+            Command::RejectAll => self.settle_all(crate::revise::Resolve::Reject),
+            Command::AcceptOne => self.settle_one(crate::revise::Resolve::Accept),
+            Command::RejectOne => self.settle_one(crate::revise::Resolve::Reject),
+            Command::NextChange => self.next_change(),
+            Command::AddComment => {
+                if self.selection.is_empty() {
+                    self.message = Some((
+                        "Nothing selected".to_owned(),
+                        "A comment is about a piece of text. Select what it is \
+                         about and try again."
+                            .to_owned(),
+                    ));
+                } else {
+                    self.drafting = Some(String::new());
+                }
+            }
+            Command::DeleteComment => self.delete_comment_here(),
             Command::GoTo(paragraph) => {
                 let caret = clamp(
                     &self.document,
@@ -540,6 +592,80 @@ impl Scriva {
         );
         edit::replace_range(&mut self.document, range, rows);
         self.changed();
+    }
+
+    fn settle_all(&mut self, how: crate::revise::Resolve) {
+        let count = crate::revise::resolve_all(&mut self.document, &mut self.history, how);
+        if count == 0 {
+            self.message = Some((
+                "No tracked changes".to_owned(),
+                "This document has nothing to accept or reject.".to_owned(),
+            ));
+            return;
+        }
+        self.selection = Selection::at(clamp(&self.document, self.caret()));
+        self.changed();
+    }
+
+    /// Settles the change nearest the caret.
+    ///
+    /// Nearest rather than *at*: a change is a range, and asking the user to put
+    /// the caret exactly inside one is asking them to hunt for it.
+    fn settle_one(&mut self, how: crate::revise::Resolve) {
+        let changes = crate::revise::tracked(&self.document);
+        let here = self.caret().paragraph;
+        let Some(found) = changes
+            .iter()
+            .min_by_key(|change| change.paragraph.abs_diff(here))
+        else {
+            self.message = Some((
+                "No tracked changes".to_owned(),
+                "This document has nothing to accept or reject.".to_owned(),
+            ));
+            return;
+        };
+        let mark = found.mark.clone();
+        if crate::revise::resolve_one(&mut self.document, &mut self.history, &mark, how) {
+            self.selection = Selection::at(clamp(&self.document, self.caret()));
+            self.changed();
+        }
+    }
+
+    fn next_change(&mut self) {
+        let changes = crate::revise::tracked(&self.document);
+        let here = self.caret().paragraph;
+        let next = changes
+            .iter()
+            .find(|change| change.paragraph > here)
+            .or_else(|| changes.first());
+        if let Some(change) = next {
+            self.run(Command::GoTo(change.paragraph));
+        }
+    }
+
+    fn delete_comment_here(&mut self) {
+        let here = self.caret().paragraph;
+        let target = self
+            .document
+            .comments
+            .iter()
+            .map(|comment| comment.id)
+            .find(|id| {
+                crate::revise::comment_at(&self.document, *id)
+                    .is_some_and(|at| at.paragraph == here)
+            });
+        match target {
+            Some(id) => {
+                crate::revise::delete_comment(&mut self.document, &mut self.history, id);
+                self.changed();
+            }
+            None => {
+                self.message = Some((
+                    "No comment here".to_owned(),
+                    "Put the caret in the text a comment is about.".to_owned(),
+                ));
+            }
+        }
     }
 
     fn toggle(&mut self, toggle: Toggle) {
@@ -661,6 +787,12 @@ impl Scriva {
             (ctrl, Key::Space, Command::ClearFormatting),
             (ctrl, Key::F, Command::Navigator),
             (egui::Modifiers::NONE, Key::F9, Command::UpdateToc),
+            (ctrl_shift, Key::E, Command::TrackChanges),
+            (
+                egui::Modifiers::COMMAND.plus(egui::Modifiers::ALT),
+                Key::M,
+                Command::AddComment,
+            ),
             (ctrl_shift, Key::Z, Command::Redo),
         ] {
             if taken(ui, modifiers, key) {
@@ -692,14 +824,7 @@ impl Scriva {
         for event in events {
             match event {
                 egui::Event::Text(text) if !text.is_empty() => {
-                    let caret = edit::type_text(
-                        &mut self.document,
-                        &mut self.history,
-                        self.selection,
-                        &text,
-                    );
-                    self.selection = Selection::at(caret);
-                    self.changed();
+                    self.type_text(&text);
                 }
                 egui::Event::Key {
                     key,
@@ -828,6 +953,90 @@ impl Scriva {
         }
     }
 
+    /// Types text, recording it as a tracked insertion when tracking is on.
+    fn type_text(&mut self, input: &str) {
+        if !self.document.settings.track_changes {
+            let caret =
+                edit::type_text(&mut self.document, &mut self.history, self.selection, input);
+            self.selection = Selection::at(caret);
+            self.changed();
+            return;
+        }
+        // What is selected is *deleted* first, and with tracking on that means
+        // marked rather than removed.
+        let (start, _) = self.selection.ordered();
+        if !self.selection.is_empty() {
+            self.record_delete();
+        }
+        let id = crate::revise::next_revision_id(&self.document);
+        let Some(before) = edit::paragraph_at(&self.document, start.paragraph) else {
+            return;
+        };
+        self.history.push(edit::Change::Paragraph {
+            index: start.paragraph,
+            before: Box::new(before),
+        });
+        let author = self.author.clone();
+        let mut paragraphs = self.document.paragraphs_mut();
+        let Some(target) = paragraphs.get_mut(start.paragraph) else {
+            return;
+        };
+        match crate::revise::record_insertion(target, start.offset, input, &author, id) {
+            Some(after) => {
+                drop(paragraphs);
+                self.selection = Selection::at(Caret {
+                    paragraph: start.paragraph,
+                    offset: after,
+                });
+                self.changed();
+            }
+            None => {
+                // A position this cannot wrap — inside a hyperlink, a content
+                // control, a field's result. A half-recorded change is worse
+                // than an unrecorded one, so the edit is refused and said.
+                drop(paragraphs);
+                self.history.undo(&mut self.document);
+                self.message = Some((
+                    "Cannot record this change".to_owned(),
+                    "Track Changes cannot record an edit inside a hyperlink, a \
+                     content control or a field. Turn tracking off to edit here."
+                        .to_owned(),
+                ));
+            }
+        }
+    }
+
+    /// Marks the selection deleted rather than removing it.
+    fn record_delete(&mut self) {
+        let (start, end) = self.selection.ordered();
+        if start.paragraph != end.paragraph {
+            // Across paragraphs the deletion covers paragraph marks too, which
+            // is a change to the body rather than to one paragraph. Not
+            // recorded; stated rather than half-done.
+            let caret =
+                edit::delete_selection(&mut self.document, &mut self.history, self.selection);
+            self.selection = Selection::at(caret);
+            self.changed();
+            return;
+        }
+        let id = crate::revise::next_revision_id(&self.document);
+        let Some(before) = edit::paragraph_at(&self.document, start.paragraph) else {
+            return;
+        };
+        self.history.push(edit::Change::Paragraph {
+            index: start.paragraph,
+            before: Box::new(before),
+        });
+        let author = self.author.clone();
+        let mut paragraphs = self.document.paragraphs_mut();
+        if let Some(target) = paragraphs.get_mut(start.paragraph) {
+            let _ = crate::revise::record_deletion(target, start.offset..end.offset, &author, id);
+        }
+        drop(paragraphs);
+        self.selection = Selection::at(start);
+        self.changed();
+    }
+
     /// One line up or down, using the laid-out lines.
     fn line_step(&self, caret: Caret, down: bool) -> Caret {
         let Some((page, rect)) = view::caret_rect(&self.view, caret) else {
@@ -948,6 +1157,10 @@ impl DocumentApp for Scriva {
             }
             return;
         }
+        if self.drafting.is_some() {
+            self.comment_dialog(ctx);
+            return;
+        }
         let Some(Pending::Unsaved(command)) = self.pending.clone() else {
             return;
         };
@@ -1001,6 +1214,11 @@ impl DocumentApp for Scriva {
                 self.run(command);
             }
         }
+        if self.reviewer {
+            if let Some(command) = self.reviewing_pane(ui) {
+                self.run(command);
+            }
+        }
 
         let blocked =
             self.pending.is_some() || self.message.is_some() || egui::Popup::is_any_open(ui.ctx());
@@ -1021,6 +1239,57 @@ impl DocumentApp for Scriva {
 }
 
 impl Scriva {
+    /// The box a new comment is written in.
+    fn comment_dialog(&mut self, ctx: &egui::Context) {
+        let Some(mut text) = self.drafting.clone() else {
+            return;
+        };
+        let mut done: Option<bool> = None;
+        egui::Modal::new(egui::Id::new("scriva-comment"))
+            .frame(dialog::frame(ctx))
+            .show(ctx, |ui| {
+                ui.set_width(420.0);
+                ui.add_space(16.0);
+                ui.label(egui::RichText::new("New comment").font(dialog::heading_font(16.0)));
+                ui.add_space(8.0);
+                let field = ui.add(
+                    egui::TextEdit::multiline(&mut text)
+                        .desired_rows(4)
+                        .desired_width(f32::INFINITY)
+                        .hint_text("What is there to say about this?"),
+                );
+                field.request_focus();
+                ui.add_space(12.0);
+                if let Some(answer) = dialog::confirm(ui, "Add") {
+                    done = Some(answer);
+                }
+                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    done = Some(false);
+                }
+            });
+        self.drafting = Some(text.clone());
+        match done {
+            Some(true) => {
+                self.drafting = None;
+                if !text.trim().is_empty() {
+                    let author = self.author.clone();
+                    crate::revise::add_comment(
+                        &mut self.document,
+                        &mut self.history,
+                        self.selection,
+                        &author.name,
+                        &author.initials,
+                        text.trim(),
+                    );
+                    self.reviewer = true;
+                    self.changed();
+                }
+            }
+            Some(false) => self.drafting = None,
+            None => {}
+        }
+    }
+
     fn finish(&mut self, command: Command, ctx: &egui::Context) {
         match command {
             Command::Exit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
@@ -1295,6 +1564,84 @@ mod tests {
         app.run(Command::Bold);
         assert!(app.dirty);
         assert_ne!(app.stamp, stamp, "the view has to lay out again");
+    }
+
+    #[test]
+    fn typing_with_track_changes_on_records_rather_than_replaces() {
+        let mut app = app_with(["hello"].as_slice());
+        app.document.settings.track_changes = true;
+        app.selection = Selection::at(Caret {
+            paragraph: 0,
+            offset: 5,
+        });
+        app.type_text(" there");
+        assert_eq!(app.document.text(), "hello there");
+        let changes = crate::revise::tracked(&app.document);
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].what, "inserted");
+    }
+
+    #[test]
+    fn typing_with_track_changes_off_is_an_ordinary_edit() {
+        let mut app = app_with(["hello"].as_slice());
+        app.selection = Selection::at(Caret {
+            paragraph: 0,
+            offset: 5,
+        });
+        app.type_text("!");
+        assert_eq!(app.document.text(), "hello!");
+        assert!(crate::revise::tracked(&app.document).is_empty());
+    }
+
+    #[test]
+    fn accept_all_with_nothing_tracked_says_so_rather_than_doing_nothing() {
+        let mut app = app_with(["plain"].as_slice());
+        app.run(Command::AcceptAll);
+        assert!(app.message.is_some());
+        assert!(!app.dirty);
+    }
+
+    #[test]
+    fn a_comment_needs_a_selection_to_be_about() {
+        let mut app = app_with(["text"].as_slice());
+        app.run(Command::AddComment);
+        assert!(app.message.is_some(), "and says why");
+        assert!(app.drafting.is_none());
+
+        app.message = None;
+        app.selection = Selection {
+            anchor: Caret {
+                paragraph: 0,
+                offset: 0,
+            },
+            head: Caret {
+                paragraph: 0,
+                offset: 4,
+            },
+        };
+        app.run(Command::AddComment);
+        assert!(app.drafting.is_some());
+    }
+
+    #[test]
+    fn next_change_walks_round_the_document() {
+        let mut app = app_with(["one", "two", "three"].as_slice());
+        let paragraphs = &mut app.document.body;
+        if let Block::Paragraph(p) = &mut paragraphs[2] {
+            p.content = vec![wp_model::doc::inserted_by(
+                "A",
+                1,
+                vec![wp_model::doc::Run::of("added")]
+                    .into_iter()
+                    .map(wp_model::Inline::Run)
+                    .collect(),
+            )];
+        }
+        app.run(Command::NextChange);
+        assert_eq!(app.caret().paragraph, 2);
+        // And round again from the end.
+        app.run(Command::NextChange);
+        assert_eq!(app.caret().paragraph, 2);
     }
 
     #[test]
