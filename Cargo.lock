@@ -3981,6 +3981,10 @@ dependencies = [
 [[package]]
 name = "wp-layout"
 version = "0.1.0"
+dependencies = [
+ "wp-docx",
+ "wp-model",
+]
 
 [[package]]
 name = "wp-model"

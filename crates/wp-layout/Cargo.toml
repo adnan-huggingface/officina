@@ -6,3 +6,9 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+wp-model.workspace = true
+
+[dev-dependencies]
+# Only so the layout can be run against real documents. Nothing in the engine
+# knows what a `.docx` is.
+wp-docx.workspace = true

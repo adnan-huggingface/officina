@@ -110,7 +110,55 @@ pub(crate) fn theme(xml: &[u8]) -> Theme {
         }
     }
 
-    Theme::from_scheme(&scheme)
+    let mut theme = Theme::from_scheme(&scheme);
+    let (major, minor) = font_scheme(xml);
+    if major != wp_model::color::FontFaces::default() {
+        theme.major = major;
+    }
+    if minor != wp_model::color::FontFaces::default() {
+        theme.minor = minor;
+    }
+    theme
+}
+
+/// `<a:fontScheme>` — the two sets of faces `w:asciiTheme` and its siblings
+/// name. Nearly every run in a modern document refers to one of them, so a
+/// resolver without this draws the whole document in a fallback face.
+fn font_scheme(xml: &[u8]) -> (wp_model::color::FontFaces, wp_model::color::FontFaces) {
+    use wp_model::color::FontFaces;
+    let mut major = FontFaces::default();
+    let mut minor = FontFaces::default();
+    let mut reader = Reader::from_reader(xml);
+    let mut into_major = true;
+    let mut inside = false;
+    while let Ok(event) = reader.read_event() {
+        match event {
+            Event::Start(e) | Event::Empty(e) => match local_name(&e) {
+                b"fontScheme" => inside = true,
+                b"majorFont" if inside => into_major = true,
+                b"minorFont" if inside => into_major = false,
+                b"latin" | b"ea" | b"cs" if inside => {
+                    // An empty `typeface=""` is how the scheme says "no face for
+                    // this script", and it is not a face called nothing.
+                    let face = attr(&e, b"typeface").filter(|name| !name.is_empty());
+                    let slot = if into_major { &mut major } else { &mut minor };
+                    let field = match local_name(&e) {
+                        b"latin" => &mut slot.latin,
+                        b"ea" => &mut slot.east_asian,
+                        _ => &mut slot.complex,
+                    };
+                    if field.is_none() {
+                        *field = face.map(Into::into);
+                    }
+                }
+                _ => {}
+            },
+            Event::End(e) if crate::xml::end_local_name(&e) == b"fontScheme" => break,
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    (major, minor)
 }
 
 fn parse_rgb(hex: &str) -> Option<[u8; 3]> {

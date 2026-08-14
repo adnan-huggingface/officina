@@ -201,13 +201,28 @@ fn shade_toward_black(base: [u8; 3], shade: u8) -> [u8; 3] {
     base.map(|c| (c as f64 * k).round().clamp(0.0, 255.0) as u8)
 }
 
-/// The document's colour scheme, out of `theme1.xml`.
+/// One of the theme's two font schemes: the faces for each script family.
+///
+/// `<a:majorFont>` is what headings use and `<a:minorFont>` is body text, which
+/// is why `<w:rFonts w:asciiTheme="minorHAnsi"/>` is on very nearly every run in
+/// a modern document and a resolver that ignores it draws the whole thing in a
+/// fallback face.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FontFaces {
+    pub latin: Option<std::sync::Arc<str>>,
+    pub east_asian: Option<std::sync::Arc<str>>,
+    pub complex: Option<std::sync::Arc<str>>,
+}
+
+/// The document's colour and font schemes, out of `theme1.xml`.
 #[derive(Debug, Clone)]
 pub struct Theme {
     /// In `<a:clrScheme>` order — dk1 first — because that is the order the
     /// part writes and [`ThemeSlot::scheme_index`] is defined against it. No
     /// swap, unlike the spreadsheet side, because Word names its slots.
     colors: Vec<[u8; 3]>,
+    pub major: FontFaces,
+    pub minor: FontFaces,
 }
 
 impl Default for Theme {
@@ -229,6 +244,16 @@ impl Default for Theme {
                 [0x05, 0x63, 0xC1], // hlink
                 [0x95, 0x4F, 0x72], // folHlink
             ],
+            // Office's own scheme since 2013. A document whose theme part is
+            // missing still renders in the faces its author saw.
+            major: FontFaces {
+                latin: Some("Calibri Light".into()),
+                ..FontFaces::default()
+            },
+            minor: FontFaces {
+                latin: Some("Calibri".into()),
+                ..FontFaces::default()
+            },
         }
     }
 }
@@ -241,11 +266,30 @@ impl Theme {
         }
         Theme {
             colors: scheme.to_vec(),
+            ..Theme::default()
         }
     }
 
     pub fn color(&self, slot: ThemeSlot) -> Option<[u8; 3]> {
         self.colors.get(slot.scheme_index()).copied()
+    }
+
+    /// The face a `<w:rFonts w:*Theme>` reference names.
+    pub fn font(&self, which: crate::prop::ThemeFont) -> Option<&str> {
+        use crate::prop::ThemeFont::*;
+        let scheme = if which.is_major() {
+            &self.major
+        } else {
+            &self.minor
+        };
+        let face = match which {
+            // `Ascii` and `HighAnsi` are both the Latin face: the split is a
+            // legacy of code pages and the theme has one entry for both.
+            MajorAscii | MajorHighAnsi | MinorAscii | MinorHighAnsi => &scheme.latin,
+            MajorEastAsian | MinorEastAsian => &scheme.east_asian,
+            MajorComplex | MinorComplex => &scheme.complex,
+        };
+        face.as_deref()
     }
 }
 
