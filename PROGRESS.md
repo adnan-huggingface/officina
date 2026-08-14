@@ -27,7 +27,14 @@ Excel, and the twelve tasks that closed what the audit found)
   C12, the audit and the insert-a-chart task because every test asked the
   model and none asked the painter. `grid::chart::tests::painted` is the
   answer to that: it runs a frame and reads the shapes back.
-- Workspace total is **893 tests**, all green; `cargo clippy --workspace
+- **Ctrl+W closes the workbook** and leaves the window standing, even when it
+  is the last workbook — Excel takes the application down with it, and a
+  mistyped Ctrl+W should not end a session. It goes through the same unsaved
+  prompt as closing the window, and `blank_slate` is now the one place that
+  empties a document, so New and Close cannot drift apart. It clears the open
+  dialogs too: a Format Cells over a selection that no longer exists is a box
+  whose buttons can only do harm.
+- Workspace total is **901 tests**, all green; `cargo clippy --workspace
   --all-targets -- -D warnings` and `cargo fmt --all --check` are both clean;
   `cargo xtask fidelity` is check 1, 27 of 27 and check 2, 12 of 12.
 - The release binary at `target/release/calx.exe` is current with this state.

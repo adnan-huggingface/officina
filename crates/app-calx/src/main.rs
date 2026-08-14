@@ -344,6 +344,9 @@ enum DataTool {
 /// An action held up by the "you have unsaved changes" prompt.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Pending {
+    /// The window is closing and the application goes with it.
+    Quit,
+    /// The workbook is being put away and the window stays.
     Close,
     New,
     Open(PathBuf),
@@ -616,9 +619,39 @@ impl Calx {
     }
 
     fn new_document(&mut self) {
+        self.blank_slate();
+        self.status = "New workbook".to_string();
+    }
+
+    /// Excel's File ▸ Close: the workbook is put away, the window stays.
+    ///
+    /// What is left behind is an empty workbook rather than an empty window.
+    /// A spreadsheet with no grid in it is a window with nothing to click, and
+    /// the next thing anyone does after closing one workbook is start another
+    /// or open another — both of which want a grid to land in.
+    ///
+    /// Which makes this New with a different sentence at the bottom, and that
+    /// sentence is the point: "Closed budget.xlsx" says the file was let go of,
+    /// where "New workbook" only says one arrived.
+    fn close_document(&mut self) {
+        let closed = self.path.as_deref().map(name_of);
+        self.blank_slate();
+        self.status = match closed {
+            Some(name) => format!("Closed {name}"),
+            None => "Closed".to_string(),
+        };
+    }
+
+    /// A fresh empty document, with nothing of the old one left anywhere.
+    ///
+    /// The dialogs go too. Every one of them was opened about the document
+    /// that is being let go — a Format Cells over a selection that no longer
+    /// exists, a Find over a sheet that has gone — and a box that outlives its
+    /// subject can only do harm when its buttons are pressed.
+    fn blank_slate(&mut self) {
         self.doc = blank();
         self.path = None;
-        self.status = "New workbook".to_string();
+        self.dialog = None;
         self.reset();
     }
 
@@ -1062,7 +1095,8 @@ impl Calx {
 
     fn proceed(&mut self, what: Pending) {
         match what {
-            Pending::Close => {}
+            Pending::Quit => {}
+            Pending::Close => self.close_document(),
             Pending::New => self.new_document(),
             Pending::Open(path) => self.open(&path),
             Pending::Browse => self.browse(),
@@ -1084,7 +1118,7 @@ impl Calx {
 
     /// The file keystrokes, which belong to the window rather than the grid.
     fn file_keys(&mut self, ctx: &egui::Context) {
-        let (save, save_as, open, new) = ctx.input_mut(|i| {
+        let (save, save_as, open, new, close) = ctx.input_mut(|i| {
             (
                 i.consume_key(egui::Modifiers::COMMAND, egui::Key::S),
                 i.consume_key(
@@ -1093,6 +1127,7 @@ impl Calx {
                 ),
                 i.consume_key(egui::Modifiers::COMMAND, egui::Key::O),
                 i.consume_key(egui::Modifiers::COMMAND, egui::Key::N),
+                i.consume_key(egui::Modifiers::COMMAND, egui::Key::W),
             )
         });
         // `consume_key` matches modifiers exactly, so Ctrl+Shift+S is not also a
@@ -1107,6 +1142,12 @@ impl Calx {
         }
         if new {
             self.guard(Pending::New);
+        }
+        // Ctrl+W puts the workbook away and leaves the window standing, even
+        // when it is the last one. Excel closes the application with it; a
+        // mistyped Ctrl+W is a slip, and a slip should not end the session.
+        if close {
+            self.guard(Pending::Close);
         }
 
         // Find and Replace are one window with a row hidden, so the two keys
@@ -1476,7 +1517,7 @@ impl Calx {
     }
 
     fn finish(&mut self, pending: Pending, ctx: &egui::Context) {
-        if pending == Pending::Close {
+        if pending == Pending::Quit {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             return;
         }
@@ -2979,6 +3020,15 @@ impl Calx {
                 .clicked()
             {
                 save_as = true;
+            }
+            // Excel's File ▸ Close, and it asks about unsaved changes on the
+            // way out exactly as closing the window does.
+            if ui
+                .button("Close")
+                .on_hover_text("Close the workbook (Ctrl+W)")
+                .clicked()
+            {
+                file = Some(Pending::Close);
             }
             separate(ui);
 
@@ -6540,7 +6590,7 @@ impl DocumentApp for Calx {
         if !self.edited {
             return true;
         }
-        self.pending = Some(Pending::Close);
+        self.pending = Some(Pending::Quit);
         false
     }
 
@@ -6783,6 +6833,53 @@ mod tests {
             "and it says the work is not lost: {message}"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn closing_a_workbook_leaves_nothing_of_it_behind() {
+        let mut app = Calx::new();
+        app.path = Some(PathBuf::from(r"C:\books\budget.xlsx"));
+        type_into(&mut app, "A1", "42");
+        app.dialog = Some(Dialog::GoTo {
+            text: String::new(),
+        });
+        assert!(app.edited && !app.undo.is_empty());
+
+        app.close_document();
+
+        assert_eq!(app.path, None, "the file has been let go of");
+        assert_eq!(value_at(&app, "A1"), None, "and so has what was in it");
+        assert!(!app.edited, "an empty workbook has nothing to save");
+        assert!(
+            app.undo.is_empty(),
+            "an undo naming cells in the old workbook would write into the new one"
+        );
+        assert!(app.dialog.is_none(), "the boxes went with their subject");
+        assert!(
+            app.status.contains("budget.xlsx"),
+            "the status names what was closed: {}",
+            app.status
+        );
+    }
+
+    #[test]
+    fn closing_an_edited_workbook_asks_first() {
+        let mut app = Calx::new();
+        type_into(&mut app, "A1", "42");
+
+        app.guard(Pending::Close);
+        assert_eq!(app.pending, Some(Pending::Close), "the prompt is up");
+        assert_eq!(
+            value_at(&app, "A1"),
+            Some(ss_model::CellValue::Number(42.0)),
+            "and nothing has been thrown away while it is"
+        );
+
+        // Whereas a workbook with nothing in it to lose closes on the spot.
+        let mut untouched = Calx::new();
+        untouched.guard(Pending::Close);
+        assert_eq!(untouched.pending, None);
+        assert_eq!(untouched.status, "Closed");
     }
 
     /// A workbook with one protected sheet, and B1 unlocked in it.
