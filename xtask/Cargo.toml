@@ -13,3 +13,5 @@ wp-model.workspace = true
 wp-docx.workspace = true
 wp-layout.workspace = true
 ss-formula.workspace = true
+# The same zip this project already reads and writes packages with.
+zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
