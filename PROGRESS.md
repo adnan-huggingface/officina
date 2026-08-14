@@ -9,16 +9,31 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[-]` deferred
 
 ## Current state
 
-**Chunk:** C23 — styles UI, TOC, fields, bookmarks (C0–C22 done: Calx complete
-through C15 plus its UX, sheets, resizing and audit passes and a menu bar with
-mnemonics; and Scriva complete through **all of phase 3** — model, reader,
-layout engine, document UI, editing and writer)
+**Chunk:** C28 — packaging and install (C0–C27 done: Calx complete through C15
+plus its UX, sheets, resizing and audit passes and a menu bar with mnemonics;
+and Scriva complete through **all of phase 3 and all of phase 4** — model,
+reader, layout engine, document UI, editing, writer, fields, revisions,
+pictures, text formats and the legacy `.doc` reader)
 **Status:** not started
 **Handoff note:**
 
-- **Phase 3 is done. `cargo xtask fidelity` is 27 of 27 on check 1 and 27 of 27
-  on check 2**, documents as well as spreadsheets — which is C22's stated exit
-  criterion and the gate that protects users' files.
+- **Phases 3 and 4 are done. `cargo xtask fidelity` is 27 of 27 on check 1 and
+  27 of 27 on check 2**, documents as well as spreadsheets — which is C22's
+  stated exit criterion and the gate that protects users' files. 1341 tests.
+- **A `.docx` can now be authored from nothing** (`wp_docx::write::blank`), so a
+  new document saves and a `.doc` has somewhere to go. The authored package is
+  a skeleton only: the paragraphs go in through the same splice writer that
+  edits a file Word wrote, because a second code path for writing paragraphs is
+  a second thing that can be wrong.
+- Watch item: **Word writes 129, not 1, for direct bold in a `.doc`.** 129 means
+  "the opposite of what the style says", because bold *is* a toggle. A reader
+  that only understands 1 shows a document with no formatting at all and no
+  error to explain it. `wp_doc::sprm` resolves it against the default, and says
+  so where it does.
+- Open, carried from phase 3: **the fixed-width shaper cannot see a fault that
+  only appears with real metrics.** One heading of `RedAndBlackReport.dotx`
+  draws past the right margin in the running application and does not reproduce
+  under `Fixed`.
 - **`LEARNINGS.md` is the debrief from Calx**, and it earned its keep: three of
   the bugs below are the exact faults it predicted, and one of them (toolbar
   glyphs that render as hollow boxes) was repeated anyway before the screenshot
@@ -1254,11 +1269,51 @@ right-click menu where Excel offers it, and under Excel's own key.
 
 ## Phase 4 — Scriva completeness
 
-- [ ] **C23. Styles UI, TOC, fields, bookmarks, hyperlinks.**
-- [ ] **C24. Track changes + comments — editable**, not just preserved.
-- [ ] **C25. Images, shapes, text boxes** — placement, wrap, basic editing.
-- [ ] **C26. Plain text + Markdown** read/write; encoding and line-ending handling.
-- [ ] **C27. .doc reader (legacy)** — CFB + MS-DOC piece table, read-only.
+- [x] **C23. Styles UI, TOC, fields, bookmarks, hyperlinks.**
+
+  Fields are two-pass: `{ PAGE }` cannot be laid out until the pages exist, and
+  the pages depend on how wide the number is. So the document is laid out once
+  to count pages, the values are evaluated, and it is laid out again.
+- [x] **C24. Track changes + comments — editable**, not just preserved.
+- [x] **C25. Images, shapes, text boxes** — decoded and drawn, anchored ones
+      placed by what the file says they are relative to, and selectable as
+      objects: drag to move, corners to resize keeping the shape, Delete to
+      remove, one undo entry per drag.
+
+  This is what made the writer splice *inside* a drawing. A paragraph holding a
+  picture could not be rewritten at all, so a move would have been shown and
+  then thrown away on save. Now the `cx`/`cy` that state the size and the
+  `posOffset` values that state the position are overwritten in the drawing's
+  own bytes, and everything else in it — effects, crops, the VML fallback, the
+  SmartArt — is copied. A drawing nobody touched still comes back byte for byte.
+
+  Stated limits: shapes and text boxes are preserved whole but not editable, and
+  text does not wrap around an anchored drawing (C19's limit, unchanged).
+- [x] **C26. Plain text + Markdown** read/write; encoding and line-ending
+      handling. The encoding and the line ending a file arrived with are the
+      ones it is written back with.
+- [x] **C27. .doc reader (legacy)** — CFB + MS-DOC piece table, read-only, with
+      save-as-`.docx` as the escape hatch.
+
+  What is read: the text through the piece table (which is the whole game — a
+  `.doc` is a memory image with a fast-save log on the end, and reading it front
+  to back gives several drafts interleaved), the parts told apart by the FIB's
+  character counts, paragraphs, tables from the cell and row marks, direct
+  character and paragraph formatting from the bin tables of property exceptions,
+  and the style *names* from the stylesheet.
+
+  What is not: pictures, drawings, fields, revision marks, and the stylesheet's
+  own definitions. Writing a `.doc` is not attempted and will not be: every byte
+  offset in the file would have to be rebuilt, and one wrong offset makes a file
+  Word opens as something else.
+
+  Corpus: six documents written by Word itself with known content, plus the two
+  legacy `.doc` files Office ships (`PROTTPLN.DOC`, `PROTTPLV.DOC`) — the same
+  move as the Excel sample workbook, and the same payoff.
+
+  A `.docx` package can now also be authored from nothing (`wp_docx::write::blank`),
+  which is what a `.doc` is saved through and what finally lets a new document be
+  saved at all.
 
 ## Phase 5 — Ship
 

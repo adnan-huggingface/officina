@@ -77,6 +77,8 @@ pub enum Command {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
     Docx,
+    /// Word 97-2003. Read-only: see `wp_doc`.
+    Doc,
     Markdown,
     Text,
 }
@@ -91,6 +93,7 @@ impl Format {
         {
             Some("md") | Some("markdown") => Format::Markdown,
             Some("txt") | Some("text") => Format::Text,
+            Some("doc") | Some("dot") => Format::Doc,
             _ => Format::Docx,
         }
     }
@@ -98,6 +101,15 @@ impl Format {
     /// Whether saving in this format throws formatting away.
     pub fn is_lossy(self) -> bool {
         !matches!(self, Format::Docx)
+    }
+
+    /// Whether this format can be written at all.
+    ///
+    /// A `.doc` is a memory image with a fast-save log on the end: writing one
+    /// back means rebuilding every byte offset in it, and one wrong offset makes
+    /// a file Word opens as something else. So it is read and saved as `.docx`.
+    pub fn is_writable(self) -> bool {
+        !matches!(self, Format::Doc)
     }
 }
 
@@ -367,6 +379,7 @@ impl Scriva {
     fn open_path(&mut self, path: &Path) {
         match Format::of(path) {
             Format::Docx => self.open_docx(path),
+            Format::Doc => self.open_doc(path),
             other => self.open_text(path, other),
         }
     }
@@ -408,6 +421,48 @@ impl Scriva {
         self.refresh_fields();
     }
 
+    /// Opens a Word 97-2003 document.
+    ///
+    /// There is no package: the file is not one. The document is read whole and
+    /// saving authors a `.docx` around it, which is why the path is dropped —
+    /// Ctrl+S must not offer to write back over a file this cannot write.
+    fn open_doc(&mut self, path: &Path) {
+        match wp_doc::open(path) {
+            Ok(document) => {
+                self.document = document;
+                self.package = None;
+                self.parts = None;
+                self.pictures.clear();
+                // Named after the original, but with the modern extension, so
+                // the save dialog opens on the right name in the right folder.
+                self.path = Some(path.with_extension("docx"));
+                // Not saved yet: it has never been written in this format.
+                self.dirty = true;
+                self.history.clear();
+                self.selection = Selection::default();
+                self.picked = None;
+                self.scroll = 0.0;
+                self.stamp = self.stamp.wrapping_add(1);
+                self.view.invalidate();
+                self.recent.remember(SCRIVA, path);
+                self.refresh_fields();
+                self.message = Some((
+                    "Opened as a copy".to_owned(),
+                    "Word 97-2003 documents are read but not written, so this \
+                     one will be saved as a .docx. Pictures, drawings, fields \
+                     and revision marks are not read from the old format."
+                        .to_owned(),
+                ));
+            }
+            Err(error) => {
+                self.message = Some((
+                    "Cannot open".to_owned(),
+                    format!("{}\n\n{error}", path.display()),
+                ));
+            }
+        }
+    }
+
     fn open_docx(&mut self, path: &Path) {
         match wp_docx::open(path) {
             Ok((document, package)) => {
@@ -440,6 +495,18 @@ impl Scriva {
         };
         if Format::of(&path) != Format::Docx {
             return self.save_text(&path, Format::of(&path));
+        }
+        if self.package.is_none() {
+            // A new document, or one read out of a `.doc`. Author the package
+            // once; from here on it is edited by the same splice writer that
+            // edits a document Word wrote.
+            match wp_docx::write::blank::package_for(&self.document) {
+                Ok(package) => self.package = Some(package),
+                Err(error) => {
+                    self.message = Some(("Cannot save".to_owned(), error.to_string()));
+                    return false;
+                }
+            }
         }
         let Some(package) = &mut self.package else {
             return self.save_as();
@@ -479,14 +546,11 @@ impl Scriva {
         };
         let path = with_extension(path);
         let format = Format::of(&path);
-        if format == Format::Docx && self.package.is_none() {
-            // Nothing to preserve: this document was never read from a file, so
-            // there is no package to edit and one would have to be authored.
+        if !format.is_writable() {
             self.message = Some((
-                "Not yet".to_owned(),
-                "Saving a new document as .docx needs a writer that authors a \
-                 package from nothing. Save it as Markdown, or open a .docx and \
-                 edit that."
+                "Cannot save".to_owned(),
+                "Word 97-2003 documents are read but not written. Save it as a \
+                 .docx instead."
                     .to_owned(),
             ));
             return false;
@@ -560,8 +624,12 @@ impl Scriva {
             Command::New => self.close_document(),
             Command::Open => {
                 let mut chooser = rfd::FileDialog::new()
-                    .add_filter("All documents", &["docx", "docm", "dotx", "md", "txt"])
+                    .add_filter(
+                        "All documents",
+                        &["docx", "docm", "dotx", "doc", "dot", "md", "txt"],
+                    )
                     .add_filter("Word documents", &["docx", "docm", "dotx"])
+                    .add_filter("Word 97-2003", &["doc", "dot"])
                     .add_filter("Markdown", &["md", "markdown"])
                     .add_filter("Plain text", &["txt"]);
                 if let Some(directory) = self.recent.directory() {

@@ -9,6 +9,7 @@ members = [
     "crates/ss-xls",
     "crates/wp-model",
     "crates/wp-layout",
+    "crates/wp-doc",
     "crates/wp-docx",
     "crates/wp-text",
     "crates/cfb",
@@ -34,6 +35,7 @@ ss-csv = { path = "crates/ss-csv" }
 ss-xls = { path = "crates/ss-xls" }
 wp-model = { path = "crates/wp-model" }
 wp-layout = { path = "crates/wp-layout" }
+wp-doc = { path = "crates/wp-doc" }
 wp-docx = { path = "crates/wp-docx" }
 wp-text = { path = "crates/wp-text" }
 cfb-reader = { path = "crates/cfb" }

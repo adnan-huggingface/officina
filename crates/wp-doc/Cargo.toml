@@ -1,0 +1,19 @@
+[package]
+name = "wp-doc"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "wp_doc"
+path = "src/lib.rs"
+
+[dependencies]
+cfb-reader.workspace = true
+wp-model.workspace = true
+
+[dev-dependencies]
+# The escape hatch a `.doc` is read for: proving it can be written out again as
+# a modern document is part of proving the reader is worth anything.
+wp-docx.workspace = true

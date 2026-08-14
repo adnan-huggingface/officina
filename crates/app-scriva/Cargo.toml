@@ -17,6 +17,7 @@ path = "src/main.rs"
 ui-kit.workspace = true
 wp-model.workspace = true
 wp-layout.workspace = true
+wp-doc.workspace = true
 wp-docx.workspace = true
 wp-text.workspace = true
 ooxml.workspace = true

@@ -348,3 +348,32 @@ Written after building Scriva through C22, so the next phase inherits it.
   are drawn rather than typed, and the first Scriva toolbar shipped `⯇` and `↶`
   and came out as a row of hollow boxes. Reading it is not the same as checking
   against it.
+
+## 11. What phase 4 added to the list
+
+- **Preservation and editing are not opposites, but keeping them apart costs
+  the user the edit.** A paragraph holding a picture was excluded from the
+  writer so the picture would survive. That was right and it was also why
+  dragging a picture did nothing on save: the model changed, the file did not,
+  and the document looked correct until it was reopened. The fix is to splice
+  *within* the preserved bytes — rewrite the four numbers the editor can change
+  and copy the rest. Preserve what is not understood, not what is not modelled.
+- **The number a format writes is not the number the specification leads with.**
+  Word spells direct bold in a `.doc` as `129` — "invert what the style says" —
+  and never as `1`. A reader built from the specification alone handles `0` and
+  `1`, opens a real document, and shows it with no formatting whatever and no
+  error to explain why. Only a file written by the real producer says which of
+  the legal spellings is the one that happens.
+- **A read-only format needs a way out or it is a museum piece.** Reading a
+  `.doc` is worth nothing if the words cannot be got into a file that can be
+  written. That made authoring a package from nothing a prerequisite rather
+  than a nicety — and it turned out to be what a *new document* had needed all
+  along, which had been failing with an apology since C22.
+- **One code path for writing, even when there is no file.** The authored
+  package holds an empty body, and the paragraphs are put in by the same splice
+  writer that edits a document Word wrote. A separate "write it all out" path
+  for new documents would be a second writer, tested half as much, diverging
+  quietly.
+- **A test that measures with arithmetic still cannot see what needs metrics.**
+  §10 recorded this; phase 4 did not fix it. It is the one open item from
+  Scriva that a test suite of 1341 cannot close.

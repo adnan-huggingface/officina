@@ -18,6 +18,7 @@
 //! controls, equations and every vendor extension ride through an edit three
 //! paragraphs away.
 
+pub mod blank;
 mod drawing;
 mod emit;
 mod splice;
