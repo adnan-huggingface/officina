@@ -59,6 +59,7 @@ cargo xtask <command>
   install    dist, then copy binaries to ~/.local/bin
   associate  make the desktop open .docx and .xlsx with these
   fidelity   run the round-trip fidelity harness over corpus/
+             (--report also writes FIDELITY.md)
   perf       time reading and laying out every file in corpus/
   help       this message"
     );
@@ -161,13 +162,19 @@ fn perf(args: &[String]) -> Result<(), String> {
 }
 
 fn fidelity(args: &[String]) -> Result<(), String> {
-    let corpus = match args.first() {
+    let corpus = match args.first().filter(|a| !a.starts_with("--")) {
         Some(p) => PathBuf::from(p),
         None => workspace_root().join("corpus"),
     };
 
     println!("fidelity: no-op round trip over {}", corpus.display());
     let report = fidelity::run(&corpus)?;
+    if args.iter().any(|a| a == "--report") {
+        let path = workspace_root().join("FIDELITY.md");
+        std::fs::write(&path, fidelity::markdown(&report, &corpus))
+            .map_err(|e| format!("write {}: {e}", path.display()))?;
+        println!("wrote {}", path.display());
+    }
     if fidelity::print(&report) {
         Ok(())
     } else if report.total() == 0 {

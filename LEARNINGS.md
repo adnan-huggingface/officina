@@ -377,3 +377,35 @@ Written after building Scriva through C22, so the next phase inherits it.
 - **A test that measures with arithmetic still cannot see what needs metrics.**
   §10 recorded this; phase 4 did not fix it. It is the one open item from
   Scriva that a test suite of 1341 cannot close.
+
+## 12. What phase 5 added to the list
+
+- **The known slow thing was slower than the note about it said.** C6 recorded
+  "`dependents_of` is a linear scan, so building the order is quadratic". True,
+  and it undersold it: the *sort* inside the topological loop was n² log n, and
+  the cycle check was a linear search of a growing vector. A performance note
+  written while building something is a hypothesis. Measure before believing it,
+  and measure again after fixing what it named.
+- **Tests get slow the same way products do.** One test rebuilt a dependency
+  graph inside a doubly-nested loop and cost 117 seconds of every single run —
+  more than the entire rest of the suite. Nobody noticed because a slow test
+  suite is a background ache rather than a bug. `cargo test` printing "has been
+  running for over 60 seconds" is the only reason it was found.
+- **An index whose buckets are too big is the scan again, wearing a costume.**
+  The first version bucketed at 256 cells square, which put every formula in a
+  dense column into one bucket and made the lookup a scan of 256 candidates.
+  Dropping to 64 and storing the *area* beside the node — so a candidate costs a
+  containment test rather than a map lookup — was 16× on top of the first fix.
+- **Do a thing twice only when the second time can differ.** Scriva laid every
+  document out twice, because `{ PAGE }` cannot be resolved until the pages
+  exist. Correct on the first layout, and pure waste on every keystroke after —
+  the page number was already right. Two passes is a fixed point iteration, and
+  a fixed point iteration should stop when it stops changing.
+- **Write the documentation from the source, not from memory.** Every key in the
+  user guide was read out of the menu definitions, and the function count was
+  counted rather than recalled. The number in the first draft was wrong by
+  seventeen.
+- **A report is worth more generated than written.** `FIDELITY.md` is produced by
+  the harness that does the checking, so it cannot drift from what is true. A
+  hand-written claim that "all 27 files round-trip" would have been correct on
+  the day it was written and unfalsifiable afterwards.
