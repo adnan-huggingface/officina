@@ -115,6 +115,19 @@ pub struct Scriva {
     /// The package the document came out of. The writer edits it rather than
     /// building a new one, which is the whole of the preservation guarantee.
     package: Option<ooxml::Package>,
+    /// Where the pictures live inside that package. Located once on opening,
+    /// because resolving a relationship per frame is work per frame.
+    parts: Option<wp_docx::DocumentParts>,
+    /// The picture selected as an object, if any. A drawing and the caret are
+    /// never both selected.
+    picked: Option<crate::drawings::Picked>,
+    /// Which handle of it is being dragged, and from where on the page.
+    dragging: Option<crate::drawings::Grip>,
+    drag_from: Option<(f64, f64)>,
+    /// Whether this drag has already put its undo entry on the stack.
+    dragged: bool,
+    /// The decoded pictures.
+    pictures: crate::pictures::Pictures,
     path: Option<PathBuf>,
     dirty: bool,
     /// Bumped on every change, so the view knows when to lay out again.
@@ -179,6 +192,12 @@ impl Scriva {
             reviewer: false,
             author: crate::revise::Author::new("Scriva user"),
             drafting: None,
+            parts: None,
+            picked: None,
+            dragging: None,
+            drag_from: None,
+            dragged: false,
+            pictures: crate::pictures::Pictures::new(),
             encoding: wp_text::Encoding::Utf8,
             ending: wp_text::LineEnding::Crlf,
             reveal: None,
@@ -376,6 +395,8 @@ impl Scriva {
             _ => wp_text::read_plain(&text),
         };
         self.package = None;
+        self.parts = None;
+        self.pictures.clear();
         self.path = Some(path.to_path_buf());
         self.dirty = false;
         self.history.clear();
@@ -391,7 +412,9 @@ impl Scriva {
         match wp_docx::open(path) {
             Ok((document, package)) => {
                 self.document = document;
+                self.parts = wp_docx::DocumentParts::locate_in(&package).ok();
                 self.package = Some(package);
+                self.pictures.clear();
                 self.path = Some(path.to_path_buf());
                 self.dirty = false;
                 self.history.clear();
@@ -512,6 +535,8 @@ impl Scriva {
     fn close_document(&mut self) {
         self.document = blank();
         self.package = None;
+        self.parts = None;
+        self.pictures.clear();
         self.path = None;
         self.dirty = false;
         self.history.clear();
@@ -951,7 +976,9 @@ impl Scriva {
         let events = ui.input(|i| i.events.clone());
         for event in events {
             match event {
-                egui::Event::Text(text) if !text.is_empty() => {
+                // Typing while a picture is selected replaces it in Word. It
+                // does nothing here rather than doing something surprising.
+                egui::Event::Text(text) if !text.is_empty() && self.picked.is_none() => {
                     self.type_text(&text);
                 }
                 egui::Event::Key {
@@ -967,6 +994,18 @@ impl Scriva {
 
     fn key(&mut self, key: egui::Key, modifiers: egui::Modifiers) {
         use egui::Key;
+        // A selected picture takes the keys that would otherwise edit text:
+        // Delete removes it, Escape lets it go, and typing is not for it.
+        if self.picked.is_some() {
+            match key {
+                Key::Delete | Key::Backspace => {
+                    self.delete_drawing();
+                }
+                Key::Escape => self.picked = None,
+                _ => {}
+            }
+            return;
+        }
         let extend = modifiers.shift;
         let word = modifiers.command;
         let caret = self.caret();
@@ -1291,7 +1330,11 @@ impl DocumentApp for Scriva {
         }
         if let Some(Pending::Lossy(path, format)) = self.pending.clone() {
             let what = match format {
-                Format::Markdown => "Markdown keeps headings, emphasis and lists.                                      Everything else — page setup, tables,                                      comments, tracked changes, pictures — is lost.",
+                Format::Markdown => {
+                    "Markdown keeps headings, emphasis and lists. Everything 
+                                     else — page setup, tables, comments, tracked 
+                                     changes, pictures — is lost."
+                }
                 _ => "Plain text keeps the words and nothing else.",
             };
             let answer = dialog::message(
@@ -1477,6 +1520,14 @@ impl Scriva {
                 let painter = ui.painter_at(rect);
 
                 self.focused = ui.ctx().memory(|m| m.focused().is_none());
+                // Decode before painting: the painter borrows the pages, and the
+                // cache cannot be borrowed mutably at the same time.
+                self.pictures.prepare(
+                    ui.ctx(),
+                    self.package.as_ref(),
+                    self.parts.as_ref(),
+                    view::image_rels(&self.view).into_iter(),
+                );
                 view::paint(
                     &painter,
                     &self.view,
@@ -1486,13 +1537,36 @@ impl Scriva {
                     zoom,
                     origin,
                     self.shaper.as_ref().expect("a shaper by now"),
+                    &self.pictures,
+                    self.picked,
                 );
 
-                if let Some(pointer) = response.interact_pointer_pos() {
-                    if let Some(spot) = self.spot_at(pointer, origin, zoom) {
-                        if let Some(caret) = view::caret_at(&self.view, spot) {
-                            let extend = ui.input(|i| i.modifiers.shift) || self.sweeping;
-                            self.set_caret(caret, extend);
+                // A press decides what the drag is: a picture under the pointer
+                // is dragged as an object, and anything else sweeps a selection.
+                if response.drag_started() || response.clicked() {
+                    let spot = response
+                        .interact_pointer_pos()
+                        .and_then(|pointer| self.spot_at(pointer, origin, zoom));
+                    self.dragging = None;
+                    match spot.and_then(|spot| {
+                        view::drawing_at(&self.view, spot).map(|found| (spot, found))
+                    }) {
+                        Some((spot, (picked, rect))) => {
+                            self.picked = Some(picked);
+                            self.dragging = crate::drawings::grip_at(rect, spot.x, spot.y);
+                            self.drag_from = Some((spot.x, spot.y));
+                            ui.ctx().memory_mut(|m| m.request_focus(response.id));
+                        }
+                        None => self.picked = None,
+                    }
+                }
+                if self.picked.is_none() {
+                    if let Some(pointer) = response.interact_pointer_pos() {
+                        if let Some(spot) = self.spot_at(pointer, origin, zoom) {
+                            if let Some(caret) = view::caret_at(&self.view, spot) {
+                                let extend = ui.input(|i| i.modifiers.shift) || self.sweeping;
+                                self.set_caret(caret, extend);
+                            }
                         }
                     }
                 }
@@ -1500,19 +1574,113 @@ impl Scriva {
                     self.sweeping = false;
                 }
                 if response.dragged() {
-                    self.sweeping = true;
+                    self.sweeping = self.picked.is_none();
+                    // The drag is applied a step at a time, from where the
+                    // pointer was last frame, so the model always says what is
+                    // on the screen and an undo puts back one whole drag.
+                    if let (Some(grip), Some(from), Some(pointer)) = (
+                        self.dragging,
+                        self.drag_from,
+                        response.interact_pointer_pos(),
+                    ) {
+                        if let Some(spot) = self.spot_at(pointer, origin, zoom) {
+                            self.drag_drawing(grip, spot.x - from.0, spot.y - from.1);
+                            self.drag_from = Some((spot.x, spot.y));
+                        }
+                    }
                 }
                 if response.drag_stopped() || response.clicked() {
                     self.sweeping = false;
+                    self.dragging = None;
+                    self.drag_from = None;
+                    self.dragged = false;
                 }
                 // A click anywhere on the desk puts the caret in the document,
                 // which is what makes typing go somewhere.
-                if response.clicked() {
+                if response.clicked() && self.picked.is_none() {
                     ui.ctx().memory_mut(|m| m.request_focus(response.id));
                 }
                 response
             });
         self.scroll = scroll.state.offset.y;
+    }
+
+    /// Moves or resizes the picked drawing by one step of a drag.
+    ///
+    /// The whole drag is one undo entry: the first step records the paragraph as
+    /// it was, and the rest change it further without recording again.
+    fn drag_drawing(&mut self, grip: crate::drawings::Grip, dx: f64, dy: f64) {
+        use crate::drawings::{moved, resized, Grip};
+
+        let Some(picked) = self.picked else {
+            return;
+        };
+        let Some((page, _)) = view::rect_of(&self.view, picked) else {
+            return;
+        };
+        let geometry = match self.view.pages().get(page) {
+            Some(page) => page.geometry,
+            None => return,
+        };
+        // Where the paragraph starts on the page, which is what an offset
+        // relative to the paragraph is measured from.
+        let line_top = view::rect_of(&self.view, picked)
+            .map(|(_, rect)| rect.1)
+            .unwrap_or(geometry.top);
+        let before = match self.document.paragraphs().get(picked.paragraph) {
+            Some(paragraph) => (*paragraph).clone(),
+            None => return,
+        };
+        let mut paragraphs = self.document.paragraphs_mut();
+        let Some(drawing) = paragraphs
+            .get_mut(picked.paragraph)
+            .and_then(|paragraph| paragraph.drawing_mut(picked.nth))
+        else {
+            return;
+        };
+        let changed = match grip {
+            Grip::Body => moved(drawing, &geometry, line_top, dx, dy),
+            grip => resized(drawing, grip, dx, dy),
+        };
+        drop(paragraphs);
+        if !changed {
+            return;
+        }
+        if !self.dragged {
+            self.history.push(crate::edit::Change::Paragraph {
+                index: picked.paragraph,
+                before: Box::new(before),
+            });
+            self.dragged = true;
+        }
+        self.changed();
+    }
+
+    /// Takes the picked drawing out of the document.
+    fn delete_drawing(&mut self) -> bool {
+        let Some(picked) = self.picked else {
+            return false;
+        };
+        let before = match self.document.paragraphs().get(picked.paragraph) {
+            Some(paragraph) => (*paragraph).clone(),
+            None => return false,
+        };
+        let removed = {
+            let mut paragraphs = self.document.paragraphs_mut();
+            paragraphs
+                .get_mut(picked.paragraph)
+                .is_some_and(|paragraph| paragraph.remove_drawing(picked.nth))
+        };
+        if !removed {
+            return false;
+        }
+        self.history.push(crate::edit::Change::Paragraph {
+            index: picked.paragraph,
+            before: Box::new(before),
+        });
+        self.picked = None;
+        self.changed();
+        true
     }
 
     /// Turns a window point into a point on a page.

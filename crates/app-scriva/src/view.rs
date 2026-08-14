@@ -14,6 +14,7 @@ use wp_layout::block::{Placed, Placement};
 use wp_layout::inline::Content;
 use wp_model::Document;
 
+use crate::drawings::{Picked, GRIP};
 use crate::edit::{Caret, Selection};
 use crate::shaper::Egui;
 
@@ -24,6 +25,8 @@ const DESK: egui::Color32 = egui::Color32::from_rgb(0x62, 0x62, 0x66);
 const PAPER: egui::Color32 = egui::Color32::WHITE;
 const EDGE: egui::Color32 = egui::Color32::from_rgb(0xB0, 0xB0, 0xB4);
 const SELECTION: egui::Color32 = egui::Color32::from_rgba_premultiplied(0x2A, 0x5C, 0xAA, 0x50);
+/// The outline and grips of a selected drawing.
+const HANDLE: egui::Color32 = egui::Color32::from_rgb(0x2A, 0x5C, 0xAA);
 
 /// The laid-out document, and how it is being looked at.
 pub struct View {
@@ -285,6 +288,181 @@ fn x_of(line: &wp_layout::inline::Line, offset: usize) -> Option<f64> {
     line.fragments.first().map(|fragment| fragment.x)
 }
 
+/// Every image relationship the view draws, for the decoder to work through.
+///
+/// Both kinds: a drawing anchored on the page, and one sitting inline in a line
+/// of text like an outsized letter.
+pub fn image_rels(view: &View) -> Vec<String> {
+    let mut rels = Vec::new();
+    for page in &view.pages {
+        for placement in page.everything() {
+            match &placement.kind {
+                Placed::Drawing { rel: Some(rel), .. } => rels.push(rel.to_string()),
+                Placed::Line { line, .. } => {
+                    for fragment in &line.fragments {
+                        if let wp_layout::inline::Content::Object { rel: Some(rel), .. } =
+                            &fragment.content
+                        {
+                            rels.push(rel.to_string());
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    rels
+}
+
+/// Draws one picture, or the frame that stands in for a picture that could not
+/// be decoded.
+///
+/// A missing picture draws a frame rather than nothing, because a hole in the
+/// page is a fact the reader should be able to see — silence would look like a
+/// document that never had the picture.
+fn paint_image(
+    painter: &egui::Painter,
+    pictures: &crate::pictures::Pictures,
+    rel: Option<&str>,
+    rect: egui::Rect,
+) {
+    match rel.and_then(|rel| pictures.texture(rel)) {
+        Some(texture) => {
+            painter.image(
+                texture.id(),
+                rect,
+                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                egui::Color32::WHITE,
+            );
+        }
+        None => {
+            painter.rect_stroke(
+                rect,
+                0.0,
+                egui::Stroke::new(1.0, EDGE),
+                egui::StrokeKind::Inside,
+            );
+            painter.line_segment([rect.left_top(), rect.right_bottom()], (1.0, EDGE));
+            painter.line_segment([rect.right_top(), rect.left_bottom()], (1.0, EDGE));
+        }
+    }
+}
+
+/// Every drawing on a page, and the rectangle it was drawn in.
+///
+/// In painting order, so the last one that contains a point is the one on top —
+/// which is the one a click means.
+pub fn drawing_rects(view: &View, page: usize) -> Vec<(Picked, (f64, f64, f64, f64))> {
+    let mut out = Vec::new();
+    let Some(page) = view.pages.get(page) else {
+        return out;
+    };
+    for placement in page.everything() {
+        match &placement.kind {
+            Placed::Drawing {
+                anchor,
+                paragraph,
+                nth,
+                ..
+            } => {
+                let (x, y) = match anchor {
+                    Some(drawing) => {
+                        crate::pictures::anchor_position(drawing, &page.geometry, placement.y)
+                    }
+                    None => (placement.x, placement.y),
+                };
+                out.push((
+                    Picked {
+                        paragraph: *paragraph,
+                        nth: *nth,
+                    },
+                    (x, y, placement.width, placement.height),
+                ));
+            }
+            Placed::Line { line, paragraph } => {
+                for fragment in &line.fragments {
+                    let Content::Object { height, nth, .. } = &fragment.content else {
+                        continue;
+                    };
+                    out.push((
+                        Picked {
+                            paragraph: *paragraph,
+                            nth: *nth,
+                        },
+                        (
+                            placement.x + fragment.x,
+                            placement.y + line.baseline - height,
+                            fragment.width,
+                            *height,
+                        ),
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// The drawing a point is on, and the rectangle it occupies.
+pub fn drawing_at(view: &View, spot: Spot) -> Option<(Picked, (f64, f64, f64, f64))> {
+    drawing_rects(view, spot.page)
+        .into_iter()
+        .rev()
+        .find(|(_, (x, y, w, h))| {
+            spot.x >= *x - GRIP
+                && spot.x <= x + w + GRIP
+                && spot.y >= *y - GRIP
+                && spot.y <= y + h + GRIP
+        })
+}
+
+/// The rectangle a picked drawing was drawn in, wherever it is.
+pub fn rect_of(view: &View, picked: Picked) -> Option<(usize, (f64, f64, f64, f64))> {
+    for page in 0..view.pages.len() {
+        if let Some((_, rect)) = drawing_rects(view, page)
+            .into_iter()
+            .find(|(found, _)| *found == picked)
+        {
+            return Some((page, rect));
+        }
+    }
+    None
+}
+
+/// Draws the selection handles of a picked drawing.
+fn paint_handles(painter: &egui::Painter, at: egui::Pos2, size: egui::Vec2, zoom: f32) {
+    let rect = egui::Rect::from_min_size(at, size);
+    painter.rect_stroke(
+        rect,
+        0.0,
+        egui::Stroke::new(1.0, HANDLE),
+        egui::StrokeKind::Outside,
+    );
+    let half = 3.0;
+    for (x, y) in [
+        (rect.left(), rect.top()),
+        (rect.center().x, rect.top()),
+        (rect.right(), rect.top()),
+        (rect.left(), rect.center().y),
+        (rect.right(), rect.center().y),
+        (rect.left(), rect.bottom()),
+        (rect.center().x, rect.bottom()),
+        (rect.right(), rect.bottom()),
+    ] {
+        let grip =
+            egui::Rect::from_center_size(egui::pos2(x, y), egui::vec2(half * 2.0, half * 2.0));
+        painter.rect_filled(grip, 1.0, egui::Color32::WHITE);
+        painter.rect_stroke(
+            grip,
+            1.0,
+            egui::Stroke::new(1.0, HANDLE),
+            egui::StrokeKind::Outside,
+        );
+    }
+    let _ = zoom;
+}
+
 /// Draws the pages, the selection and the caret.
 ///
 /// `to_screen` maps a point on the stack of pages to a point in the window.
@@ -298,6 +476,8 @@ pub fn paint(
     zoom: f32,
     origin: egui::Pos2,
     shaper: &Egui,
+    pictures: &crate::pictures::Pictures,
+    picked: Option<Picked>,
 ) {
     for (index, page) in view.pages.iter().enumerate() {
         let (page_x, page_y) = view.page_origin(index);
@@ -320,12 +500,34 @@ pub fn paint(
 
         for placement in page.everything() {
             paint_placement(
-                painter, placement, top_left, zoom, shaper, selection, view, index,
+                painter,
+                placement,
+                top_left,
+                zoom,
+                shaper,
+                selection,
+                pictures,
+                &page.geometry,
             );
         }
     }
 
-    if focused {
+    if let Some(picked) = picked {
+        if let Some((page, (x, y, width, height))) = rect_of(view, picked) {
+            let (page_x, page_y) = view.page_origin(page);
+            let top_left = origin + egui::vec2(page_x as f32 * zoom, page_y as f32 * zoom);
+            paint_handles(
+                painter,
+                top_left + egui::vec2(x as f32 * zoom, y as f32 * zoom),
+                egui::vec2(width as f32 * zoom, height as f32 * zoom),
+                zoom,
+            );
+        }
+    }
+
+    // A drawing is selected *or* the caret is, never both: the caret would sit
+    // blinking in text the arrow keys are no longer moving through.
+    if focused && picked.is_none() {
         if let Some(caret) = caret {
             if let Some((page, rect)) = caret_rect(view, caret) {
                 let (page_x, page_y) = view.page_origin(page);
@@ -348,8 +550,8 @@ fn paint_placement(
     zoom: f32,
     shaper: &Egui,
     selection: Selection,
-    _view: &View,
-    _page_index: usize,
+    pictures: &crate::pictures::Pictures,
+    geometry: &wp_model::PageBox,
 ) {
     let at = |x: f64, y: f64| page + egui::vec2(x as f32 * zoom, y as f32 * zoom);
     match &placement.kind {
@@ -381,10 +583,26 @@ fn paint_placement(
         }
         Placed::Line { line, paragraph } => {
             paint_line(
-                painter, placement, line, *paragraph, page, zoom, shaper, selection,
+                painter, placement, line, *paragraph, page, zoom, shaper, selection, pictures,
             );
         }
-        Placed::Drawing { .. } | Placed::FootnoteSeparator => {}
+        Placed::Drawing { rel, anchor, .. } => {
+            // The placement's y is where the paragraph's first line landed,
+            // which is the one thing pagination knows and the anchor needs.
+            let (x, y) = match anchor {
+                Some(drawing) => crate::pictures::anchor_position(drawing, geometry, placement.y),
+                None => (placement.x, placement.y),
+            };
+            let rect = egui::Rect::from_min_size(
+                at(x, y),
+                egui::vec2(
+                    placement.width as f32 * zoom,
+                    placement.height as f32 * zoom,
+                ),
+            );
+            paint_image(painter, pictures, rel.as_deref(), rect);
+        }
+        Placed::FootnoteSeparator => {}
     }
 }
 
@@ -398,6 +616,7 @@ fn paint_line(
     zoom: f32,
     shaper: &Egui,
     selection: Selection,
+    pictures: &crate::pictures::Pictures,
 ) {
     let baseline = placement.y + line.baseline;
     let (start, end) = selection.ordered();
@@ -431,6 +650,16 @@ fn paint_line(
                 );
                 painter.rect_filled(rect, 0.0, SELECTION);
             }
+        }
+        if let Content::Object { height, rel, .. } = &fragment.content {
+            // An inline drawing sits on the baseline like a very large letter.
+            let top = baseline - height;
+            let rect = egui::Rect::from_min_size(
+                page + egui::vec2(x as f32 * zoom, top as f32 * zoom),
+                egui::vec2(fragment.width as f32 * zoom, *height as f32 * zoom),
+            );
+            paint_image(painter, pictures, rel.as_deref(), rect);
+            continue;
         }
         let Content::Text { text, .. } = &fragment.content else {
             continue;

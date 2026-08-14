@@ -7,9 +7,11 @@
 #![forbid(unsafe_code)]
 
 pub mod app;
+pub mod drawings;
 pub mod edit;
 mod icons;
 mod menus;
+pub mod pictures;
 pub mod revise;
 pub mod shaper;
 pub mod text;

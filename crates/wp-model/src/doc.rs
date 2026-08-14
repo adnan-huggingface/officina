@@ -156,6 +156,35 @@ impl Paragraph {
         runs
     }
 
+    /// Every drawing the paragraph holds, in document order.
+    ///
+    /// The position in this list is a drawing's identity for the editor: it is
+    /// what a click on a picture resolves to, and what a move, a resize or a
+    /// delete names. Order, not a generated id, because the file has no id for a
+    /// drawing that survives Word's own round trips.
+    pub fn drawings(&self) -> Vec<&Drawing> {
+        self.runs()
+            .iter()
+            .flat_map(|run| &run.content)
+            .filter_map(|piece| match piece {
+                Piece::Drawing(drawing) => Some(drawing.as_ref()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The same list, to change.
+    pub fn drawing_mut(&mut self, nth: usize) -> Option<&mut Drawing> {
+        let mut seen = 0;
+        drawing_mut(&mut self.content, nth, &mut seen)
+    }
+
+    /// Takes a drawing out of the paragraph. `true` if there was one.
+    pub fn remove_drawing(&mut self, nth: usize) -> bool {
+        let mut seen = 0;
+        remove_drawing(&mut self.content, nth, &mut seen)
+    }
+
     /// Where a page ended the last time Word laid this document out.
     ///
     /// Word writes `<w:lastRenderedPageBreak>` into the runs when it saves, and
@@ -170,6 +199,76 @@ impl Paragraph {
             .filter(|piece| matches!(piece, Piece::LastRenderedPageBreak))
             .count()
     }
+}
+
+/// The `nth` drawing of a tree of inlines, to change.
+///
+/// Written as a walk rather than as `runs_mut`, because handing out every run
+/// mutably at once is a borrow the tree cannot give.
+fn drawing_mut<'a>(
+    content: &'a mut [Inline],
+    nth: usize,
+    seen: &mut usize,
+) -> Option<&'a mut Drawing> {
+    for inline in content {
+        let nested: &mut Vec<Inline> = match inline {
+            Inline::Run(run) => {
+                for piece in &mut run.content {
+                    if let Piece::Drawing(drawing) = piece {
+                        if *seen == nth {
+                            return Some(drawing);
+                        }
+                        *seen += 1;
+                    }
+                }
+                continue;
+            }
+            Inline::Hyperlink(link) => &mut link.content,
+            Inline::Revised { content, .. } => content,
+            Inline::Structured(sdt) => &mut sdt.content,
+            Inline::Wrapper { content, .. } => content,
+            Inline::SimpleField { content, .. } => content,
+            Inline::Anchor(_) | Inline::Math(_) => continue,
+        };
+        if let Some(found) = drawing_mut(nested, nth, seen) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn remove_drawing(content: &mut [Inline], nth: usize, seen: &mut usize) -> bool {
+    for inline in content {
+        let nested: &mut Vec<Inline> = match inline {
+            Inline::Run(run) => {
+                let mut at = None;
+                for (index, piece) in run.content.iter().enumerate() {
+                    if matches!(piece, Piece::Drawing(_)) {
+                        if *seen == nth {
+                            at = Some(index);
+                            break;
+                        }
+                        *seen += 1;
+                    }
+                }
+                if let Some(index) = at {
+                    run.content.remove(index);
+                    return true;
+                }
+                continue;
+            }
+            Inline::Hyperlink(link) => &mut link.content,
+            Inline::Revised { content, .. } => content,
+            Inline::Structured(sdt) => &mut sdt.content,
+            Inline::Wrapper { content, .. } => content,
+            Inline::SimpleField { content, .. } => content,
+            Inline::Anchor(_) | Inline::Math(_) => continue,
+        };
+        if remove_drawing(nested, nth, seen) {
+            return true;
+        }
+    }
+    false
 }
 
 fn collect_runs<'a>(content: &'a [Inline], into: &mut Vec<&'a Run>) {

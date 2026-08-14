@@ -62,8 +62,15 @@ pub enum Content {
     },
     /// A tab's whitespace, and the leader drawn across it.
     Tab { leader: TabLeader },
-    /// An inline drawing.
-    Object { height: f64 },
+    /// An inline drawing, and the relationship naming the part that holds its
+    /// bytes. Without the relationship the painter has a rectangle of the right
+    /// size and nothing to put in it.
+    Object {
+        height: f64,
+        rel: Option<std::sync::Arc<str>>,
+        /// Which of the paragraph's drawings this is.
+        nth: usize,
+    },
     /// The bullet or number of a list paragraph.
     Label,
 }
@@ -192,6 +199,8 @@ enum UnitKind {
     Break(Break),
     Object {
         height: f64,
+        rel: Option<std::sync::Arc<str>>,
+        nth: usize,
     },
     Label,
 }
@@ -340,6 +349,7 @@ fn units(
         }
         push_run(run, run_index, layers, ctx, shaper, &mut fields, &mut out);
     }
+    number_drawings(paragraph, &mut out);
     out
 }
 
@@ -455,6 +465,26 @@ fn deleted_runs(paragraph: &Paragraph) -> Vec<usize> {
     out
 }
 
+/// Tells each inline drawing which of the paragraph's drawings it is.
+///
+/// An anchored drawing is not laid out inline but is still counted, so that the
+/// number means the same thing here as it does to `Paragraph::drawing_mut`.
+fn number_drawings(paragraph: &Paragraph, out: &mut [Unit]) {
+    let inline: Vec<usize> = paragraph
+        .drawings()
+        .iter()
+        .enumerate()
+        .filter(|(_, drawing)| !drawing.anchored)
+        .map(|(index, _)| index)
+        .collect();
+    let mut next = inline.iter();
+    for unit in out.iter_mut() {
+        if let UnitKind::Object { nth, .. } = &mut unit.kind {
+            *nth = next.next().copied().unwrap_or(0);
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn push_run(
     run: &Run,
@@ -558,6 +588,10 @@ fn push_run(
                     field: None,
                     kind: UnitKind::Object {
                         height: drawing.extent.1.points(),
+                        rel: drawing.rel.clone(),
+                        // Filled in once the whole paragraph is walked: a unit
+                        // does not know how many drawings came before it.
+                        nth: 0,
                     },
                     width: drawing.extent.0.points(),
                     trailing: 0.0,
@@ -809,7 +843,11 @@ fn fragment_of(unit: &Unit, x: f64) -> Fragment {
             hyphen: *hyphen,
         },
         UnitKind::Tab { leader } => Content::Tab { leader: *leader },
-        UnitKind::Object { height } => Content::Object { height: *height },
+        UnitKind::Object { height, rel, nth } => Content::Object {
+            height: *height,
+            rel: rel.clone(),
+            nth: *nth,
+        },
         UnitKind::Label => Content::Label,
         UnitKind::Break(_) => Content::Text {
             text: String::new(),
@@ -984,7 +1022,7 @@ fn fragment_metrics(fragment: &Fragment, shaper: &mut dyn Shaper) -> Metrics {
     match &fragment.content {
         // An inline object's height is all above the baseline, which is what
         // makes a line holding a picture as tall as the picture.
-        Content::Object { height } => Metrics {
+        Content::Object { height, .. } => Metrics {
             ascent: *height,
             descent: 0.0,
             line_gap: 0.0,

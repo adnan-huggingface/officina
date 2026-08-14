@@ -172,3 +172,38 @@ fn the_bytes_around_an_edited_paragraph_are_the_producers_own() {
         );
     }
 }
+
+#[test]
+fn a_resized_picture_survives_being_saved_and_read_back() {
+    // The whole point of splicing the drawing's own bytes. Before this, a
+    // paragraph holding a picture could not be rewritten at all, so a resize was
+    // shown on screen and thrown away on save — the document looked right until
+    // it was reopened.
+    let path = corpus().join("floating-image-wrap.docx");
+    let (mut document, mut package) = wp_docx::open(&path).expect("the document opens");
+    let before = {
+        let mut paragraphs = document.paragraphs_mut();
+        let index = (0..paragraphs.len())
+            .find(|index| !paragraphs[*index].drawings().is_empty())
+            .expect("a paragraph with a picture");
+        let drawing = paragraphs[index].drawing_mut(0).expect("its first drawing");
+        let was = drawing.extent;
+        drawing.extent = (wp_model::Emu(was.0 .0 * 2), wp_model::Emu(was.1 .0 * 2));
+        was
+    };
+
+    let temporary = std::env::temp_dir().join("scriva-resize-round-trip.docx");
+    wp_docx::write::save(&document, &mut package, &temporary).expect("it writes");
+    let (read, _) = wp_docx::open(&temporary).expect("it reads back");
+    let _ = std::fs::remove_file(&temporary);
+
+    let drawing = read
+        .paragraphs()
+        .iter()
+        .flat_map(|paragraph| paragraph.drawings())
+        .next()
+        .expect("the picture is still there");
+    assert_eq!(drawing.extent.0 .0, before.0 .0 * 2, "twice as wide");
+    assert_eq!(drawing.extent.1 .0, before.1 .0 * 2, "and twice as tall");
+    assert!(drawing.rel.is_some(), "and still names its bytes");
+}

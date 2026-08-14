@@ -734,10 +734,17 @@ fn piece(out: &mut String, piece: &Piece) {
         // worse than none: it would tell C19's oracle where the pages used to
         // end rather than where they do.
         Piece::LastRenderedPageBreak => {}
-        // A drawing or an embedded object is never emitted from the model —
-        // a paragraph holding one is not treated as changed, so its original
-        // bytes are copied. See `write::document_out`.
-        Piece::Drawing(_) | Piece::Embedded { .. } => {}
+        // A drawing and an embedded object are put back as the bytes they were
+        // read as, so that editing the paragraph around a picture does not
+        // destroy the picture. The drawing's size and position are the two
+        // things the editor can change, and those are spliced into those bytes
+        // rather than re-authored — see `write::drawing`.
+        Piece::Drawing(drawing) => {
+            out.push_str(&String::from_utf8_lossy(&super::drawing::patch(drawing)));
+        }
+        Piece::Embedded { source, .. } => {
+            out.push_str(&String::from_utf8_lossy(source));
+        }
     }
 }
 

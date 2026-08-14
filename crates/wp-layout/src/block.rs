@@ -59,7 +59,17 @@ pub enum Placed {
     /// One edge of a border.
     Edge { border: Border, side: Side },
     /// A drawing, by the relationship naming the part that holds its bytes.
-    Drawing { rel: Option<Arc<str>> },
+    ///
+    /// `anchor` is the drawing itself, for a renderer that has to work out where
+    /// an anchored one sits — see [`anchor_position`].
+    Drawing {
+        rel: Option<Arc<str>>,
+        anchor: Option<Box<wp_model::Drawing>>,
+        /// Which paragraph holds it, and which of that paragraph's drawings it
+        /// is — the pair that turns a click on a picture into an edit.
+        paragraph: usize,
+        nth: usize,
+    },
     /// The rule Word draws above the footnote area.
     FootnoteSeparator,
 }
@@ -470,6 +480,25 @@ fn push_paragraph(
     let before = laid.space_before;
     let after = laid.space_after;
 
+    // An anchored drawing is placed on the page rather than in the line, so it
+    // rides with the paragraph's first item and is positioned from there.
+    let floats: Vec<Placement> = anchored(paragraph)
+        .into_iter()
+        .map(|(nth, drawing)| Placement {
+            x: 0.0,
+            y: 0.0,
+            width: drawing.extent.0.points(),
+            height: drawing.extent.1.points(),
+            kind: Placed::Drawing {
+                rel: drawing.rel.clone(),
+                anchor: Some(Box::new(drawing.clone())),
+                paragraph: paragraph_index,
+                nth,
+            },
+        })
+        .collect();
+    let mut floats = Some(floats);
+
     for (index, line) in laid.lines.into_iter().enumerate() {
         let is_first = index == 0;
         let is_last = index + 1 == count;
@@ -484,7 +513,8 @@ fn push_paragraph(
         }
         let ends_page = line.ended_by == Some(Break::Page);
         let x = left + line.x;
-        let parts = vec![Placement {
+        let mut parts = floats.take().unwrap_or_default();
+        parts.push(Placement {
             x,
             y: top,
             width: line.width,
@@ -493,7 +523,7 @@ fn push_paragraph(
                 line: Box::new(line),
                 paragraph: paragraph_index,
             },
-        }];
+        });
         into.items.push(Item {
             height,
             parts,
@@ -864,6 +894,113 @@ fn pull_back(items: &[Item], start: usize, mut end: usize) -> usize {
         }
     }
     end.max(floor)
+}
+
+/// Where an anchored drawing sits on the page, in points.
+///
+/// An inline drawing is placed by the line it is in and never reaches here. An
+/// anchored one states its own position, relative to one of eleven things, and
+/// this resolves the ones a page can answer without knowing which side of a
+/// spread it is on.
+///
+/// **Stated limit.** `inside` and `outside` are resolved as left and right: they
+/// mean "toward the binding", which is only decided once mirrored margins are
+/// implemented.
+pub fn anchor_position(drawing: &wp_model::Drawing, page: &PageBox, line_top: f64) -> (f64, f64) {
+    use wp_model::doc::{Alignment, RelativeTo};
+
+    let Some(position) = &drawing.position else {
+        return (page.start, line_top);
+    };
+    let width = drawing.extent.0.points();
+    let height = drawing.extent.1.points();
+
+    let x = match (position.horizontal.align, position.horizontal.offset) {
+        (Some(align), _) => {
+            let (left, right) = match position.horizontal.relative_to {
+                RelativeTo::Page => (0.0, page.width),
+                _ => (page.start, page.width - page.end),
+            };
+            match align {
+                Alignment::Center => (left + right) / 2.0 - width / 2.0,
+                Alignment::Right | Alignment::Outside => right - width,
+                _ => left,
+            }
+        }
+        (None, Some(offset)) => {
+            let base = match position.horizontal.relative_to {
+                RelativeTo::Page => 0.0,
+                RelativeTo::RightMargin => page.width - page.end,
+                _ => page.start,
+            };
+            base + offset.points()
+        }
+        (None, None) => page.start,
+    };
+
+    let y = match (position.vertical.align, position.vertical.offset) {
+        (Some(align), _) => {
+            let (top, bottom) = match position.vertical.relative_to {
+                RelativeTo::Page => (0.0, page.height),
+                _ => (page.top, page.height - page.bottom),
+            };
+            match align {
+                Alignment::Center => (top + bottom) / 2.0 - height / 2.0,
+                Alignment::Bottom => bottom - height,
+                _ => top,
+            }
+        }
+        (None, Some(offset)) => {
+            let base = match position.vertical.relative_to {
+                RelativeTo::Page => 0.0,
+                RelativeTo::Margin | RelativeTo::TopMargin => page.top,
+                RelativeTo::BottomMargin => page.height - page.bottom,
+                // Relative to the paragraph or the line: from where the text is.
+                // This is what makes a picture travel with the paragraph it
+                // belongs to rather than staying where it was written.
+                _ => line_top,
+            };
+            base + offset.points()
+        }
+        (None, None) => line_top,
+    };
+
+    (x, y)
+}
+
+/// The origin each axis of an anchored drawing measures from.
+///
+/// Subtracting this from a position gives the offset that would put a drawing
+/// there, which is what dragging one needs: the user moves it on the page, and
+/// the file has to say the same thing in the drawing's own frame of reference.
+pub fn anchor_base(drawing: &wp_model::Drawing, page: &PageBox, line_top: f64) -> (f64, f64) {
+    use wp_model::doc::RelativeTo;
+
+    let Some(position) = &drawing.position else {
+        return (page.start, line_top);
+    };
+    let x = match position.horizontal.relative_to {
+        RelativeTo::Page => 0.0,
+        RelativeTo::RightMargin => page.width - page.end,
+        _ => page.start,
+    };
+    let y = match position.vertical.relative_to {
+        RelativeTo::Page => 0.0,
+        RelativeTo::Margin | RelativeTo::TopMargin => page.top,
+        RelativeTo::BottomMargin => page.height - page.bottom,
+        _ => line_top,
+    };
+    (x, y)
+}
+
+/// Every anchored drawing of a paragraph.
+pub fn anchored(paragraph: &Paragraph) -> Vec<(usize, &wp_model::Drawing)> {
+    paragraph
+        .drawings()
+        .into_iter()
+        .enumerate()
+        .filter(|(_, drawing)| drawing.anchored)
+        .collect()
 }
 
 /// The vertical alignment of a cell's content, for a renderer that places it.
@@ -1412,6 +1549,93 @@ mod tests {
             &Default::default(),
         );
         assert!(values.is_empty());
+    }
+
+    #[test]
+    fn an_anchored_drawing_is_placed_on_the_page_rather_than_in_a_line() {
+        let drawing = wp_model::Drawing {
+            source: Vec::new().into(),
+            anchored: true,
+            extent: (
+                wp_model::Emu::from_points(100.0),
+                wp_model::Emu::from_points(50.0),
+            ),
+            rel: Some("rId7".into()),
+            name: None,
+            description: None,
+            wrap: wp_model::Wrap::Square,
+            distance: Default::default(),
+            position: None,
+            behind_text: false,
+        };
+        let paragraph = Paragraph {
+            content: vec![Inline::Run(Run {
+                content: vec![
+                    Piece::Text("text".into()),
+                    Piece::Drawing(Box::new(drawing)),
+                ],
+                ..Run::new()
+            })],
+            ..Paragraph::new()
+        };
+        let mut document = document(vec![Block::Paragraph(paragraph)]);
+        document.section = page_of(20);
+        let page = &pages(&document)[0];
+        let drawn = page
+            .content
+            .iter()
+            .find(|p| matches!(p.kind, Placed::Drawing { .. }))
+            .expect("the drawing was placed");
+        assert_eq!(drawn.width, 100.0);
+        assert_eq!(drawn.height, 50.0);
+        // And the text is still a line of its own, with the picture not in it.
+        let line = page
+            .content
+            .iter()
+            .find(|p| matches!(p.kind, Placed::Line { .. }))
+            .expect("a line");
+        assert!(line.width < 100.0);
+    }
+
+    #[test]
+    fn a_centred_anchor_is_centred_on_the_text_column() {
+        let geometry = PageBox {
+            width: 612.0,
+            height: 792.0,
+            top: 72.0,
+            bottom: 72.0,
+            start: 72.0,
+            end: 72.0,
+        };
+        let drawing = wp_model::Drawing {
+            source: Vec::new().into(),
+            anchored: true,
+            extent: (
+                wp_model::Emu::from_points(100.0),
+                wp_model::Emu::from_points(50.0),
+            ),
+            rel: None,
+            name: None,
+            description: None,
+            wrap: wp_model::Wrap::Square,
+            distance: Default::default(),
+            position: Some(Box::new(wp_model::doc::DrawingPosition {
+                horizontal: wp_model::doc::Offset {
+                    relative_to: wp_model::doc::RelativeTo::Margin,
+                    offset: None,
+                    align: Some(wp_model::doc::Alignment::Center),
+                },
+                vertical: wp_model::doc::Offset {
+                    relative_to: wp_model::doc::RelativeTo::Paragraph,
+                    offset: Some(wp_model::Emu::from_points(10.0)),
+                    align: None,
+                },
+            })),
+            behind_text: false,
+        };
+        // The column is 72..540, so its middle is 306 and a 100pt picture
+        // starts at 256; the vertical offset is from where the text is.
+        assert_eq!(anchor_position(&drawing, &geometry, 400.0), (256.0, 410.0));
     }
 
     #[test]
