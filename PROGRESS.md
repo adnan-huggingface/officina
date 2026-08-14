@@ -34,7 +34,14 @@ Excel, and the twelve tasks that closed what the audit found)
   empties a document, so New and Close cannot drift apart. It clears the open
   dialogs too: a Format Cells over a selection that no longer exists is a box
   whose buttons can only do harm.
-- Workspace total is **901 tests**, all green; `cargo clippy --workspace
+- **Every dialog is drawn by `ui_kit::dialog`** — frame, gutter, heading face,
+  buttons, action row, message box. Finding 33, and the reason it is worth
+  knowing: the app theme draws buttons flat and borderless on purpose, which is
+  right for the toolbar and makes any dialog built from plain `ui.button` look
+  unfinished. Use `dialog::confirm` / `dialog::row` / `dialog::button` for a
+  form and `dialog::message` for a box; do not reach for `ui.button` inside a
+  modal.
+- Workspace total is **904 tests**, all green; `cargo clippy --workspace
   --all-targets -- -D warnings` and `cargo fmt --all --check` are both clean;
   `cargo xtask fidelity` is check 1, 27 of 27 and check 2, 12 of 12.
 - The release binary at `target/release/calx.exe` is current with this state.

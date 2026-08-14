@@ -6,6 +6,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod dialog;
 pub mod fonts;
 pub mod paths;
 pub mod recent;

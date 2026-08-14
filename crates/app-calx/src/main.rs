@@ -13,7 +13,7 @@ use ss_formula::cond;
 use ss_formula::edit::{self, Change, Geometry, Patch};
 use ss_model::style::{BorderStyle, Pattern, Underline, VAlign};
 use ss_model::{Axis, CellRange, CellRef, Color, Fill, HAlign, Shift, Workbook};
-use ui_kit::{egui, paths, AppId, DocumentApp, Recent, CALX};
+use ui_kit::{dialog, egui, paths, AppId, DocumentApp, Recent, CALX};
 
 use calx::grid::{self, Action, BorderPreset, Editor, Format, GridView, Mode};
 use calx::icons::{self, Icon};
@@ -69,7 +69,10 @@ fn locked_by(path: &Path) -> Option<String> {
 }
 
 /// What to say when a save was refused, in a sentence that names the way out.
-fn save_trouble(path: &Path, error: &dyn std::fmt::Display) -> String {
+///
+/// The error itself is not in here: it goes in the box's `detail`, small and
+/// grey, where an error code belongs.
+fn save_trouble(path: &Path) -> String {
     let name = name_of(path);
     if let Some(holder) = locked_by(path) {
         return format!(
@@ -78,9 +81,7 @@ fn save_trouble(path: &Path, error: &dyn std::fmt::Display) -> String {
              Windows will not let one program write over a file another one is \
              holding open. Close it there and press Ctrl+S again — nothing has \
              been lost, the changes are still here — or use Save As to write a \
-             different file.\n\
-             \n\
-             {error}"
+             different file."
         );
     }
     if path.exists() && std::fs::metadata(path).is_ok_and(|m| m.permissions().readonly()) {
@@ -88,16 +89,12 @@ fn save_trouble(path: &Path, error: &dyn std::fmt::Display) -> String {
             "{name} was not saved: the file is marked read-only.\n\
              \n\
              Clear the read-only tick in its Windows properties, or use Save As \
-             to write a different file. The changes are still here either way.\n\
-             \n\
-             {error}"
+             to write a different file. The changes are still here either way."
         );
     }
     format!(
         "{name} was not saved. The changes are still here — try Save As to write \
-         a different file.\n\
-         \n\
-         {error}"
+         a different file."
     )
 }
 
@@ -245,7 +242,15 @@ enum Dialog {
     /// answer to "that file is locked" is usually "then write a different one".
     Trouble {
         title: &'static str,
+        /// What the icon says before the words are read. A file held open by
+        /// Excel is news, not a failure, and drawing it with the same red cross
+        /// as a workbook that would not open teaches the user to ignore both.
+        severity: dialog::Severity,
         message: String,
+        /// The machine's own words — an error code, a parser's complaint.
+        /// Kept apart from the message because it is the one line in the box
+        /// nobody asked for and nobody can act on.
+        detail: String,
         offer_save_as: bool,
     },
     /// Excel's Find and Replace, which are one window with a row hidden.
@@ -411,6 +416,10 @@ impl Calx {
                 if let Some(holder) = locked_by(path) {
                     self.dialog = Some(Dialog::Trouble {
                         title: "Open in another program",
+                        // A warning rather than a notice: it is about a save
+                        // that will be refused later, and later is when it
+                        // costs something.
+                        severity: dialog::Severity::Warning,
                         message: format!(
                             "{} is open in {holder}.\n\
                              \n\
@@ -420,6 +429,7 @@ impl Calx {
                              Save As will write a copy at any time.",
                             name_of(path)
                         ),
+                        detail: String::new(),
                         offer_save_as: false,
                     });
                 }
@@ -428,7 +438,9 @@ impl Calx {
                 self.status = format!("could not open {}: {e}", path.display());
                 self.dialog = Some(Dialog::Trouble {
                     title: "Not opened",
-                    message: format!("{} could not be opened.\n\n{e}", name_of(path)),
+                    severity: dialog::Severity::Error,
+                    message: format!("{} could not be opened.", name_of(path)),
+                    detail: e.to_string(),
                     offer_save_as: false,
                 });
             }
@@ -574,7 +586,9 @@ impl Calx {
                 self.status = format!("could not save {}: {e}", path.display());
                 self.dialog = Some(Dialog::Trouble {
                     title: "Not saved",
-                    message: save_trouble(path, &e),
+                    severity: dialog::Severity::Error,
+                    message: save_trouble(path),
+                    detail: e.to_string(),
                     offer_save_as: true,
                 });
                 return;
@@ -611,7 +625,9 @@ impl Calx {
                 self.status = format!("could not save {}: {e}", path.display());
                 self.dialog = Some(Dialog::Trouble {
                     title: "Not saved",
-                    message: save_trouble(path, &e),
+                    severity: dialog::Severity::Error,
+                    message: save_trouble(path),
+                    detail: e.to_string(),
                     offer_save_as: true,
                 });
             }
@@ -1038,7 +1054,9 @@ impl Calx {
                 self.status = format!("could not save {}: {e}", path.display());
                 self.dialog = Some(Dialog::Trouble {
                     title: "Not saved",
-                    message: save_trouble(path, &e),
+                    severity: dialog::Severity::Error,
+                    message: save_trouble(path),
+                    detail: e.to_string(),
                     offer_save_as: true,
                 });
             }
@@ -1475,26 +1493,33 @@ impl Calx {
         let Some(pending) = self.pending.clone() else {
             return;
         };
-        let mut choice = None;
-        egui::Modal::new(egui::Id::new("calx-unsaved")).show(ctx, |ui| {
-            ui.heading("Unsaved changes");
-            ui.label(match &self.path {
-                Some(path) => format!("{} has changes that are not saved.", name_of(path)),
-                None => "This workbook has never been saved.".to_string(),
-            });
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                if ui.button("Save").clicked() {
-                    choice = Some(Choice::Save);
-                }
-                if ui.button("Discard").clicked() {
-                    choice = Some(Choice::Discard);
-                }
-                if ui.button("Cancel").clicked() {
-                    choice = Some(Choice::Cancel);
-                }
-            });
-        });
+        // Named in the question rather than in the body: "Unsaved changes" over
+        // "this workbook has changes" says the same thing twice and neither
+        // time says which workbook. Office asks about the file by name, and the
+        // buttons answer the question as asked.
+        let heading = match &self.path {
+            Some(path) => format!("Save changes to {}?", name_of(path)),
+            None => "Save changes to this workbook?".to_string(),
+        };
+        let answer = dialog::message(
+            ctx,
+            "unsaved",
+            dialog::Severity::Warning,
+            &heading,
+            "Your changes will be lost if you don't save them.",
+            None,
+            &[
+                dialog::Choice::new("Save").primary(),
+                dialog::Choice::new("Don't Save"),
+                dialog::Choice::new("Cancel").escapes(),
+            ],
+        );
+        let choice = match answer {
+            Some(0) => Some(Choice::Save),
+            Some(1) => Some(Choice::Discard),
+            Some(_) => Some(Choice::Cancel),
+            None => None,
+        };
 
         match choice {
             Some(Choice::Save) => {
@@ -4104,10 +4129,11 @@ impl Calx {
                     {
                         ui.colored_label(egui::Color32::from_rgb(0xB0, 0x30, 0x20), why);
                     }
-                    ui.horizontal(|ui| {
-                        accept |= ui.button("Rename").clicked();
-                        keep &= !ui.button("Cancel").clicked();
-                    });
+                    match dialog::confirm(ui, "Rename") {
+                        Some(true) => accept = true,
+                        Some(false) => keep = false,
+                        None => {}
+                    }
                 });
                 if accept {
                     let name = text.clone();
@@ -4129,10 +4155,11 @@ impl Calx {
                     ui.add_space(2.0);
                     ui.weak("A cell, a range, or a defined name — B12, A1:D9, Sales.");
                     ui.add_space(4.0);
-                    ui.horizontal(|ui| {
-                        accept |= ui.button("Go").clicked();
-                        keep &= !ui.button("Cancel").clicked();
-                    });
+                    match dialog::confirm(ui, "Go") {
+                        Some(true) => accept = true,
+                        Some(false) => keep = false,
+                        None => {}
+                    }
                 });
                 if accept {
                     let target = text.clone();
@@ -4283,16 +4310,16 @@ impl Calx {
                                 .desired_width(172.0),
                         );
                     });
-                    ui.add_space(6.0);
-                    ui.horizontal(|ui| {
-                        accept = ui.button("OK").clicked();
+                    // Right to left, which is the order `dialog::row` lays a
+                    // group out in: Cancel ends up on the right.
+                    dialog::row(ui, |ui| {
+                        keep &= !dialog::button(ui, "Cancel", false).clicked();
                         ui.add_enabled_ui(existing.is_some(), |ui| {
-                            remove = ui
-                                .button("Remove")
+                            remove = dialog::button(ui, "Remove", false)
                                 .on_hover_text("Delete this rule from every cell it covers")
                                 .clicked();
                         });
-                        keep &= !ui.button("Cancel").clicked();
+                        accept = dialog::button(ui, "OK", true).clicked();
                     });
                 });
                 let sheet = self.grid.sheet_index;
@@ -4467,11 +4494,13 @@ impl Calx {
                             ui.color_edit_button_srgb(fill_color);
                         });
                     }
-                    ui.horizontal(|ui| {
-                        add = ui.button("Add rule").clicked();
+                    dialog::row(ui, |ui| {
+                        keep &= !dialog::button(ui, "Cancel", false).clicked();
+                        accept = dialog::button(ui, "OK", true).clicked();
+                        // Set apart from the two answers: it adds a rule to the
+                        // list rather than answering the dialog.
                         ui.add_space(12.0);
-                        accept = ui.button("OK").clicked();
-                        keep &= !ui.button("Cancel").clicked();
+                        add = dialog::button(ui, "Add rule", false).clicked();
                     });
                 });
                 if add && !selection.is_empty() {
@@ -4602,10 +4631,11 @@ impl Calx {
                             }
                         });
                     ui.checkbox(copy, "Create a copy");
-                    ui.horizontal(|ui| {
-                        go = ui.button("OK").clicked();
-                        keep &= !ui.button("Cancel").clicked();
-                    });
+                    match dialog::confirm(ui, "OK") {
+                        Some(true) => go = true,
+                        Some(false) => keep = false,
+                        None => {}
+                    }
                 });
                 if go {
                     let (before, copy) = (*before, *copy);
@@ -4650,10 +4680,11 @@ impl Calx {
                             format!("A number from 0 to {ceiling}. Zero hides."),
                         );
                     }
-                    ui.horizontal(|ui| {
-                        accept |= ui.button("OK").clicked();
-                        keep &= !ui.button("Cancel").clicked();
-                    });
+                    match dialog::confirm(ui, "OK") {
+                        Some(true) => accept = true,
+                        Some(false) => keep = false,
+                        None => {}
+                    }
                 });
                 if accept {
                     match parse_size(text, axis) {
@@ -4797,9 +4828,11 @@ impl Calx {
                             );
                         }
                     }
-                    ui.horizontal(|ui| {
-                        if ui
-                            .button("New")
+                    dialog::row(ui, |ui| {
+                        keep &= !dialog::button(ui, "Cancel", false).clicked();
+                        save = dialog::button(ui, "Save", true).clicked();
+                        ui.add_space(12.0);
+                        if dialog::button(ui, "New", false)
                             .on_hover_text(format!("Refers to {selection}"))
                             .clicked()
                         {
@@ -4810,8 +4843,6 @@ impl Calx {
                             });
                             *editing = Some(names.len() - 1);
                         }
-                        save = ui.button("Save").clicked();
-                        keep &= !ui.button("Cancel").clicked();
                     });
                 });
                 if let Some(index) = remove {
@@ -4855,11 +4886,11 @@ impl Calx {
                             FormatTab::Fill => fill_tab(ui, &theme, look),
                             FormatTab::Protection => protection_tab(ui, look),
                         });
-                    ui.separator();
-                    ui.horizontal(|ui| {
-                        apply = ui.button("OK").clicked();
-                        keep &= !ui.button("Cancel").clicked();
-                    });
+                    match dialog::confirm(ui, "OK") {
+                        Some(true) => apply = true,
+                        Some(false) => keep = false,
+                        None => {}
+                    }
                 });
                 if apply {
                     let look = look.clone();
@@ -4887,11 +4918,11 @@ impl Calx {
                     ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
                         ui.small("An empty note is no note: clearing the text removes it.");
                     });
-                    ui.add_space(6.0);
-                    ui.horizontal(|ui| {
-                        apply = ui.button("OK").clicked();
-                        keep &= !ui.button("Cancel").clicked();
-                    });
+                    match dialog::confirm(ui, "OK") {
+                        Some(true) => apply = true,
+                        Some(false) => keep = false,
+                        None => {}
+                    }
                 });
                 if apply {
                     let (at, author, text) = (*at, author.clone(), text.clone());
@@ -4950,11 +4981,11 @@ impl Calx {
                             ui.small(line);
                         }
                     });
-                    ui.add_space(6.0);
-                    ui.horizontal(|ui| {
-                        go = ui.button("Split").clicked();
-                        keep &= !ui.button("Cancel").clicked();
-                    });
+                    match dialog::confirm(ui, "Split") {
+                        Some(true) => go = true,
+                        Some(false) => keep = false,
+                        None => {}
+                    }
                 });
                 if go {
                     let mut how = how.clone();
@@ -5001,11 +5032,11 @@ impl Calx {
                                 ui.checkbox(on, ss_model::column_name(*col));
                             }
                         });
-                    ui.add_space(6.0);
-                    ui.horizontal(|ui| {
-                        go = ui.button("Remove").clicked();
-                        keep &= !ui.button("Cancel").clicked();
-                    });
+                    match dialog::confirm(ui, "Remove") {
+                        Some(true) => go = true,
+                        Some(false) => keep = false,
+                        None => {}
+                    }
                 });
                 if go {
                     let chosen: Vec<u32> = columns
@@ -5045,11 +5076,11 @@ impl Calx {
                             ui.small(line);
                         }
                     });
-                    ui.add_space(6.0);
-                    ui.horizontal(|ui| {
-                        go = ui.button("Protect").clicked();
-                        keep &= !ui.button("Cancel").clicked();
-                    });
+                    match dialog::confirm(ui, "Protect") {
+                        Some(true) => go = true,
+                        Some(false) => keep = false,
+                        None => {}
+                    }
                 });
                 if go {
                     let allow = (**allow).clone();
@@ -5068,11 +5099,11 @@ impl Calx {
                     ui.checkbox(&mut how.transpose, "Transpose");
                     ui.checkbox(&mut how.skip_blanks, "Skip blanks")
                         .on_hover_text("A blank in the copy leaves what is already there");
-                    ui.add_space(6.0);
-                    ui.horizontal(|ui| {
-                        go = ui.button("Paste").clicked();
-                        keep &= !ui.button("Cancel").clicked();
-                    });
+                    match dialog::confirm(ui, "Paste") {
+                        Some(true) => go = true,
+                        Some(false) => keep = false,
+                        None => {}
+                    }
                 });
                 if go {
                     let how = *how;
@@ -5084,36 +5115,37 @@ impl Calx {
 
             Dialog::Trouble {
                 title,
+                severity,
                 message,
+                detail,
                 offer_save_as,
             } => {
-                let title = *title;
                 let offer = *offer_save_as;
-                let mut save_as = false;
-                // One `small` label per line: a modal offers a wrapped label
-                // the whole window's width, and a paragraph laid out that way
-                // comes back centred in columns.
-                let lines: Vec<String> = message.lines().map(str::to_owned).collect();
-                modal(ctx, title, |ui| {
-                    ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
-                        for line in &lines {
-                            if line.is_empty() {
-                                ui.add_space(6.0);
-                            } else {
-                                ui.small(line);
-                            }
-                        }
-                    });
-                    ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        keep &= !ui.button("OK").clicked();
-                        if offer {
-                            save_as = ui.button("Save As…").clicked();
-                        }
-                    });
-                });
-                if save_as {
+                // Save As is the way out of a refused save, so it is the
+                // default when it is offered at all: the box is not asking
+                // whether the news was received, it is offering somewhere else
+                // to put the work.
+                let choices: &[dialog::Choice] = if offer {
+                    &[
+                        dialog::Choice::new("Save As…").primary(),
+                        dialog::Choice::new("OK").escapes(),
+                    ]
+                } else {
+                    &[dialog::Choice::new("OK").primary().escapes()]
+                };
+                let answer = dialog::message(
+                    ctx,
+                    "trouble",
+                    *severity,
+                    title,
+                    message,
+                    Some(detail.as_str()),
+                    choices,
+                );
+                if answer.is_some() {
                     keep = false;
+                }
+                if offer && answer == Some(0) {
                     self.save_as();
                 }
             }
@@ -5184,23 +5216,26 @@ impl Calx {
                     if !report.is_empty() {
                         ui.label(egui::RichText::new(report.as_str()).small());
                     }
-                    ui.add_space(4.0);
-                    ui.horizontal(|ui| {
-                        if ui.button("Find next").clicked() {
-                            command = Some(FindCommand::Next);
-                        }
-                        if ui.button("Find previous").clicked() {
-                            command = Some(FindCommand::Previous);
-                        }
+                    // Right to left, so this reads backwards: Close on the
+                    // right, then the searches, with Find next — the one Enter
+                    // in the field also does — filled and furthest left.
+                    dialog::row(ui, |ui| {
+                        keep &= !dialog::button(ui, "Close", false).clicked();
+                        ui.add_space(12.0);
                         if *replacing {
-                            if ui.button("Replace").clicked() {
-                                command = Some(FindCommand::ReplaceOne);
-                            }
-                            if ui.button("Replace all").clicked() {
+                            if dialog::button(ui, "Replace all", false).clicked() {
                                 command = Some(FindCommand::ReplaceAll);
                             }
+                            if dialog::button(ui, "Replace", false).clicked() {
+                                command = Some(FindCommand::ReplaceOne);
+                            }
                         }
-                        keep &= !ui.button("Close").clicked();
+                        if dialog::button(ui, "Find previous", false).clicked() {
+                            command = Some(FindCommand::Previous);
+                        }
+                        if dialog::button(ui, "Find next", true).clicked() {
+                            command = Some(FindCommand::Next);
+                        }
                     });
                 });
                 if let Some(command) = command {
@@ -5278,11 +5313,11 @@ impl Calx {
                                 ui.end_row();
                             }
                         });
-                    ui.add_space(6.0);
-                    ui.horizontal(|ui| {
-                        go = ui.button("Sort").clicked();
-                        keep &= !ui.button("Cancel").clicked();
-                    });
+                    match dialog::confirm(ui, "Sort") {
+                        Some(true) => go = true,
+                        Some(false) => keep = false,
+                        None => {}
+                    }
                 });
                 if go {
                     let (header, levels) = (*header, *levels);
@@ -5344,11 +5379,11 @@ impl Calx {
                                 ui.checkbox(blanks, "(Blanks)");
                             }
                         });
-                    ui.separator();
-                    ui.horizontal(|ui| {
-                        go = ui.button("OK").clicked();
-                        clear = ui.button("Clear this column").clicked();
-                        keep &= !ui.button("Cancel").clicked();
+                    dialog::row(ui, |ui| {
+                        keep &= !dialog::button(ui, "Cancel", false).clicked();
+                        go = dialog::button(ui, "OK", true).clicked();
+                        ui.add_space(12.0);
+                        clear = dialog::button(ui, "Clear this column", false).clicked();
                     });
                 });
                 if go || clear {
@@ -5841,14 +5876,29 @@ fn cf_rule_label(rule: &ss_model::cond::CfRule) -> String {
     }
 }
 
-/// A modal window: centred, not resizable, and blocking the rest of the app.
+/// A form dialog: centred, not resizable, and blocking the rest of the app.
+///
+/// The title bar, the gutter and the frame come from `ui_kit::dialog` so that a
+/// form and a message box are recognisably the same furniture; what the form
+/// puts inside is its own business, and its buttons go in `dialog::actions`.
 fn modal(ctx: &egui::Context, title: &str, add: impl FnOnce(&mut egui::Ui)) {
-    egui::Modal::new(egui::Id::new(("calx-modal", title))).show(ctx, |ui| {
-        ui.set_min_width(320.0);
-        ui.heading(title);
-        ui.separator();
-        add(ui);
-    });
+    egui::Modal::new(egui::Id::new(("calx-modal", title)))
+        .frame(dialog::frame(ctx))
+        .show(ctx, |ui| {
+            ui.set_min_width(340.0);
+            egui::Frame::new()
+                .inner_margin(egui::Margin {
+                    left: 22,
+                    right: 22,
+                    top: 18,
+                    bottom: 18,
+                })
+                .show(ui, |ui| {
+                    ui.label(egui::RichText::new(title).font(dialog::heading_font(16.0)));
+                    ui.add_space(12.0);
+                    add(ui);
+                });
+        });
 }
 
 /// Format Cells ▸ Number. A category list and the code behind it.
@@ -6819,7 +6869,7 @@ mod tests {
         // Windows gives for a file another program is holding.
         let dir = std::env::temp_dir().join(format!("calx-refused-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("a directory");
-        let message = save_trouble(&dir, &"os error 32");
+        let message = save_trouble(&dir);
 
         let name = name_of(&dir);
         assert!(message.contains(&name), "{message}");

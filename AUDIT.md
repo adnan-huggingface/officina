@@ -514,3 +514,27 @@ anything); no function autocomplete; grouped sheet editing absent.
     The application now tells the grid when a dialog is up, and the grid takes
     no keys while it is. Drawing carries on, because a grid that blanks behind
     a dialog is worse than one that is merely inert.
+
+33. **The dialogs were the least finished thing in the program.** Reported by
+    the user, in the plainest terms: the box that comes up when a workbook with
+    changes is closed "looked unprofessional". It did. It was a heading, a
+    sentence hard against the frame, and three borderless words in a row where
+    the buttons should have been — because the application's theme deliberately
+    draws buttons flat and edgeless, which is right for a toolbar of forty
+    icons and wrong everywhere else. Twenty dialogs had been built out of that
+    same handful of calls, so all twenty read as unfinished.
+
+    The furniture now lives in `ui_kit::dialog` rather than at each call site,
+    which is the only arrangement in which they stay the same as each other: a
+    frame with a shadow and a hairline, a 24 pixel gutter, a heading in the
+    real bold face rather than a darker grey, 96 by 32 buttons with a state to
+    hover into, and the default action filled in the accent. A message box puts
+    its buttons in a band of its own along the bottom; a form puts them under a
+    rule. Enter takes the default and Escape the way out.
+
+    Two things the rewrite made possible rather than merely prettier. The box
+    now names the file in the question — "Save changes to budget.xlsx?" over
+    "Unsaved changes", which said the same thing twice and neither time said
+    which workbook. And the machine's own words — `invalid Zip archive: Could
+    not find EOCD` — are set small and grey underneath the sentence a person
+    can act on, instead of in the same type as it.
