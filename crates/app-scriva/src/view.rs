@@ -35,6 +35,8 @@ pub struct View {
     pub show_marks: bool,
     pub show_revisions: bool,
     pages: Vec<wp_layout::block::Page>,
+    /// What the fields came out as last time. See `refresh`.
+    settled: wp_layout::FieldValues,
     /// The document revision the pages were laid out for. Laying a hundred pages
     /// out per frame is what makes an editor feel slow, so it is done when the
     /// document changes and not otherwise.
@@ -48,6 +50,7 @@ impl Default for View {
             show_marks: false,
             show_revisions: true,
             pages: Vec::new(),
+            settled: wp_layout::FieldValues::default(),
             stamp: u64::MAX,
         }
     }
@@ -74,21 +77,40 @@ impl View {
             return;
         }
         let theme = document.theme.clone();
+        // The application's own strings — file name, author, today's date — are
+        // always the fresh ones; only the page numbers are carried over.
+        let mut carried = self.settled.clone();
+        carried.today = fields.today.clone();
+        carried.now = fields.now.clone();
+        carried.file_name = fields.file_name.clone();
+        carried.author = fields.author.clone();
+        carried.title = fields.title.clone();
         let ctx = wp_layout::inline::Context {
             theme: &theme,
             default_tab: document.settings.default_tab_stop,
             fallback_font: "Calibri",
             show_revisions: self.show_revisions,
             show_hidden: self.show_marks,
-            fields,
+            fields: match self.settled.is_empty() {
+                true => fields,
+                false => &carried,
+            },
         };
         self.pages = wp_layout::block::layout(document, &ctx, shaper);
+        // Remember what the fields came out as, so the next layout starts from
+        // the numbers this one arrived at. A `{ PAGE }` that is already right
+        // costs one pass instead of two, on every keystroke.
+        self.settled = wp_layout::block::evaluate(&self.pages, fields);
         self.stamp = stamp;
     }
 
     /// Forces the next `refresh` to lay out again.
+    ///
+    /// A different document's page numbers are not this one's, so the carried
+    /// values go with it.
     pub fn invalidate(&mut self) {
         self.stamp = u64::MAX;
+        self.settled = wp_layout::FieldValues::default();
     }
 
     /// The size of the whole stack of pages, in points before zoom.

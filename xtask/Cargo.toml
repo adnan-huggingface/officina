@@ -11,3 +11,5 @@ ss-model.workspace = true
 ss-xlsx.workspace = true
 wp-model.workspace = true
 wp-docx.workspace = true
+wp-layout.workspace = true
+ss-formula.workspace = true

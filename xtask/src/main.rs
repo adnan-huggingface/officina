@@ -6,6 +6,7 @@
 //! the rest of the workspace does not build.
 
 mod fidelity;
+mod perf;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -26,6 +27,7 @@ fn main() -> ExitCode {
         "install" => install(),
         "dist" => dist(),
         "fidelity" => fidelity(rest),
+        "perf" => perf(rest),
         "check" => check(),
         "help" | "--help" | "-h" => {
             usage();
@@ -52,6 +54,7 @@ cargo xtask <command>
   dist       release build of both apps
   install    dist, then copy binaries to ~/.local/bin
   fidelity   run the round-trip fidelity harness over corpus/
+  perf       time reading and laying out every file in corpus/
   help       this message"
     );
 }
@@ -102,6 +105,14 @@ fn install() -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+fn perf(args: &[String]) -> Result<(), String> {
+    let corpus = match args.first() {
+        Some(p) => PathBuf::from(p),
+        None => workspace_root().join("corpus"),
+    };
+    perf::run(&corpus)
 }
 
 fn fidelity(args: &[String]) -> Result<(), String> {

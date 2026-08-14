@@ -4088,9 +4088,11 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "ooxml",
+ "ss-formula",
  "ss-model",
  "ss-xlsx",
  "wp-docx",
+ "wp-layout",
  "wp-model",
 ]
 

@@ -164,6 +164,13 @@ pub fn layout(document: &Document, ctx: &Context<'_>, shaper: &mut dyn Shaper) -
     if values.is_empty() {
         return first;
     }
+    // Nothing a field says has changed, so the second pass would produce the
+    // same pages as the first. This is the ordinary case once a document has
+    // settled: a `{ PAGE }` in a footer would otherwise double the cost of
+    // laying out on *every* keystroke, for a number that is already right.
+    if values.same_as(ctx.fields) {
+        return first;
+    }
     let second = Context {
         fields: &values,
         theme: ctx.theme,
@@ -176,7 +183,10 @@ pub fn layout(document: &Document, ctx: &Context<'_>, shaper: &mut dyn Shaper) -
 }
 
 /// Reads the page each field landed on off a laid-out document.
-fn evaluate(pages: &[Page], known: &crate::field::FieldValues) -> crate::field::FieldValues {
+///
+/// Public so that a caller holding pages from a previous layout can start the
+/// next one from the values it already arrived at, rather than from nothing.
+pub fn evaluate(pages: &[Page], known: &crate::field::FieldValues) -> crate::field::FieldValues {
     use wp_model::field::Kind;
     let mut values = crate::field::FieldValues::carrying(known);
     let total = pages.len();
@@ -1482,6 +1492,85 @@ mod tests {
             })
             .count();
         assert_eq!(labelled, 12, "every item got a label");
+    }
+
+    #[test]
+    fn a_document_whose_fields_have_settled_is_laid_out_once() {
+        // The second pass exists to put the right page number in a `{ PAGE }`.
+        // Once it *is* the right number — which is true from the moment the
+        // document has been shown once — running it again produces the same
+        // pages, and in an editor it would run on every keystroke.
+        #[derive(Default)]
+        struct Counting {
+            asked: usize,
+            inner: crate::shape::Fixed,
+        }
+        impl Shaper for Counting {
+            fn metrics(&mut self, font: &crate::shape::FontRequest) -> crate::shape::Metrics {
+                self.inner.metrics(font)
+            }
+            fn advances(
+                &mut self,
+                text: &str,
+                font: &crate::shape::FontRequest,
+                out: &mut Vec<crate::shape::Advance>,
+            ) {
+                self.asked += 1;
+                self.inner.advances(text, font, out);
+            }
+        }
+
+        let mut blocks = paragraphs(10);
+        blocks.push(Block::Paragraph(Paragraph {
+            content: vec![Inline::Run(Run {
+                content: vec![
+                    Piece::FieldStart {
+                        dirty: false,
+                        lock: false,
+                    },
+                    Piece::Instruction(" PAGE ".into()),
+                    Piece::FieldSeparate,
+                    Piece::Text("1".into()),
+                    Piece::FieldEnd,
+                ],
+                ..Run::new()
+            })],
+            ..Paragraph::new()
+        }));
+        let mut document = document(blocks);
+        document.section = page_of(5);
+
+        let theme = document.theme.clone();
+        fn make<'a>(
+            theme: &'a wp_model::Theme,
+            document: &'a Document,
+            fields: &'a crate::FieldValues,
+        ) -> Context<'a> {
+            Context {
+                theme,
+                default_tab: document.settings.default_tab_stop,
+                fallback_font: "Calibri",
+                show_revisions: true,
+                show_hidden: false,
+                fields,
+            }
+        }
+
+        let empty = crate::FieldValues::default();
+        let mut cold = Counting::default();
+        let pages = layout(&document, &make(&theme, &document, &empty), &mut cold);
+        let settled = evaluate(&pages, &empty);
+        assert!(!settled.is_empty(), "the field was evaluated");
+
+        let mut warm = Counting::default();
+        let again = layout(&document, &make(&theme, &document, &settled), &mut warm);
+        assert_eq!(again.len(), pages.len(), "and the same pages come out");
+        assert!(
+            warm.asked * 2 <= cold.asked,
+            "a settled document measured {} times against {} cold —              the second pass is still running",
+            warm.asked,
+            cold.asked
+        );
     }
 
     #[test]

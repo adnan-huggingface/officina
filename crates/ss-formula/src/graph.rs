@@ -8,11 +8,21 @@
 //! `SUM(A:A)` depends on a million cells, and materializing those edges would
 //! cost more than the whole workbook. Precedents are therefore stored as *areas*,
 //! and the reverse lookup — "which formulas does this cell feed?" — is answered
-//! by testing containment against a per-sheet list. That is a linear scan, which
-//! is the honest trade: cheap to build, and fast enough while the number of
-//! distinct ranges stays far below the number of cells.
+//! by testing containment.
+//!
+//! **Which cannot be a linear scan, and was.** Testing every formula in the
+//! workbook to answer one lookup is O(F); building an evaluation order asks the
+//! question once per formula, so a workbook of twenty thousand formulas did four
+//! hundred million containment tests to open. The areas are therefore also
+//! registered in a coarse grid — [`BLOCK`] cells square — so a lookup starts
+//! from the handful of formulas whose ranges reach that part of the sheet.
+//!
+//! An area too big to register block by block (`A:A` covers four thousand of
+//! them) goes on a short list that is always scanned. That is the honest trade:
+//! whole-column references stay linear, and everything else stops being.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet};
 
 use ss_model::cell::{MAX_COLS, MAX_ROWS};
 use ss_model::{CellRange, CellRef};
@@ -154,12 +164,57 @@ fn area_to_range(area: &Area) -> CellRange {
     }
 }
 
+/// How many cells on a side one bucket of the reverse index covers.
+///
+/// Small enough that a dense column of formulas does not put them all in one
+/// bucket — which would be the scan again, wearing an index's clothes — and
+/// large enough that an ordinary range lands in a handful.
+pub const BLOCK: u32 = 64;
+
+/// The most buckets one area may be registered in before it is treated as wide.
+///
+/// `A1:Z500` is two buckets. `A:A` is four thousand, and registering it in each
+/// would cost more than the scan it is meant to avoid.
+const WIDEST: usize = 64;
+
+/// One bucket of the reverse index: a square of one sheet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+struct Bucket {
+    sheet: usize,
+    row: u32,
+    col: u32,
+}
+
+impl Bucket {
+    fn of(sheet: usize, at: CellRef) -> Bucket {
+        Bucket {
+            sheet,
+            row: at.row / BLOCK,
+            col: at.col / BLOCK,
+        }
+    }
+}
+
 /// The workbook's formula cells and what each reads.
 #[derive(Debug, Default)]
 pub struct DependencyGraph {
     formulas: BTreeMap<Node, Precedents>,
     /// Defined name -> the cells it resolves to, so name edges can be followed.
     name_targets: HashMap<String, Vec<AreaRef>>,
+    /// Which formulas read anywhere in each square of each sheet, and through
+    /// which of their areas.
+    ///
+    /// The area is stored beside the node rather than looked up again: the
+    /// lookup was a tree descent per candidate, and the candidates are the
+    /// thing there are many of.
+    ///
+    /// Maintained as formulas are inserted and removed rather than rebuilt,
+    /// because an edit to one cell should cost one cell's worth of work.
+    index: HashMap<Bucket, Vec<(Node, AreaRef)>>,
+    /// Formulas whose precedents are too broad to bucket, or which read a
+    /// defined name — a name's target can change without the formula changing,
+    /// so bucketing one would go stale silently.
+    wide: BTreeSet<Node>,
 }
 
 impl DependencyGraph {
@@ -177,11 +232,31 @@ impl DependencyGraph {
 
     /// Records that `node` holds a formula reading `precedents`.
     pub fn insert(&mut self, node: Node, precedents: Precedents) {
+        // A formula being replaced has to leave its old buckets first, or it
+        // keeps answering lookups for a range it no longer reads.
+        self.remove(node);
+        for (bucket, area) in buckets_of(&precedents) {
+            self.index.entry(bucket).or_default().push((node, area));
+        }
+        if is_wide(&precedents) {
+            self.wide.insert(node);
+        }
         self.formulas.insert(node, precedents);
     }
 
     pub fn remove(&mut self, node: Node) {
-        self.formulas.remove(&node);
+        let Some(precedents) = self.formulas.remove(&node) else {
+            return;
+        };
+        for (bucket, _) in buckets_of(&precedents) {
+            if let Some(nodes) = self.index.get_mut(&bucket) {
+                nodes.retain(|&(found, _)| found != node);
+                if nodes.is_empty() {
+                    self.index.remove(&bucket);
+                }
+            }
+        }
+        self.wide.remove(&node);
     }
 
     pub fn precedents(&self, node: Node) -> Option<&Precedents> {
@@ -204,14 +279,43 @@ impl DependencyGraph {
     }
 
     /// Every formula that reads `node`, directly.
+    ///
+    /// Ordered, because everything downstream of this is ordered and a
+    /// recalculation that varied run to run would make a difference in the
+    /// output impossible to reproduce.
     pub fn dependents_of(&self, node: Node) -> Vec<Node> {
         let mut out = Vec::new();
-        for (&formula, precedents) in &self.formulas {
-            if self.reads(precedents, node) {
-                out.push(formula);
+        self.dependents_into(node, &mut out);
+        out
+    }
+
+    /// The same, reusing the caller's buffer.
+    ///
+    /// `order_over` asks this once per formula in the workbook, and a fresh
+    /// allocation each time was costing more than the lookup.
+    fn dependents_into(&self, node: Node, out: &mut Vec<Node>) {
+        out.clear();
+        let bucket = Bucket::of(node.sheet, node.at);
+        for &(candidate, area) in self.index.get(&bucket).map(Vec::as_slice).unwrap_or(&[]) {
+            if area.contains(node) {
+                out.push(candidate);
             }
         }
-        out
+        // A wide formula may also be in the bucket — `SUM(A:A)+B1` is both — so
+        // the two lists can overlap and the result has to be deduplicated.
+        for &candidate in &self.wide {
+            if self.reads_at(candidate, node) {
+                out.push(candidate);
+            }
+        }
+        out.sort_unstable();
+        out.dedup();
+    }
+
+    fn reads_at(&self, formula: Node, node: Node) -> bool {
+        self.formulas
+            .get(&formula)
+            .is_some_and(|precedents| self.reads(precedents, node))
     }
 
     fn reads(&self, precedents: &Precedents, node: Node) -> bool {
@@ -275,64 +379,109 @@ impl DependencyGraph {
     fn order_over(&self, subset: BTreeSet<Node>) -> Order {
         // Edges only within the subset: a precedent outside it is already
         // up to date and imposes no ordering constraint.
-        let mut in_degree: BTreeMap<Node, usize> = subset.iter().map(|&n| (n, 0)).collect();
-        let mut edges: BTreeMap<Node, Vec<Node>> = BTreeMap::new();
+        // Hashed, not ordered: nothing reads these in order. Determinism comes
+        // from the ready heap, which orders what it pops.
+        let mut in_degree: HashMap<Node, usize> = subset.iter().map(|&n| (n, 0)).collect();
+        let mut edges: HashMap<Node, Vec<Node>> = HashMap::new();
 
         // A cell that reads itself can never settle. It is skipped when building
         // edges — a self-loop is invisible to Kahn's algorithm, which would
         // otherwise hand it back as perfectly sortable — so it is recorded here.
-        let mut self_referential: BTreeSet<Node> = BTreeSet::new();
+        let mut self_referential: HashSet<Node> = HashSet::new();
+        let mut found: Vec<Node> = Vec::new();
 
-        for &node in &subset {
-            let Some(precedents) = self.formulas.get(&node) else {
-                continue;
-            };
-            if self.reads(precedents, node) {
-                self_referential.insert(node);
-            }
-            // Which other members of the subset does `node` read?
-            let mut from: HashSet<Node> = HashSet::new();
-            for &other in &subset {
-                if other != node && self.reads(precedents, other) {
-                    from.insert(other);
+        // Built forwards rather than backwards: asking "who reads this cell?"
+        // once per member is a bucket lookup each, where asking "which members
+        // does this read?" was a scan of the whole subset each.
+        for &source in &subset {
+            if let Some(precedents) = self.formulas.get(&source) {
+                if self.reads(precedents, source) {
+                    self_referential.insert(source);
                 }
             }
-            for source in from {
-                edges.entry(source).or_default().push(node);
-                *in_degree.entry(node).or_insert(0) += 1;
+            self.dependents_into(source, &mut found);
+            for &target in &found {
+                if target == source || !subset.contains(&target) {
+                    continue;
+                }
+                edges.entry(source).or_default().push(target);
+                *in_degree.entry(target).or_insert(0) += 1;
             }
         }
 
-        // BTreeMap iteration makes the ready set ordered, so the output is
-        // deterministic. A recalculation order that varied run to run would make
-        // every downstream difference impossible to reproduce.
-        let mut ready: Vec<Node> = in_degree
+        // A heap rather than a sorted vector: the ready set is pushed to and
+        // popped from once per node, and re-sorting it each time made the sort
+        // itself the slowest part of opening a workbook.
+        let mut ready: BinaryHeap<Reverse<Node>> = in_degree
             .iter()
             .filter(|(n, &d)| d == 0 && !self_referential.contains(n))
-            .map(|(&n, _)| n)
+            .map(|(&n, _)| Reverse(n))
             .collect();
-        ready.reverse(); // pop() takes the smallest first
 
         let mut sorted = Vec::with_capacity(subset.len());
-        while let Some(node) = ready.pop() {
+        while let Some(Reverse(node)) = ready.pop() {
             sorted.push(node);
             if let Some(targets) = edges.get(&node) {
                 for &t in targets {
                     let d = in_degree.get_mut(&t).expect("target is in the subset");
                     *d -= 1;
                     if *d == 0 && !self_referential.contains(&t) {
-                        ready.push(t);
+                        ready.push(Reverse(t));
                     }
                 }
             }
-            ready.sort_unstable_by(|a, b| b.cmp(a));
         }
 
         // Anything with a remaining in-degree is in, or downstream of, a cycle.
-        let cyclic: Vec<Node> = subset.into_iter().filter(|n| !sorted.contains(n)).collect();
+        let placed: HashSet<Node> = sorted.iter().copied().collect();
+        let cyclic: Vec<Node> = subset.into_iter().filter(|n| !placed.contains(n)).collect();
 
         Order { sorted, cyclic }
     }
+}
+
+/// Every bucket an area list touches, with the area that put it there.
+///
+/// Empty when the precedents are too broad to bucket: those are scanned.
+fn buckets_of(precedents: &Precedents) -> Vec<(Bucket, AreaRef)> {
+    if is_wide(precedents) {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for &area in &precedents.areas {
+        for row in area.range.start.row / BLOCK..=area.range.end.row / BLOCK {
+            for col in area.range.start.col / BLOCK..=area.range.end.col / BLOCK {
+                out.push((
+                    Bucket {
+                        sheet: area.sheet,
+                        row,
+                        col,
+                    },
+                    area,
+                ));
+            }
+        }
+    }
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// Whether these precedents are answered by the scan rather than the index.
+fn is_wide(precedents: &Precedents) -> bool {
+    if !precedents.names.is_empty() {
+        return true;
+    }
+    let mut count = 0usize;
+    for area in &precedents.areas {
+        let rows = area.range.end.row / BLOCK - area.range.start.row / BLOCK + 1;
+        let cols = area.range.end.col / BLOCK - area.range.start.col / BLOCK + 1;
+        count += (rows as usize).saturating_mul(cols as usize);
+        if count > WIDEST {
+            return true;
+        }
+    }
+    false
 }
 
 /// The result of a topological sort.
@@ -626,15 +775,20 @@ mod tests {
             .iter()
             .map(|(a, b)| (a.as_str(), b.as_str()))
             .collect();
-        let order = graph(&pairs).evaluation_order();
+        // Built once. Rebuilding it inside the loops below — which is what this
+        // test used to do — reparsed two hundred formulas forty thousand times
+        // and took two minutes of every test run to answer a question about
+        // ordering.
+        let graph = graph(&pairs);
+        let order = graph.evaluation_order();
 
         assert!(!order.has_cycle());
         assert_eq!(order.sorted.len(), 199);
         // Every cell must come after the one it reads.
         for (i, node) in order.sorted.iter().enumerate() {
+            let precedents = graph.precedents(*node).expect("a formula").clone();
             for (j, other) in order.sorted.iter().enumerate() {
-                let precedents = graph(&pairs).precedents(*node).cloned().unwrap();
-                if graph(&pairs).reads(&precedents, *other) {
+                if graph.reads(&precedents, *other) {
                     assert!(j < i, "{} evaluated before its input", node.at.to_a1());
                 }
             }

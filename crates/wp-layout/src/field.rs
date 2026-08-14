@@ -99,6 +99,20 @@ impl FieldValues {
     }
 }
 
+impl FieldValues {
+    /// Whether these are the values the layout was already given.
+    ///
+    /// Only the field results matter — the application's own strings are
+    /// carried through unchanged and cannot differ between the two passes.
+    pub fn same_as(&self, other: &FieldValues) -> bool {
+        self.values.len() == other.values.len()
+            && self
+                .values
+                .iter()
+                .all(|(key, value)| other.values.get(key) == Some(value))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
