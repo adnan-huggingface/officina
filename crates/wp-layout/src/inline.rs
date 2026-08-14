@@ -72,7 +72,12 @@ pub enum Content {
         nth: usize,
     },
     /// The bullet or number of a list paragraph.
-    Label,
+    ///
+    /// It carries its own text: the label is not in the document's runs, so a
+    /// renderer handed only the paragraph has nothing to draw it from, and a
+    /// variant that says only "a label goes here" is one a painter can do
+    /// nothing with but skip.
+    Label { text: String, advances: Vec<f64> },
 }
 
 /// One drawn piece of a line.
@@ -141,6 +146,7 @@ pub struct ListLabel {
 }
 
 /// What the layout needs beyond the paragraph itself.
+#[derive(Clone, Copy)]
 pub struct Context<'a> {
     pub theme: &'a wp_model::color::Theme,
     /// `<w:defaultTabStop>` — where tabs land when the paragraph defines none.
@@ -156,6 +162,9 @@ pub struct Context<'a> {
     /// Empty on the first pass — a page number cannot be known before the page
     /// exists — and filled in for the second.
     pub fields: &'a FieldValues,
+    /// Which band is being laid out: `None` for the document body, `Some(page)`
+    /// for the header or footer of that page. See [`FieldMark::band`].
+    pub band: Option<u32>,
 }
 
 impl Default for Context<'_> {
@@ -167,6 +176,7 @@ impl Default for Context<'_> {
             show_revisions: true,
             show_hidden: false,
             fields: Box::leak(Box::new(FieldValues::default())),
+            band: None,
         }
     }
 }
@@ -195,6 +205,9 @@ enum UnitKind {
     },
     Tab {
         leader: TabLeader,
+        /// This is the tab that follows a list label, which lands somewhere a
+        /// tab typed by a user does not. See `fill`.
+        after_label: bool,
     },
     Break(Break),
     Object {
@@ -202,7 +215,10 @@ enum UnitKind {
         rel: Option<std::sync::Arc<str>>,
         nth: usize,
     },
-    Label,
+    Label {
+        text: String,
+        advances: Vec<f64>,
+    },
 }
 
 /// Lays a paragraph out into lines of `width` points.
@@ -311,12 +327,15 @@ fn units(
             style,
             source: None,
             field: None,
-            kind: UnitKind::Label,
+            kind: UnitKind::Label {
+                text: label.text.clone(),
+                advances,
+            },
             width,
             trailing: 0.0,
         });
         match label.suffix {
-            Suffix::Tab => out.push(tab_unit(&out[0].style, TabLeader::None)),
+            Suffix::Tab => out.push(tab_unit(&out[0].style, TabLeader::None, true)),
             Suffix::Space => {
                 let style = out[0].style.clone();
                 let mut advances = Vec::new();
@@ -342,7 +361,7 @@ fn units(
     let deleted = deleted_runs(paragraph);
     // Field state runs *across* runs: a field's begin, its instruction, its
     // separator and its result are very often four different `<w:r>` elements.
-    let mut fields = FieldWalk::new(index);
+    let mut fields = FieldWalk::new(index, ctx.band);
     for (run_index, run) in runs.iter().enumerate() {
         if deleted.contains(&run_index) && !ctx.show_revisions {
             continue;
@@ -360,6 +379,7 @@ fn units(
 /// depend on how deeply the field sits.
 struct FieldWalk {
     paragraph: usize,
+    band: Option<u32>,
     next_ordinal: usize,
     stack: Vec<OpenField>,
 }
@@ -373,9 +393,10 @@ struct OpenField {
 }
 
 impl FieldWalk {
-    fn new(paragraph: usize) -> FieldWalk {
+    fn new(paragraph: usize, band: Option<u32>) -> FieldWalk {
         FieldWalk {
             paragraph,
+            band,
             next_ordinal: 0,
             stack: Vec::new(),
         }
@@ -420,17 +441,21 @@ impl FieldWalk {
         open.in_result.then(|| FieldMark {
             paragraph: self.paragraph,
             ordinal: open.ordinal,
+            band: self.band,
             kind: open.kind.unwrap_or(wp_model::field::Kind::Other),
         })
     }
 }
 
-fn tab_unit(style: &TextStyle, leader: TabLeader) -> Unit {
+fn tab_unit(style: &TextStyle, leader: TabLeader, after_label: bool) -> Unit {
     Unit {
         style: style.clone(),
         source: None,
         field: None,
-        kind: UnitKind::Tab { leader },
+        kind: UnitKind::Tab {
+            leader,
+            after_label,
+        },
         width: 0.0,
         trailing: 0.0,
     }
@@ -511,7 +536,37 @@ fn push_run(
         match piece {
             Piece::FieldStart { .. } => fields.begin(),
             Piece::FieldSeparate => fields.separate(),
-            Piece::FieldEnd => fields.end(),
+            Piece::FieldEnd => {
+                // A field can close with nothing between its separator and its
+                // end — Google Docs writes `{ PAGE }` that way, cached result
+                // and all, and leaves it to the reader to work the number out.
+                // There is nothing to substitute into, so a placeholder of no
+                // width is drawn instead: it carries the mark, which is what
+                // tells the second pass which page this field landed on.
+                if let Some(mark) = fields.mark() {
+                    if !already_drawn(out, Some(mark)) {
+                        match ctx.fields.get(mark) {
+                            Some(value) => {
+                                push_text(value, &props, index, piece_index, ctx, shaper, out);
+                                mark_last(out, Some(mark));
+                            }
+                            None => out.push(Unit {
+                                style: style_for(' ', &props, ctx),
+                                source: None,
+                                field: Some(mark),
+                                kind: UnitKind::Text {
+                                    text: String::new(),
+                                    advances: Vec::new(),
+                                    hyphen: false,
+                                },
+                                width: 0.0,
+                                trailing: 0.0,
+                            }),
+                        }
+                    }
+                }
+                fields.end();
+            }
             Piece::Instruction(text) => fields.instruction(text),
             Piece::DeletedInstruction(_) => {}
             _ if fields.in_instruction() => {}
@@ -538,7 +593,7 @@ fn push_run(
             }
             Piece::Tab => {
                 let style = style_for('\t', &props, ctx);
-                let mut unit = tab_unit(&style, TabLeader::None);
+                let mut unit = tab_unit(&style, TabLeader::None, false);
                 unit.field = fields.mark();
                 out.push(unit);
             }
@@ -755,9 +810,23 @@ fn fill(
                 is_first = false;
                 continue;
             }
-            UnitKind::Tab { leader } => {
+            UnitKind::Tab {
+                leader,
+                after_label,
+            } => {
                 let left = if is_first { start + first } else { start };
-                let (stop, _, stop_leader) = next_tab(pen + left, tabs, ctx.default_tab);
+                let here = pen + left;
+                // The tab that follows a list label goes to the paragraph's own
+                // left indent before it considers any tab stop. That is what
+                // lines a bullet's first line up with the wrapped lines under
+                // it; sending it to the next default stop instead leaves half
+                // an inch of white between every bullet and its text.
+                let (stop, stop_leader) = if *after_label && start > here + 0.01 {
+                    (start, TabLeader::None)
+                } else {
+                    let (at, _, leader) = next_tab(here, tabs, ctx.default_tab);
+                    (at, leader)
+                };
                 let target = (stop - left).min(limit);
                 let advance = (target - pen).max(0.0);
                 fragments.push(Fragment {
@@ -842,13 +911,16 @@ fn fragment_of(unit: &Unit, x: f64) -> Fragment {
             advances: advances.clone(),
             hyphen: *hyphen,
         },
-        UnitKind::Tab { leader } => Content::Tab { leader: *leader },
+        UnitKind::Tab { leader, .. } => Content::Tab { leader: *leader },
         UnitKind::Object { height, rel, nth } => Content::Object {
             height: *height,
             rel: rel.clone(),
             nth: *nth,
         },
-        UnitKind::Label => Content::Label,
+        UnitKind::Label { text, advances } => Content::Label {
+            text: text.clone(),
+            advances: advances.clone(),
+        },
         UnitKind::Break(_) => Content::Text {
             text: String::new(),
             advances: Vec::new(),
@@ -1073,6 +1145,7 @@ mod tests {
             show_revisions: true,
             show_hidden: false,
             fields: Box::leak(Box::new(crate::field::FieldValues::default())),
+            band: None,
         }
     }
 
@@ -1425,13 +1498,116 @@ mod tests {
             &mut shaper,
         );
         let line = &laid.lines[0];
-        assert!(matches!(line.fragments[0].content, Content::Label));
+        let Content::Label { text, .. } = &line.fragments[0].content else {
+            panic!("the first fragment is the label");
+        };
+        // The label carries its own text. It is not in the document's runs, so
+        // a renderer that is handed only the paragraph has nothing to draw.
+        assert_eq!(text, "\u{F0B7}");
         assert_eq!(line.fragments[0].style.font.family.as_ref(), "Symbol");
         assert!(
             matches!(line.fragments[1].content, Content::Tab { .. }),
             "the suffix is a tab and lands on a stop"
         );
         assert_eq!(texts(line), ["item"]);
+    }
+
+    #[test]
+    fn the_tab_after_a_list_label_stops_at_the_paragraphs_own_indent() {
+        // Word sends it to the hanging position rather than to the next default
+        // stop, which is what lines a bullet's first line up with the wrapped
+        // lines under it. Half an inch of white between every bullet and its
+        // text is what the other reading looks like.
+        let label = ListLabel {
+            text: "\u{2022}".to_string(),
+            props: RunProps::default(),
+            suffix: Suffix::Tab,
+        };
+        let mut layers = layers();
+        layers.para.indent = Indent {
+            start: Some(Twips(240)),
+            hanging: Some(Twips(240)),
+            ..Indent::default()
+        };
+        let theme = theme();
+        let mut shaper = crate::shape::Fixed;
+        let laid = layout(
+            &Paragraph::of("item"),
+            0,
+            &layers,
+            Some(&label),
+            &ctx(&theme),
+            500.0,
+            &mut shaper,
+        );
+        let line = &laid.lines[0];
+        let text = line
+            .fragments
+            .iter()
+            .find(|f| matches!(&f.content, Content::Text { text, .. } if text == "item"))
+            .expect("the text is on the line");
+        // 240 twips is 12 points; the default tab stop is 36 and would be wrong.
+        assert!(
+            (text.x - 12.0).abs() < 0.01,
+            "the text started at {} rather than at the indent",
+            text.x
+        );
+    }
+
+    #[test]
+    fn a_field_that_cached_no_result_still_leaves_somewhere_to_put_one() {
+        // Google Docs writes `{ PAGE }` as begin, instruction, separate, end,
+        // with nothing between the separator and the end. Nothing is drawn, so
+        // without a placeholder there is no fragment for the second pass to
+        // find and the page number never appears.
+        let run = Run {
+            content: vec![
+                Piece::FieldStart {
+                    dirty: false,
+                    lock: false,
+                },
+                Piece::Instruction(" PAGE ".into()),
+                Piece::FieldSeparate,
+                Piece::FieldEnd,
+            ],
+            ..Run::new()
+        };
+        let paragraph = Paragraph {
+            content: vec![Inline::Run(run)],
+            ..Paragraph::new()
+        };
+        let theme = theme();
+        let mut shaper = crate::shape::Fixed;
+        let laid = layout(
+            &paragraph,
+            3,
+            &layers(),
+            None,
+            &ctx(&theme),
+            500.0,
+            &mut shaper,
+        );
+        let mark = laid.lines[0]
+            .fragments
+            .iter()
+            .find_map(|f| f.field)
+            .expect("the empty result is still marked as the field's");
+        assert_eq!(mark.paragraph, 3);
+        assert_eq!(mark.kind, wp_model::field::Kind::Page);
+        // The placeholder is empty and has no width: it holds the mark and
+        // draws nothing.
+        assert_eq!(texts(&laid.lines[0]), [""]);
+        assert_eq!(laid.lines[0].width, 0.0);
+
+        // And once the value is known, it is drawn there.
+        let mut values = FieldValues::new();
+        values.set(mark, "7");
+        let knowing = Context {
+            fields: &values,
+            ..ctx(&theme)
+        };
+        let again = layout(&paragraph, 3, &layers(), None, &knowing, 500.0, &mut shaper);
+        assert_eq!(texts(&again.lines[0]), ["7"]);
     }
 
     #[test]

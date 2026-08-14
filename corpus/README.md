@@ -4,6 +4,20 @@ Test documents for `cargo xtask fidelity`. **These must be produced by real
 Microsoft Word and Excel**, not by us and not by LibreOffice. The entire point is
 to test against what actually lands in a user's inbox.
 
+## The gap this corpus has
+
+Every file here was written by Word or Excel, and that is exactly one producer's
+dialect. A `.docx` exported from **Google Docs** broke the reader in five
+separate ways while all twenty-seven of these passed — decimal numbers where the
+schema says integer, a revision record holding a complete copy of the grid it
+replaced, a `{ PAGE }` field with no cached result. See `PROGRESS.md`, "What one
+resume found".
+
+What actually lands in a user's inbox was written by Word, or Google Docs, or
+LibreOffice, or a report generator nobody has heard of. **Files from a second
+producer are the most valuable thing that could be added here** — scrubbed of
+their content, which is never the point.
+
 Drop files anywhere under `docx/` or `xlsx/`; the harness walks recursively and
 picks up `.docx`, `.docm`, `.dotx`, `.xlsx`, `.xlsm`, `.xltx`.
 

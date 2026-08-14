@@ -95,6 +95,7 @@ impl View {
                 true => fields,
                 false => &carried,
             },
+            band: None,
         };
         self.pages = wp_layout::block::layout(document, &ctx, shaper);
         // Remember what the fields came out as, so the next layout starts from
@@ -593,13 +594,20 @@ fn paint_placement(
                 .and_then(|c| c.resolve(&wp_model::Theme::default()))
                 .map(|rgb| egui::Color32::from_rgb(rgb[0], rgb[1], rgb[2]))
                 .unwrap_or(egui::Color32::BLACK);
-            let width = border.size.map(|s| s.points()).unwrap_or(0.5) as f32 * zoom;
+            let thickness = border.size.map(|s| s.points()).unwrap_or(0.5);
+            let width = thickness as f32 * zoom;
             let (x, y, w, h) = (placement.x, placement.y, placement.width, placement.height);
+            // A row is laid out in bands so that a page can break inside it, and
+            // its side edges arrive one band at a time. Abutting segments leave
+            // a hairline of paper between them once they are anti-aliased, which
+            // turns a ruled column into a dotted one — so each overlaps its
+            // neighbour by half its own thickness.
+            let over = thickness / 2.0;
             let line = match side {
                 wp_layout::block::Side::Top => (at(x, y), at(x + w, y)),
                 wp_layout::block::Side::Bottom => (at(x, y + h), at(x + w, y + h)),
-                wp_layout::block::Side::Start => (at(x, y), at(x, y + h)),
-                wp_layout::block::Side::End => (at(x + w, y), at(x + w, y + h)),
+                wp_layout::block::Side::Start => (at(x, y - over), at(x, y + h + over)),
+                wp_layout::block::Side::End => (at(x + w, y - over), at(x + w, y + h + over)),
             };
             painter.line_segment([line.0, line.1], egui::Stroke::new(width.max(0.5), color));
         }
@@ -683,8 +691,11 @@ fn paint_line(
             paint_image(painter, pictures, rel.as_deref(), rect);
             continue;
         }
-        let Content::Text { text, .. } = &fragment.content else {
-            continue;
+        // A list label draws exactly like text — it just is not text the
+        // document holds, so it comes with its own.
+        let text = match &fragment.content {
+            Content::Text { text, .. } | Content::Label { text, .. } => text,
+            _ => continue,
         };
         if text.is_empty() {
             continue;

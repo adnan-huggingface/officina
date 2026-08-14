@@ -18,9 +18,12 @@
 //! anchored drawing — the drawing is placed where the document says and the text
 //! flows past it, which is right for `wrapNone` and `wrapTopAndBottom` and wrong
 //! for `wrapSquare`. Multi-column sections lay out column by column rather than
-//! balancing the last page. A table row taller than a page is placed whole and
-//! overflows rather than being split mid-cell. Each is a body of work of its
-//! own and each is visible rather than silent.
+//! balancing the last page. A table row splits across pages between the lines
+//! of its cells, but only at a height that is a line boundary in *every* cell
+//! at once — where two columns of text line up on nothing, the row moves whole,
+//! because a row drawn in two pieces that disagree about where they were cut is
+//! worse than a row that moved. Each is a body of work of its own and each is
+//! visible rather than silent.
 
 use std::sync::Arc;
 
@@ -129,6 +132,13 @@ pub struct Item {
     pub break_before: bool,
     /// A table header row: repeated at the top of every page the table covers.
     pub repeat: bool,
+    /// Which table this came from, if it came from one.
+    ///
+    /// Separate from `group` because the two answer different questions. A
+    /// group is what a keep rule holds together — one row, since Word splits a
+    /// table between its rows — while a repeated header row has to be found
+    /// again from a *later* row of the same table, which is a different group.
+    pub table: Option<usize>,
     /// Footnotes referenced by this item, and how tall they are.
     pub footnotes: Vec<(i32, f64)>,
 }
@@ -173,11 +183,7 @@ pub fn layout(document: &Document, ctx: &Context<'_>, shaper: &mut dyn Shaper) -
     }
     let second = Context {
         fields: &values,
-        theme: ctx.theme,
-        default_tab: ctx.default_tab,
-        fallback_font: ctx.fallback_font,
-        show_revisions: ctx.show_revisions,
-        show_hidden: ctx.show_hidden,
+        ..*ctx
     };
     layout_once(document, &second, shaper)
 }
@@ -309,6 +315,14 @@ fn place_bands(
         return;
     };
     let width = section.text_width().points();
+    // The same header is laid out again for every page it appears on, so its
+    // fields belong to this page rather than to the header. Without that, one
+    // `{ PAGE }` in a footer would be a single question with a single answer,
+    // and every page would show the number of the last one.
+    let ctx = &Context {
+        band: Some(number),
+        ..*ctx
+    };
 
     if let Some(body) = section.header(kind).or_else(|| {
         // A section with no header of the kind the page wants has *no* header —
@@ -317,23 +331,20 @@ fn place_bands(
         (kind == HeaderKind::Default).then_some(section.header(HeaderKind::Default)?)
     }) {
         if let Some(header) = document.header(body) {
-            let mut y = section.margins.header.points();
-            for placement in band(&header.content, document, ctx, shaper, width) {
+            let y = section.margins.header.points();
+            for placement in band(&header.content, document, ctx, shaper, width).0 {
                 page.header.push(Placement {
                     x: section.margins.start.points() + placement.x,
                     y: y + placement.y,
                     ..placement
                 });
             }
-            y += 0.0;
-            let _ = y;
         }
     }
 
     if let Some(body) = section.footer(kind) {
         if let Some(footer) = document.header(body) {
-            let placements = band(&footer.content, document, ctx, shaper, width);
-            let height: f64 = placements.iter().map(|p| p.height).sum();
+            let (placements, height) = band(&footer.content, document, ctx, shaper, width);
             let top = section.page.height.points() - section.margins.footer.points() - height;
             for placement in placements {
                 page.footer.push(Placement {
@@ -346,14 +357,19 @@ fn place_bands(
     }
 }
 
-/// Lays a header or footer body out as a simple stack.
+/// Lays a header or footer body out as a simple stack, and says how tall it is.
+///
+/// The height is the stack's, not the sum of the placements': a table puts one
+/// placement per cell, and adding those up makes a one-line footer measure
+/// several inches tall — which is how a footer ends up floating in the middle of
+/// the page instead of sitting above the bottom edge.
 fn band(
     blocks: &[Block],
     document: &Document,
     ctx: &Context<'_>,
     shaper: &mut dyn Shaper,
     width: f64,
-) -> Vec<Placement> {
+) -> (Vec<Placement>, f64) {
     let mut out = Vec::new();
     let mut counters = Counters::new();
     let mut flow = Flow::default();
@@ -378,7 +394,7 @@ fn band(
         }
         y += item.height;
     }
-    out
+    (out, y)
 }
 
 /// Turns one block into items.
@@ -549,6 +565,7 @@ fn push_paragraph(
             break_before: (is_first && layers.para.page_break_before.unwrap_or(false))
                 || (is_first && explicit_break && false),
             repeat: false,
+            table: None,
             footnotes: Vec::new(),
         });
         if ends_page {
@@ -568,6 +585,7 @@ fn push_paragraph(
                 widow_control: false,
                 break_before: true,
                 repeat: false,
+                table: None,
                 footnotes: Vec::new(),
             });
         }
@@ -587,6 +605,7 @@ fn push_paragraph(
             widow_control: false,
             break_before: false,
             repeat: false,
+            table: None,
             footnotes: Vec::new(),
         });
     }
@@ -607,17 +626,20 @@ pub fn column_widths(table: &Table, available: f64) -> Vec<f64> {
         .collect();
     let total: f64 = widths.iter().sum();
 
+    // The grid decides, unless it does not fit. This is what `auto` and `nil`
+    // mean, and it is also the only sane reading of a declared width that comes
+    // out non-positive — `w:tblW w:w="0" w:type="dxa"` is written by real
+    // producers for a table that is anything but zero wide, and scaling the
+    // columns by zero would collapse them to nothing.
+    let from_grid = if total > 0.0 {
+        total.min(available)
+    } else {
+        available
+    };
     let target = match table.props.width {
-        Width::Fixed(twips) => twips.points(),
-        Width::Percent(pct) => pct.of(Twips::from_points(available)).points(),
-        // `auto` and `nil`: the grid decides, unless it does not fit.
-        _ => {
-            if total > 0.0 {
-                total.min(available)
-            } else {
-                available
-            }
-        }
+        Width::Fixed(twips) if twips.points() > 0.0 => twips.points(),
+        Width::Percent(pct) if pct.0 > 0 => pct.of(Twips::from_points(available)).points(),
+        _ => from_grid,
     };
 
     if total <= 0.0 {
@@ -673,14 +695,13 @@ fn flow_table(
         .map(|t| t.points())
         .unwrap_or(0.0);
 
-    let group = into.items.len();
+    let table_id = into.items.len();
     // A header row repeats only while every row before it also says so: Word
     // stops at the first row that does not.
     let mut still_header = true;
 
-    for (row_index, row) in table.rows.iter().enumerate() {
-        let mut parts: Vec<Placement> = Vec::new();
-        let mut height: f64 = 0.0;
+    for row in table.rows.iter() {
+        let mut cells: Vec<CellPlan> = Vec::new();
         let mut column = row.props.grid_before;
         let mut x = indent
             + widths
@@ -715,69 +736,66 @@ fn flow_table(
                     );
                 }
             }
-            let content_height: f64 = cell_flow.items.iter().map(|item| item.height).sum();
-            let cell_height = content_height + pad_top + pad_bottom;
-            height = height.max(cell_height);
 
-            if let Some(fill) = cell
-                .props
-                .shading
-                .and_then(|s| s.background())
-                .and_then(|c| c.resolve(&document.theme))
-            {
-                parts.push(Placement {
-                    x,
-                    y: 0.0,
-                    width: cell_width,
-                    height: 0.0,
-                    kind: Placed::Fill(fill),
-                });
-            }
-            for (side, border) in [
-                (
-                    Side::Top,
-                    cell.props.borders.top.or(table.props.borders.top),
-                ),
-                (
-                    Side::Start,
-                    cell.props.borders.start.or(table.props.borders.start),
-                ),
-                (
-                    Side::Bottom,
-                    cell.props.borders.bottom.or(table.props.borders.bottom),
-                ),
-                (
-                    Side::End,
-                    cell.props.borders.end.or(table.props.borders.end),
-                ),
-            ] {
-                if let Some(border) = border.filter(|b| b.style.draws()) {
-                    parts.push(Placement {
-                        x,
-                        y: 0.0,
-                        width: cell_width,
-                        height: 0.0,
-                        kind: Placed::Edge { border, side },
-                    });
-                }
-            }
-
-            let mut y = pad_top;
+            // Each of the cell's lines, with where it starts. Kept apart rather
+            // than flattened into one block so the row can be split between two
+            // of them.
+            let mut lines: Vec<CellLine> = Vec::new();
+            let mut y = 0.0;
             for item in cell_flow.items {
-                for part in item.parts {
-                    parts.push(Placement {
+                let parts = item
+                    .parts
+                    .into_iter()
+                    .map(|part| Placement {
                         x: x + pad_start + part.x,
-                        y: y + part.y,
                         ..part
-                    });
-                }
+                    })
+                    .collect();
+                lines.push(CellLine {
+                    top: y,
+                    height: item.height,
+                    parts,
+                });
                 y += item.height;
             }
+
+            cells.push(CellPlan {
+                x,
+                width: cell_width,
+                align: cell.props.v_align,
+                fill: cell
+                    .props
+                    .shading
+                    .and_then(|s| s.background())
+                    .and_then(|c| c.resolve(&document.theme)),
+                borders: [
+                    (
+                        Side::Top,
+                        cell.props.borders.top.or(table.props.borders.top),
+                    ),
+                    (
+                        Side::Start,
+                        cell.props.borders.start.or(table.props.borders.start),
+                    ),
+                    (
+                        Side::Bottom,
+                        cell.props.borders.bottom.or(table.props.borders.bottom),
+                    ),
+                    (
+                        Side::End,
+                        cell.props.borders.end.or(table.props.borders.end),
+                    ),
+                ],
+                content: y,
+                lines,
+            });
 
             x += cell_width;
             column += span;
         }
 
+        let tallest = cells.iter().map(|c| c.content).fold(0.0f64, f64::max);
+        let mut height = tallest + pad_top + pad_bottom;
         // A stated row height is a floor or a ceiling depending on its rule.
         if let Some(rule) = row.props.height {
             height = match rule {
@@ -786,28 +804,152 @@ fn flow_table(
                 wp_model::table::RowHeight::Exact(t) => t.points(),
             };
         }
-        // Every part that spans the row learns its height now that it is known.
-        for part in &mut parts {
-            if matches!(part.kind, Placed::Fill(_) | Placed::Edge { .. }) {
-                part.height = height;
+        let inner_height = (height - pad_top - pad_bottom).max(0.0);
+        // Vertical alignment is a shift of the cell's lines within the row's
+        // final height, which is why it can only be applied once that is known.
+        for cell in &mut cells {
+            let offset = cell_offset(cell.align, cell.content, inner_height);
+            if offset > 0.0 {
+                for line in &mut cell.lines {
+                    line.top += offset;
+                }
             }
         }
 
+        let bands = split_points(&cells, inner_height);
+        let last_band = bands.len() - 2;
         still_header = still_header && row.props.header;
-        into.items.push(Item {
-            height,
-            parts,
-            group,
-            index_in_group: row_index,
-            items_in_group: table.rows.len(),
-            keep_with_next: false,
-            keep_lines: row.props.cant_split,
-            widow_control: false,
-            break_before: false,
-            repeat: still_header,
-            footnotes: Vec::new(),
-        });
+        let group = into.items.len();
+        for (band, pair) in bands.windows(2).enumerate() {
+            let (top, bottom) = (pair[0], pair[1]);
+            let is_first = band == 0;
+            let is_last = band == last_band;
+            let band_height = (bottom - top)
+                + if is_first { pad_top } else { 0.0 }
+                + if is_last { pad_bottom } else { 0.0 };
+            let above = if is_first { pad_top } else { 0.0 };
+            let mut parts: Vec<Placement> = Vec::new();
+            for cell in &cells {
+                if let Some(fill) = cell.fill {
+                    parts.push(Placement {
+                        x: cell.x,
+                        y: 0.0,
+                        width: cell.width,
+                        height: band_height,
+                        kind: Placed::Fill(fill),
+                    });
+                }
+                for (side, border) in cell.borders {
+                    // The row's top edge is drawn once, above the first band,
+                    // and its bottom edge once, below the last. Drawing either
+                    // on every band would rule a line across the middle of a
+                    // cell wherever a page break happened to fall.
+                    if (side == Side::Top && !is_first) || (side == Side::Bottom && !is_last) {
+                        continue;
+                    }
+                    if let Some(border) = border.filter(|b| b.style.draws()) {
+                        parts.push(Placement {
+                            x: cell.x,
+                            y: 0.0,
+                            width: cell.width,
+                            height: band_height,
+                            kind: Placed::Edge { border, side },
+                        });
+                    }
+                }
+                for line in &cell.lines {
+                    if line.top < top - EPSILON || line.top >= bottom - EPSILON {
+                        continue;
+                    }
+                    let dy = above + (line.top - top);
+                    for part in &line.parts {
+                        parts.push(Placement {
+                            y: dy + part.y,
+                            ..part.clone()
+                        });
+                    }
+                }
+            }
+            into.items.push(Item {
+                height: band_height,
+                parts,
+                group,
+                index_in_group: band,
+                items_in_group: last_band + 1,
+                keep_with_next: false,
+                keep_lines: row.props.cant_split,
+                widow_control: false,
+                break_before: false,
+                repeat: still_header,
+                table: Some(table_id),
+                footnotes: Vec::new(),
+            });
+        }
     }
+}
+
+/// Half a thousandth of a point: what split points are compared at.
+const EPSILON: f64 = 0.0005;
+
+/// One cell of a row, flowed but not yet placed.
+struct CellPlan {
+    x: f64,
+    width: f64,
+    align: CellVAlign,
+    fill: Option<[u8; 3]>,
+    borders: [(Side, Option<Border>); 4],
+    /// How tall the cell's own content came out.
+    content: f64,
+    lines: Vec<CellLine>,
+}
+
+/// One line of a cell, and where it sits in the row.
+struct CellLine {
+    top: f64,
+    height: f64,
+    parts: Vec<Placement>,
+}
+
+/// Where a row may be broken, as offsets from the top of its content box.
+///
+/// **A row is split between lines, never through one.** Every line boundary of
+/// every cell is a candidate; a candidate that falls *inside* some other cell's
+/// line is not a height a page can end at, so it is dropped. What is left is
+/// where the row can be cut, the row's own two edges included.
+///
+/// A row with nothing to split on comes back as a single band and travels
+/// whole. That is the honest answer when two columns of text line up on
+/// nothing: Word would break each cell on its own line boundaries and leave the
+/// two columns of one row at different heights, and a row drawn in two pieces
+/// that do not agree where they were cut is worse than a row that moved.
+fn split_points(cells: &[CellPlan], inner_height: f64) -> Vec<f64> {
+    let key = |v: f64| (v * 1000.0).round() as i64;
+    let total = key(inner_height);
+    let mut offsets: std::collections::BTreeSet<i64> = std::collections::BTreeSet::new();
+    offsets.insert(0);
+    offsets.insert(total);
+    for cell in cells {
+        for line in &cell.lines {
+            offsets.insert(key(line.top));
+            offsets.insert(key(line.top + line.height));
+        }
+    }
+    let inside = |at: i64| {
+        cells.iter().any(|cell| {
+            cell.lines
+                .iter()
+                .any(|line| key(line.top) < at && at < key(line.top + line.height))
+        })
+    };
+    let points: Vec<f64> = offsets
+        .into_iter()
+        .filter(|at| *at <= total && (*at == 0 || *at == total || !inside(*at)))
+        .map(|at| at as f64 / 1000.0)
+        .collect();
+    if points.len() < 2 {
+        return vec![0.0, inner_height];
+    }
+    points
 }
 
 // -------------------------------------------------------------- pagination
@@ -862,10 +1004,13 @@ fn repeated_height(items: &[Item], start: usize) -> f64 {
     let Some(item) = items.get(start) else {
         return 0.0;
     };
+    let Some(table) = item.table else {
+        return 0.0;
+    };
     items
         .iter()
         .take(start)
-        .filter(|earlier| earlier.group == item.group && earlier.repeat)
+        .filter(|earlier| earlier.table == Some(table) && earlier.repeat)
         .map(|earlier| earlier.height)
         .sum()
 }
@@ -1058,6 +1203,7 @@ mod tests {
             show_revisions: true,
             show_hidden: false,
             fields: Box::leak(Box::new(crate::field::FieldValues::default())),
+            band: None,
         }
     }
 
@@ -1228,6 +1374,122 @@ mod tests {
         assert_eq!(page.content[2].y, page.geometry.top + 10.0);
     }
 
+    #[test]
+    fn a_row_taller_than_the_page_is_split_between_the_lines_of_its_cells() {
+        // The shape every table-heavy document has: one short cell beside one
+        // long one. Word breaks the row and carries the rest over, and a reader
+        // that moves the whole row instead leaves most of a page blank.
+        let table = Table {
+            grid: vec![Twips(1440), Twips(1440)],
+            rows: vec![Row {
+                cells: vec![
+                    cell("date"),
+                    Cell {
+                        props: CellProps::new(),
+                        content: paragraphs(10),
+                    },
+                ],
+                ..Row::new()
+            }],
+            ..Table::new()
+        };
+        let mut document = document(vec![Block::Table(table)]);
+        document.section = page_of(6);
+        let pages = pages(&document);
+        assert!(pages.len() >= 2, "the row did not split");
+        assert!(
+            pages[0]
+                .content
+                .iter()
+                .any(|p| matches!(&p.kind, Placed::Line { .. })),
+            "the first page holds part of the row"
+        );
+        // Nothing is lost or drawn twice: ten lines in the tall cell and one in
+        // the short one, across every page.
+        let lines: usize = pages
+            .iter()
+            .map(|page| {
+                page.content
+                    .iter()
+                    .filter(|p| matches!(p.kind, Placed::Line { .. }))
+                    .count()
+            })
+            .sum();
+        assert_eq!(lines, 11);
+    }
+
+    #[test]
+    fn a_row_that_says_it_cannot_be_split_moves_whole() {
+        let table = Table {
+            grid: vec![Twips(1440)],
+            rows: vec![Row {
+                props: RowProps {
+                    cant_split: true,
+                    ..RowProps::default()
+                },
+                cells: vec![Cell {
+                    props: CellProps::new(),
+                    content: paragraphs(6),
+                }],
+            }],
+            ..Table::new()
+        };
+        let mut blocks = paragraphs(3);
+        blocks.push(Block::Table(table));
+        let mut document = document(blocks);
+        document.section = page_of(8);
+        let pages = pages(&document);
+        assert_eq!(pages.len(), 2);
+        assert_eq!(
+            pages[0].content.len(),
+            3,
+            "the row moved rather than being cut"
+        );
+    }
+
+    #[test]
+    fn a_split_row_draws_its_top_edge_once_and_its_bottom_edge_once() {
+        // Otherwise a page break rules a line across the middle of a cell.
+        let border = Border {
+            style: wp_model::prop::BorderStyle::Single,
+            size: Some(wp_model::units::Eighth(4)),
+            color: None,
+            space: None,
+            shadow: false,
+        };
+        let mut props = CellProps::new();
+        props.borders.top = Some(border);
+        props.borders.bottom = Some(border);
+        props.borders.start = Some(border);
+        let table = Table {
+            grid: vec![Twips(1440)],
+            rows: vec![Row {
+                cells: vec![Cell {
+                    props,
+                    content: paragraphs(8),
+                }],
+                ..Row::new()
+            }],
+            ..Table::new()
+        };
+        let mut document = document(vec![Block::Table(table)]);
+        document.section = page_of(5);
+        let pages = pages(&document);
+        let count = |side: Side| -> usize {
+            pages
+                .iter()
+                .flat_map(|page| page.content.iter())
+                .filter(|p| matches!(&p.kind, Placed::Edge { side: s, .. } if *s == side))
+                .count()
+        };
+        assert_eq!(count(Side::Top), 1, "one top edge for the whole row");
+        assert_eq!(count(Side::Bottom), 1, "one bottom edge for the whole row");
+        assert!(
+            count(Side::Start) >= 2,
+            "the side edge is drawn on every band it passes through"
+        );
+    }
+
     fn cell(text: &str) -> Cell {
         Cell {
             props: CellProps::new(),
@@ -1270,6 +1532,26 @@ mod tests {
         assert_eq!(widths.len(), 2);
         assert!((widths.iter().sum::<f64>() - 432.0).abs() < 0.01);
         assert_eq!(widths[0], widths[1]);
+    }
+
+    #[test]
+    fn a_declared_width_of_zero_is_read_as_auto_rather_than_as_nothing() {
+        // `w:tblW w:w="0" w:type="dxa"` is written by real producers for a
+        // table that is anything but zero wide. Scaling the columns by zero
+        // collapses every one of them to a single character per line.
+        let table = Table {
+            grid: vec![Twips(1440), Twips(2880)],
+            props: wp_model::table::TableProps {
+                width: Width::Fixed(Twips(0)),
+                ..wp_model::table::TableProps::default()
+            },
+            rows: vec![Row {
+                cells: vec![cell("a"), cell("b")],
+                ..Row::new()
+            }],
+        };
+        let widths = column_widths(&table, 432.0);
+        assert_eq!(widths, [72.0, 144.0], "the grid decided");
     }
 
     #[test]
@@ -1427,6 +1709,109 @@ mod tests {
     }
 
     #[test]
+    fn a_page_number_in_a_footer_is_a_different_number_on_every_page() {
+        // A footer is laid out again for every page it appears on, from the
+        // same paragraphs. One field mark for all of them would answer every
+        // page with the number of the last.
+        let field = Paragraph {
+            content: vec![Inline::Run(Run {
+                content: vec![
+                    Piece::FieldStart {
+                        dirty: false,
+                        lock: false,
+                    },
+                    Piece::Instruction(" PAGE ".into()),
+                    Piece::FieldSeparate,
+                    Piece::FieldEnd,
+                ],
+                ..Run::new()
+            })],
+            ..Paragraph::new()
+        };
+        let mut document = document(paragraphs(9));
+        document.section = page_of(4);
+        document.section.footers.push(wp_model::HeaderRef {
+            kind: HeaderKind::Default,
+            body: wp_model::HeaderId(0),
+            rel: None,
+        });
+        document.headers.push(wp_model::HeaderFooter {
+            id: wp_model::HeaderId(0),
+            part: None,
+            rel: None,
+            footer: true,
+            content: vec![Block::Paragraph(field)],
+        });
+        let pages = pages(&document);
+        assert_eq!(pages.len(), 3);
+        let drawn: Vec<String> = pages
+            .iter()
+            .map(|page| {
+                page.footer
+                    .iter()
+                    .filter_map(|placement| match &placement.kind {
+                        Placed::Line { line, .. } => Some(
+                            line.fragments
+                                .iter()
+                                .filter_map(|f| match &f.content {
+                                    crate::inline::Content::Text { text, .. } => {
+                                        Some(text.as_str())
+                                    }
+                                    _ => None,
+                                })
+                                .collect::<String>(),
+                        ),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .collect();
+        assert_eq!(drawn, ["1", "2", "3"]);
+    }
+
+    #[test]
+    fn a_footer_holding_a_table_is_measured_by_its_stack_not_by_its_cells() {
+        // Summing every placement counts one row of three cells as three rows,
+        // and the footer floats inches above where it belongs.
+        let table = Table {
+            grid: vec![Twips(1440), Twips(1440), Twips(1440)],
+            rows: vec![Row {
+                cells: vec![cell("a"), cell("b"), cell("c")],
+                ..Row::new()
+            }],
+            ..Table::new()
+        };
+        let mut document = document(paragraphs(1));
+        document.section = page_of(30);
+        document.section.footers.push(wp_model::HeaderRef {
+            kind: HeaderKind::Default,
+            body: wp_model::HeaderId(0),
+            rel: None,
+        });
+        document.headers.push(wp_model::HeaderFooter {
+            id: wp_model::HeaderId(0),
+            part: None,
+            rel: None,
+            footer: true,
+            content: vec![Block::Table(table)],
+        });
+        let page = &pages(&document)[0];
+        let top = page
+            .footer
+            .iter()
+            .map(|p| p.y)
+            .fold(f64::INFINITY, f64::min);
+        let footer_edge = page.geometry.height - document.section.margins.footer.points();
+        // One row of ten points, so its top is ten points above the edge the
+        // footer is measured from — not thirty.
+        assert!(
+            (top - (footer_edge - 10.0)).abs() < 0.01,
+            "the footer started at {top}, expected {}",
+            footer_edge - 10.0
+        );
+    }
+
+    #[test]
     fn a_footer_is_measured_up_from_the_bottom_edge() {
         let mut document = document(paragraphs(1));
         document.section = page_of(20);
@@ -1487,7 +1872,7 @@ mod tests {
                 Placed::Line { line, .. } => line
                     .fragments
                     .iter()
-                    .any(|f| matches!(f.content, crate::inline::Content::Label)),
+                    .any(|f| matches!(f.content, crate::inline::Content::Label { .. })),
                 _ => false,
             })
             .count();
@@ -1553,6 +1938,7 @@ mod tests {
                 show_revisions: true,
                 show_hidden: false,
                 fields,
+                band: None,
             }
         }
 

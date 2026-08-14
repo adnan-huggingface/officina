@@ -13,9 +13,13 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[-]` deferred
 **Status:** complete, with three things open and named below.
 **Handoff note:**
 
+- **A real document off a real desk found five faults no corpus file had.** See
+  "What one resume found" below. The short version: a `.docx` that Google Docs
+  wrote is a different dialect from one Word wrote, and every corpus file was
+  Word's.
 - **Phases 3 and 4 are done. `cargo xtask fidelity` is 27 of 27 on check 1 and
   27 of 27 on check 2**, documents as well as spreadsheets — which is C22's
-  stated exit criterion and the gate that protects users' files. 1341 tests.
+  stated exit criterion and the gate that protects users' files. 1363 tests.
 - **A `.docx` can now be authored from nothing** (`wp_docx::write::blank`), so a
   new document saves and a `.doc` has somewhere to go. The authored package is
   a skeleton only: the paragraphs go in through the same splice writer that
@@ -1361,6 +1365,66 @@ right-click menu where Excel offers it, and under Excel's own key.
   different question from "read" and it is the one that matters: a feature this
   does not understand is *copied*, not dropped. It ends with the six known gaps
   stated plainly.
+
+## What one resume found
+
+A `.docx` exported from Google Docs, opened in Scriva beside the same file in
+Word. It did not look nearly right; it looked *broken*. Five faults, in the
+order they were peeled back.
+
+1. **Every table collapsed to one character per line.** Google Docs writes
+   `<w:tblW w:w="10397.0"/>` — a decimal where the schema says integer. The
+   parser refused it, the table's declared width became zero, and the columns
+   were scaled by zero. `parse_i32` now rounds a fraction rather than refusing
+   it: every attribute that carries one is a measurement whose fractional twip
+   is below the resolution of anything done with it, and *catastrophe* is a poor
+   answer to a rounding question. Eighty attributes in that one file.
+
+2. **Three-column tables were read as six columns, half as wide.**
+   `<w:tblGridChange>` holds a complete second `<w:tblGrid>` — the grid as it
+   stood before the last tracked revision — and the reader descended into it and
+   counted its columns as more columns. It now skips any child that is not a
+   `gridCol`.
+
+3. **No bullet or number has ever been drawn.** `Content::Label` carried no
+   text, and the painter skips every fragment that is not `Content::Text`. The
+   layout had always measured the label, reserved its width and indented the
+   text correctly — so a bulleted list looked like an indented list and nothing
+   pointed at the hole. The variant now carries its own text, because the label
+   is not in the document's runs and a renderer handed only the paragraph has
+   nothing to draw it from. The tab that follows it now stops at the paragraph's
+   own indent, which is where Word puts it.
+
+4. **`{ PAGE }` in a footer showed nothing, twice over.** Google Docs writes the
+   field with an empty cached result — begin, instruction, separate, end — so
+   nothing was drawn and there was no fragment for the second pass to fill in; a
+   zero-width placeholder now carries the mark. And a footer is laid out again
+   for every page it appears on, so one field mark answered every page with the
+   number of the last: `FieldMark` gained a band, `None` in the body and
+   `Some(page)` in a header or footer.
+
+5. **The footer floated two inches above where it belonged.** Its height was the
+   sum of every placement, and a footer holding one row of three cells counted
+   as three rows. `band` now returns the height of the stack it built.
+
+And one that was a stated limit rather than a bug: **a table row now splits
+across a page break.** Word does, this did not, and a resume laid out in tables
+lost three inches at the foot of every page and paginated differently from Word
+from page one. A row is flowed into bands — a band being a run of lines between
+two heights at which *no* cell has a line in progress — and the bands paginate
+like anything else. Where no such height exists the row still moves whole, which
+is the honest answer: Word would cut each cell at its own line boundary and
+leave the two halves of one row at different heights.
+
+Two things fell out of it. Cell vertical alignment was computed and never
+applied — `cell_offset` had tests and no caller. And a row's side edges, now
+arriving one band at a time, drew a dotted line instead of a ruled one until
+each was made to overlap its neighbour by half its own thickness.
+
+**The lesson is about the corpus, not about tables.** Twenty-seven files, every
+one produced by Word or Excel, and all twenty-seven passed while a resume that
+had been through Google Docs was unreadable. A corpus that is all one producer
+tests one producer's dialect.
 
 ## Deferred
 

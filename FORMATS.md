@@ -109,8 +109,12 @@ so, which is why the title bar shows a `.docx` name from the moment it opens.
 2. **One heading in one Office template draws past the right margin.** It does
    not reproduce under the arithmetic shaper the layout tests use, which is a
    limit of the tests as much as of the layout.
-3. **A table row taller than a page overflows** rather than splitting across the
-   page break.
+3. **A table row splits across a page break only where every cell agrees.** The
+   row is cut between the lines of its cells, at a height that is a line
+   boundary in all of them at once — which is the ordinary case, since most rows
+   have one column of text and the rest short. Where two columns of text line up
+   on nothing, the row moves whole instead: Word would cut each cell at its own
+   line boundary and leave the halves of one row at different heights.
 4. **Pivot tables are shown as they were last calculated by Excel**, not
    recalculated.
 5. **A large document is laid out in full on every edit.** Eight thousand

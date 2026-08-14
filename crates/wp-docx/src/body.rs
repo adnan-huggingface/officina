@@ -981,12 +981,28 @@ fn read_cell_margins(reader: &mut Reader<&[u8]>, until: &[u8]) -> CellMargins {
 
 fn read_grid(reader: &mut Reader<&[u8]>) -> Vec<Twips> {
     let mut grid = Vec::new();
+    // How deep inside a child element this is. `w:tblGridChange` holds a
+    // complete second `w:tblGrid` — the grid as it stood before the last tracked
+    // revision — and counting its columns as more columns is how a three-column
+    // table silently becomes a six-column one half as wide.
+    let mut inside = 0usize;
     loop {
         match reader.read_event() {
-            Ok(Event::Start(e)) | Ok(Event::Empty(e)) if local_name(&e) == b"gridCol" => {
+            Ok(Event::Empty(e)) if inside == 0 && local_name(&e) == b"gridCol" => {
                 grid.push(attr_twips(&e, b"w").unwrap_or(Twips(0)));
             }
-            Ok(Event::End(e)) if end_local_name(&e) == b"tblGrid" => break,
+            Ok(Event::Start(e)) => {
+                if inside == 0 && local_name(&e) == b"gridCol" {
+                    grid.push(attr_twips(&e, b"w").unwrap_or(Twips(0)));
+                }
+                inside += 1;
+            }
+            Ok(Event::End(e)) => {
+                if inside == 0 && end_local_name(&e) == b"tblGrid" {
+                    break;
+                }
+                inside = inside.saturating_sub(1);
+            }
             Ok(Event::Eof) | Err(_) => break,
             _ => {}
         }
@@ -1167,4 +1183,52 @@ fn read_cell_props(reader: &mut Reader<&[u8]>) -> CellProps {
         }
     }
     props
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ctx::test_ctx;
+
+    fn table_of(xml: &str) -> wp_model::table::Table {
+        let (mut styles, mut headers) = test_ctx();
+        let mut ctx = Ctx::new(&mut styles, &mut headers);
+        let mut reader = Reader::from_reader(xml.as_bytes());
+        loop {
+            match reader.read_event() {
+                Ok(Event::Start(e)) if local_name(&e) == b"tbl" => {
+                    return read_table(&mut reader, &mut ctx)
+                }
+                Ok(Event::Eof) | Err(_) => panic!("no table in the fragment"),
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn the_grid_a_revision_replaced_is_not_read_as_more_columns() {
+        // `w:tblGridChange` holds a complete second `w:tblGrid` — the grid as it
+        // stood before the last tracked revision. Counting its columns turns a
+        // three-column table into a six-column one half as wide, which is how
+        // every cell of a real document ends up one character per line.
+        let table = table_of(
+            r#"<w:tbl>
+                <w:tblPr><w:tblW w:w="10397.0" w:type="dxa"/><w:tblLayout w:type="fixed"/></w:tblPr>
+                <w:tblGrid>
+                  <w:gridCol w:w="2970"/><w:gridCol w:w="6075"/><w:gridCol w:w="1352"/>
+                  <w:tblGridChange w:id="0"><w:tblGrid>
+                    <w:gridCol w:w="2970"/><w:gridCol w:w="6075"/><w:gridCol w:w="1352"/>
+                  </w:tblGrid></w:tblGridChange>
+                </w:tblGrid>
+                <w:tr><w:tc><w:p/></w:tc><w:tc><w:p/></w:tc><w:tc><w:p/></w:tc></w:tr>
+            </w:tbl>"#,
+        );
+        assert_eq!(table.grid.len(), 3, "{:?}", table.grid);
+        assert_eq!(table.columns(), 3);
+        // And the width, written as a decimal, was read rather than dropped.
+        assert_eq!(
+            table.props.width,
+            wp_model::table::Width::Fixed(wp_model::Twips(10397))
+        );
+    }
 }

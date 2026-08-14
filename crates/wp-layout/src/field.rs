@@ -25,19 +25,28 @@ pub struct FieldMark {
     /// Which field of that paragraph, counted from the `begin` so that a field
     /// nested inside another keeps a stable number.
     pub ordinal: usize,
+    /// Which band this field was laid out in: `None` in the document body,
+    /// `Some(page)` in the header or footer drawn on that page.
+    ///
+    /// A header is laid out again for every page it appears on, from the same
+    /// paragraphs — so without this, the `{ PAGE }` in a footer would be one
+    /// field asked the same question on every page, and every page would show
+    /// the number of the last one. The paragraph indices would collide with the
+    /// body's besides, headers not being part of `Document::paragraphs`.
+    pub band: Option<u32>,
     pub kind: Kind,
 }
 
 impl FieldMark {
-    fn key(&self) -> (usize, usize) {
-        (self.paragraph, self.ordinal)
+    fn key(&self) -> (usize, usize, Option<u32>) {
+        (self.paragraph, self.ordinal, self.band)
     }
 }
 
 /// What each field evaluates to.
 #[derive(Debug, Clone, Default)]
 pub struct FieldValues {
-    values: HashMap<(usize, usize), Arc<str>>,
+    values: HashMap<(usize, usize, Option<u32>), Arc<str>>,
     /// What `{ DATE }` and `{ TIME }` show. Supplied by the application rather
     /// than read here: a layout that read the clock could not be tested, and a
     /// document laid out twice would differ for no reason the user caused.
@@ -121,6 +130,7 @@ mod tests {
         FieldMark {
             paragraph: 0,
             ordinal,
+            band: None,
             kind,
         }
     }

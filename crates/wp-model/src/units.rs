@@ -221,10 +221,27 @@ impl fmt::Display for HalfPoint {
 /// schema types as `ST_UniversalMeasure`. Returns `None` rather than a default
 /// so a caller can tell "absent" from "present and unreadable" — the two mean
 /// different things everywhere in this format.
+///
+/// **A fraction is rounded rather than refused.** The schema types these as
+/// `ST_DecimalNumber`, which is an integer, and Word has never written anything
+/// else — but Google Docs exports `w:w="10397.0"` and `w:firstLine="359.99999"`,
+/// and every such attribute is a measurement whose fractional twip is below the
+/// resolution of anything that will be done with it. Refusing them is how a
+/// table's declared width becomes zero and its columns collapse to one character
+/// per line, which is a catastrophic answer to a rounding question.
 pub fn parse_i32(text: &str) -> Option<i32> {
     let text = text.trim();
     let text = text.strip_prefix('+').unwrap_or(text);
-    text.parse::<i32>().ok()
+    if let Ok(whole) = text.parse::<i32>() {
+        return Some(whole);
+    }
+    // Only after the integer parse fails, so the common case pays nothing and a
+    // value that is not a number at all is still rejected.
+    let value = text.parse::<f64>().ok()?;
+    if !value.is_finite() || value.abs() > i32::MAX as f64 {
+        return None;
+    }
+    Some(value.round() as i32)
 }
 
 /// Parses `ST_UniversalMeasure` — a number with a unit suffix — into twips.
@@ -267,6 +284,20 @@ mod tests {
         // of the other is 1.5pt, which is the whole reason they are two types.
         assert_eq!(HalfPoint(12).points(), 6.0);
         assert_eq!(Eighth(12).points(), 1.5);
+    }
+
+    #[test]
+    fn a_measurement_written_as_a_fraction_is_rounded_rather_than_refused() {
+        // Google Docs exports `w:w="10397.0"` and `w:firstLine="359.99999"`.
+        // Refusing them is how a table's declared width becomes zero.
+        assert_eq!(parse_i32("10397.0"), Some(10397));
+        assert_eq!(parse_i32("359.99999"), Some(360));
+        assert_eq!(parse_i32("-6.999999999999993"), Some(-7));
+        assert_eq!(parse_universal("10397.0"), Some(Twips(10397)));
+        // Still not a number, and still distinguishable from absent.
+        assert_eq!(parse_i32("auto"), None);
+        assert_eq!(parse_i32(""), None);
+        assert_eq!(parse_i32("NaN"), None);
     }
 
     #[test]

@@ -317,7 +317,8 @@ not `"AB"`.
 Written after building Scriva through C22, so the next phase inherits it.
 
 - **Microsoft ships a corpus with Office.** `C:\Program Files\Microsoft
-  Officeoot\Templates` holds 41 finished `.dotx` files — 604 paragraphs, 278
+  Office
+oot\Templates` holds 41 finished `.dotx` files — 604 paragraphs, 278
   content controls, tables, floating art, glossary parts — written by Word's own
   designers rather than by a script of ours. Every reader and writer bug found
   in C17 and C22 came from them and none from our own corpus. This is the
@@ -409,3 +410,46 @@ Written after building Scriva through C22, so the next phase inherits it.
   the harness that does the checking, so it cannot drift from what is true. A
   hand-written claim that "all 27 files round-trip" would have been correct on
   the day it was written and unfalsifiable afterwards.
+
+## 13. What one real document added to the list
+
+Everything above was learned from a corpus. This was learned from a file off
+somebody's desk, and it is a different kind of lesson.
+
+**A corpus of one producer tests one producer's dialect.** Twenty-seven files,
+every one written by Word or Excel, all passing — and a `.docx` that had been
+through Google Docs was unreadable. Not subtly wrong: every table column
+collapsed to a single character per line.
+
+**Be liberal about the *type* of a number and strict about its absence.**
+`ST_DecimalNumber` is an integer and Word has never written anything else, so
+`"10397.0"` was refused, and refusing it produced a zero — which is a real width
+meaning "collapse this". Returning `None` for absent is worth keeping; refusing
+a value that is plainly a number is not. Round it.
+
+**A revision record can contain a whole copy of what it replaced.**
+`<w:tblGridChange>` holds a complete `<w:tblGrid>`. Any reader that descends
+into unknown children on the way to a known one will read the past as if it were
+the present. Skip what you do not recognise; do not walk through it.
+
+**A variant that carries no data is a variant a renderer can only skip.**
+`Content::Label` said "a bullet goes here" and nothing more, so the painter
+matched `Content::Text`, fell through, and drew nothing — for the entire life of
+the project. The layout was correct throughout: it measured the label, reserved
+its width, indented the text. Nothing in the tests or on the screen pointed at
+the hole, because an indented list looks like a list. **Make the data structure
+carry what the consumer needs, or the consumer will silently do without it.**
+
+**The same content laid out twice is two questions, not one.** A footer holding
+`{ PAGE }` is laid out again for every page. Keying the answer by paragraph and
+ordinal alone gave every page the last page's number. The identity of a field
+result includes *which instance of the band* it was drawn in.
+
+**A height that is a sum of parts is rarely the height of the whole.** A
+footer's height was the sum of its placements, and a table row of three cells
+counted three times. Ask the thing that stacked them how tall the stack is.
+
+**Splitting a shared edge into pieces is a rendering problem.** Once a table row
+is laid out in bands so a page can break inside it, its side borders arrive one
+band at a time. Abutting anti-aliased segments leave a hairline of paper between
+them, and a ruled column comes out dotted. Overlap by half the stroke.
