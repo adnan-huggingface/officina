@@ -41,7 +41,7 @@ pub use doc::{
 };
 pub use numbering::{AbstractNum, Counters, Level, Num, NumFormat, Numbering};
 pub use prop::{
-    Border, BorderStyle, Fonts, Indent, Justify, Layer, LineSpacing, NumRef, ParaBorders,
+    Border, BorderStyle, Fonts, Indent, Justify, Lang, Layer, LineSpacing, NumRef, ParaBorders,
     ParaProps, RunProps, Script, Shading, ShadingPattern, Spacing, TabKind, TabLeader, TabStop,
     TextAlign, ThemeFont, Toggle, Toggles, Underline, UnderlineKind, VertAlign,
 };

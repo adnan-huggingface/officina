@@ -180,6 +180,7 @@ fn collect_runs<'a>(content: &'a [Inline], into: &mut Vec<&'a Run>) {
             Inline::Revised { content, .. } => collect_runs(content, into),
             Inline::Structured(sdt) => collect_runs(&sdt.content, into),
             Inline::Wrapper { content, .. } => collect_runs(content, into),
+            Inline::SimpleField { content, .. } => collect_runs(content, into),
             Inline::Anchor(_) | Inline::Math(_) => {}
         }
     }
@@ -198,6 +199,16 @@ pub enum Inline {
     },
     /// An inline `<w:sdt>`.
     Structured(Box<Sdt<Vec<Inline>>>),
+    /// `<w:fldSimple w:instr=" PAGE ">` — the compact spelling of a field, with
+    /// its instruction on the element and its cached result inside.
+    ///
+    /// The same thing as the [`Piece::FieldStart`] triple and not
+    /// interchangeable with it: rewriting one as the other would change every
+    /// byte of a paragraph nobody edited.
+    SimpleField {
+        instruction: Arc<str>,
+        content: Vec<Inline>,
+    },
     Anchor(Anchor),
     /// `<w:smartTag>` and inline `<w:customXml>` — wrappers that carry meaning
     /// for something outside Word and none for layout. Transparent, and kept so
@@ -235,7 +246,7 @@ impl Inline {
                     inline.write_text(out, skip_deleted);
                 }
             }
-            Inline::Wrapper { content, .. } => {
+            Inline::Wrapper { content, .. } | Inline::SimpleField { content, .. } => {
                 for inline in content {
                     inline.write_text(out, skip_deleted);
                 }
@@ -830,6 +841,7 @@ fn collect_authors(content: &[Inline], into: &mut People) {
             Inline::Hyperlink(link) => collect_authors(&link.content, into),
             Inline::Structured(sdt) => collect_authors(&sdt.content, into),
             Inline::Wrapper { content, .. } => collect_authors(content, into),
+            Inline::SimpleField { content, .. } => collect_authors(content, into),
             Inline::Anchor(_) | Inline::Math(_) => {}
         }
     }

@@ -481,6 +481,28 @@ impl RunProps {
         }
     }
 
+    /// The size to draw at, with Word's own fallback for a document that never
+    /// states one.
+    ///
+    /// **`<w:docDefaults>` need not contain a `<w:sz>`.** Several of the
+    /// templates Microsoft ships with Office do not — `ChronologicalLetter.dotx`
+    /// states the theme fonts, a colour and three languages and no size at all —
+    /// and Word draws those documents at 10pt, which is its built-in default
+    /// from long before there were document defaults to state one in.
+    ///
+    /// A reader must not invent this: the difference between "the file says
+    /// 10pt" and "the file says nothing" has to survive to the writer. So the
+    /// fallback lives here, at the point of use.
+    pub fn font_size(&self) -> HalfPoint {
+        self.size.unwrap_or(HalfPoint(20))
+    }
+
+    /// The size a complex-script run is drawn at, which is its own property and
+    /// falls back to the Latin one rather than to the constant.
+    pub fn complex_font_size(&self) -> HalfPoint {
+        self.size_complex.or(self.size).unwrap_or(HalfPoint(20))
+    }
+
     pub fn bold(&self) -> bool {
         self.toggles.is_on(Toggle::Bold)
     }
