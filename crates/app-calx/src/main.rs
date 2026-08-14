@@ -13,7 +13,7 @@ use ss_formula::cond;
 use ss_formula::edit::{self, Change, Geometry, Patch};
 use ss_model::style::{BorderStyle, Pattern, Underline, VAlign};
 use ss_model::{Axis, CellRange, CellRef, Color, Fill, HAlign, Shift, Workbook};
-use ui_kit::{dialog, egui, paths, AppId, DocumentApp, Recent, CALX};
+use ui_kit::{dialog, egui, menu, paths, AppId, DocumentApp, Recent, CALX};
 
 use calx::grid::{self, Action, BorderPreset, Editor, Format, GridView, Mode};
 use calx::icons::{self, Icon};
@@ -359,6 +359,52 @@ enum Pending {
     /// current document is dealt with, so the user is not made to pick a file
     /// and only then told they might lose the one they have.
     Browse,
+}
+
+/// Something the command surface asked for.
+///
+/// The menus and the toolbar gather one of these and hand it back; the caller
+/// performs it once the layout is finished. Deferred rather than run where it
+/// is clicked because a command that ran mid-layout would change the document
+/// under the controls that have not been drawn yet — and because the layout
+/// closures hold `self`, while half of these need it again.
+///
+/// It also means the menu bar and the toolbar cannot drift: "Freeze Panes" in
+/// the View menu and the freeze button on the toolbar are the same `Command`,
+/// not two call sites that were meant to stay in step.
+#[derive(Debug, Clone, PartialEq)]
+enum Command {
+    /// Anything the grid already knows how to be asked for.
+    Do(Action),
+    /// A document-level move that has to clear the unsaved-changes prompt.
+    Guard(Pending),
+    Save,
+    SaveAs,
+    Exit,
+    Reopen(PathBuf),
+    ForgetRecent,
+    Sort(bool),
+    Filter(FilterCommand),
+    Size(Axis),
+    Find {
+        replacing: bool,
+    },
+    GoTo,
+    Names,
+    FormatCells(FormatTab),
+    Validation,
+    CondFormat,
+    Protect,
+    Data(DataTool),
+    Chart(ss_model::ChartKind),
+    Picture,
+    Note,
+    /// Paste needs the system clipboard, which the layout has no business
+    /// reading: the read happens where the command is performed.
+    Paste,
+    PasteSpecial,
+    Autosum,
+    Zoom(f64),
 }
 
 impl Calx {
@@ -2974,105 +3020,430 @@ impl Calx {
         }
     }
 
-    /// The command surface, in three rows: the document, the selection's
-    /// formatting, and what the cursor is sitting on.
+    /// The menu bar: every command the application has, in the places a
+    /// spreadsheet has kept them for thirty years.
     ///
-    /// Three rows rather than one because they answer different questions and
-    /// change at different rates. The first row is about the file and is the
-    /// same all day; the second changes with every click; the third is the
-    /// cell. A single row of forty controls makes the user re-scan all forty
-    /// to find the one that moved.
-    fn toolbar(&mut self, ui: &mut egui::Ui) {
-        let mut requested: Option<Action> = None;
-        let mut file: Option<Pending> = None;
-        let mut save = false;
-        let mut save_as = false;
-        let mut sort: Option<bool> = None;
-        let mut filter: Option<FilterCommand> = None;
-        let mut size: Option<Axis> = None;
-        let mut find_dialog = false;
-        let mut format_cells = false;
-        let mut names_dialog = false;
-        let mut validation_dialog = false;
-        let mut cond_dialog = false;
-        let mut reopen: Option<PathBuf> = None;
-        let mut forget_all = false;
-        let mut protect = false;
-        let mut data_tool: Option<DataTool> = None;
-        let mut chart: Option<ss_model::ChartKind> = None;
-        let mut picture = false;
+    /// A row of forty buttons is not a command surface, it is a wall, and the
+    /// only way through a wall of unlabelled groups is to read all forty labels
+    /// every time. Menus cost one click and give back three things a button row
+    /// cannot: a name over each group of commands, room for the ones nobody
+    /// needs weekly, and somewhere to print the keystroke beside the command —
+    /// which is the only way anybody ever stops using the menu.
+    fn menus(&mut self, ui: &mut egui::Ui) -> Option<Command> {
+        let mut command: Option<Command> = None;
 
-        ui.horizontal(|ui| {
-            if icons::button(ui, Icon::New, false, "New workbook (Ctrl+N)").clicked() {
-                file = Some(Pending::New);
-            }
-            if icons::button(ui, Icon::Open, false, "Open (Ctrl+O)").clicked() {
-                file = Some(Pending::Browse);
-            }
-            // Excel's File ▸ Recent, next to Open because that is what it is: a
-            // shortcut past the file dialog for the handful of workbooks
-            // somebody actually works in.
-            ui.add_enabled_ui(!self.recent.is_empty(), |ui| {
-                ui.menu_button("Recent", |ui| {
-                    for (n, path) in self.recent.paths().iter().enumerate() {
-                        // Numbered so that the list is a place rather than an
-                        // order that shuffles under the pointer, and titled with
-                        // the full path because two directories can hold a
-                        // "budget.xlsx" and only one of them is the right one.
-                        let entry = ui
-                            .button(format!("{}  {}", n + 1, name_of(path)))
-                            .on_hover_text(path.display().to_string());
-                        if entry.clicked() {
-                            reopen = Some(path.clone());
-                            ui.close();
+        // Everything the menus *read* is read first, into plain values. The
+        // layout closures below would otherwise hold a borrow of the sheet for
+        // as long as they run, and a menu that borrowed the sheet to ask
+        // whether it is frozen could not then ask to unfreeze it.
+        let cursor = self.grid.selection.cursor();
+        let sheet = self.doc.workbook.sheet(self.grid.sheet_index);
+        let merged = sheet.is_some_and(|s| s.merge_at(cursor).is_some());
+        let panes = sheet.and_then(|s| s.panes);
+        let frozen = panes.is_some_and(|p| p.frozen);
+        let split = panes.is_some_and(|p| !p.frozen);
+        let protected = sheet.is_some_and(|s| s.protection.is_some());
+        let filtering = sheet.and_then(|s| s.filter.as_ref());
+        let has_filter = filtering.is_some();
+        let constrained = filtering.is_some_and(|f| f.is_filtering());
+        let noted = sheet.is_some_and(|s| s.comments.iter().any(|note| note.at == cursor));
+        let undo = self.undo.last().map(|change| change.label.clone());
+        let redo = self.redo.last().map(|change| change.label.clone());
+        let recent: Vec<PathBuf> = self.recent.paths().to_vec();
+        let can_save = self.edited || self.path.is_none();
+        let zoom = self.grid.zoom;
+
+        menu::bar(ui, |ui| {
+            menu::top(ui, "File", |ui| {
+                if menu::item(ui, "New", "Ctrl+N").clicked() {
+                    command = Some(Command::Guard(Pending::New));
+                }
+                if menu::item(ui, "Open…", "Ctrl+O").clicked() {
+                    command = Some(Command::Guard(Pending::Browse));
+                }
+                ui.add_enabled_ui(!recent.is_empty(), |ui| {
+                    menu::sub(ui, "Open Recent", |ui| {
+                        for (n, path) in recent.iter().enumerate() {
+                            // Numbered, so the list is a *place* rather than an
+                            // order that shuffles under the pointer; and shown
+                            // in full on hover, because two directories can
+                            // both hold a "budget.xlsx" and only one is meant.
+                            let entry =
+                                menu::item(ui, &format!("{}   {}", n + 1, name_of(path)), "")
+                                    .on_hover_text(path.display().to_string());
+                            if entry.clicked() {
+                                command = Some(Command::Reopen(path.clone()));
+                            }
+                        }
+                        menu::sep(ui);
+                        if menu::item(ui, "Clear List", "").clicked() {
+                            command = Some(Command::ForgetRecent);
+                        }
+                    });
+                });
+                menu::sep(ui);
+                ui.add_enabled_ui(can_save, |ui| {
+                    if menu::item(ui, "Save", "Ctrl+S").clicked() {
+                        command = Some(Command::Save);
+                    }
+                });
+                if menu::item(ui, "Save As…", "Ctrl+Shift+S").clicked() {
+                    command = Some(Command::SaveAs);
+                }
+                menu::sep(ui);
+                if menu::item(ui, "Close", "Ctrl+W").clicked() {
+                    command = Some(Command::Guard(Pending::Close));
+                }
+                if menu::item(ui, "Exit", "Alt+F4").clicked() {
+                    command = Some(Command::Exit);
+                }
+            });
+
+            menu::top(ui, "Edit", |ui| {
+                // The label carries what would be undone, which is the whole
+                // value of an undo menu over an undo button: "Undo Sort" and
+                // "Undo Paste" are different offers.
+                ui.add_enabled_ui(undo.is_some(), |ui| {
+                    let label = match &undo {
+                        Some(what) => format!("Undo {what}"),
+                        None => "Undo".to_string(),
+                    };
+                    if menu::item(ui, &label, "Ctrl+Z").clicked() {
+                        command = Some(Command::Do(Action::Undo));
+                    }
+                });
+                ui.add_enabled_ui(redo.is_some(), |ui| {
+                    let label = match &redo {
+                        Some(what) => format!("Redo {what}"),
+                        None => "Redo".to_string(),
+                    };
+                    if menu::item(ui, &label, "Ctrl+Y").clicked() {
+                        command = Some(Command::Do(Action::Redo));
+                    }
+                });
+                menu::sep(ui);
+                if menu::item(ui, "Cut", "Ctrl+X").clicked() {
+                    command = Some(Command::Do(Action::Copy { cut: true }));
+                }
+                if menu::item(ui, "Copy", "Ctrl+C").clicked() {
+                    command = Some(Command::Do(Action::Copy { cut: false }));
+                }
+                if menu::item(ui, "Paste", "Ctrl+V").clicked() {
+                    command = Some(Command::Paste);
+                }
+                if menu::item(ui, "Paste Special…", "Ctrl+Alt+V").clicked() {
+                    command = Some(Command::PasteSpecial);
+                }
+                menu::sep(ui);
+                if menu::item(ui, "Clear Contents", "Delete").clicked() {
+                    command = Some(Command::Do(Action::Clear));
+                }
+                menu::sep(ui);
+                if menu::item(ui, "Find…", "Ctrl+F").clicked() {
+                    command = Some(Command::Find { replacing: false });
+                }
+                if menu::item(ui, "Replace…", "Ctrl+H").clicked() {
+                    command = Some(Command::Find { replacing: true });
+                }
+                if menu::item(ui, "Go To…", "Ctrl+G").clicked() {
+                    command = Some(Command::GoTo);
+                }
+            });
+
+            menu::top(ui, "View", |ui| {
+                if menu::check(ui, "Freeze Panes", "", frozen).clicked() {
+                    command = Some(Command::Do(Action::Freeze(!frozen)));
+                }
+                if menu::check(ui, "Split", "", split).clicked() {
+                    command = Some(Command::Do(Action::Split(!split)));
+                }
+                menu::sep(ui);
+                menu::sub(ui, "Zoom", |ui| {
+                    for percent in [50.0, 75.0, 100.0, 125.0, 150.0, 200.0] {
+                        let on = (zoom * 100.0 - percent).abs() < 0.5;
+                        if menu::check(ui, &format!("{percent:.0}%"), "", on).clicked() {
+                            command = Some(Command::Zoom(percent / 100.0));
                         }
                     }
-                    ui.separator();
-                    if ui.button("Clear list").clicked() {
-                        forget_all = true;
-                        ui.close();
+                });
+            });
+
+            menu::top(ui, "Insert", |ui| {
+                if menu::item(ui, "Rows", "Ctrl++").clicked() {
+                    command = Some(Command::Do(Action::Insert(Axis::Rows)));
+                }
+                if menu::item(ui, "Columns", "").clicked() {
+                    command = Some(Command::Do(Action::Insert(Axis::Columns)));
+                }
+                menu::sep(ui);
+                if menu::item(ui, "Delete Rows", "Ctrl+-").clicked() {
+                    command = Some(Command::Do(Action::Delete(Axis::Rows)));
+                }
+                if menu::item(ui, "Delete Columns", "").clicked() {
+                    command = Some(Command::Do(Action::Delete(Axis::Columns)));
+                }
+                menu::sep(ui);
+                menu::sub(ui, "Chart", |ui| {
+                    for (label, key, kind) in [
+                        ("Column", "Alt+F1", ss_model::ChartKind::Bar),
+                        ("Line", "", ss_model::ChartKind::Line),
+                        ("Pie", "", ss_model::ChartKind::Pie),
+                        ("Area", "", ss_model::ChartKind::Area),
+                    ] {
+                        if menu::item(ui, label, key).clicked() {
+                            command = Some(Command::Chart(kind));
+                        }
                     }
+                });
+                if menu::item(ui, "Picture…", "").clicked() {
+                    command = Some(Command::Picture);
+                }
+                menu::sep(ui);
+                if menu::item(ui, "Sum Above", "Alt+=").clicked() {
+                    command = Some(Command::Autosum);
+                }
+                let note = if noted { "Edit Note" } else { "Note" };
+                if menu::item(ui, note, "Shift+F2").clicked() {
+                    command = Some(Command::Note);
+                }
+            });
+
+            menu::top(ui, "Format", |ui| {
+                if menu::item(ui, "Cells…", "Ctrl+1").clicked() {
+                    command = Some(Command::FormatCells(FormatTab::default()));
+                }
+                menu::sep(ui);
+                menu::sub(ui, "Row", |ui| {
+                    if menu::item(ui, "Height…", "").clicked() {
+                        command = Some(Command::Size(Axis::Rows));
+                    }
+                    if menu::item(ui, "Fit to Contents", "").clicked() {
+                        command = Some(Command::Do(Action::AutoFit(Axis::Rows)));
+                    }
+                    menu::sep(ui);
+                    if menu::item(ui, "Hide", "Ctrl+9").clicked() {
+                        command = Some(Command::Do(Action::Visibility {
+                            axis: Axis::Rows,
+                            hide: true,
+                        }));
+                    }
+                    if menu::item(ui, "Unhide", "Ctrl+Shift+9").clicked() {
+                        command = Some(Command::Do(Action::Visibility {
+                            axis: Axis::Rows,
+                            hide: false,
+                        }));
+                    }
+                });
+                menu::sub(ui, "Column", |ui| {
+                    if menu::item(ui, "Width…", "").clicked() {
+                        command = Some(Command::Size(Axis::Columns));
+                    }
+                    if menu::item(ui, "Fit to Contents", "").clicked() {
+                        command = Some(Command::Do(Action::AutoFit(Axis::Columns)));
+                    }
+                    menu::sep(ui);
+                    if menu::item(ui, "Hide", "Ctrl+0").clicked() {
+                        command = Some(Command::Do(Action::Visibility {
+                            axis: Axis::Columns,
+                            hide: true,
+                        }));
+                    }
+                    if menu::item(ui, "Unhide", "Ctrl+Shift+0").clicked() {
+                        command = Some(Command::Do(Action::Visibility {
+                            axis: Axis::Columns,
+                            hide: false,
+                        }));
+                    }
+                });
+                menu::sep(ui);
+                if menu::check(ui, "Merge Cells", "", merged).clicked() {
+                    command = Some(Command::Do(Action::Merge(!merged)));
+                }
+                if menu::item(ui, "Conditional Formatting…", "").clicked() {
+                    command = Some(Command::CondFormat);
+                }
+                menu::sep(ui);
+                if menu::item(ui, "Clear Formatting", "").clicked() {
+                    command = Some(Command::Do(Action::Format(Format::Clear)));
+                }
+            });
+
+            menu::top(ui, "Data", |ui| {
+                if menu::item(ui, "Sort Ascending", "").clicked() {
+                    command = Some(Command::Sort(false));
+                }
+                if menu::item(ui, "Sort Descending", "").clicked() {
+                    command = Some(Command::Sort(true));
+                }
+                if menu::item(ui, "Sort…", "").clicked() {
+                    command = Some(Command::Filter(FilterCommand::SortDialog));
+                }
+                menu::sep(ui);
+                if menu::check(ui, "Filter", "Ctrl+Shift+L", has_filter).clicked() {
+                    command = Some(Command::Filter(FilterCommand::Toggle));
+                }
+                ui.add_enabled_ui(constrained, |ui| {
+                    if menu::item(ui, "Clear Filter", "").clicked() {
+                        command = Some(Command::Filter(FilterCommand::Clear));
+                    }
+                });
+                ui.add_enabled_ui(has_filter, |ui| {
+                    if menu::item(ui, "Reapply Filter", "").clicked() {
+                        command = Some(Command::Filter(FilterCommand::Reapply));
+                    }
+                });
+                menu::sep(ui);
+                if menu::item(ui, "Text to Columns…", "").clicked() {
+                    command = Some(Command::Data(DataTool::TextToColumns));
+                }
+                if menu::item(ui, "Remove Duplicates…", "").clicked() {
+                    command = Some(Command::Data(DataTool::RemoveDuplicates));
+                }
+            });
+
+            menu::top(ui, "Tools", |ui| {
+                if menu::check(ui, "Protect Sheet", "", protected).clicked() {
+                    command = Some(Command::Protect);
+                }
+                menu::sep(ui);
+                if menu::item(ui, "Data Validation…", "").clicked() {
+                    command = Some(Command::Validation);
+                }
+                if menu::item(ui, "Define Names…", "Ctrl+F3").clicked() {
+                    command = Some(Command::Names);
+                }
+            });
+        });
+
+        command
+    }
+
+    /// Performs one gathered [`Command`].
+    ///
+    /// One place, so that the toolbar and the menus cannot answer the same
+    /// command differently — and so that adding a command anywhere on the
+    /// surface is adding it in exactly two places, not five.
+    fn run(&mut self, ui: &egui::Ui, command: Command) {
+        match command {
+            Command::Do(action) => self.act(ui, action),
+            Command::Guard(what) => self.guard(what),
+            Command::Save => self.save(),
+            Command::SaveAs => self.save_as(),
+            Command::Exit => ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close),
+            Command::Reopen(path) => self.open_recent(path),
+            Command::ForgetRecent => {
+                self.recent.clear(CALX);
+                self.status = "Recent file list cleared".to_string();
+            }
+            Command::Sort(descending) => self.sort_quick(descending),
+            Command::Filter(FilterCommand::SortDialog) => self.open_sort_dialog(),
+            Command::Filter(FilterCommand::Toggle) => self.toggle_filter(),
+            Command::Filter(FilterCommand::Clear) => self.clear_filter(),
+            Command::Filter(FilterCommand::Reapply) => self.reapply_filter(),
+            Command::Size(axis) => self.open_size_dialog(axis),
+            Command::Find { replacing } => self.open_find(replacing),
+            Command::GoTo => {
+                self.dialog = Some(Dialog::GoTo {
+                    text: String::new(),
                 })
-                .response
-                .on_hover_text("Files opened recently");
-            });
-            ui.add_enabled_ui(self.edited || self.path.is_none(), |ui| {
-                save = icons::button(ui, Icon::Save, false, "Save (Ctrl+S)").clicked();
-            });
-            if ui
-                .button("Save as…")
-                .on_hover_text("Ctrl+Shift+S")
-                .clicked()
-            {
-                save_as = true;
             }
-            // Excel's File ▸ Close, and it asks about unsaved changes on the
-            // way out exactly as closing the window does.
-            if ui
-                .button("Close")
-                .on_hover_text("Close the workbook (Ctrl+W)")
-                .clicked()
-            {
-                file = Some(Pending::Close);
+            Command::Names => self.open_names(),
+            Command::FormatCells(tab) => {
+                self.dialog = Some(Dialog::FormatCells {
+                    look: Box::new(self.cursor_look()),
+                    tab,
+                })
             }
+            Command::Validation => self.open_validation(),
+            Command::CondFormat => self.open_cond_format(),
+            Command::Protect => self.toggle_protection(),
+            Command::Data(DataTool::TextToColumns) => self.open_text_to_columns(),
+            Command::Data(DataTool::RemoveDuplicates) => self.open_remove_duplicates(),
+            Command::Chart(kind) => self.insert_chart(kind),
+            Command::Picture => self.insert_picture(),
+            Command::Note => self.open_note(),
+            Command::Paste => {
+                let text = self.os_clipboard_text();
+                self.act(ui, Action::Paste(text));
+            }
+            Command::PasteSpecial => {
+                self.dialog = Some(Dialog::PasteSpecial {
+                    how: Default::default(),
+                })
+            }
+            Command::Autosum => self.autosum(),
+            Command::Zoom(factor) => self.grid.set_zoom(factor),
+        }
+    }
+
+    /// The command surface: menus, the quick-access icons, the formatting of
+    /// the selection, and what the cursor is sitting on.
+    ///
+    /// Four rows rather than one because they answer different questions and
+    /// change at different rates. The menus are the same all day; the icons are
+    /// the dozen commands used by the minute; the formatting row changes with
+    /// every click; the formula bar is the cell. A single row of forty controls
+    /// makes the user re-scan all forty to find the one that moved.
+    fn toolbar(&mut self, ui: &mut egui::Ui) {
+        let mut command = self.menus(ui);
+        rule(ui);
+        ui.add_space(2.0);
+
+        // Read before the row is laid out, for the same reason the menus read
+        // their state up front.
+        let cursor = self.grid.selection.cursor();
+        let sheet = self.doc.workbook.sheet(self.grid.sheet_index);
+        let merged = sheet.is_some_and(|s| s.merge_at(cursor).is_some());
+        let panes = sheet.and_then(|s| s.panes);
+        let frozen = panes.is_some_and(|p| p.frozen);
+        let has_filter = sheet.is_some_and(|s| s.filter.is_some());
+        let undo = self.undo.last().map(|change| change.label.clone());
+        let redo = self.redo.last().map(|change| change.label.clone());
+        let can_save = self.edited || self.path.is_none();
+
+        // The quick-access row. Icons only: a toolbar that mixes drawn glyphs
+        // with words reads as two toolbars that collided, and every word that
+        // used to be here is a command already named — more legibly, with its
+        // keystroke — one row up.
+        ui.horizontal(|ui| {
+            for (icon, tip, what) in [
+                (
+                    Icon::New,
+                    "New workbook (Ctrl+N)",
+                    Command::Guard(Pending::New),
+                ),
+                (Icon::Open, "Open (Ctrl+O)", Command::Guard(Pending::Browse)),
+            ] {
+                if icons::button(ui, icon, false, tip).clicked() {
+                    command = Some(what);
+                }
+            }
+            ui.add_enabled_ui(can_save, |ui| {
+                if icons::button(ui, Icon::Save, false, "Save (Ctrl+S)")
+                    .on_disabled_hover_text("Nothing has changed since the last save")
+                    .clicked()
+                {
+                    command = Some(Command::Save);
+                }
+            });
             separate(ui);
 
-            ui.add_enabled_ui(!self.undo.is_empty(), |ui| {
-                let tip = match self.undo.last() {
-                    Some(change) => format!("Undo {} (Ctrl+Z)", change.label),
+            ui.add_enabled_ui(undo.is_some(), |ui| {
+                let tip = match &undo {
+                    Some(what) => format!("Undo {what} (Ctrl+Z)"),
                     None => "Undo (Ctrl+Z)".to_string(),
                 };
                 if icons::button(ui, Icon::Undo, false, &tip).clicked() {
-                    requested = Some(Action::Undo);
+                    command = Some(Command::Do(Action::Undo));
                 }
             });
-            ui.add_enabled_ui(!self.redo.is_empty(), |ui| {
-                let tip = match self.redo.last() {
-                    Some(change) => format!("Redo {} (Ctrl+Y)", change.label),
+            ui.add_enabled_ui(redo.is_some(), |ui| {
+                let tip = match &redo {
+                    Some(what) => format!("Redo {what} (Ctrl+Y)"),
                     None => "Redo (Ctrl+Y)".to_string(),
                 };
                 if icons::button(ui, Icon::Redo, false, &tip).clicked() {
-                    requested = Some(Action::Redo);
+                    command = Some(Command::Do(Action::Redo));
                 }
             });
             separate(ui);
@@ -3100,300 +3471,90 @@ impl Calx {
                 ),
             ] {
                 if icons::button(ui, icon, false, tip).clicked() {
-                    requested = Some(action);
+                    command = Some(Command::Do(action));
                 }
             }
             separate(ui);
 
-            if ui
-                .button("Find…")
-                .on_hover_text("Find and replace (Ctrl+F, Ctrl+H)")
-                .clicked()
-            {
-                find_dialog = true;
-            }
-            if ui
-                .button("Names…")
-                .on_hover_text("Defined names (Ctrl+F3)")
-                .clicked()
-            {
-                names_dialog = true;
-            }
-            separate(ui);
-
-            // Excel's Home ▸ Cells ▸ Format, which is where anybody who has
-            // not found the draggable boundary goes looking.
-            ui.menu_button("Format", |ui| {
-                for (label, action) in [
-                    ("Fit column to contents", Action::AutoFit(Axis::Columns)),
-                    ("Fit row to contents", Action::AutoFit(Axis::Rows)),
-                    (
-                        "Hide columns",
-                        Action::Visibility {
-                            axis: Axis::Columns,
-                            hide: true,
-                        },
-                    ),
-                    (
-                        "Hide rows",
-                        Action::Visibility {
-                            axis: Axis::Rows,
-                            hide: true,
-                        },
-                    ),
-                    (
-                        "Unhide columns",
-                        Action::Visibility {
-                            axis: Axis::Columns,
-                            hide: false,
-                        },
-                    ),
-                    (
-                        "Unhide rows",
-                        Action::Visibility {
-                            axis: Axis::Rows,
-                            hide: false,
-                        },
-                    ),
-                ] {
-                    if ui.button(label).clicked() {
-                        requested = Some(action);
-                        ui.close();
-                    }
-                }
-                ui.separator();
-                if ui.button("Column width…").clicked() {
-                    size = Some(Axis::Columns);
-                    ui.close();
-                }
-                if ui.button("Row height…").clicked() {
-                    size = Some(Axis::Rows);
-                    ui.close();
-                }
-            });
-            separate(ui);
-
-            let merged = self
-                .doc
-                .workbook
-                .sheet(self.grid.sheet_index)
-                .is_some_and(|s| s.merge_at(self.grid.selection.cursor()).is_some());
             if icons::button(ui, Icon::Merge, merged, "Merge cells").clicked() {
-                requested = Some(Action::Merge(!merged));
+                command = Some(Command::Do(Action::Merge(!merged)));
             }
-            let panes = self
-                .doc
-                .workbook
-                .sheet(self.grid.sheet_index)
-                .and_then(|s| s.panes);
-            let frozen = panes.is_some_and(|p| p.frozen);
             let tip = if frozen {
                 "Unfreeze panes"
             } else {
                 "Freeze rows above and columns left of the cursor"
             };
             if icons::button(ui, Icon::Freeze, frozen, tip).clicked() {
-                requested = Some(Action::Freeze(!frozen));
+                command = Some(Command::Do(Action::Freeze(!frozen)));
             }
-            let protected = self
-                .doc
-                .workbook
-                .sheet(self.grid.sheet_index)
-                .is_some_and(|s| s.protection.is_some());
-            if ui
-                .selectable_label(protected, "Protect")
-                .on_hover_text(if protected {
-                    "Unprotect this sheet"
-                } else {
-                    "Protect this sheet against edits to its locked cells"
-                })
-                .clicked()
-            {
-                protect = true;
-            }
-            let split = panes.is_some_and(|p| !p.frozen);
-            let tip = if split {
-                "Remove the split"
-            } else {
-                "Split the sheet at the cursor, into panes that scroll on their own"
-            };
-            if ui
-                .selectable_label(split, "Split")
-                .on_hover_text(tip)
-                .clicked()
-            {
-                requested = Some(Action::Split(!split));
-            }
-            if icons::button(ui, Icon::Sum, false, "Sum the cells above").clicked() {
-                self.autosum();
+            if icons::button(ui, Icon::Sum, false, "Sum the cells above (Alt+=)").clicked() {
+                command = Some(Command::Autosum);
             }
             separate(ui);
 
-            // Sort & Filter. `sort` and `filter` are deferred rather than run
-            // inside the closure because both need `self` mutably and the
-            // toolbar has it borrowed for the layout.
             for (icon, tip, descending) in [
                 (Icon::SortAscending, "Sort A to Z (smallest first)", false),
                 (Icon::SortDescending, "Sort Z to A (largest first)", true),
             ] {
                 if icons::button(ui, icon, false, tip).clicked() {
-                    sort = Some(descending);
+                    command = Some(Command::Sort(descending));
                 }
             }
-            if ui
-                .button("Sort…")
-                .on_hover_text("Sort by up to three columns")
-                .clicked()
-            {
-                filter = Some(FilterCommand::SortDialog);
-            }
-            let filtering = self
-                .doc
-                .workbook
-                .sheet(self.grid.sheet_index)
-                .and_then(|s| s.filter.as_ref());
-            let has_filter = filtering.is_some();
-            let constrained = filtering.is_some_and(|f| f.is_filtering());
-            if icons::button(
-                ui,
-                Icon::Filter,
-                has_filter,
-                if has_filter {
-                    "Remove the filter arrows"
-                } else {
-                    "Filter (arrows on the heading row)"
-                },
-            )
-            .clicked()
-            {
-                filter = Some(FilterCommand::Toggle);
-            }
-            ui.add_enabled_ui(constrained, |ui| {
-                if ui
-                    .button("Clear")
-                    .on_hover_text("Show every row, keeping the arrows")
-                    .on_disabled_hover_text("Nothing is being filtered out")
-                    .clicked()
-                {
-                    filter = Some(FilterCommand::Clear);
-                }
-            });
-            ui.add_enabled_ui(has_filter, |ui| {
-                if ui
-                    .button("Reapply")
-                    .on_hover_text("Re-run the filter over the data as it is now")
-                    .clicked()
-                {
-                    filter = Some(FilterCommand::Reapply);
-                }
-            });
-            separate(ui);
-            ui.menu_button("Insert", |ui| {
-                for (label, tip, kind) in [
-                    (
-                        "Column chart",
-                        "Chart the selection (Alt+F1)",
-                        ss_model::ChartKind::Bar,
-                    ),
-                    (
-                        "Line chart",
-                        "Chart the selection",
-                        ss_model::ChartKind::Line,
-                    ),
-                    ("Pie chart", "Chart the selection", ss_model::ChartKind::Pie),
-                    (
-                        "Area chart",
-                        "Chart the selection",
-                        ss_model::ChartKind::Area,
-                    ),
-                ] {
-                    if ui.button(label).on_hover_text(tip).clicked() {
-                        chart = Some(kind);
-                        ui.close();
-                    }
-                }
-                ui.separator();
-                if ui
-                    .button("Picture…")
-                    .on_hover_text("Put an image on the sheet")
-                    .clicked()
-                {
-                    picture = true;
-                    ui.close();
-                }
-            });
-            ui.menu_button("Data", |ui| {
-                if ui
-                    .button("Text to Columns…")
-                    .on_hover_text("Cut one column of text into several")
-                    .clicked()
-                {
-                    data_tool = Some(DataTool::TextToColumns);
-                    ui.close();
-                }
-                if ui
-                    .button("Remove Duplicates…")
-                    .on_hover_text("Keep the first of every repeated row")
-                    .clicked()
-                {
-                    data_tool = Some(DataTool::RemoveDuplicates);
-                    ui.close();
-                }
-            });
-            if ui
-                .button("Validate…")
-                .on_hover_text("Data validation for the selection")
-                .clicked()
-            {
-                validation_dialog = true;
-            }
-            if ui
-                .button("Cond. format…")
-                .on_hover_text("Conditional formatting rules")
-                .clicked()
-            {
-                cond_dialog = true;
+            let tip = if has_filter {
+                "Remove the filter arrows (Ctrl+Shift+L)"
+            } else {
+                "Filter — arrows on the heading row (Ctrl+Shift+L)"
+            };
+            if icons::button(ui, Icon::Filter, has_filter, tip).clicked() {
+                command = Some(Command::Filter(FilterCommand::Toggle));
             }
         });
 
-        // The formatting row.
+        // The formatting row: what the cursor's cell looks like, and every way
+        // to change it that is worth a permanent place on the screen.
         ui.horizontal(|ui| {
             let look = self.cursor_look();
+            let theme = self.doc.workbook.styles.theme();
 
             let name = look.font.name.clone();
-            egui::ComboBox::from_id_salt("calx-font")
-                .selected_text(&name)
-                .width(130.0)
-                .show_ui(ui, |ui| {
-                    // The workbook's own font first, so a document set in a
-                    // face nobody offers can still be got back to.
-                    let mut offered: Vec<&str> = FONT_NAMES.to_vec();
-                    if !offered.contains(&name.as_str()) {
-                        offered.insert(0, name.as_str());
-                    }
-                    for choice in offered {
-                        if ui.selectable_label(choice == name, choice).clicked() {
-                            requested = Some(Action::Format(Format::FontName(choice.to_string())));
+            field(ui, |ui| {
+                egui::ComboBox::from_id_salt("calx-font")
+                    .selected_text(&name)
+                    .width(140.0)
+                    .show_ui(ui, |ui| {
+                        // The workbook's own font first, so a document set in a
+                        // face nobody offers can still be got back to.
+                        let mut offered: Vec<&str> = FONT_NAMES.to_vec();
+                        if !offered.contains(&name.as_str()) {
+                            offered.insert(0, name.as_str());
                         }
-                    }
-                });
+                        for choice in offered {
+                            if ui.selectable_label(choice == name, choice).clicked() {
+                                command = Some(Command::Do(Action::Format(Format::FontName(
+                                    choice.to_string(),
+                                ))));
+                            }
+                        }
+                    });
+            });
 
             let mut size = look.font.size;
-            if ui
-                .add(
+            let changed = field(ui, |ui| {
+                ui.add(
                     egui::DragValue::new(&mut size)
                         .speed(0.5)
                         .range(1.0..=409.0)
                         .fixed_decimals(0),
                 )
-                .on_hover_text("Font size")
+                .on_hover_text("Font size — drag, or click to type")
                 .changed()
-            {
-                requested = Some(Action::Format(Format::FontSize(size)));
+            });
+            if changed {
+                command = Some(Command::Do(Action::Format(Format::FontSize(size))));
             }
             separate(ui);
 
-            for (letter, command) in [
+            for (letter, apply) in [
                 (bold_letter("B", look.font.bold), Format::Bold),
                 (italic_letter("I", look.font.italic), Format::Italic),
                 (
@@ -3418,46 +3579,44 @@ impl Calx {
                 ),
             ] {
                 if icons::letter(ui, letter).clicked() {
-                    requested = Some(Action::Format(command));
+                    command = Some(Command::Do(Action::Format(apply)));
                 }
             }
             separate(ui);
 
-            let theme = self.doc.workbook.styles.theme();
-            let mut text_rgb = look.font.color.resolve(theme).unwrap_or([0, 0, 0]);
-            ui.horizontal(|ui| {
-                // The icon *applies* the colour beside it, as Excel's A-with-
-                // a-bar does; the swatch is where a different one is picked.
-                if icons::button(ui, Icon::TextColor, false, "Apply this text colour").clicked() {
-                    let [r, g, b] = text_rgb;
-                    requested = Some(Action::Format(Format::TextColor(Some(Color::rgb(r, g, b)))));
-                }
-                if ui
-                    .color_edit_button_srgb(&mut text_rgb)
-                    .on_hover_text("Text colour")
-                    .changed()
-                {
-                    let [r, g, b] = text_rgb;
-                    requested = Some(Action::Format(Format::TextColor(Some(Color::rgb(r, g, b)))));
-                }
-            });
-            let mut fill_rgb = look.fill.shade(theme).unwrap_or([255, 255, 255]);
-            ui.horizontal(|ui| {
-                if icons::button(ui, Icon::FillColor, false, "Apply this fill colour").clicked() {
-                    let [r, g, b] = fill_rgb;
-                    requested = Some(Action::Format(Format::Fill(Some(Color::rgb(r, g, b)))));
-                }
-                if ui
-                    .color_edit_button_srgb(&mut fill_rgb)
-                    .on_hover_text("Fill colour")
-                    .changed()
-                {
-                    let [r, g, b] = fill_rgb;
-                    requested = Some(Action::Format(Format::Fill(Some(Color::rgb(r, g, b)))));
-                }
-            });
-            if ui.small_button("×").on_hover_text("No fill").clicked() {
-                requested = Some(Action::Format(Format::Fill(None)));
+            // Excel's split colour controls: the glyph applies the colour shown
+            // in the band beneath it, and the chevron is where a different one
+            // is chosen. Two halves rather than one because applying the same
+            // colour to a dozen ranges is the common case, and it should not
+            // cost a trip through a palette every time.
+            let text_rgb = look.font.color.resolve(theme).unwrap_or([0, 0, 0]);
+            if icons::color_button(ui, Icon::TextColor, text_rgb, "Apply this text colour")
+                .clicked()
+            {
+                let [r, g, b] = text_rgb;
+                command = Some(Command::Do(Action::Format(Format::TextColor(Some(
+                    Color::rgb(r, g, b),
+                )))));
+            }
+            let arrow = icons::arrow(ui, "Choose a text colour");
+            if let Some(chosen) = menu::under(&arrow, |ui| palette(ui, "Automatic")).flatten() {
+                let color = chosen.map(|[r, g, b]| Color::rgb(r, g, b));
+                command = Some(Command::Do(Action::Format(Format::TextColor(color))));
+            }
+
+            let fill_rgb = look.fill.shade(theme).unwrap_or([255, 255, 255]);
+            if icons::color_button(ui, Icon::FillColor, fill_rgb, "Apply this fill colour")
+                .clicked()
+            {
+                let [r, g, b] = fill_rgb;
+                command = Some(Command::Do(Action::Format(Format::Fill(Some(Color::rgb(
+                    r, g, b,
+                ))))));
+            }
+            let arrow = icons::arrow(ui, "Choose a fill colour");
+            if let Some(chosen) = menu::under(&arrow, |ui| palette(ui, "No Fill")).flatten() {
+                let color = chosen.map(|[r, g, b]| Color::rgb(r, g, b));
+                command = Some(Command::Do(Action::Format(Format::Fill(color))));
             }
             separate(ui);
 
@@ -3468,143 +3627,101 @@ impl Calx {
             ] {
                 let on = look.alignment.horizontal == align;
                 if icons::button(ui, icon, on, tip).clicked() {
-                    requested = Some(Action::Format(Format::Align(align)));
+                    command = Some(Command::Do(Action::Format(Format::Align(align))));
                 }
             }
             if icons::button(ui, Icon::Wrap, look.alignment.wrap, "Wrap text").clicked() {
-                requested = Some(Action::Format(Format::Wrap));
+                command = Some(Command::Do(Action::Format(Format::Wrap)));
             }
             for (icon, by, tip) in [
                 (Icon::IndentLess, -1, "Decrease indent"),
                 (Icon::IndentMore, 1, "Increase indent"),
             ] {
                 if icons::button(ui, icon, false, tip).clicked() {
-                    requested = Some(Action::Format(Format::Indent(by)));
+                    command = Some(Command::Do(Action::Format(Format::Indent(by))));
                 }
             }
             separate(ui);
 
-            ui.menu_button("Borders", |ui| {
-                for (label, preset) in [
-                    ("All borders", BorderPreset::All),
-                    ("Outline", BorderPreset::Outline),
-                    ("Thick outline", BorderPreset::Thick),
-                    ("Bottom", BorderPreset::Bottom),
-                    ("Top", BorderPreset::Top),
-                    ("Left", BorderPreset::Left),
-                    ("Right", BorderPreset::Right),
-                    ("No border", BorderPreset::None),
+            let borders = icons::menu_button(ui, Icon::Borders, "Borders");
+            if let Some(Some(preset)) = menu::under(&borders, |ui| {
+                let mut chosen = None;
+                for (label, key, preset) in [
+                    ("All Borders", "", BorderPreset::All),
+                    ("Outline", "Ctrl+Shift+&", BorderPreset::Outline),
+                    ("Thick Outline", "", BorderPreset::Thick),
+                    ("Bottom", "", BorderPreset::Bottom),
+                    ("Top", "", BorderPreset::Top),
+                    ("Left", "", BorderPreset::Left),
+                    ("Right", "", BorderPreset::Right),
                 ] {
-                    if ui.button(label).clicked() {
-                        requested = Some(Action::Format(Format::Border(preset)));
-                        ui.close();
+                    if menu::item(ui, label, key).clicked() {
+                        chosen = Some(preset);
                     }
                 }
-            });
+                menu::sep(ui);
+                if menu::item(ui, "No Border", "Ctrl+Shift+_").clicked() {
+                    chosen = Some(BorderPreset::None);
+                }
+                chosen
+            }) {
+                command = Some(Command::Do(Action::Format(Format::Border(preset))));
+            }
+            separate(ui);
 
-            egui::ComboBox::from_id_salt("calx-number-format")
-                .selected_text(short_format_name(&look.number_format))
-                .width(120.0)
-                .show_ui(ui, |ui| {
-                    for (label, code) in NUMBER_FORMATS {
-                        if ui
-                            .selectable_label(look.number_format == *code, *label)
-                            .clicked()
-                        {
-                            requested =
-                                Some(Action::Format(Format::NumberFormat(code.to_string())));
+            let number = look.number_format.clone();
+            field(ui, |ui| {
+                egui::ComboBox::from_id_salt("calx-number-format")
+                    .selected_text(short_format_name(&number))
+                    .width(126.0)
+                    .show_ui(ui, |ui| {
+                        for (label, code) in NUMBER_FORMATS {
+                            if ui.selectable_label(number == *code, *label).clicked() {
+                                command = Some(Command::Do(Action::Format(Format::NumberFormat(
+                                    code.to_string(),
+                                ))));
+                            }
                         }
-                    }
-                });
+                    });
+            });
             for (label, tip, code) in [
                 ("$", "Currency", "\"$\"#,##0.00"),
                 ("%", "Percent", "0.00%"),
-                (",", "Thousands", "#,##0.00"),
+                (",", "Thousands separator", "#,##0.00"),
             ] {
-                if ui.small_button(label).on_hover_text(tip).clicked() {
-                    requested = Some(Action::Format(Format::NumberFormat(code.to_string())));
+                if icons::letter(
+                    ui,
+                    icons::Letter {
+                        text: label,
+                        tip,
+                        ..icons::Letter::plain()
+                    },
+                )
+                .clicked()
+                {
+                    command = Some(Command::Do(Action::Format(Format::NumberFormat(
+                        code.to_string(),
+                    ))));
                 }
             }
-            if ui
-                .button("Clear")
-                .on_hover_text("Clear formatting")
+            separate(ui);
+
+            // Excel's dialog launcher: the whole of Format Cells, for the parts
+            // of it a toolbar has no room to hold.
+            if word_button(ui, "More…")
+                .on_hover_text("Format Cells (Ctrl+1)")
                 .clicked()
             {
-                requested = Some(Action::Format(Format::Clear));
-            }
-            if ui
-                .button("More…")
-                .on_hover_text("Format cells (Ctrl+1)")
-                .clicked()
-            {
-                format_cells = true;
+                command = Some(Command::FormatCells(FormatTab::default()));
             }
         });
 
         self.formula_bar(ui);
         self.chart_bar(ui);
 
-        if let Some(action) = requested {
+        if let Some(command) = command {
             let ui = &*ui;
-            self.act(ui, action);
-        }
-        if find_dialog {
-            self.open_find(false);
-        }
-        if format_cells {
-            self.open_format_cells();
-        }
-        if names_dialog {
-            self.open_names();
-        }
-        if validation_dialog {
-            self.open_validation();
-        }
-        if cond_dialog {
-            self.open_cond_format();
-        }
-        if let Some(axis) = size {
-            self.open_size_dialog(axis);
-        }
-        if let Some(descending) = sort {
-            self.sort_quick(descending);
-        }
-        match filter {
-            Some(FilterCommand::SortDialog) => self.open_sort_dialog(),
-            Some(FilterCommand::Toggle) => self.toggle_filter(),
-            Some(FilterCommand::Clear) => self.clear_filter(),
-            Some(FilterCommand::Reapply) => self.reapply_filter(),
-            None => {}
-        }
-        if save {
-            self.save();
-        }
-        if save_as {
-            self.save_as();
-        }
-        if let Some(what) = file {
-            self.guard(what);
-        }
-        if let Some(path) = reopen {
-            self.open_recent(path);
-        }
-        if forget_all {
-            self.recent.clear(CALX);
-            self.status = "Recent file list cleared".to_string();
-        }
-        if protect {
-            self.toggle_protection();
-        }
-        match data_tool {
-            Some(DataTool::TextToColumns) => self.open_text_to_columns(),
-            Some(DataTool::RemoveDuplicates) => self.open_remove_duplicates(),
-            None => {}
-        }
-        if let Some(kind) = chart {
-            self.insert_chart(kind);
-        }
-        if picture {
-            self.insert_picture();
+            self.run(ui, command);
         }
     }
 
@@ -3691,6 +3808,7 @@ impl Calx {
                 }
             });
             ui.label(egui::RichText::new("fx").italics().weak());
+            ui.separator();
 
             let width = ui.available_width();
             match &mut self.grid.editor {
@@ -3720,12 +3838,23 @@ impl Calx {
                 None => {
                     let source =
                         grid::source_text(&self.doc.workbook, self.grid.sheet_index, cursor);
-                    let response = ui.add_sized(
-                        [width, 22.0],
-                        egui::Label::new(egui::RichText::new(source).monospace())
-                            .truncate()
-                            .sense(egui::Sense::click()),
-                    );
+                    // Laid out left to right rather than sized: `add_sized`
+                    // *centres* what it is given, so a short formula in a wide
+                    // bar drifted into the middle of the window, nowhere near
+                    // the caret that appears the moment it is clicked.
+                    let response = ui
+                        .allocate_ui_with_layout(
+                            egui::vec2(width, 22.0),
+                            egui::Layout::left_to_right(egui::Align::Center),
+                            |ui| {
+                                ui.add(
+                                    egui::Label::new(egui::RichText::new(source).monospace())
+                                        .truncate()
+                                        .sense(egui::Sense::click()),
+                                )
+                            },
+                        )
+                        .inner;
                     if response.clicked() {
                         open_editor = true;
                     }
@@ -6507,6 +6636,138 @@ fn separate(ui: &mut egui::Ui) {
     ui.add_space(3.0);
     ui.separator();
     ui.add_space(3.0);
+}
+
+/// A toolbar control that is a word rather than a glyph.
+///
+/// Given an edge, because the shared theme draws inactive buttons flat and a
+/// flat word on a flat bar is prose. The glyph buttons can do without one —
+/// they are already obviously controls — but "More…" without a box round it is
+/// just the word "more".
+fn word_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
+    ui.add(
+        egui::Button::new(label)
+            .min_size(egui::vec2(0.0, icons::SIZE + 4.0))
+            .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(0xBC))),
+    )
+}
+
+/// A hairline across the whole width, under the menu bar.
+///
+/// The menus and the toolbar are two different things — one is every command
+/// there is, the other is the dozen used by the minute — and without a line
+/// between them they read as one crowded block of chrome.
+fn rule(ui: &mut egui::Ui) {
+    let width = ui.available_width();
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 5.0), egui::Sense::hover());
+    if ui.is_rect_visible(rect) {
+        ui.painter().hline(
+            rect.x_range(),
+            rect.center().y.round() + 0.5,
+            egui::Stroke::new(1.0, egui::Color32::from_gray(0xDC)),
+        );
+    }
+}
+
+/// Draws `add` with the look of a form field rather than a toolbar button.
+///
+/// The shared theme paints inactive controls flat and borderless, which is
+/// right for forty buttons and wrong for the three things on the row that are
+/// *inputs*. A combo box with no edge is a word floating on the chrome, and
+/// nothing about it says it can be opened; a number with no box around it does
+/// not look like something you are allowed to change.
+fn field<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    ui.scope(|ui| {
+        let v = &mut ui.style_mut().visuals;
+        let edge = egui::Stroke::new(1.0, egui::Color32::from_gray(0xBC));
+        let lit = egui::Stroke::new(1.0, egui::Color32::from_gray(0x8C));
+        for (widget, stroke) in [
+            (&mut v.widgets.inactive, edge),
+            (&mut v.widgets.hovered, lit),
+            (&mut v.widgets.active, lit),
+            (&mut v.widgets.open, lit),
+        ] {
+            widget.weak_bg_fill = egui::Color32::WHITE;
+            widget.bg_fill = egui::Color32::WHITE;
+            widget.bg_stroke = stroke;
+        }
+        add(ui)
+    })
+    .inner
+}
+
+/// The colours a colour menu offers, as Excel arranges them: greys along the
+/// top, the standard hues below, and a lighter tint of each under that.
+const PALETTE: [[u32; 10]; 3] = [
+    [
+        0x000000, 0x262626, 0x404040, 0x595959, 0x808080, 0xA6A6A6, 0xBFBFBF, 0xD9D9D9, 0xF2F2F2,
+        0xFFFFFF,
+    ],
+    [
+        0xC00000, 0xFF0000, 0xFFC000, 0xFFFF00, 0x92D050, 0x00B050, 0x00B0F0, 0x0070C0, 0x002060,
+        0x7030A0,
+    ],
+    [
+        0xE6B8B7, 0xFF9999, 0xFFE699, 0xFFFF99, 0xC6E0B4, 0xA9D08E, 0x9BC2E6, 0x9DC3E6, 0x8EA9DB,
+        0xB4A7D6,
+    ],
+];
+
+/// A colour menu. `None` means the way *out* of colour — "Automatic" for text,
+/// "No Fill" for a background — which is a real answer and not the absence of
+/// one, so it goes at the top where it can be found.
+///
+/// Returns `Some(choice)` only on the frame something is picked.
+fn palette(ui: &mut egui::Ui, none: &str) -> Option<Option<[u8; 3]>> {
+    let mut picked = None;
+    if menu::item(ui, none, "").clicked() {
+        picked = Some(None);
+    }
+    menu::sep(ui);
+    for row in PALETTE {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 3.0;
+            for packed in row {
+                let rgb = [(packed >> 16) as u8, (packed >> 8) as u8, packed as u8];
+                if swatch(ui, rgb).clicked() {
+                    picked = Some(Some(rgb));
+                    ui.close();
+                }
+            }
+        });
+    }
+    picked
+}
+
+/// One colour in the palette.
+///
+/// Outlined whatever it holds, because white and near-white are colours a
+/// spreadsheet uses constantly and an unoutlined white swatch is a gap in the
+/// grid rather than a choice.
+fn swatch(ui: &mut egui::Ui, rgb: [u8; 3]) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::click());
+    if ui.is_rect_visible(rect) {
+        let [r, g, b] = rgb;
+        let hovered = response.hovered();
+        let inner = if hovered { rect.shrink(2.0) } else { rect };
+        ui.painter()
+            .rect_filled(inner, 2.0, egui::Color32::from_rgb(r, g, b));
+        ui.painter().rect_stroke(
+            inner,
+            2.0,
+            egui::Stroke::new(1.0, egui::Color32::from_gray(0x99)),
+            egui::StrokeKind::Inside,
+        );
+        if hovered {
+            ui.painter().rect_stroke(
+                rect,
+                3.0,
+                egui::Stroke::new(1.5, egui::Color32::from_rgb(0x21, 0x73, 0x46)),
+                egui::StrokeKind::Inside,
+            );
+        }
+    }
+    response
 }
 
 /// One sheet tab.

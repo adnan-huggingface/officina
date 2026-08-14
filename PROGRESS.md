@@ -41,7 +41,19 @@ Excel, and the twelve tasks that closed what the audit found)
   unfinished. Use `dialog::confirm` / `dialog::row` / `dialog::button` for a
   form and `dialog::message` for a box; do not reach for `ui.button` inside a
   modal.
-- Workspace total is **904 tests**, all green; `cargo clippy --workspace
+- **There is a menu bar** — File, Edit, View, Insert, Format, Data, Tools —
+  drawn by `ui_kit::menu`, and it is where every command in the application
+  lives with its keystroke printed beside it. Finding 34. The toolbar under it
+  is now icons only; the fifteen bare word-buttons that used to run across the
+  top were the whole of the complaint. Two things to know before touching it:
+  every command goes through the `Command` enum and `Calx::run`, so the menu
+  and the toolbar cannot answer the same command differently; and **nothing
+  inside a menu may ask for `ui.available_width()`** — a popup measures itself
+  in a pass where that is the width of the screen, which is what made the first
+  File menu 700 points wide. `menu::sep` guards it with `ui.is_sizing_pass()`,
+  and `menu::tests::a_rule_does_not_get_a_vote_on_how_wide_the_menu_is` keeps
+  it that way.
+- Workspace total is **907 tests**, all green; `cargo clippy --workspace
   --all-targets -- -D warnings` and `cargo fmt --all --check` are both clean;
   `cargo xtask fidelity` is check 1, 27 of 27 and check 2, 12 of 12.
 - The release binary at `target/release/calx.exe` is current with this state.

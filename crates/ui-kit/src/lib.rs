@@ -8,6 +8,7 @@
 
 pub mod dialog;
 pub mod fonts;
+pub mod menu;
 pub mod paths;
 pub mod recent;
 pub mod shell;

@@ -76,6 +76,108 @@ pub fn button(ui: &mut egui::Ui, icon: Icon, on: bool, tip: &str) -> egui::Respo
     response.on_hover_text(tip)
 }
 
+/// The left half of Excel's colour control: the glyph, with a band of the
+/// colour under it that the button would apply.
+///
+/// The band is the whole point. A colour button with no band is a button whose
+/// effect you find out by pressing it, which for a colour is one undo per
+/// guess; with the band, the toolbar answers "what will this do" before it is
+/// touched. Pair it with [`arrow`] for the half that changes the colour.
+pub fn color_button(ui: &mut egui::Ui, icon: Icon, rgb: [u8; 3], tip: &str) -> egui::Response {
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(SIZE + 6.0, SIZE + 4.0), egui::Sense::click());
+    if ui.is_rect_visible(rect) {
+        let visuals = ui.style().interact(&response);
+        ui.painter().rect(
+            rect,
+            visuals.corner_radius,
+            visuals.weak_bg_fill,
+            egui::Stroke::NONE,
+            egui::StrokeKind::Inside,
+        );
+        // The glyph sits high so that the band has room to be a band rather
+        // than an underline nobody notices.
+        let glyph = egui::Rect::from_min_max(rect.min, egui::pos2(rect.max.x, rect.max.y - 5.0));
+        draw(ui.painter(), icon, glyph, visuals.fg_stroke.color);
+        let band = egui::Rect::from_min_max(
+            egui::pos2(rect.left() + 4.0, rect.bottom() - 6.0),
+            egui::pos2(rect.right() - 4.0, rect.bottom() - 2.0),
+        );
+        let [r, g, b] = rgb;
+        ui.painter()
+            .rect_filled(band, 1.0, egui::Color32::from_rgb(r, g, b));
+        // White on white would be an invisible band, and "no fill" is a real
+        // and common answer, so the band is always outlined.
+        ui.painter().rect_stroke(
+            band,
+            1.0,
+            egui::Stroke::new(1.0, egui::Color32::from_gray(0x8A)),
+            egui::StrokeKind::Inside,
+        );
+    }
+    response.on_hover_text(tip)
+}
+
+/// A toolbar control that opens a menu: the glyph, and the chevron that says
+/// so.
+///
+/// The chevron is not decoration. A dropdown drawn as a plain icon button is
+/// indistinguishable from a command, so the user learns what it is by clicking
+/// it and being surprised.
+pub fn menu_button(ui: &mut egui::Ui, icon: Icon, tip: &str) -> egui::Response {
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(SIZE + 17.0, SIZE + 4.0), egui::Sense::click());
+    if ui.is_rect_visible(rect) {
+        let visuals = ui.style().interact(&response);
+        ui.painter().rect(
+            rect,
+            visuals.corner_radius,
+            visuals.weak_bg_fill,
+            egui::Stroke::NONE,
+            egui::StrokeKind::Inside,
+        );
+        let glyph = egui::Rect::from_min_max(rect.min, egui::pos2(rect.max.x - 11.0, rect.max.y));
+        draw(ui.painter(), icon, glyph, visuals.fg_stroke.color);
+        chevron(
+            ui.painter(),
+            egui::pos2(rect.right() - 7.0, rect.center().y),
+            visuals.fg_stroke.color,
+        );
+    }
+    response.on_hover_text(tip)
+}
+
+/// The right half of a split control: a chevron, and nothing else.
+pub fn arrow(ui: &mut egui::Ui, tip: &str) -> egui::Response {
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(13.0, SIZE + 4.0), egui::Sense::click());
+    if ui.is_rect_visible(rect) {
+        let visuals = ui.style().interact(&response);
+        ui.painter().rect(
+            rect,
+            visuals.corner_radius,
+            visuals.weak_bg_fill,
+            egui::Stroke::NONE,
+            egui::StrokeKind::Inside,
+        );
+        chevron(ui.painter(), rect.center(), visuals.fg_stroke.color);
+    }
+    response.on_hover_text(tip)
+}
+
+/// The little downward triangle that means "there is a list behind this".
+fn chevron(painter: &egui::Painter, at: egui::Pos2, color: egui::Color32) {
+    painter.add(egui::Shape::convex_polygon(
+        vec![
+            egui::pos2(at.x - 3.5, at.y - 1.5),
+            egui::pos2(at.x + 3.5, at.y - 1.5),
+            egui::pos2(at.x, at.y + 2.5),
+        ],
+        color,
+        egui::Stroke::NONE,
+    ));
+}
+
 /// A letter button that wears the formatting it applies.
 ///
 /// The button for bold is the letter B *in the bold face*, drawn from the same
@@ -316,17 +418,47 @@ fn draw(painter: &egui::Painter, icon: Icon, rect: egui::Rect, color: egui::Colo
             painter.hline(l..=r, seam_y, stroke);
             painter.vline(seam_x, t..=b, stroke);
         }
-        Icon::TextColor | Icon::FillColor => {
+        Icon::TextColor => {
             let font =
                 egui::FontId::new(13.0, ui_kit::fonts::face(ui_kit::Family::Sans, true, false));
-            let label = if icon == Icon::TextColor { "A" } else { "▪" };
             painter.text(
-                egui::pos2(box_.center().x, t + h * 0.38),
+                egui::pos2(box_.center().x, t + h * 0.36),
                 egui::Align2::CENTER_CENTER,
-                label,
+                "A",
                 font,
                 color,
             );
+        }
+        Icon::FillColor => {
+            // A bucket, tipped as if pouring. The character that used to stand
+            // in for this — `▪` — drew a three-pixel square: technically a
+            // filled shape, and unreadable at any size anyone builds a toolbar
+            // out of.
+            let bucket = vec![
+                egui::pos2(l + w * 0.12, t + h * 0.30),
+                egui::pos2(r - w * 0.12, t + h * 0.30),
+                egui::pos2(r - w * 0.30, t + h * 0.80),
+                egui::pos2(l + w * 0.30, t + h * 0.80),
+            ];
+            painter.add(egui::Shape::convex_polygon(
+                bucket,
+                color.gamma_multiply(0.22),
+                thin,
+            ));
+            // The handle: half a loop over the mouth.
+            let mouth = egui::Rect::from_min_max(
+                egui::pos2(l + w * 0.24, t + h * 0.04),
+                egui::pos2(r - w * 0.24, t + h * 0.30),
+            );
+            let mut arc = Vec::new();
+            for step in 0..=10 {
+                let angle = std::f32::consts::PI * step as f32 / 10.0;
+                arc.push(egui::pos2(
+                    mouth.center().x - angle.cos() * mouth.width() / 2.0,
+                    mouth.bottom() - angle.sin() * mouth.height(),
+                ));
+            }
+            painter.add(egui::Shape::line(arc, thin));
         }
         Icon::InsertRow | Icon::DeleteRow | Icon::InsertColumn | Icon::DeleteColumn => {
             painter.rect_stroke(box_, 0.0, thin, egui::StrokeKind::Inside);

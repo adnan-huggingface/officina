@@ -538,3 +538,37 @@ anything); no function autocomplete; grouped sheet editing absent.
     which workbook. And the machine's own words — `invalid Zip archive: Could
     not find EOCD` — are set small and grey underneath the sentence a person
     can act on, instead of in the same type as it.
+
+34. **The command surface was a wall of words.** Reported by the user, about
+    the top of the window: it "doesn't look professional". Across one row sat
+    fifteen bare word-buttons — Recent, Save as…, Close, Find…, Names…, Format,
+    Protect, Split, Sort…, Clear, Reapply, Insert, Data, Validate…, Cond.
+    format… — interleaved with drawn icons, in the same flat borderless theme
+    finding 33 turned up, so none of them read as a control at all. Five of
+    them opened menus and nothing said so. Two of them were called "Clear" and
+    meant different things. The row scanned as a sentence, and the only way to
+    find a command in it was to read all fifteen labels every time.
+
+    There is now a menu bar: File, Edit, View, Insert, Format, Data, Tools,
+    built on `ui_kit::menu`. Every command in the application is in it, each
+    with its keystroke set to the right — which is the part a toolbar can never
+    do, and the only reason anyone ever stops using the menu. Ticked items are
+    marked in a gutter that is reserved in every row whether or not it is ever
+    ticked, so labels do not step sideways as things are switched on and off.
+    Sliding along the bar with a menu down changes menus, as a menu bar has
+    done since there were menu bars; egui's own opens on a click and stays put,
+    so the switch is carried one frame in `menu::bar` rather than acted on
+    where it is noticed, which would leave a frame showing two menus at once.
+
+    The toolbar beneath is icons only, in five groups: file, undo, rows and
+    columns, structure, sort and filter. The formatting row keeps its place but
+    its three inputs are drawn as inputs — a combo box with no edge is a word
+    floating on the chrome — and the colour controls became Excel's split
+    button: a glyph over a band of the colour it would apply, and a chevron for
+    the palette. The fill glyph was `▪`, a three-pixel square nobody could see;
+    it is a drawn bucket now.
+
+    One bug found on the way, and worth knowing before adding a menu: a popup
+    measures itself in a pass of its own, and in that pass "however much width
+    is left" is the width of the screen. `menu::sep` asked for it, and every
+    menu with a rule in it came out three times wider than its longest label.
