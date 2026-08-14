@@ -309,3 +309,42 @@ not `"AB"`.
   construction, and clean is where preservation bugs do *not* live. Real-world
   documents with the accumulated oddities of many Word versions are the gap, and
   the audit-by-claim method from §5 is what covers the rest.
+
+---
+
+## 10. What phase 3 added to the list
+
+Written after building Scriva through C22, so the next phase inherits it.
+
+- **Microsoft ships a corpus with Office.** `C:\Program Files\Microsoft
+  Officeoot\Templates` holds 41 finished `.dotx` files — 604 paragraphs, 278
+  content controls, tables, floating art, glossary parts — written by Word's own
+  designers rather than by a script of ours. Every reader and writer bug found
+  in C17 and C22 came from them and none from our own corpus. This is the
+  SOLVSAMP.XLS move, and it is available for every format Office writes.
+- **A test that measures with arithmetic cannot see a fault that needs real
+  metrics.** Making the shaper a trait was right — it is what makes line
+  breaking testable at all — and it draws a line around what those tests can
+  say. One heading of a real template overflows its page in the running
+  application and lays out correctly under the fixed-width shaper. Layout needs
+  *both* kinds of test, and the second kind is a screenshot.
+- **A reader must not add content, ever.** Repairing a malformed cell on read
+  looked defensive and was destructive: the invented paragraph pushed every
+  later paragraph into the wrong cell on save. Repair on *author*, never on
+  read — the file is what has to round-trip.
+- **Byte offsets from an XML reader are not byte offsets in the file.** A UTF-8
+  BOM is skipped and not counted, so every span is three bytes short. Copying
+  spans hides it completely, because they still tile the input; the damage
+  appears the first time one is replaced.
+- **Preserve inside a modelled part, not only around it.** A `<w:drawing>` is a
+  whole DrawingML document. Parsing out the four fields layout needs and
+  re-emitting from them destroys the rest — so the element's bytes are carried
+  in the model and written back verbatim. The Preservation Vault, one level in.
+- **A shadowed loop variable is a real bug, not a style problem.** `index` for
+  the paragraph and `index` for the line meant every laid-out line reported
+  paragraph zero, so every click landed in the first paragraph of the document.
+  The compiler is happy; only a test that clicks catches it.
+- **The lessons in this file do not apply themselves.** §7 says toolbar icons
+  are drawn rather than typed, and the first Scriva toolbar shipped `⯇` and `↶`
+  and came out as a row of hollow boxes. Reading it is not the same as checking
+  against it.

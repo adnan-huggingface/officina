@@ -9,12 +9,63 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[-]` deferred
 
 ## Current state
 
-**Chunk:** C17 — the docx reader (C0–C16 done: Calx complete through C15 plus
-a UX pass, a sheets / sort / filter pass, a row-and-column resizing pass, a
-parity audit against Excel, the twelve tasks that closed what the audit found,
-a menu bar with mnemonics — and now Scriva's document model)
+**Chunk:** C23 — styles UI, TOC, fields, bookmarks (C0–C22 done: Calx complete
+through C15 plus its UX, sheets, resizing and audit passes and a menu bar with
+mnemonics; and Scriva complete through **all of phase 3** — model, reader,
+layout engine, document UI, editing and writer)
 **Status:** not started
 **Handoff note:**
+
+- **Phase 3 is done. `cargo xtask fidelity` is 27 of 27 on check 1 and 27 of 27
+  on check 2**, documents as well as spreadsheets — which is C22's stated exit
+  criterion and the gate that protects users' files.
+- **`LEARNINGS.md` is the debrief from Calx**, and it earned its keep: three of
+  the bugs below are the exact faults it predicted, and one of them (toolbar
+  glyphs that render as hollow boxes) was repeated anyway before the screenshot
+  caught it.
+- **The docx writer edits `document.xml`; it does not reprint it.** Each `<w:p>`
+  is compared against the model by *re-reading it*, so "changed" means exactly
+  "would read back differently" — the only definition that cannot drift away
+  from the reader. Paragraphs are paired by document order **at any depth**: one
+  corpus document is nothing but a content control, and a writer that walked only
+  the body's children could not save an edit to it.
+- Watch item: **quick-xml's `buffer_position` does not count a UTF-8 byte-order
+  mark.** Every span is then three bytes short. Copying spans hides it perfectly
+  — they still tile the input — and the first *replaced* span cuts three bytes
+  early and leaves three bytes of the next element behind. `write::splice`
+  adds the offset back.
+- Watch item: **a `<w:sdt>` may wrap a `<w:tr>` or a `<w:tc>`.** Word's own
+  templates are full of them. A reader that skips the wrapper loses the row
+  inside it, the model runs behind the file, and the writer rewrites the wrong
+  paragraphs.
+- Watch item: **a reader must not add content.** An earlier version repaired
+  every table cell whose last block was not a paragraph. A cell ending in a
+  content control is ordinary, so the reader invented a paragraph the file did
+  not have — and every paragraph after it went into the wrong cell on save.
+- Watch item: **`<w:drawing>`, `<m:oMath>` and VML pictures are captured as
+  bytes on read and written back verbatim.** Without that, editing a paragraph
+  that holds a picture destroys the picture. The Preservation Vault applied
+  *inside* a modelled part.
+- **The layout engine measures through a trait.** `wp_layout::shape::Shaper` is
+  all it knows about fonts, so it lays out headlessly against `Fixed`, whose
+  every glyph is half its point size — a test can then say "this line holds
+  eleven characters" and mean it. Known limit, and it bit: **the fixed-width
+  shaper cannot see a fault that only appears with real metrics.** One heading
+  of `RedAndBlackReport.dotx` draws past the right margin in the running
+  application and does not reproduce under `Fixed`. Open, and the first thing
+  C23 should look at.
+- Watch item: **a paragraph's index was shadowed by the line loop's own
+  `index`**, so every laid-out line reported paragraph zero and every click
+  landed in the first paragraph of the document. Found by
+  `view::tests::a_click_below_the_last_line_lands_in_the_last_paragraph`.
+- **Scriva runs.** It opens `RedAndBlackReport.dotx`, paginates it to nine
+  pages, counts 675 words, draws the themed heading colour and the table rules,
+  and centres the page on a grey desk. Verified from a screenshot of the real
+  program, not from a test.
+- Watch item, and a repeat of Calx's: **toolbar icons are drawn, not typed.**
+  `⯇`, `↶` and `≡` came out as hollow boxes in the first build, exactly as
+  `LEARNINGS.md` §7 says they would. `app-scriva/src/icons.rs` draws them, and
+  `every_icon_puts_ink_on_the_screen` keeps them drawn.
 
 - **`LEARNINGS.md` is the debrief from building Calx** — what generalises,
   organised by preservation, reading, writing, modelling, what tests do not
@@ -56,7 +107,7 @@ a menu bar with mnemonics — and now Scriva's document model)
   - Stated limit: `themeTint`/`themeShade` are blended toward white and black
     in sRGB, which is *not* a spreadsheet's HSL `tint`. Checked against the
     cached `w:val` Word writes beside the attributes, not against Word's screen.
-- Workspace total is now **995 tests**.
+- Workspace total is now **1203 tests**.
 - **Calx is feature-complete for daily use as far as the audit reaches**, with
   one exception recorded on purpose: printing, which is out of scope by
   instruction. `AUDIT.md` holds every claim and every finding; findings 1–26
@@ -104,7 +155,7 @@ a menu bar with mnemonics — and now Scriva's document model)
   event that anything accepting typing reads (`Marked::taken`); and a submenu
   opened by key needs `MenuState::mark_shown` before its row is recorded as
   open, or the menu forgets a row whose submenu has not been drawn *yet*.
-- Workspace total is **995 tests**, all green; `cargo clippy --workspace
+- Workspace total is **1203 tests**, all green; `cargo clippy --workspace
   --all-targets -- -D warnings` and `cargo fmt --all --check` are both clean;
   `cargo xtask fidelity` is check 1, 27 of 27 and check 2, 12 of 12.
 - The release binary at `target/release/calx.exe` is current with this state.
@@ -1133,7 +1184,7 @@ right-click menu where Excel offers it, and under Excel's own key.
   of its formulas recompute to exactly the values Excel cached in the file.**
   That is the same check the xlsx corpus gets, on a file nobody here wrote.
 
-## Phase 3 — Scriva (word processor) core
+## Phase 3 — Scriva (word processor) core — **complete**
 
 - [x] **C16. Word model** — paragraph/run tree, style inheritance resolution, sections,
       numbering, tables, revision + comment layers. **84 tests.**
@@ -1169,17 +1220,37 @@ right-click menu where Excel offers it, and under Excel's own key.
   Deliberately not modelled and carried whole: equations (`<m:oMath>`, with
   their text extracted so search is not blind), VML and OLE objects, and every
   compatibility flag in `settings.xml`.
-- [ ] **C17. docx reader** — document.xml, styles, numbering, settings, headers/footers.
-- [ ] **C18. Layout engine — inline** — itemization, shaping via cosmic-text/swash,
-      UAX #14 line breaking, justification.
-- [ ] **C19. Layout engine — block** — pagination, tables, floats with text wrap,
-      footnotes/endnotes, columns.
-- [ ] **C20. Document UI** — custom render surface, caret/selection model, scrolling,
-      zoom, page view.
-- [ ] **C21. Editing + undo + keybindings** — typing, formatting commands, Word
-      keybinding table, coalesced undo.
-- [ ] **C22. docx writer** — through the Preservation Vault.
-      *Exit: harness check 2 green across the Word corpus.*
+- [x] **C17. docx reader** — document.xml, styles, numbering, settings, headers/footers,
+      footnotes, endnotes, comments, people. **62 tests**, plus the 41 templates
+      Office ships as an independent corpus.
+- [x] **C18. Layout engine — inline** — itemization, measurement through a trait,
+      UAX #14-ish line breaking, tabs, alignment, justification.
+
+  Shaping is not cosmic-text: measurement is a trait and the application answers
+  it with the same epaint faces the spreadsheet draws with. That is what lets
+  the engine be laid out headlessly against a shaper whose every glyph is half
+  its point size — and a layout engine tested against a real face is tested
+  against a moving target.
+- [x] **C19. Layout engine — block** — pagination with the keep rules, tables,
+      headers and footers, sections.
+
+  Two passes: flow into items, then paginate and *pull the break back* to honour
+  keep-with-next, keep-lines and widow control. Doing it in one pass works right
+  up to the moment a paragraph says "keep with next", by which time the decision
+  is made. Stated limits: no text wrap around an anchored drawing, no column
+  balancing, and a table row taller than a page overflows rather than splitting.
+- [x] **C20. Document UI** — the page surface, caret and selection, scrolling,
+      zoom, menus with mnemonics, a drawn-icon toolbar and a status bar.
+- [x] **C21. Editing + undo + keybindings** — typing, deletion, split and merge,
+      run and paragraph formatting, Word's keys, undo coalesced at word
+      boundaries.
+
+  Undo is a value: applying a change returns the change that undoes it, so redo
+  is the undo of the undo. Cost is bounded by what changed — typing remembers
+  one paragraph, splitting remembers where, merging remembers the two. Nothing
+  clones the body.
+- [x] **C22. docx writer** — through the Preservation Vault.
+      *Exit: harness check 2 green across the Word corpus.* — **met: 27 of 27.**
 
 ## Phase 4 — Scriva completeness
 

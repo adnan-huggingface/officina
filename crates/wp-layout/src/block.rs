@@ -47,8 +47,13 @@ pub struct Placement {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Placed {
-    /// One laid-out line. Its fragments' `x` are relative to the line's own.
-    Line(Box<Line>),
+    /// One laid-out line, and which paragraph it belongs to.
+    ///
+    /// The paragraph is its index in [`wp_model::Document::paragraphs`] — the
+    /// same document-order walk an editor names positions by. Without it a click
+    /// on a line resolves to an offset in *some* paragraph and no way to say
+    /// which, which is the whole of placing a caret.
+    Line { line: Box<Line>, paragraph: usize },
     /// A filled rectangle: cell or paragraph shading.
     Fill([u8; 3]),
     /// One edge of a border.
@@ -122,6 +127,9 @@ pub struct Item {
 #[derive(Debug, Clone, Default)]
 pub struct Flow {
     pub items: Vec<Item>,
+    /// How many paragraphs have been flowed. Counts in the same order as
+    /// [`wp_model::Document::paragraphs`], so it *is* the next paragraph's index.
+    pub paragraphs: usize,
 }
 
 /// Everything the block layout needs beyond the document.
@@ -378,6 +386,11 @@ fn push_paragraph(
     into: &mut Flow,
 ) {
     let group = into.items.len();
+    // Named apart from the line loop's own `index` below, which shadowed this
+    // one and gave every line the paragraph number *zero* — so every click
+    // landed in the first paragraph of the document.
+    let paragraph_index = into.paragraphs;
+    into.paragraphs += 1;
     let count = laid.lines.len().max(1);
     let explicit_break = paragraph
         .runs()
@@ -406,7 +419,10 @@ fn push_paragraph(
             y: top,
             width: line.width,
             height: line.height,
-            kind: Placed::Line(Box::new(line)),
+            kind: Placed::Line {
+                line: Box::new(line),
+                paragraph: paragraph_index,
+            },
         }];
         into.items.push(Item {
             height,
@@ -1112,7 +1128,7 @@ mod tests {
             .content
             .iter()
             .filter_map(|p| match &p.kind {
-                Placed::Line(line) => Some(
+                Placed::Line { line, .. } => Some(
                     line.fragments
                         .iter()
                         .filter_map(|f| match &f.content {
@@ -1250,7 +1266,7 @@ mod tests {
             .iter()
             .flat_map(|page| &page.content)
             .filter(|placement| match &placement.kind {
-                Placed::Line(line) => line
+                Placed::Line { line, .. } => line
                     .fragments
                     .iter()
                     .any(|f| matches!(f.content, crate::inline::Content::Label)),

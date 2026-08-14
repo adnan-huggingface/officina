@@ -5,9 +5,19 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[lib]
+name = "scriva"
+path = "src/lib.rs"
+
 [[bin]]
 name = "scriva"
 path = "src/main.rs"
 
 [dependencies]
 ui-kit.workspace = true
+wp-model.workspace = true
+wp-layout.workspace = true
+wp-docx.workspace = true
+ooxml.workspace = true
+# Default features: the XDG portal on Linux, so a build needs no GTK headers.
+rfd = "0.15"

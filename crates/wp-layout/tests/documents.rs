@@ -91,7 +91,7 @@ fn drawn_text(pages: &[block::Page]) -> String {
     let mut out = String::new();
     for page in pages {
         for placement in &page.content {
-            if let Placed::Line(line) = &placement.kind {
+            if let Placed::Line { line, .. } = &placement.kind {
                 for fragment in &line.fragments {
                     match &fragment.content {
                         Content::Text { text, .. } => out.push_str(text),
@@ -175,7 +175,7 @@ fn no_line_reaches_past_the_paper_it_is_printed_on() {
         for page in &pages {
             let margin = page.geometry.width - page.geometry.end;
             for placement in &page.content {
-                let Placed::Line(line) = &placement.kind else {
+                let Placed::Line { line, .. } = &placement.kind else {
                     continue;
                 };
                 let reach = placement.x + line.width;
