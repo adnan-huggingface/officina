@@ -10,6 +10,7 @@ members = [
     "crates/wp-model",
     "crates/wp-layout",
     "crates/wp-docx",
+    "crates/wp-text",
     "crates/cfb",
     "crates/ui-kit",
     "crates/app-calx",
@@ -34,6 +35,7 @@ ss-xls = { path = "crates/ss-xls" }
 wp-model = { path = "crates/wp-model" }
 wp-layout = { path = "crates/wp-layout" }
 wp-docx = { path = "crates/wp-docx" }
+wp-text = { path = "crates/wp-text" }
 cfb-reader = { path = "crates/cfb" }
 ui-kit = { path = "crates/ui-kit" }
 

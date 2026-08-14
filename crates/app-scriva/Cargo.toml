@@ -18,6 +18,7 @@ ui-kit.workspace = true
 wp-model.workspace = true
 wp-layout.workspace = true
 wp-docx.workspace = true
+wp-text.workspace = true
 ooxml.workspace = true
 # Default features: the XDG portal on Linux, so a build needs no GTK headers.
 rfd = "0.15"

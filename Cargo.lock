@@ -2622,6 +2622,7 @@ dependencies = [
  "wp-docx",
  "wp-layout",
  "wp-model",
+ "wp-text",
 ]
 
 [[package]]
@@ -3994,6 +3995,13 @@ dependencies = [
 [[package]]
 name = "wp-model"
 version = "0.1.0"
+
+[[package]]
+name = "wp-text"
+version = "0.1.0"
+dependencies = [
+ "wp-model",
+]
 
 [[package]]
 name = "writeable"

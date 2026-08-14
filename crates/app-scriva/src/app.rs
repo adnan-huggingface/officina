@@ -69,11 +69,45 @@ pub enum Command {
     Reviewer,
 }
 
+/// Which of the three formats a path names.
+///
+/// Decided by the extension, because that is what the user chose in the save
+/// dialog and what the file manager will show. A `.docx` whose contents are not
+/// a package is reported when it is opened, not guessed at here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Format {
+    Docx,
+    Markdown,
+    Text,
+}
+
+impl Format {
+    pub fn of(path: &Path) -> Format {
+        match path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(str::to_ascii_lowercase)
+            .as_deref()
+        {
+            Some("md") | Some("markdown") => Format::Markdown,
+            Some("txt") | Some("text") => Format::Text,
+            _ => Format::Docx,
+        }
+    }
+
+    /// Whether saving in this format throws formatting away.
+    pub fn is_lossy(self) -> bool {
+        !matches!(self, Format::Docx)
+    }
+}
+
 /// What the application is waiting for an answer to.
 #[derive(Debug, Clone, PartialEq)]
 enum Pending {
     /// Unsaved changes, and what to do once the user has answered.
     Unsaved(Box<Command>),
+    /// Saving in a format that cannot hold what the document has.
+    Lossy(PathBuf, Format),
 }
 
 pub struct Scriva {
@@ -109,6 +143,9 @@ pub struct Scriva {
     author: crate::revise::Author,
     /// The comment being written, before it is added.
     drafting: Option<String>,
+    /// How the open document was written, so a save puts it back the same way.
+    encoding: wp_text::Encoding,
+    ending: wp_text::LineEnding,
     /// Where the view should scroll to, once it knows where that is.
     reveal: Option<Caret>,
 }
@@ -142,6 +179,8 @@ impl Scriva {
             reviewer: false,
             author: crate::revise::Author::new("Scriva user"),
             drafting: None,
+            encoding: wp_text::Encoding::Utf8,
+            ending: wp_text::LineEnding::Crlf,
             reveal: None,
         }
     }
@@ -307,6 +346,48 @@ impl Scriva {
     // ------------------------------------------------------------ files
 
     fn open_path(&mut self, path: &Path) {
+        match Format::of(path) {
+            Format::Docx => self.open_docx(path),
+            other => self.open_text(path, other),
+        }
+    }
+
+    /// Opens a `.txt` or a `.md`.
+    ///
+    /// There is no package behind it, so there is nothing to preserve and
+    /// nothing to splice: the document is built from the text, and saving builds
+    /// the text back.
+    fn open_text(&mut self, path: &Path, format: Format) {
+        let bytes = match std::fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                self.message = Some((
+                    "Cannot open".to_owned(),
+                    format!("{}\n\n{error}", path.display()),
+                ));
+                return;
+            }
+        };
+        let (text, encoding) = wp_text::decode(&bytes);
+        self.ending = wp_text::line_ending(&text);
+        self.encoding = encoding;
+        self.document = match format {
+            Format::Markdown => wp_text::read(&text),
+            _ => wp_text::read_plain(&text),
+        };
+        self.package = None;
+        self.path = Some(path.to_path_buf());
+        self.dirty = false;
+        self.history.clear();
+        self.selection = Selection::default();
+        self.scroll = 0.0;
+        self.stamp = self.stamp.wrapping_add(1);
+        self.view.invalidate();
+        self.recent.remember(SCRIVA, path);
+        self.refresh_fields();
+    }
+
+    fn open_docx(&mut self, path: &Path) {
         match wp_docx::open(path) {
             Ok((document, package)) => {
                 self.document = document;
@@ -334,6 +415,9 @@ impl Scriva {
         let Some(path) = self.path.clone() else {
             return self.save_as();
         };
+        if Format::of(&path) != Format::Docx {
+            return self.save_text(&path, Format::of(&path));
+        }
         let Some(package) = &mut self.package else {
             return self.save_as();
         };
@@ -360,7 +444,10 @@ impl Scriva {
     }
 
     fn save_as(&mut self) -> bool {
-        let mut chooser = rfd::FileDialog::new().add_filter("Word document", &["docx"]);
+        let mut chooser = rfd::FileDialog::new()
+            .add_filter("Word document", &["docx"])
+            .add_filter("Markdown", &["md"])
+            .add_filter("Plain text", &["txt"]);
         if let Some(directory) = self.recent.directory() {
             chooser = chooser.set_directory(directory);
         }
@@ -368,20 +455,58 @@ impl Scriva {
             return false;
         };
         let path = with_extension(path);
-        if self.package.is_none() {
+        let format = Format::of(&path);
+        if format == Format::Docx && self.package.is_none() {
             // Nothing to preserve: this document was never read from a file, so
-            // there is no package to edit and one has to be authored.
+            // there is no package to edit and one would have to be authored.
             self.message = Some((
                 "Not yet".to_owned(),
-                "Saving a document that was never opened from a file needs a \
-                 writer that authors a package from nothing. Open a .docx and \
+                "Saving a new document as .docx needs a writer that authors a \
+                 package from nothing. Save it as Markdown, or open a .docx and \
                  edit that."
                     .to_owned(),
             ));
             return false;
         }
+        if format.is_lossy() {
+            // Asked *before* the write, because a user who did not mean it has
+            // no way back once the file is on disk.
+            self.pending = Some(Pending::Lossy(path, format));
+            return false;
+        }
         self.path = Some(path);
         self.save()
+    }
+
+    /// Writes the document as text, keeping the encoding and the line endings
+    /// the file came in with.
+    fn save_text(&mut self, path: &Path, format: Format) -> bool {
+        let text = match format {
+            Format::Markdown => wp_text::write(&self.document),
+            _ => wp_text::write_plain(&self.document, self.ending),
+        };
+        // Markdown's own line endings are `\n`; a plain text file keeps
+        // whatever it had.
+        let text = match format {
+            Format::Markdown => text.replace('\n', self.ending.as_str()),
+            _ => text,
+        };
+        match std::fs::write(path, wp_text::encode(&text, self.encoding)) {
+            Ok(()) => {
+                self.path = Some(path.to_path_buf());
+                self.dirty = false;
+                self.recent.remember(SCRIVA, path);
+                self.refresh_fields();
+                true
+            }
+            Err(error) => {
+                self.message = Some((
+                    "Cannot save".to_owned(),
+                    format!("{}\n\n{error}", path.display()),
+                ));
+                false
+            }
+        }
     }
 
     fn close_document(&mut self) {
@@ -409,8 +534,11 @@ impl Scriva {
         match command {
             Command::New => self.close_document(),
             Command::Open => {
-                let mut chooser =
-                    rfd::FileDialog::new().add_filter("Word documents", &["docx", "docm", "dotx"]);
+                let mut chooser = rfd::FileDialog::new()
+                    .add_filter("All documents", &["docx", "docm", "dotx", "md", "txt"])
+                    .add_filter("Word documents", &["docx", "docm", "dotx"])
+                    .add_filter("Markdown", &["md", "markdown"])
+                    .add_filter("Plain text", &["txt"]);
                 if let Some(directory) = self.recent.directory() {
                     chooser = chooser.set_directory(directory);
                 }
@@ -1161,6 +1289,33 @@ impl DocumentApp for Scriva {
             self.comment_dialog(ctx);
             return;
         }
+        if let Some(Pending::Lossy(path, format)) = self.pending.clone() {
+            let what = match format {
+                Format::Markdown => "Markdown keeps headings, emphasis and lists.                                      Everything else — page setup, tables,                                      comments, tracked changes, pictures — is lost.",
+                _ => "Plain text keeps the words and nothing else.",
+            };
+            let answer = dialog::message(
+                ctx,
+                "scriva-lossy",
+                dialog::Severity::Warning,
+                "Save in this format?",
+                what,
+                Some(&path.display().to_string()),
+                &[
+                    dialog::Choice::new("Save").primary(),
+                    dialog::Choice::new("Cancel").escapes(),
+                ],
+            );
+            match answer {
+                Some(0) => {
+                    self.pending = None;
+                    self.save_text(&path, format);
+                }
+                Some(_) => self.pending = None,
+                None => {}
+            }
+            return;
+        }
         let Some(Pending::Unsaved(command)) = self.pending.clone() else {
             return;
         };
@@ -1681,6 +1836,58 @@ mod tests {
         app.path = Some(PathBuf::from("C:/reports/Q3.docx"));
         app.refresh_fields();
         assert_eq!(app.fields.file_name.as_deref(), Some("Q3.docx"));
+    }
+
+    #[test]
+    fn the_extension_decides_the_format() {
+        assert_eq!(Format::of(Path::new("a.docx")), Format::Docx);
+        assert_eq!(Format::of(Path::new("a.DOCX")), Format::Docx);
+        assert_eq!(Format::of(Path::new("a.md")), Format::Markdown);
+        assert_eq!(Format::of(Path::new("a.txt")), Format::Text);
+        assert!(Format::Markdown.is_lossy());
+        assert!(!Format::Docx.is_lossy());
+    }
+
+    #[test]
+    fn a_markdown_file_opens_as_a_document_with_headings() {
+        let dir = std::env::temp_dir().join("scriva-c26");
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        let path = dir.join("note.md");
+        std::fs::write(&path, "# Title\r\n\r\nSome **bold** text.\r\n").expect("written");
+
+        let mut app = Scriva::new();
+        app.open_path(&path);
+        assert_eq!(app.paragraph_count(), 2);
+        assert!(app.package.is_none(), "there is no package behind a .md");
+        assert_eq!(app.ending, wp_text::LineEnding::Crlf, "kept for the save");
+        let paragraphs = app.document.paragraphs();
+        assert_eq!(
+            wp_model::outline::heading_level(paragraphs[0], &app.document.styles),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn saving_as_text_keeps_the_line_endings_the_file_came_in_with() {
+        let dir = std::env::temp_dir().join("scriva-c26");
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        let path = dir.join("plain.txt");
+        std::fs::write(&path, "one\r\ntwo\r\n").expect("written");
+
+        let mut app = Scriva::new();
+        app.open_path(&path);
+        assert_eq!(app.paragraph_count(), 2);
+        assert!(app.save_text(&path, Format::Text));
+        let back = std::fs::read_to_string(&path).expect("read back");
+        assert_eq!(back, "one\r\ntwo");
+    }
+
+    #[test]
+    fn saving_in_a_lossy_format_asks_before_it_writes() {
+        // A user who did not mean it has no way back once the file is on disk.
+        let mut app = app_with(["text"].as_slice());
+        app.pending = Some(Pending::Lossy(PathBuf::from("x.md"), Format::Markdown));
+        assert!(matches!(app.pending, Some(Pending::Lossy(_, _))));
     }
 
     #[test]
