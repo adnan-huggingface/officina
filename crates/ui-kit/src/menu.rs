@@ -10,6 +10,15 @@
 //! So it lives here, and every menu in both applications is the same menu.
 
 use eframe::egui;
+use eframe::egui::AtomExt as _;
+
+/// The gap between the tick gutter and the label.
+///
+/// Spent as a sized atom rather than as the button's atom spacing, because the
+/// label is not one atom any more: it is split around the mnemonic so that one
+/// character of it can be underlined, and a spacing that applied between *all*
+/// the atoms would put a gap inside every word.
+const GUTTER: f32 = 8.0;
 
 /// The narrowest a menu may be.
 ///
@@ -49,6 +58,130 @@ fn open_id() -> egui::Id {
     egui::Id::new("ui-kit-menu-open")
 }
 
+fn marks_id() -> egui::Id {
+    egui::Id::new("ui-kit-menu-marks")
+}
+
+/// Whether the mnemonics are showing.
+///
+/// Hidden until Alt is held down or a menu is open, which is the rule Windows
+/// has used since the underlines stopped being permanent: a bar with a letter
+/// underlined in every title all day is noise, and the underline is only
+/// wanted at the moment somebody reaches for Alt.
+fn showing_marks(ctx: &egui::Context) -> bool {
+    ctx.data(|d| d.get_temp(marks_id())).unwrap_or(false)
+}
+
+/// A label with its mnemonic picked out, written the way Windows has written
+/// it for thirty years: `"&File"`, `"Save &As…"`, `"E&xit"`.
+struct Marked<'a> {
+    before: &'a str,
+    key: Option<char>,
+    after: &'a str,
+}
+
+fn mark(label: &str) -> Marked<'_> {
+    let Some(at) = label.find('&') else {
+        return Marked {
+            before: label,
+            key: None,
+            after: "",
+        };
+    };
+    let rest = &label[at + 1..];
+    match rest.chars().next() {
+        Some(key) => Marked {
+            before: &label[..at],
+            key: Some(key),
+            after: &rest[key.len_utf8()..],
+        },
+        // A trailing `&` marks nothing. Show the label as it was written rather
+        // than swallowing a character that was probably a typo.
+        None => Marked {
+            before: label,
+            key: None,
+            after: "",
+        },
+    }
+}
+
+impl Marked<'_> {
+    /// The key that reaches this command, if it has one.
+    fn key(&self) -> Option<egui::Key> {
+        egui::Key::from_name(&self.key?.to_ascii_uppercase().to_string())
+    }
+
+    /// Was this row's letter pressed, with `modifiers` held?
+    ///
+    /// Takes the character as well as the key. `consume_key` removes the key
+    /// event and leaves the `Text` event beside it, and `Text` is what anything
+    /// that accepts typing reads — so the letter that chose a menu command also
+    /// arrived in the cell underneath the menu, which is exactly the bug this
+    /// whole arrangement is supposed to prevent.
+    fn taken(&self, ui: &egui::Ui, modifiers: egui::Modifiers) -> bool {
+        let (Some(letter), Some(key)) = (self.key, self.key()) else {
+            return false;
+        };
+        ui.input_mut(|i| {
+            if !i.consume_key(modifiers, key) {
+                return false;
+            }
+            i.events.retain(|event| match event {
+                egui::Event::Text(text) => !text.eq_ignore_ascii_case(&letter.to_string()),
+                _ => true,
+            });
+            true
+        })
+    }
+
+    /// The label, as atoms.
+    ///
+    /// Three of them rather than one, so that the mnemonic can carry an
+    /// underline while the rest of the label still takes its colour from the
+    /// widget — which is what greys a disabled row out, and what a baked-in
+    /// `LayoutJob` would have thrown away.
+    fn atoms(&self, underline: bool, into: &mut egui::Atoms<'static>) {
+        if !self.before.is_empty() {
+            into.push_right(egui::RichText::new(self.before.to_string()));
+        }
+        if let Some(key) = self.key {
+            let mut text = egui::RichText::new(key.to_string());
+            if underline {
+                text = text.underline();
+            }
+            into.push_right(text);
+        }
+        if !self.after.is_empty() {
+            into.push_right(egui::RichText::new(self.after.to_string()));
+        }
+    }
+}
+
+/// One row of a menu, which can be reached by the pointer or by its letter.
+///
+/// A wrapper rather than a bare [`egui::Response`] because a key press is not
+/// a click and egui has no way to say that it was — and every call site asks
+/// the same question, "was this chosen", which should have one answer.
+pub struct Item {
+    /// The row itself: for a tooltip, or its rectangle.
+    pub response: egui::Response,
+    by_key: bool,
+}
+
+impl Item {
+    /// Was this command chosen — by the pointer, or by its letter?
+    pub fn clicked(&self) -> bool {
+        self.by_key || self.response.clicked()
+    }
+
+    pub fn on_hover_text(self, text: impl Into<egui::WidgetText>) -> Self {
+        Item {
+            response: self.response.on_hover_text(text),
+            by_key: self.by_key,
+        }
+    }
+}
+
 /// The menu bar across the top of the window.
 ///
 /// Add one [`top`] per menu inside `add`.
@@ -68,6 +201,13 @@ pub fn bar<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
         egui::Popup::open_id(&ctx, to);
         ctx.data_mut(|d| d.insert_temp(open_id(), to));
     }
+
+    let held = ui.input(|i| i.modifiers.alt);
+    let down = ctx
+        .data(|d| d.get_temp::<egui::Id>(open_id()))
+        .is_some_and(|id| egui::Popup::is_id_open(&ctx, id));
+    ctx.data_mut(|d| d.insert_temp(marks_id(), held || down));
+
     egui::MenuBar::new()
         .style(bar_style as fn(&mut egui::Style))
         .ui(ui, add)
@@ -75,10 +215,39 @@ pub fn bar<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
 }
 
 /// One title on the menu bar, and the menu that drops from it.
+///
+/// Mark the mnemonic with `&`: `"&File"` is opened by Alt+F.
 pub fn top<R>(ui: &mut egui::Ui, label: &str, add: impl FnOnce(&mut egui::Ui) -> R) -> Option<R> {
-    let response = ui.add(egui::Button::new(label));
+    let marked = mark(label);
+    let mut atoms = egui::Atoms::new("");
+    marked.atoms(showing_marks(ui.ctx()), &mut atoms);
+
+    // The title of an open menu is *held down*, and has to look it — including
+    // when the menu was opened from the keyboard and the pointer is nowhere
+    // near it. The id a widget will take is known before it is added, which is
+    // the only way to ask whether its menu is open in time to draw it that way.
+    let id = ui.next_auto_id().with("popup");
+    let open = egui::Popup::is_id_open(ui.ctx(), id);
+    let mut button = egui::Button::new(atoms).gap(0.0);
+    if open {
+        let held = ui.visuals().widgets.open;
+        button = button.fill(held.weak_bg_fill).stroke(held.bg_stroke);
+    }
+    let response = ui.add(button);
     let ctx = ui.ctx().clone();
-    let id = egui::Popup::default_response_id(&response);
+    debug_assert_eq!(id, egui::Popup::default_response_id(&response));
+
+    // Alt and the underlined letter, from anywhere in the window. Consumed, so
+    // that the grid below — which reads key events straight out of the frame —
+    // does not also see it.
+    let by_key = marked.taken(ui, egui::Modifiers::ALT);
+    if by_key {
+        egui::Popup::open_id(&ctx, id);
+        ctx.data_mut(|d| {
+            d.insert_temp(open_id(), id);
+            d.insert_temp(marks_id(), true);
+        });
+    }
 
     if egui::Popup::is_id_open(&ctx, id) {
         ctx.data_mut(|d| d.insert_temp(open_id(), id));
@@ -121,51 +290,83 @@ pub fn under<R>(response: &egui::Response, add: impl FnOnce(&mut egui::Ui) -> R)
 
 /// A command: a label, and the keystroke that does the same thing.
 ///
-/// Pass an empty `shortcut` for a command that has no key. Clicking closes the
-/// menu, because a menu that stays open after its command has run is a menu
-/// covering the thing the command just changed.
-pub fn item(ui: &mut egui::Ui, label: &str, shortcut: &str) -> egui::Response {
+/// Mark the mnemonic with `&`: inside an open menu, `"&New"` runs on N. Pass an
+/// empty `shortcut` for a command that has no key. Choosing closes the menu,
+/// because a menu that stays open after its command has run is a menu covering
+/// the thing the command just changed.
+pub fn item(ui: &mut egui::Ui, label: &str, shortcut: &str) -> Item {
     entry(ui, label, shortcut, None)
 }
 
 /// A command that is either on or off, marked with a tick when it is on.
-pub fn check(ui: &mut egui::Ui, label: &str, shortcut: &str, on: bool) -> egui::Response {
+pub fn check(ui: &mut egui::Ui, label: &str, shortcut: &str, on: bool) -> Item {
     entry(ui, label, shortcut, Some(on))
 }
 
-fn entry(ui: &mut egui::Ui, label: &str, shortcut: &str, checked: Option<bool>) -> egui::Response {
-    let mark = egui::RichText::new(TICK).size(12.0).color(match checked {
+fn entry(ui: &mut egui::Ui, label: &str, shortcut: &str, checked: Option<bool>) -> Item {
+    let marked = mark(label);
+    let tick = egui::RichText::new(TICK).size(12.0).color(match checked {
         Some(true) => ACCENT,
         // The gutter is still spent, so that every label in the menu starts at
         // the same x whatever any of them is doing.
         _ => egui::Color32::TRANSPARENT,
     });
-    let mut button = egui::Button::new((mark, label)).gap(8.0);
+    let mut atoms = egui::Atoms::new(tick);
+    atoms.push_right("".atom_size(egui::vec2(GUTTER, 0.0)));
+    marked.atoms(showing_marks(ui.ctx()), &mut atoms);
+    let mut button = egui::Button::new(atoms).gap(0.0);
     if !shortcut.is_empty() {
         button = button.shortcut_text(shortcut);
     }
     let response = ui.add(button);
-    if response.clicked() {
+
+    // An open menu owns the keyboard, so the bare letter is enough. Consumed
+    // rather than merely read, which is what stops the row above from also
+    // answering to it — and what stops the letter reaching the grid, where it
+    // would start typing into a cell.
+    let by_key = ui.is_enabled() && marked.taken(ui, egui::Modifiers::NONE);
+    if response.clicked() || by_key {
         ui.close();
     }
-    response
+    Item { response, by_key }
 }
 
-/// A submenu, opened by resting on its row.
+/// A submenu, opened by resting on its row — or by its letter.
 pub fn sub<R>(ui: &mut egui::Ui, label: &str, add: impl FnOnce(&mut egui::Ui) -> R) -> Option<R> {
-    let mark = egui::RichText::new(TICK)
+    let marked = mark(label);
+    let tick = egui::RichText::new(TICK)
         .size(12.0)
         .color(egui::Color32::TRANSPARENT);
-    let button = egui::Button::new((mark, label))
-        .gap(8.0)
+    let mut atoms = egui::Atoms::new(tick);
+    atoms.push_right("".atom_size(egui::vec2(GUTTER, 0.0)));
+    marked.atoms(showing_marks(ui.ctx()), &mut atoms);
+    let button = egui::Button::new(atoms)
+        .gap(0.0)
         .right_text(egui::containers::menu::SubMenuButton::RIGHT_ARROW);
-    egui::containers::menu::SubMenuButton::from_button(button)
-        .ui(ui, |ui| {
+    let by_key = ui.is_enabled() && marked.taken(ui, egui::Modifiers::NONE);
+
+    let (response, inner) =
+        egui::containers::menu::SubMenuButton::from_button(button).ui(ui, |ui| {
             ui.set_min_width(MIN_WIDTH);
             add(ui)
-        })
-        .1
-        .map(|inner| inner.inner)
+        });
+
+    // A submenu is opened by telling the menu it belongs to which of its rows
+    // is open — the same thing resting on the row does, one frame later.
+    //
+    // `mark_shown` first, and it is not optional: a menu forgets an open row
+    // whose submenu has not been drawn for a frame, which is a sound rule for
+    // a submenu that has gone away and exactly wrong for one that has not been
+    // drawn *yet*. Without it the row is opened and forgotten in the same
+    // breath, and the letter appears to do nothing at all.
+    if by_key {
+        let child = egui::containers::menu::SubMenu::id_from_widget_id(response.id);
+        egui::containers::menu::MenuState::mark_shown(ui.ctx(), child);
+        egui::containers::menu::MenuState::from_ui(ui, |state, _| state.open_item = Some(child));
+        ui.ctx().request_repaint();
+    }
+
+    inner.map(|inner| inner.inner)
 }
 
 /// The rule between one group of commands and the next.
@@ -274,8 +475,16 @@ mod tests {
 
     /// Runs one frame of `add` and hands back every shape it painted.
     fn painted(add: impl FnOnce(&mut egui::Ui)) -> Vec<egui::epaint::Shape> {
+        painted_with_marks(false, add)
+    }
+
+    fn painted_with_marks(
+        marks: bool,
+        add: impl FnOnce(&mut egui::Ui),
+    ) -> Vec<egui::epaint::Shape> {
         let ctx = egui::Context::default();
         crate::fonts::register(&ctx, &[]);
+        ctx.data_mut(|d| d.insert_temp(marks_id(), marks));
         ctx.all_styles_mut(|style| style.animation_time = 0.0);
         let input = || egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
@@ -293,6 +502,9 @@ mod tests {
             let _ = &mut add;
         });
         out.textures_delta.clear();
+        // The warm-up ran `bar`, which decides for itself whether the marks
+        // show. Put the answer the test wants back before the pass it reads.
+        ctx.data_mut(|d| d.insert_temp(marks_id(), marks));
         let mut out = ctx.run_ui(input(), |ui| {
             if let Some(add) = add.take() {
                 add(ui);
@@ -314,6 +526,114 @@ mod tests {
             walk(clipped.shape, &mut flat);
         }
         flat
+    }
+
+    #[test]
+    fn a_label_says_where_its_mnemonic_is_with_an_ampersand() {
+        let cases = [
+            ("&File", ("", Some('F'), "ile")),
+            ("Save &As…", ("Save ", Some('A'), "s…")),
+            ("E&xit", ("E", Some('x'), "it")),
+            // Nothing marked, and a stray trailing marker, both come back as
+            // the label written out — never as a swallowed character.
+            ("Automatic", ("Automatic", None, "")),
+            ("Rows &", ("Rows &", None, "")),
+        ];
+        for (label, want) in cases {
+            let got = mark(label);
+            assert_eq!((got.before, got.key, got.after), want, "{label:?}");
+        }
+        assert_eq!(mark("&File").key(), Some(egui::Key::F));
+        assert_eq!(mark("Cu&t").key(), Some(egui::Key::T));
+        assert_eq!(mark("Automatic").key(), None);
+    }
+
+    /// A letter that chooses a menu command has to be *taken*, not read.
+    ///
+    /// The bug: `consume_key` removes the key event and leaves the `Text` event
+    /// beside it, and `Text` is what anything accepting typing reads. So Alt+V
+    /// then P split the panes and typed "p" into the cell underneath.
+    #[test]
+    fn a_menu_letter_is_taken_from_the_keyboard_rather_than_merely_read() {
+        let ctx = egui::Context::default();
+        crate::fonts::register(&ctx, &[]);
+        let mut left = Vec::new();
+        let mut out = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(900.0, 600.0),
+                )),
+                events: vec![
+                    egui::Event::Key {
+                        key: egui::Key::P,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                    egui::Event::Text("p".to_string()),
+                ],
+                ..Default::default()
+            },
+            |ui| {
+                assert!(mark("S&plit").taken(ui, egui::Modifiers::NONE));
+                left = ui.input(|i| i.events.clone());
+            },
+        );
+        out.textures_delta.clear();
+        assert!(left.is_empty(), "the keyboard still holds {left:?}");
+    }
+
+    /// The marker is notation, not text. If an `&` ever reaches the screen the
+    /// menu reads as a debugging artefact — and it is the sort of thing that
+    /// survives review because the code looks right.
+    #[test]
+    fn the_ampersand_never_reaches_the_screen() {
+        for marks in [false, true] {
+            let shapes = painted_with_marks(marks, |ui| {
+                in_a_menu(ui, |ui| {
+                    entry(ui, "Save &As…", "Ctrl+Shift+S", None);
+                });
+            });
+            let mut said = String::new();
+            for shape in &shapes {
+                if let egui::epaint::Shape::Text(text) = shape {
+                    said.push_str(&text.galley.job.text);
+                }
+            }
+            assert!(!said.contains('&'), "marks={marks}: painted {said:?}");
+            assert!(said.contains("Save "), "marks={marks}: painted {said:?}");
+            assert!(said.contains('A'), "marks={marks}: painted {said:?}");
+            assert!(said.contains("s…"), "marks={marks}: painted {said:?}");
+        }
+    }
+
+    /// The underline is the whole point of the mnemonic, and it is meant to
+    /// appear only when somebody reaches for Alt.
+    #[test]
+    fn the_mnemonic_is_underlined_only_while_the_marks_are_showing() {
+        fn underlined(marks: bool) -> bool {
+            let shapes = painted_with_marks(marks, |ui| {
+                in_a_menu(ui, |ui| {
+                    entry(ui, "&New", "Ctrl+N", None);
+                });
+            });
+            shapes.iter().any(|shape| match shape {
+                egui::epaint::Shape::Text(text) => {
+                    text.galley.job.text == "N"
+                        && text
+                            .galley
+                            .job
+                            .sections
+                            .iter()
+                            .any(|section| section.format.underline.width > 0.0)
+                }
+                _ => false,
+            })
+        }
+        assert!(underlined(true), "Alt was held and nothing was underlined");
+        assert!(!underlined(false), "the underline showed unasked");
     }
 
     /// A menu is as wide as its widest command, and a rule is not a command.

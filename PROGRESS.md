@@ -53,7 +53,16 @@ Excel, and the twelve tasks that closed what the audit found)
   File menu 700 points wide. `menu::sep` guards it with `ui.is_sizing_pass()`,
   and `menu::tests::a_rule_does_not_get_a_vote_on_how_wide_the_menu_is` keeps
   it that way.
-- Workspace total is **907 tests**, all green; `cargo clippy --workspace
+- **The menus answer to the keyboard.** Alt+F, Alt+E, Alt+V, Alt+I, Alt+O,
+  Alt+D, Alt+T open them; inside an open menu the underlined letter runs the
+  command or opens the submenu. Mark the letter in the label with `&`, Windows
+  style — `"Save &As…"`. The underlines show only while Alt is held or a menu
+  is down. Two traps, both of which bit: a menu letter has to be *taken* rather
+  than read, because `consume_key` removes the key event and leaves the `Text`
+  event that anything accepting typing reads (`Marked::taken`); and a submenu
+  opened by key needs `MenuState::mark_shown` before its row is recorded as
+  open, or the menu forgets a row whose submenu has not been drawn *yet*.
+- Workspace total is **911 tests**, all green; `cargo clippy --workspace
   --all-targets -- -D warnings` and `cargo fmt --all --check` are both clean;
   `cargo xtask fidelity` is check 1, 27 of 27 and check 2, 12 of 12.
 - The release binary at `target/release/calx.exe` is current with this state.

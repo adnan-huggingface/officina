@@ -3054,59 +3054,59 @@ impl Calx {
         let zoom = self.grid.zoom;
 
         menu::bar(ui, |ui| {
-            menu::top(ui, "File", |ui| {
-                if menu::item(ui, "New", "Ctrl+N").clicked() {
+            menu::top(ui, "&File", |ui| {
+                if menu::item(ui, "&New", "Ctrl+N").clicked() {
                     command = Some(Command::Guard(Pending::New));
                 }
-                if menu::item(ui, "Open…", "Ctrl+O").clicked() {
+                if menu::item(ui, "&Open…", "Ctrl+O").clicked() {
                     command = Some(Command::Guard(Pending::Browse));
                 }
                 ui.add_enabled_ui(!recent.is_empty(), |ui| {
-                    menu::sub(ui, "Open Recent", |ui| {
+                    menu::sub(ui, "Open &Recent", |ui| {
                         for (n, path) in recent.iter().enumerate() {
                             // Numbered, so the list is a *place* rather than an
                             // order that shuffles under the pointer; and shown
                             // in full on hover, because two directories can
                             // both hold a "budget.xlsx" and only one is meant.
                             let entry =
-                                menu::item(ui, &format!("{}   {}", n + 1, name_of(path)), "")
+                                menu::item(ui, &format!("&{}   {}", n + 1, name_of(path)), "")
                                     .on_hover_text(path.display().to_string());
                             if entry.clicked() {
                                 command = Some(Command::Reopen(path.clone()));
                             }
                         }
                         menu::sep(ui);
-                        if menu::item(ui, "Clear List", "").clicked() {
+                        if menu::item(ui, "Clear &List", "").clicked() {
                             command = Some(Command::ForgetRecent);
                         }
                     });
                 });
                 menu::sep(ui);
                 ui.add_enabled_ui(can_save, |ui| {
-                    if menu::item(ui, "Save", "Ctrl+S").clicked() {
+                    if menu::item(ui, "&Save", "Ctrl+S").clicked() {
                         command = Some(Command::Save);
                     }
                 });
-                if menu::item(ui, "Save As…", "Ctrl+Shift+S").clicked() {
+                if menu::item(ui, "Save &As…", "Ctrl+Shift+S").clicked() {
                     command = Some(Command::SaveAs);
                 }
                 menu::sep(ui);
-                if menu::item(ui, "Close", "Ctrl+W").clicked() {
+                if menu::item(ui, "&Close", "Ctrl+W").clicked() {
                     command = Some(Command::Guard(Pending::Close));
                 }
-                if menu::item(ui, "Exit", "Alt+F4").clicked() {
+                if menu::item(ui, "E&xit", "Alt+F4").clicked() {
                     command = Some(Command::Exit);
                 }
             });
 
-            menu::top(ui, "Edit", |ui| {
+            menu::top(ui, "&Edit", |ui| {
                 // The label carries what would be undone, which is the whole
                 // value of an undo menu over an undo button: "Undo Sort" and
                 // "Undo Paste" are different offers.
                 ui.add_enabled_ui(undo.is_some(), |ui| {
                     let label = match &undo {
-                        Some(what) => format!("Undo {what}"),
-                        None => "Undo".to_string(),
+                        Some(what) => format!("&Undo {what}"),
+                        None => "&Undo".to_string(),
                     };
                     if menu::item(ui, &label, "Ctrl+Z").clicked() {
                         command = Some(Command::Do(Action::Undo));
@@ -3114,51 +3114,51 @@ impl Calx {
                 });
                 ui.add_enabled_ui(redo.is_some(), |ui| {
                     let label = match &redo {
-                        Some(what) => format!("Redo {what}"),
-                        None => "Redo".to_string(),
+                        Some(what) => format!("&Redo {what}"),
+                        None => "&Redo".to_string(),
                     };
                     if menu::item(ui, &label, "Ctrl+Y").clicked() {
                         command = Some(Command::Do(Action::Redo));
                     }
                 });
                 menu::sep(ui);
-                if menu::item(ui, "Cut", "Ctrl+X").clicked() {
+                if menu::item(ui, "Cu&t", "Ctrl+X").clicked() {
                     command = Some(Command::Do(Action::Copy { cut: true }));
                 }
-                if menu::item(ui, "Copy", "Ctrl+C").clicked() {
+                if menu::item(ui, "&Copy", "Ctrl+C").clicked() {
                     command = Some(Command::Do(Action::Copy { cut: false }));
                 }
-                if menu::item(ui, "Paste", "Ctrl+V").clicked() {
+                if menu::item(ui, "&Paste", "Ctrl+V").clicked() {
                     command = Some(Command::Paste);
                 }
-                if menu::item(ui, "Paste Special…", "Ctrl+Alt+V").clicked() {
+                if menu::item(ui, "Paste &Special…", "Ctrl+Alt+V").clicked() {
                     command = Some(Command::PasteSpecial);
                 }
                 menu::sep(ui);
-                if menu::item(ui, "Clear Contents", "Delete").clicked() {
+                if menu::item(ui, "Clear Co&ntents", "Delete").clicked() {
                     command = Some(Command::Do(Action::Clear));
                 }
                 menu::sep(ui);
-                if menu::item(ui, "Find…", "Ctrl+F").clicked() {
+                if menu::item(ui, "&Find…", "Ctrl+F").clicked() {
                     command = Some(Command::Find { replacing: false });
                 }
-                if menu::item(ui, "Replace…", "Ctrl+H").clicked() {
+                if menu::item(ui, "R&eplace…", "Ctrl+H").clicked() {
                     command = Some(Command::Find { replacing: true });
                 }
-                if menu::item(ui, "Go To…", "Ctrl+G").clicked() {
+                if menu::item(ui, "&Go To…", "Ctrl+G").clicked() {
                     command = Some(Command::GoTo);
                 }
             });
 
-            menu::top(ui, "View", |ui| {
-                if menu::check(ui, "Freeze Panes", "", frozen).clicked() {
+            menu::top(ui, "&View", |ui| {
+                if menu::check(ui, "&Freeze Panes", "", frozen).clicked() {
                     command = Some(Command::Do(Action::Freeze(!frozen)));
                 }
-                if menu::check(ui, "Split", "", split).clicked() {
+                if menu::check(ui, "S&plit", "", split).clicked() {
                     command = Some(Command::Do(Action::Split(!split)));
                 }
                 menu::sep(ui);
-                menu::sub(ui, "Zoom", |ui| {
+                menu::sub(ui, "&Zoom", |ui| {
                     for percent in [50.0, 75.0, 100.0, 125.0, 150.0, 200.0] {
                         let on = (zoom * 100.0 - percent).abs() < 0.5;
                         if menu::check(ui, &format!("{percent:.0}%"), "", on).clicked() {
@@ -3168,87 +3168,87 @@ impl Calx {
                 });
             });
 
-            menu::top(ui, "Insert", |ui| {
-                if menu::item(ui, "Rows", "Ctrl++").clicked() {
+            menu::top(ui, "&Insert", |ui| {
+                if menu::item(ui, "&Rows", "Ctrl++").clicked() {
                     command = Some(Command::Do(Action::Insert(Axis::Rows)));
                 }
-                if menu::item(ui, "Columns", "").clicked() {
+                if menu::item(ui, "&Columns", "").clicked() {
                     command = Some(Command::Do(Action::Insert(Axis::Columns)));
                 }
                 menu::sep(ui);
-                if menu::item(ui, "Delete Rows", "Ctrl+-").clicked() {
+                if menu::item(ui, "Delete Ro&ws", "Ctrl+-").clicked() {
                     command = Some(Command::Do(Action::Delete(Axis::Rows)));
                 }
-                if menu::item(ui, "Delete Columns", "").clicked() {
+                if menu::item(ui, "Delete Colu&mns", "").clicked() {
                     command = Some(Command::Do(Action::Delete(Axis::Columns)));
                 }
                 menu::sep(ui);
-                menu::sub(ui, "Chart", |ui| {
+                menu::sub(ui, "C&hart", |ui| {
                     for (label, key, kind) in [
-                        ("Column", "Alt+F1", ss_model::ChartKind::Bar),
-                        ("Line", "", ss_model::ChartKind::Line),
-                        ("Pie", "", ss_model::ChartKind::Pie),
-                        ("Area", "", ss_model::ChartKind::Area),
+                        ("C&olumn", "Alt+F1", ss_model::ChartKind::Bar),
+                        ("&Line", "", ss_model::ChartKind::Line),
+                        ("Pi&e", "", ss_model::ChartKind::Pie),
+                        ("&Area", "", ss_model::ChartKind::Area),
                     ] {
                         if menu::item(ui, label, key).clicked() {
                             command = Some(Command::Chart(kind));
                         }
                     }
                 });
-                if menu::item(ui, "Picture…", "").clicked() {
+                if menu::item(ui, "&Picture…", "").clicked() {
                     command = Some(Command::Picture);
                 }
                 menu::sep(ui);
-                if menu::item(ui, "Sum Above", "Alt+=").clicked() {
+                if menu::item(ui, "&Sum Above", "Alt+=").clicked() {
                     command = Some(Command::Autosum);
                 }
-                let note = if noted { "Edit Note" } else { "Note" };
+                let note = if noted { "Edit &Note" } else { "&Note" };
                 if menu::item(ui, note, "Shift+F2").clicked() {
                     command = Some(Command::Note);
                 }
             });
 
-            menu::top(ui, "Format", |ui| {
-                if menu::item(ui, "Cells…", "Ctrl+1").clicked() {
+            menu::top(ui, "F&ormat", |ui| {
+                if menu::item(ui, "&Cells…", "Ctrl+1").clicked() {
                     command = Some(Command::FormatCells(FormatTab::default()));
                 }
                 menu::sep(ui);
-                menu::sub(ui, "Row", |ui| {
-                    if menu::item(ui, "Height…", "").clicked() {
+                menu::sub(ui, "&Row", |ui| {
+                    if menu::item(ui, "Heigh&t…", "").clicked() {
                         command = Some(Command::Size(Axis::Rows));
                     }
-                    if menu::item(ui, "Fit to Contents", "").clicked() {
+                    if menu::item(ui, "F&it to Contents", "").clicked() {
                         command = Some(Command::Do(Action::AutoFit(Axis::Rows)));
                     }
                     menu::sep(ui);
-                    if menu::item(ui, "Hide", "Ctrl+9").clicked() {
+                    if menu::item(ui, "&Hide", "Ctrl+9").clicked() {
                         command = Some(Command::Do(Action::Visibility {
                             axis: Axis::Rows,
                             hide: true,
                         }));
                     }
-                    if menu::item(ui, "Unhide", "Ctrl+Shift+9").clicked() {
+                    if menu::item(ui, "&Unhide", "Ctrl+Shift+9").clicked() {
                         command = Some(Command::Do(Action::Visibility {
                             axis: Axis::Rows,
                             hide: false,
                         }));
                     }
                 });
-                menu::sub(ui, "Column", |ui| {
-                    if menu::item(ui, "Width…", "").clicked() {
+                menu::sub(ui, "Colum&n", |ui| {
+                    if menu::item(ui, "&Width…", "").clicked() {
                         command = Some(Command::Size(Axis::Columns));
                     }
-                    if menu::item(ui, "Fit to Contents", "").clicked() {
+                    if menu::item(ui, "F&it to Contents", "").clicked() {
                         command = Some(Command::Do(Action::AutoFit(Axis::Columns)));
                     }
                     menu::sep(ui);
-                    if menu::item(ui, "Hide", "Ctrl+0").clicked() {
+                    if menu::item(ui, "&Hide", "Ctrl+0").clicked() {
                         command = Some(Command::Do(Action::Visibility {
                             axis: Axis::Columns,
                             hide: true,
                         }));
                     }
-                    if menu::item(ui, "Unhide", "Ctrl+Shift+0").clicked() {
+                    if menu::item(ui, "&Unhide", "Ctrl+Shift+0").clicked() {
                         command = Some(Command::Do(Action::Visibility {
                             axis: Axis::Columns,
                             hide: false,
@@ -3256,60 +3256,60 @@ impl Calx {
                     }
                 });
                 menu::sep(ui);
-                if menu::check(ui, "Merge Cells", "", merged).clicked() {
+                if menu::check(ui, "&Merge Cells", "", merged).clicked() {
                     command = Some(Command::Do(Action::Merge(!merged)));
                 }
-                if menu::item(ui, "Conditional Formatting…", "").clicked() {
+                if menu::item(ui, "Con&ditional Formatting…", "").clicked() {
                     command = Some(Command::CondFormat);
                 }
                 menu::sep(ui);
-                if menu::item(ui, "Clear Formatting", "").clicked() {
+                if menu::item(ui, "Clear &Formatting", "").clicked() {
                     command = Some(Command::Do(Action::Format(Format::Clear)));
                 }
             });
 
-            menu::top(ui, "Data", |ui| {
-                if menu::item(ui, "Sort Ascending", "").clicked() {
+            menu::top(ui, "&Data", |ui| {
+                if menu::item(ui, "Sort &Ascending", "").clicked() {
                     command = Some(Command::Sort(false));
                 }
-                if menu::item(ui, "Sort Descending", "").clicked() {
+                if menu::item(ui, "Sort &Descending", "").clicked() {
                     command = Some(Command::Sort(true));
                 }
-                if menu::item(ui, "Sort…", "").clicked() {
+                if menu::item(ui, "&Sort…", "").clicked() {
                     command = Some(Command::Filter(FilterCommand::SortDialog));
                 }
                 menu::sep(ui);
-                if menu::check(ui, "Filter", "Ctrl+Shift+L", has_filter).clicked() {
+                if menu::check(ui, "&Filter", "Ctrl+Shift+L", has_filter).clicked() {
                     command = Some(Command::Filter(FilterCommand::Toggle));
                 }
                 ui.add_enabled_ui(constrained, |ui| {
-                    if menu::item(ui, "Clear Filter", "").clicked() {
+                    if menu::item(ui, "&Clear Filter", "").clicked() {
                         command = Some(Command::Filter(FilterCommand::Clear));
                     }
                 });
                 ui.add_enabled_ui(has_filter, |ui| {
-                    if menu::item(ui, "Reapply Filter", "").clicked() {
+                    if menu::item(ui, "&Reapply Filter", "").clicked() {
                         command = Some(Command::Filter(FilterCommand::Reapply));
                     }
                 });
                 menu::sep(ui);
-                if menu::item(ui, "Text to Columns…", "").clicked() {
+                if menu::item(ui, "&Text to Columns…", "").clicked() {
                     command = Some(Command::Data(DataTool::TextToColumns));
                 }
-                if menu::item(ui, "Remove Duplicates…", "").clicked() {
+                if menu::item(ui, "Remove D&uplicates…", "").clicked() {
                     command = Some(Command::Data(DataTool::RemoveDuplicates));
                 }
             });
 
-            menu::top(ui, "Tools", |ui| {
-                if menu::check(ui, "Protect Sheet", "", protected).clicked() {
+            menu::top(ui, "&Tools", |ui| {
+                if menu::check(ui, "&Protect Sheet", "", protected).clicked() {
                     command = Some(Command::Protect);
                 }
                 menu::sep(ui);
-                if menu::item(ui, "Data Validation…", "").clicked() {
+                if menu::item(ui, "&Data Validation…", "").clicked() {
                     command = Some(Command::Validation);
                 }
-                if menu::item(ui, "Define Names…", "Ctrl+F3").clicked() {
+                if menu::item(ui, "Define &Names…", "Ctrl+F3").clicked() {
                     command = Some(Command::Names);
                 }
             });
@@ -3647,20 +3647,20 @@ impl Calx {
             if let Some(Some(preset)) = menu::under(&borders, |ui| {
                 let mut chosen = None;
                 for (label, key, preset) in [
-                    ("All Borders", "", BorderPreset::All),
-                    ("Outline", "Ctrl+Shift+&", BorderPreset::Outline),
-                    ("Thick Outline", "", BorderPreset::Thick),
-                    ("Bottom", "", BorderPreset::Bottom),
-                    ("Top", "", BorderPreset::Top),
-                    ("Left", "", BorderPreset::Left),
-                    ("Right", "", BorderPreset::Right),
+                    ("&All Borders", "", BorderPreset::All),
+                    ("Ou&tline", "Ctrl+Shift+&", BorderPreset::Outline),
+                    ("T&hick Outline", "", BorderPreset::Thick),
+                    ("&Bottom", "", BorderPreset::Bottom),
+                    ("To&p", "", BorderPreset::Top),
+                    ("&Left", "", BorderPreset::Left),
+                    ("&Right", "", BorderPreset::Right),
                 ] {
                     if menu::item(ui, label, key).clicked() {
                         chosen = Some(preset);
                     }
                 }
                 menu::sep(ui);
-                if menu::item(ui, "No Border", "Ctrl+Shift+_").clicked() {
+                if menu::item(ui, "&No Border", "Ctrl+Shift+_").clicked() {
                     chosen = Some(BorderPreset::None);
                 }
                 chosen
@@ -6940,8 +6940,14 @@ impl DocumentApp for Calx {
         // It draws while a dialog is up and takes no keys: a modal stops the
         // pointer by itself, but the grid reads key events straight out of the
         // input rather than waiting to be focused, so it has to be told.
+        //
+        // An open menu counts, and so does an open combo box. Menu rows answer
+        // to their own letter, and a grid that also saw that letter would put
+        // it in a cell — press Alt+I, then W to delete a row, and "w" lands in
+        // the cursor cell as well.
         self.last_body = ui.available_size();
-        self.grid.blocked = self.dialog.is_some() || self.pending.is_some();
+        self.grid.blocked =
+            self.dialog.is_some() || self.pending.is_some() || egui::Popup::is_any_open(ui.ctx());
         let response = self.grid.show(ui, &mut self.doc.workbook);
         response.context_menu(|ui| self.context_menu(ui));
 

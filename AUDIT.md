@@ -572,3 +572,29 @@ anything); no function autocomplete; grouped sheet editing absent.
     measures itself in a pass of its own, and in that pass "however much width
     is left" is the width of the screen. `menu::sep` asked for it, and every
     menu with a rule in it came out three times wider than its longest label.
+
+35. **The menu bar could not be reached from the keyboard.** Raised by the user
+    straight after finding 34, and fair: a menu bar whose only way in is the
+    pointer has given up half of what a menu bar is for. Excel has had Alt+F
+    since it had an F.
+
+    Alt and the underlined letter open a menu now, and inside an open menu the
+    bare letter runs the command or opens the submenu. The letter is marked in
+    the label with `&`, the way Windows has written it for thirty years, and
+    the underlines appear only while Alt is held or a menu is down — a bar with
+    a letter underlined in every title all day is noise.
+
+    Two bugs worth writing down, because both are the kind that look fixed.
+
+    The first: Alt+V then P split the panes *and* typed "p" into the cell
+    underneath. `consume_key` removes the key event and leaves the `Text` event
+    sitting beside it, and `Text` is what anything that accepts typing reads —
+    including this grid, which takes key events straight out of the frame
+    rather than waiting to be focused. A menu letter has to be taken, not read.
+
+    The second: a submenu opened by its letter opened and closed in the same
+    breath, so the key appeared to do nothing. A menu forgets which of its rows
+    is open when that row's submenu has not been drawn for a frame — a sound
+    rule for a submenu that has gone away, and exactly wrong for one that has
+    not been drawn yet. `MenuState::mark_shown` on the child, before the row is
+    recorded, is the difference.
