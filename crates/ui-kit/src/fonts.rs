@@ -14,7 +14,7 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use eframe::egui;
 
@@ -83,6 +83,133 @@ pub fn face(family: Family, bold: bool, italic: bool) -> egui::FontFamily {
         (true, true) => "-bolditalic",
     };
     egui::FontFamily::Name(format!("{}{suffix}", family.slug()).into())
+}
+
+/// Faces a document may name that are not what the three families substitute.
+///
+/// A resume set in Verdana is a third wider than the same words in Arial; a
+/// substitution that ignores the name gets every line break wrong and then
+/// every page break after it. These are the names documents actually use, each
+/// with the file Windows (or Office) ships for its four styles — an empty name
+/// means the style was never shipped, and asking for it falls back to the
+/// family's generic face so bold stays bold.
+///
+/// The three generic families remain the answer for a name not in this table.
+const NAMED: &[(&str, [&str; 4])] = &[
+    (
+        "verdana",
+        [
+            "verdana.ttf",
+            "verdanab.ttf",
+            "verdanai.ttf",
+            "verdanaz.ttf",
+        ],
+    ),
+    ("tahoma", ["tahoma.ttf", "tahomabd.ttf", "", ""]),
+    (
+        "trebuchet ms",
+        ["trebuc.ttf", "trebucbd.ttf", "trebucit.ttf", "trebucbi.ttf"],
+    ),
+    (
+        "georgia",
+        [
+            "georgia.ttf",
+            "georgiab.ttf",
+            "georgiai.ttf",
+            "georgiaz.ttf",
+        ],
+    ),
+    ("impact", ["impact.ttf", "", "", ""]),
+    (
+        "comic sans ms",
+        ["comic.ttf", "comicbd.ttf", "comici.ttf", "comicz.ttf"],
+    ),
+    (
+        "palatino linotype",
+        ["pala.ttf", "palab.ttf", "palai.ttf", "palabi.ttf"],
+    ),
+    ("lucida sans unicode", ["l_10646.ttf", "", "", ""]),
+    ("lucida console", ["lucon.ttf", "", "", ""]),
+    (
+        "franklin gothic medium",
+        ["framd.ttf", "", "framdit.ttf", ""],
+    ),
+    (
+        "segoe ui",
+        [
+            "segoeui.ttf",
+            "segoeuib.ttf",
+            "segoeuii.ttf",
+            "segoeuiz.ttf",
+        ],
+    ),
+    (
+        "calibri",
+        [
+            "calibri.ttf",
+            "calibrib.ttf",
+            "calibrii.ttf",
+            "calibriz.ttf",
+        ],
+    ),
+    (
+        "candara",
+        [
+            "candara.ttf",
+            "candarab.ttf",
+            "candarai.ttf",
+            "candaraz.ttf",
+        ],
+    ),
+    (
+        "corbel",
+        ["corbel.ttf", "corbelb.ttf", "corbeli.ttf", "corbelz.ttf"],
+    ),
+    (
+        "constantia",
+        [
+            "constan.ttf",
+            "constanb.ttf",
+            "constani.ttf",
+            "constanz.ttf",
+        ],
+    ),
+    (
+        "bookman old style",
+        ["bookos.ttf", "bookosb.ttf", "bookosi.ttf", "bookosbi.ttf"],
+    ),
+    (
+        "century gothic",
+        ["gothic.ttf", "gothicb.ttf", "gothici.ttf", "gothicbi.ttf"],
+    ),
+    ("garamond", ["gara.ttf", "garabd.ttf", "garait.ttf", ""]),
+    (
+        "book antiqua",
+        ["bkant.ttf", "antquab.ttf", "antquai.ttf", "antquabi.ttf"],
+    ),
+    (
+        "arial narrow",
+        ["arialn.ttf", "arialnb.ttf", "arialni.ttf", "arialnbi.ttf"],
+    ),
+];
+
+/// The faces from [`NAMED`] that were actually found and registered.
+///
+/// A `FontFamily::Name` epaint has never been given *panics* when drawn with,
+/// so the one source of truth for "may I ask for Verdana bold" is what
+/// [`register`] managed to load. Set once; a second registration in the same
+/// process keeps the first answer, which is also the one epaint kept.
+static NAMED_FACES: OnceLock<BTreeMap<(String, bool, bool), egui::FontFamily>> = OnceLock::new();
+
+/// The registered face for a document's exact font name, if the machine has it.
+///
+/// `None` says to fall back to [`face`] of [`Family::of`] the same name — the
+/// substitution that was previously the only answer.
+pub fn named_face(name: &str, bold: bool, italic: bool) -> Option<egui::FontFamily> {
+    let faces = NAMED_FACES.get()?;
+    faces
+        .get(&(name.to_ascii_lowercase(), bold, italic))
+        .cloned()
 }
 
 /// One candidate file per face, in preference order.
@@ -176,17 +303,24 @@ fn font_directories() -> Vec<PathBuf> {
 }
 
 fn load(family: Family, bold: bool, italic: bool, dirs: &[PathBuf]) -> Option<Vec<u8>> {
-    for name in candidates(family, bold, italic) {
-        for dir in dirs {
-            let path = dir.join(name);
-            if let Ok(bytes) = std::fs::read(&path) {
-                // A collection needs an index to pick a face out of; anything
-                // that is not a single face is skipped rather than guessed at.
-                if bytes.len() > 4 && &bytes[..4] == b"ttcf" {
-                    continue;
-                }
-                return Some(bytes);
+    candidates(family, bold, italic)
+        .iter()
+        .find_map(|name| read_face(name, dirs))
+}
+
+/// One font file by its bare name, from wherever it is.
+fn read_face(name: &str, dirs: &[PathBuf]) -> Option<Vec<u8>> {
+    if name.is_empty() {
+        return None;
+    }
+    for dir in dirs {
+        if let Ok(bytes) = std::fs::read(dir.join(name)) {
+            // A collection needs an index to pick a face out of; anything
+            // that is not a single face is skipped rather than guessed at.
+            if bytes.len() > 4 && &bytes[..4] == b"ttcf" {
+                continue;
             }
+            return Some(bytes);
         }
     }
     None
@@ -241,6 +375,39 @@ pub fn register(ctx: &egui::Context, dirs: &[PathBuf]) -> Loaded {
         }
     }
 
+    // The exact names, on top of the generic families they would otherwise
+    // fall into. Each named face's chain continues with its shape's generic
+    // chain, so a glyph Verdana lacks is drawn by Arial rather than as tofu.
+    let mut named = BTreeMap::new();
+    for (name, files) in NAMED {
+        let shape = Family::of(name);
+        for (index, (bold, italic)) in [(false, false), (true, false), (false, true), (true, true)]
+            .into_iter()
+            .enumerate()
+        {
+            let Some(bytes) = read_face(files[index], dirs) else {
+                continue;
+            };
+            let key = format!("named-{}-{}{}", name, bold as u8, italic as u8);
+            let family =
+                egui::FontFamily::Name(format!("{name}-{}{}", bold as u8, italic as u8).into());
+            let mut chain: Vec<String> = definitions
+                .families
+                .get(&face(shape, bold, italic))
+                .cloned()
+                .unwrap_or_default();
+            definitions
+                .font_data
+                .insert(key.clone(), Arc::new(egui::FontData::from_owned(bytes)));
+            chain.insert(0, key);
+            definitions.families.insert(family.clone(), chain);
+            named.insert((name.to_string(), bold, italic), family);
+        }
+    }
+    // A second registration keeps the first process-wide answer — which is
+    // fine, because it is also the set of families epaint was actually given.
+    let _ = NAMED_FACES.set(named);
+
     ctx.set_fonts(definitions);
     loaded
 }
@@ -289,6 +456,16 @@ mod tests {
         assert_eq!(Family::of("Consolas"), Family::Mono);
         // A name nobody has is sans, which is what Excel substitutes too.
         assert_eq!(Family::of("Chalkduster Pro"), Family::Sans);
+    }
+
+    #[test]
+    fn the_named_table_is_lowercase_and_unique_because_lookups_lowercase() {
+        let mut seen = std::collections::BTreeSet::new();
+        for (name, files) in NAMED {
+            assert_eq!(*name, name.to_ascii_lowercase(), "{name} would never match");
+            assert!(seen.insert(*name), "{name} is listed twice");
+            assert!(!files[0].is_empty(), "{name} has no regular face at all");
+        }
     }
 
     #[test]

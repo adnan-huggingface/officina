@@ -30,6 +30,11 @@ pub struct Egui {
     /// repeats its words, so this hits far more often than it misses.
     runs: HashMap<(Key, String), Vec<f64>>,
     metrics: HashMap<Key, Metrics>,
+    /// Which named face each (family, bold, italic) resolved to, if the machine
+    /// has it registered — interned so a `Key` stays `Copy` and cheap to hash.
+    /// `None` remembers that the name has only the generic families to fall to.
+    codes: HashMap<(String, bool, bool), Option<u16>>,
+    named: Vec<egui::FontFamily>,
 }
 
 /// A font, reduced to what epaint distinguishes.
@@ -39,41 +44,26 @@ pub struct Egui {
 /// pixel can show.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct Key {
-    /// The three families, as a number: `ui_kit::Family` is not hashable, and
-    /// making it so would be a change to a crate this one only reads from.
-    family: u8,
+    /// 0–2 are the three generic families; `NAMED_BASE + n` is the `n`th
+    /// exactly-named face this shaper has resolved. A named code already
+    /// accounts for bold and italic — those pick which *file* the family is —
+    /// but the flags stay on the key so a generic fallback stays styled.
+    family: u16,
     size: u32,
     bold: bool,
     italic: bool,
 }
 
-impl Key {
-    fn of(font: &FontRequest) -> Key {
-        Key {
-            family: match ui_kit::Family::of(&font.family) {
-                ui_kit::Family::Sans => 0,
-                ui_kit::Family::Serif => 1,
-                ui_kit::Family::Mono => 2,
-            },
-            size: (font.size * 20.0).round().max(1.0) as u32,
-            bold: font.bold,
-            italic: font.italic,
-        }
-    }
+/// Where the named-face codes start.
+const NAMED_BASE: u16 = 3;
 
+impl Key {
     fn family(self) -> ui_kit::Family {
         match self.family {
             1 => ui_kit::Family::Serif,
             2 => ui_kit::Family::Mono,
             _ => ui_kit::Family::Sans,
         }
-    }
-
-    fn font_id(self) -> egui::FontId {
-        egui::FontId::new(
-            self.size as f32 / 20.0,
-            ui_kit::fonts::face(self.family(), self.bold, self.italic),
-        )
     }
 }
 
@@ -83,12 +73,56 @@ impl Egui {
             ctx: ctx.clone(),
             runs: HashMap::new(),
             metrics: HashMap::new(),
+            codes: HashMap::new(),
+            named: Vec::new(),
         }
     }
 
+    fn key(&mut self, font: &FontRequest) -> Key {
+        let family = match self.named_code(&font.family, font.bold, font.italic) {
+            Some(code) => code,
+            None => match ui_kit::Family::of(&font.family) {
+                ui_kit::Family::Sans => 0,
+                ui_kit::Family::Serif => 1,
+                ui_kit::Family::Mono => 2,
+            },
+        };
+        Key {
+            family,
+            size: (font.size * 20.0).round().max(1.0) as u32,
+            bold: font.bold,
+            italic: font.italic,
+        }
+    }
+
+    /// The interned code of the exactly-named face for this request, if the
+    /// machine registered one.
+    fn named_code(&mut self, family: &str, bold: bool, italic: bool) -> Option<u16> {
+        let ask = (family.to_ascii_lowercase(), bold, italic);
+        if let Some(&code) = self.codes.get(&ask) {
+            return code;
+        }
+        let code = ui_kit::fonts::named_face(&ask.0, bold, italic).map(|face| {
+            self.named.push(face);
+            NAMED_BASE + (self.named.len() - 1) as u16
+        });
+        self.codes.insert(ask, code);
+        code
+    }
+
+    fn id_of(&self, key: Key) -> egui::FontId {
+        let family = if key.family >= NAMED_BASE {
+            self.named[(key.family - NAMED_BASE) as usize].clone()
+        } else {
+            ui_kit::fonts::face(key.family(), key.bold, key.italic)
+        };
+        egui::FontId::new(key.size as f32 / 20.0, family)
+    }
+
     /// The epaint font a request resolves to, for a painter.
-    pub fn font_id(&self, font: &FontRequest) -> egui::FontId {
-        Key::of(font).font_id()
+    pub fn font_id(&mut self, font: &FontRequest) -> egui::FontId {
+        let key = self.key(font);
+        self.id_of(key)
     }
 
     /// The advance of each character of `text`, measured together so the face's
@@ -98,7 +132,7 @@ impl Egui {
             if self.runs.len() >= CACHE_LIMIT {
                 self.runs.clear();
             }
-            let id = key.font_id();
+            let id = self.id_of(key);
             // `fonts_mut`: laying text out fills epaint's own caches, so the
             // read is a write.
             let galley = self
@@ -128,11 +162,11 @@ impl Egui {
 
 impl Shaper for Egui {
     fn metrics(&mut self, font: &FontRequest) -> Metrics {
-        let key = Key::of(font);
+        let key = self.key(font);
         if let Some(&metrics) = self.metrics.get(&key) {
             return metrics;
         }
-        let id = key.font_id();
+        let id = self.id_of(key);
         let pixels_per_point = self.ctx.pixels_per_point();
         // `FontsView::row_height` throws away the split between ascent and
         // descent that produced it. A fixed 80/20 guess at that split put a
@@ -159,7 +193,7 @@ impl Shaper for Egui {
     }
 
     fn advances(&mut self, text: &str, font: &FontRequest, into: &mut Vec<Advance>) {
-        let key = Key::of(font);
+        let key = self.key(font);
         let widths = self.measure(key, text).to_vec();
         for (index, (offset, _)) in text.char_indices().enumerate() {
             into.push(Advance {
@@ -192,7 +226,7 @@ mod tests {
     #[test]
     fn a_font_request_becomes_the_face_the_application_registered() {
         let ctx = context();
-        let shaper = Egui::new(&ctx);
+        let mut shaper = Egui::new(&ctx);
         let id = shaper.font_id(&FontRequest {
             family: "Times New Roman".into(),
             size: 12.0,
@@ -203,6 +237,25 @@ mod tests {
         assert_eq!(
             id.family,
             ui_kit::fonts::face(ui_kit::Family::Serif, true, false)
+        );
+    }
+
+    #[test]
+    fn a_name_with_no_registered_face_falls_back_to_its_shape() {
+        // In tests nothing is loaded from disk, so even Verdana has no named
+        // face — the request lands on the generic sans family, styled. On the
+        // user's machine the same request resolves to verdana.ttf itself.
+        let ctx = context();
+        let mut shaper = Egui::new(&ctx);
+        let id = shaper.font_id(&FontRequest {
+            family: "Verdana".into(),
+            size: 10.0,
+            bold: false,
+            italic: true,
+        });
+        assert_eq!(
+            id.family,
+            ui_kit::fonts::face(ui_kit::Family::Sans, false, true)
         );
     }
 
@@ -224,10 +277,12 @@ mod tests {
         // A zoomed view produces sizes that differ in the seventh decimal place,
         // and missing the cache on every frame is the difference between
         // scrolling and stuttering.
-        let a = Key::of(&FontRequest::new("Arial", 11.000_001));
-        let b = Key::of(&FontRequest::new("Arial", 11.0));
+        let ctx = context();
+        let mut shaper = Egui::new(&ctx);
+        let a = shaper.key(&FontRequest::new("Arial", 11.000_001));
+        let b = shaper.key(&FontRequest::new("Arial", 11.0));
         assert_eq!(a, b);
-        assert_ne!(a, Key::of(&FontRequest::new("Arial", 11.5)));
+        assert_ne!(a, shaper.key(&FontRequest::new("Arial", 11.5)));
     }
 
     #[test]

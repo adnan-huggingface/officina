@@ -54,6 +54,16 @@ pub(crate) struct ParaPropsRead {
 /// of what the theme currently resolves to and goes stale the moment the theme
 /// changes.
 pub(crate) fn color(e: &BytesStart<'_>) -> Option<Color> {
+    color_in(e, b"val")
+}
+
+/// A colour held in a named attribute of some other element.
+///
+/// `<w:color>` says its colour in `w:val`, but a border or a shading says its
+/// own thing there — "single", "clear" — and keeps the colour in `w:color`.
+/// Reading `w:val` for those parses the *style* as a colour, fails, and turns
+/// every white table rule black.
+fn color_in(e: &BytesStart<'_>, name: &[u8]) -> Option<Color> {
     if let Some(slot) = attr(e, b"themeColor")
         .as_deref()
         .and_then(ThemeSlot::from_name)
@@ -68,7 +78,7 @@ pub(crate) fn color(e: &BytesStart<'_>) -> Option<Color> {
                 .and_then(|t| u8::from_str_radix(t.trim(), 16).ok()),
         });
     }
-    Color::from_val(&attr(e, b"val")?)
+    Color::from_val(&attr(e, name)?)
 }
 
 /// `<w:rFonts>`.
@@ -101,7 +111,7 @@ pub(crate) fn border(e: &BytesStart<'_>) -> Border {
             .unwrap_or_default(),
         size: attr_i32(e, b"sz").map(Eighth),
         space: attr_u32(e, b"space").map(|s| s.min(255) as u8),
-        color: color(e),
+        color: color_in(e, b"color"),
         shadow: attr(e, b"shadow")
             .as_deref()
             .map(|v| wp_model::prop::on_off(Some(v)))
@@ -133,7 +143,7 @@ pub(crate) fn shading(e: &BytesStart<'_>) -> Shading {
                             .and_then(|t| u8::from_str_radix(t.trim(), 16).ok()),
                     })
             }),
-        color: color(e),
+        color: color_in(e, b"color"),
     }
 }
 
@@ -909,5 +919,29 @@ mod tests {
         let shading = props.shading.unwrap();
         assert_eq!(shading.pattern, ShadingPattern::Clear);
         assert_eq!(shading.background(), Some(Color::Rgb([0xD9, 0xE2, 0xF3])));
+    }
+
+    #[test]
+    fn a_borders_colour_is_in_w_color_because_w_val_is_its_style() {
+        // resume.docx rules its footer with white borders — invisible on paper.
+        // Reading `w:val` here parses "single" as a colour, fails, and the
+        // painter's black fallback draws a box Word never shows.
+        let mut reader =
+            Reader::from_str(r#"<w:top w:color="ffffff" w:space="0" w:sz="4" w:val="single"/>"#);
+        let e = match reader.read_event().unwrap() {
+            Event::Empty(e) => e.into_owned(),
+            other => panic!("{other:?}"),
+        };
+        let edge = border(&e);
+        assert_eq!(edge.style, BorderStyle::Single);
+        assert_eq!(edge.color, Some(Color::Rgb([0xff, 0xff, 0xff])));
+    }
+
+    #[test]
+    fn solid_shading_finds_its_fill_in_w_color() {
+        // `solid` inverts the attributes: `w:color` is what gets painted.
+        let props = run(r#"<w:rPr><w:shd w:val="solid" w:color="1F4E79" w:fill="auto"/></w:rPr>"#);
+        let shading = props.shading.unwrap();
+        assert_eq!(shading.background(), Some(Color::Rgb([0x1F, 0x4E, 0x79])));
     }
 }

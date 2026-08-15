@@ -400,11 +400,33 @@ impl Scriva {
     }
 
     /// The number of words in the document, as the status bar reports it.
+    ///
+    /// Word's rules, checked against Word's own count of a real resume: every
+    /// break separates (`text()` drops a page break, silently gluing the words
+    /// around it), and a slash splits — "TCP/IP" is two words to Word even
+    /// though "real-time" is one.
     fn word_count(&self) -> usize {
+        use wp_model::doc::Piece;
         self.document
             .paragraphs()
             .iter()
-            .map(|paragraph| paragraph.text().split_whitespace().count())
+            .map(|paragraph| {
+                let mut text = String::new();
+                for run in paragraph.runs() {
+                    for piece in &run.content {
+                        match piece {
+                            Piece::Text(t) => text.push_str(t),
+                            Piece::Tab | Piece::Break(_) => text.push(' '),
+                            Piece::Symbol { ch, .. } => text.push(*ch),
+                            Piece::Hyphen { .. } => text.push('-'),
+                            _ => {}
+                        }
+                    }
+                }
+                text.split(|c: char| c.is_whitespace() || c == '/')
+                    .filter(|word| !word.is_empty())
+                    .count()
+            })
             .sum()
     }
 
@@ -2457,6 +2479,24 @@ mod tests {
             .collect();
         app.stamp += 1;
         app
+    }
+
+    #[test]
+    fn the_word_count_counts_the_way_word_does() {
+        use wp_model::doc::{Break, Inline, Piece, Run};
+        // A slash splits — Word counts "TCP/IP" as two — but a hyphen does not.
+        let mut app = app_with(&["TCP/IP real-time networks"]);
+        assert_eq!(app.word_count(), 4);
+        // A page break separates the words around it, even though `text()`
+        // has nothing to show for it.
+        let mut run = Run::of("before");
+        run.content.push(Piece::Break(Break::Page));
+        run.content.push(Piece::Text("after".into()));
+        app.document.body.push(Block::Paragraph(Paragraph {
+            content: vec![Inline::Run(run)],
+            ..Paragraph::default()
+        }));
+        assert_eq!(app.word_count(), 6);
     }
 
     #[test]
