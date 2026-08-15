@@ -878,7 +878,21 @@ fn fill(
         pen = used + unit.trailing;
         index += 1;
     }
-    lines.push(raw_line(fragments, used, None));
+    // The final line — except after a trailing page or column break, where
+    // the paragraph mark rides the line the break ended. Word starts the new
+    // page with the *next* paragraph, not with this one's empty remainder; an
+    // extra line here pushed everything on the new page down by one and moved
+    // a page break the author placed deliberately. A trailing *line* break is
+    // different: Shift+Enter at the end of a paragraph genuinely opens an
+    // empty line below itself.
+    let mark_rides_the_break = fragments.is_empty()
+        && matches!(
+            lines.last().and_then(|line| line.ended_by),
+            Some(Break::Page | Break::Column)
+        );
+    if !mark_rides_the_break {
+        lines.push(raw_line(fragments, used, None));
+    }
     lines
 }
 
