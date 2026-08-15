@@ -236,7 +236,8 @@ fn layout_once(document: &Document, ctx: &Context<'_>, shaper: &mut dyn Shaper) 
             number = start;
         }
         let width = section.text_width().points();
-        let height = section.text_height().points();
+        let (top, bottom) = band_margins(document, section, ctx, shaper);
+        let height = section.page.height.points() - top - bottom;
         let columns = section.columns.resolve(section.text_width());
 
         let mut flow = Flow::default();
@@ -258,7 +259,11 @@ fn layout_once(document: &Document, ctx: &Context<'_>, shaper: &mut dyn Shaper) 
             let mut page = Page {
                 number,
                 section: section_index,
-                geometry: PageBox::of(section),
+                geometry: PageBox {
+                    top,
+                    bottom,
+                    ..PageBox::of(section)
+                },
                 content: Vec::new(),
                 header: Vec::new(),
                 footer: Vec::new(),
@@ -297,6 +302,42 @@ fn layout_once(document: &Document, ctx: &Context<'_>, shaper: &mut dyn Shaper) 
         }
     }
     pages
+}
+
+/// How far the body must actually stay from the page's edges.
+///
+/// The margins say where the body normally starts, but a header taller than
+/// the gap between the header distance and the top margin pushes the text
+/// *down* rather than being drawn over, and a tall footer pushes it up — Word
+/// grows the effective margin to the band's distance plus its height. Without
+/// this the body keeps the nominal margin and fits a line more per page than
+/// Word does, and every page break after the first drifts.
+///
+/// Measured with the default bands: a section whose first or even pages carry
+/// a different-sized band is approximated by its ordinary one, because the
+/// body is paginated with one height per section.
+fn band_margins(
+    document: &Document,
+    section: &SectionProps,
+    ctx: &Context<'_>,
+    shaper: &mut dyn Shaper,
+) -> (f64, f64) {
+    let width = section.text_width().points();
+    let mut top = section.margins.top.points();
+    let mut bottom = section.margins.bottom.points();
+    if let Some(body) = section.header(HeaderKind::Default) {
+        if let Some(header) = document.header(body) {
+            let (_, height) = band(&header.content, document, ctx, shaper, width);
+            top = top.max(section.margins.header.points() + height);
+        }
+    }
+    if let Some(body) = section.footer(HeaderKind::Default) {
+        if let Some(footer) = document.header(body) {
+            let (_, height) = band(&footer.content, document, ctx, shaper, width);
+            bottom = bottom.max(section.margins.footer.points() + height);
+        }
+    }
+    (top, bottom)
 }
 
 /// Puts the header and the footer in the margins.
