@@ -957,7 +957,7 @@ fn read_table_borders(
     (borders, diagonals)
 }
 
-fn read_cell_margins(reader: &mut Reader<&[u8]>, until: &[u8]) -> CellMargins {
+pub(crate) fn read_cell_margins(reader: &mut Reader<&[u8]>, until: &[u8]) -> CellMargins {
     let mut margins = CellMargins::default();
     while let Ok(event) = reader.read_event() {
         match event {

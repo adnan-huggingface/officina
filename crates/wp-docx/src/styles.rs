@@ -72,41 +72,73 @@ fn read_defaults(reader: &mut Reader<&[u8]>, ctx: &mut Ctx<'_>) -> DocDefaults {
 fn read_style(reader: &mut Reader<&[u8]>, ctx: &mut Ctx<'_>, style: &mut Style, kind: StyleKind) {
     while let Ok(event) = reader.read_event() {
         match event {
-            Event::Start(e) | Event::Empty(e) => match local_name(&e) {
-                b"name" => style.name = val(&e).map(Into::into),
-                b"basedOn" => {
-                    // A style is based on one of its own kind, and interning it
-                    // with the wrong kind would make a placeholder that the real
-                    // definition later has to correct. Cheap to get right here.
-                    style.based_on = val(&e).map(|id| ctx.styles.intern(&id, kind));
+            Event::Start(_) | Event::Empty(_) => {
+                let empty = matches!(event, Event::Empty(_));
+                let (Event::Start(e) | Event::Empty(e)) = event else {
+                    unreachable!()
+                };
+                match local_name(&e) {
+                    b"name" => style.name = val(&e).map(Into::into),
+                    b"basedOn" => {
+                        // A style is based on one of its own kind, and interning it
+                        // with the wrong kind would make a placeholder that the real
+                        // definition later has to correct. Cheap to get right here.
+                        style.based_on = val(&e).map(|id| ctx.styles.intern(&id, kind));
+                    }
+                    b"next" => style.next = val(&e).map(|id| ctx.styles.intern(&id, kind)),
+                    // `<w:link>` pairs a paragraph style with a character style, so
+                    // the linked one is always of the *other* kind.
+                    b"link" => {
+                        let linked = match kind {
+                            StyleKind::Paragraph => StyleKind::Character,
+                            StyleKind::Character => StyleKind::Paragraph,
+                            other => other,
+                        };
+                        style.link = val(&e).map(|id| ctx.styles.intern(&id, linked));
+                    }
+                    b"uiPriority" => style.priority = attr_i32(&e, b"val"),
+                    b"qFormat" => style.quick = on_off(&e),
+                    b"semiHidden" => style.semi_hidden = on_off(&e),
+                    b"unhideWhenUsed" => style.unhide_when_used = on_off(&e),
+                    b"pPr" => {
+                        let read = props::para_props(reader, ctx);
+                        style.para = read.props;
+                    }
+                    b"rPr" => style.run = props::run_props(reader, ctx).props,
+                    // The one slice of a table style's `tblPr` the layout
+                    // resolves. The resume that found this keeps its cell
+                    // margins here and nowhere else.
+                    b"tblPr" if !empty => style.cell_margins = read_style_margins(reader),
+                    // A conditional band (`firstRow`, `band1Horz`, …) holds its
+                    // own pPr and rPr; falling through would blend a band's
+                    // formatting into the base style.
+                    b"tblStylePr" if !empty => {
+                        let _ = crate::xml::skip_element(reader, b"tblStylePr");
+                    }
+                    _ => {}
                 }
-                b"next" => style.next = val(&e).map(|id| ctx.styles.intern(&id, kind)),
-                // `<w:link>` pairs a paragraph style with a character style, so
-                // the linked one is always of the *other* kind.
-                b"link" => {
-                    let linked = match kind {
-                        StyleKind::Paragraph => StyleKind::Character,
-                        StyleKind::Character => StyleKind::Paragraph,
-                        other => other,
-                    };
-                    style.link = val(&e).map(|id| ctx.styles.intern(&id, linked));
-                }
-                b"uiPriority" => style.priority = attr_i32(&e, b"val"),
-                b"qFormat" => style.quick = on_off(&e),
-                b"semiHidden" => style.semi_hidden = on_off(&e),
-                b"unhideWhenUsed" => style.unhide_when_used = on_off(&e),
-                b"pPr" => {
-                    let read = props::para_props(reader, ctx);
-                    style.para = read.props;
-                }
-                b"rPr" => style.run = props::run_props(reader, ctx).props,
-                _ => {}
-            },
+            }
             Event::End(e) if end_local_name(&e) == b"style" => break,
             Event::Eof => break,
             _ => {}
         }
     }
+}
+
+/// The `<w:tblCellMar>` inside a style's `<w:tblPr>`, and nothing else of it.
+fn read_style_margins(reader: &mut Reader<&[u8]>) -> wp_model::table::CellMargins {
+    let mut margins = wp_model::table::CellMargins::default();
+    while let Ok(event) = reader.read_event() {
+        match event {
+            Event::Start(e) if local_name(&e) == b"tblCellMar" => {
+                margins = crate::body::read_cell_margins(reader, b"tblCellMar");
+            }
+            Event::End(e) if end_local_name(&e) == b"tblPr" => break,
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    margins
 }
 
 #[cfg(test)]
@@ -134,6 +166,38 @@ mod tests {
         assert_eq!(defaults.run.size, Some(HalfPoint(22)));
         assert_eq!(defaults.run.fonts.ascii.as_deref(), Some("Calibri"));
         assert_eq!(defaults.para.spacing.after, Some(wp_model::Twips(160)));
+    }
+
+    #[test]
+    fn a_table_styles_cell_margins_are_read_and_a_bands_formatting_is_not() {
+        // The margins are written the way Google Docs writes them — decimal
+        // strings in a style's tblPr, nowhere near the table itself. The
+        // firstRow band carries bold that must NOT become the base style's.
+        let styles = styles_of(
+            r#"<w:styles>
+              <w:style w:type="table" w:styleId="Boxed">
+                <w:name w:val="Boxed"/>
+                <w:tblPr>
+                  <w:tblBorders><w:top w:val="single" w:sz="4"/></w:tblBorders>
+                  <w:tblCellMar><w:top w:w="55.0" w:type="dxa"/><w:left w:w="55.0" w:type="dxa"/><w:bottom w:w="55.0" w:type="dxa"/><w:right w:w="55.0" w:type="dxa"/></w:tblCellMar>
+                </w:tblPr>
+                <w:tblStylePr w:type="firstRow"><w:rPr><w:b/></w:rPr></w:tblStylePr>
+              </w:style>
+            </w:styles>"#,
+        );
+        let boxed = styles.lookup("Boxed").expect("the style is defined");
+        let style = styles.get(boxed).unwrap();
+        use wp_model::table::Width;
+        use wp_model::Twips;
+        assert_eq!(style.cell_margins.top, Some(Width::Fixed(Twips(55))));
+        assert_eq!(style.cell_margins.start, Some(Width::Fixed(Twips(55))));
+        assert_eq!(style.cell_margins.bottom, Some(Width::Fixed(Twips(55))));
+        assert_eq!(style.cell_margins.end, Some(Width::Fixed(Twips(55))));
+        assert_eq!(
+            style.run.toggles.get(Toggle::Bold),
+            None,
+            "the first-row band's bold stayed in its band"
+        );
     }
 
     #[test]

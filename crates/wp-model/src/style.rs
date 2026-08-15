@@ -96,6 +96,12 @@ pub struct Style {
     pub link: Option<StyleId>,
     pub para: ParaProps,
     pub run: RunProps,
+    /// `<w:tblPr><w:tblCellMar>` of a table style — the padding inside every
+    /// cell of a table that names this style. A table style is a whole
+    /// conditional-formatting scheme; this is the one slice of it the layout
+    /// resolves, because a row's height is wrong by exactly the sum of the
+    /// margins nobody read. All-`None` means the style says nothing.
+    pub cell_margins: crate::table::CellMargins,
     /// `w:default="1"` — the style used when nothing names one. Exactly one per
     /// kind, in a well-formed document.
     pub default: bool,
@@ -121,6 +127,7 @@ impl Style {
             link: None,
             para: ParaProps::default(),
             run: RunProps::default(),
+            cell_margins: crate::table::CellMargins::default(),
             default: false,
             quick: false,
             semi_hidden: false,
@@ -308,6 +315,33 @@ impl StyleTable {
     ///
     /// Takes the paragraph's layers rather than recomputing them, because a
     /// paragraph has many runs and the walk above is the expensive half.
+    /// The padding inside a table's cells, with the style chain heard from.
+    ///
+    /// The table's own `<w:tblCellMar>` wins over its style, the style over
+    /// what it is based on, and Word's default — nothing above or below,
+    /// 0.08in either side — is the floor. Every side of the answer is `Some`.
+    pub fn resolve_cell_margins(
+        &self,
+        table: &crate::table::TableProps,
+    ) -> crate::table::CellMargins {
+        fn overlay(out: &mut crate::table::CellMargins, layer: &crate::table::CellMargins) {
+            out.top = layer.top.or(out.top);
+            out.start = layer.start.or(out.start);
+            out.bottom = layer.bottom.or(out.bottom);
+            out.end = layer.end.or(out.end);
+        }
+        let mut out = crate::table::CellMargins::word_default();
+        if let Some(id) = table.style {
+            for id in self.chain(id) {
+                if let Some(style) = self.get(id) {
+                    overlay(&mut out, &style.cell_margins);
+                }
+            }
+        }
+        overlay(&mut out, &table.cell_margins);
+        out
+    }
+
     pub fn resolve_run(&self, paragraph: &Layers, direct: &RunProps) -> RunProps {
         let mut run = paragraph.run.clone();
         if let Some(style) = direct.style {
@@ -341,6 +375,47 @@ mod tests {
     use crate::color::Color;
     use crate::prop::{Indent, Toggle};
     use crate::units::{HalfPoint, Twips};
+
+    #[test]
+    fn a_tables_cell_margins_come_through_its_style_chain() {
+        use crate::table::{CellMargins, TableProps, Width};
+        let mut styles = StyleTable::default();
+        let mut base = Style::new("TableNormal", StyleKind::Table);
+        base.cell_margins = CellMargins {
+            top: Some(Width::Fixed(Twips(100))),
+            start: Some(Width::Fixed(Twips(115))),
+            bottom: Some(Width::Fixed(Twips(100))),
+            end: Some(Width::Fixed(Twips(115))),
+        };
+        let base_id = styles.insert(base);
+        let mut derived = Style::new("Boxed", StyleKind::Table);
+        derived.based_on = Some(base_id);
+        // The derived style speaks only about the top; the rest is the base's.
+        derived.cell_margins.top = Some(Width::Fixed(Twips(55)));
+        let derived_id = styles.insert(derived);
+
+        let mut props = TableProps {
+            style: Some(derived_id),
+            ..TableProps::default()
+        };
+        let resolved = styles.resolve_cell_margins(&props);
+        assert_eq!(resolved.top, Some(Width::Fixed(Twips(55))), "the leaf wins");
+        assert_eq!(
+            resolved.start,
+            Some(Width::Fixed(Twips(115))),
+            "the base fills in"
+        );
+
+        // The table's own tblCellMar beats them all.
+        props.cell_margins.top = Some(Width::Fixed(Twips(0)));
+        let resolved = styles.resolve_cell_margins(&props);
+        assert_eq!(resolved.top, Some(Width::Fixed(Twips(0))));
+
+        // And a table with no style still gets Word's floor.
+        let bare = styles.resolve_cell_margins(&TableProps::default());
+        assert_eq!(bare.top, Some(Width::Fixed(Twips(0))));
+        assert_eq!(bare.start, Some(Width::Fixed(Twips(108))));
+    }
 
     /// Normal (11pt, Calibri) with Heading1 based on it (16pt, bold), plus a
     /// Strong character style that is also bold.

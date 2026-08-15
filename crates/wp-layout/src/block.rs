@@ -762,7 +762,9 @@ fn flow_table(
         .and_then(|w| w.resolve(Twips::from_points(available)))
         .map(|t| t.points())
         .unwrap_or(0.0);
-    let margins = &table.props.cell_margins;
+    // The style chain is heard from: a table whose margins live in its style —
+    // where Google Docs puts them — pads its cells all the same.
+    let margins = document.styles.resolve_cell_margins(&table.props);
     let pad_start = margins
         .start
         .and_then(|w| w.resolve(Twips::from_points(available)))
@@ -1506,6 +1508,61 @@ mod tests {
         assert_eq!(page.content[0].y, page.geometry.top);
         assert_eq!(page.content[1].y, page.geometry.top);
         assert_eq!(page.content[2].y, page.geometry.top + 10.0);
+    }
+
+    #[test]
+    fn a_table_styles_cell_margins_pad_every_row() {
+        // The margins live in the table's *style* — where Google Docs puts
+        // them — and a layout that read only the table's own tblCellMar drew
+        // every row 5.5pt short and every text column 5.3pt narrow. The rows
+        // of the two tables here differ only in the style's say-so.
+        use wp_model::table::Width;
+        let two_rows = || Table {
+            grid: vec![Twips(1440)],
+            rows: vec![
+                Row {
+                    cells: vec![cell("a")],
+                    ..Row::new()
+                },
+                Row {
+                    cells: vec![cell("b")],
+                    ..Row::new()
+                },
+            ],
+            ..Table::new()
+        };
+        let line_ys = |document: &Document| -> Vec<f64> {
+            pages(document)[0]
+                .content
+                .iter()
+                .filter(|p| matches!(p.kind, Placed::Line { .. }))
+                .map(|p| p.y)
+                .collect()
+        };
+
+        let mut plain = document(vec![Block::Table(two_rows())]);
+        plain.section = page_of(20);
+        let plain_ys = line_ys(&plain);
+
+        let mut style = wp_model::Style::new("Boxed", wp_model::StyleKind::Table);
+        style.cell_margins = wp_model::table::CellMargins {
+            top: Some(Width::Fixed(Twips(55))),
+            start: Some(Width::Fixed(Twips(55))),
+            bottom: Some(Width::Fixed(Twips(55))),
+            end: Some(Width::Fixed(Twips(55))),
+        };
+        let mut padded = document(vec![Block::Table(two_rows())]);
+        let id = padded.styles.insert(style);
+        if let Block::Table(table) = &mut padded.body[0] {
+            table.props.style = Some(id);
+        }
+        padded.section = page_of(20);
+        let padded_ys = line_ys(&padded);
+
+        // 55 twips is 2.75pt: the first line sits that much below the row's
+        // top, and the second row starts 5.5pt later than it otherwise would.
+        assert_eq!(padded_ys[0], plain_ys[0] + 2.75);
+        assert_eq!(padded_ys[1], plain_ys[1] + 2.75 + 5.5);
     }
 
     #[test]
