@@ -2633,6 +2633,7 @@ dependencies = [
  "wp-docx",
  "wp-layout",
  "wp-model",
+ "wp-print",
  "wp-text",
 ]
 
@@ -4016,6 +4017,16 @@ dependencies = [
 [[package]]
 name = "wp-model"
 version = "0.1.0"
+
+[[package]]
+name = "wp-print"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "windows-sys 0.61.2",
+ "wp-layout",
+ "wp-model",
+]
 
 [[package]]
 name = "wp-text"

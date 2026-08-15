@@ -72,6 +72,13 @@ impl Scriva {
                     chosen = Some(Command::SaveAs);
                 }
                 menu::sep(ui);
+                if menu::item(ui, "&Print…", "Ctrl+P").clicked() {
+                    chosen = Some(Command::Print);
+                }
+                if menu::item(ui, "Export as P&DF…", "").clicked() {
+                    chosen = Some(Command::ExportPdf);
+                }
+                menu::sep(ui);
                 if menu::item(ui, "&Close", "Ctrl+W").clicked() {
                     chosen = Some(Command::Close);
                 }

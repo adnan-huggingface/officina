@@ -412,6 +412,65 @@ pub fn register(ctx: &egui::Context, dirs: &[PathBuf]) -> Loaded {
     loaded
 }
 
+/// The font file a document's face name resolves to, and where it came from.
+///
+/// This is the *same* resolution [`register`] performs — the exact-name table
+/// first, the generic shape's candidates after — re-read from disk, for a
+/// renderer that must embed the bytes rather than draw with them. The path is
+/// returned so a caller can recognise two names resolving to one file and
+/// embed it once.
+pub fn face_file(name: &str, bold: bool, italic: bool) -> Option<(PathBuf, Vec<u8>)> {
+    let dirs = font_directories();
+    let index = match (bold, italic) {
+        (false, false) => 0,
+        (true, false) => 1,
+        (false, true) => 2,
+        (true, true) => 3,
+    };
+    let lower = name.to_ascii_lowercase();
+    let candidates: Vec<&str> = match NAMED.iter().find(|(named, _)| *named == lower) {
+        Some((_, files)) if !files[index].is_empty() => {
+            // The exact face first, then the shape's own chain — the same
+            // order the screen falls back in when the exact file is missing.
+            let mut all = vec![files[index]];
+            all.extend(candidates(Family::of(name), bold, italic));
+            all
+        }
+        _ => candidates(Family::of(name), bold, italic),
+    };
+    for file in candidates {
+        for dir in &dirs {
+            let path = dir.join(file);
+            if let Ok(bytes) = std::fs::read(&path) {
+                if bytes.len() > 4 && &bytes[..4] == b"ttcf" {
+                    continue;
+                }
+                return Some((path, bytes));
+            }
+        }
+    }
+    None
+}
+
+/// The family name GDI should be asked for, mirroring what the screen shows.
+///
+/// A name in the exact-name table is real and GDI knows it. Anything else was
+/// drawn in the generic face of its shape, and naming that face keeps the
+/// printout in the type the user approved — GDI's own fuzzy matching would
+/// pick something else for an unknown name.
+pub fn gdi_family(name: &str) -> String {
+    let lower = name.to_ascii_lowercase();
+    if NAMED.iter().any(|(named, _)| *named == lower) {
+        return name.to_owned();
+    }
+    match Family::of(name) {
+        Family::Sans => "Arial",
+        Family::Serif => "Times New Roman",
+        Family::Mono => "Consolas",
+    }
+    .to_owned()
+}
+
 /// Which faces turned out to exist on this machine.
 #[derive(Debug, Clone, Default)]
 pub struct Loaded {
@@ -466,6 +525,17 @@ mod tests {
             assert!(seen.insert(*name), "{name} is listed twice");
             assert!(!files[0].is_empty(), "{name} has no regular face at all");
         }
+    }
+
+    #[test]
+    fn the_printer_is_asked_for_the_face_the_screen_showed() {
+        // Named faces print as themselves; unknown names print as the
+        // substitute the screen drew them in, not whatever GDI would guess.
+        assert_eq!(gdi_family("Verdana"), "Verdana");
+        assert_eq!(gdi_family("verdana"), "verdana", "case is GDI's problem");
+        assert_eq!(gdi_family("Chalkduster Pro"), "Arial");
+        assert_eq!(gdi_family("Cambria"), "Times New Roman");
+        assert_eq!(gdi_family("Courier New"), "Consolas");
     }
 
     #[test]

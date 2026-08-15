@@ -1426,9 +1426,41 @@ one produced by Word or Excel, and all twenty-seven passed while a resume that
 had been through Google Docs was unreadable. A corpus that is all one producer
 tests one producer's dialect.
 
+## Printing and PDF (2026-08-15, after ship)
+
+Both landed in one stroke, because they are one thing: a second and third
+renderer over the same laid-out pages the screen paints. The new `wp-print`
+crate flattens a page into device-independent draw operations that mirror the
+screen painter decision for decision — same baseline arithmetic, same underline
+offsets, same border overlaps — and two backends put ink to them.
+
+- **PDF export** (`File ▸ Export as PDF…`): fonts embedded whole as Identity-H
+  CID fonts, resolved through the *same* table the screen resolves names
+  through, so the file wears the type the user approved. Every character is
+  pinned to the layout's advance with `TJ` corrections — a viewer cannot
+  re-break a line. A `ToUnicode` map makes the text copyable; JPEGs pass
+  through as their own bytes; PNG transparency becomes an `SMask`. The TTF
+  reading (`cmap`, `hmtx`, `head`/`hhea`, `OS/2`/`post`) is our own, in the
+  house tradition.
+- **Printing** (`File ▸ Print…`, Ctrl+P): `PrintDlgW`, then GDI against the
+  printer DC. Text is pinned per character with `lpDx` so the printed line
+  breaks where the screen's did, whatever GDI thinks the string measures.
+  Orientation follows each page through `ResetDCW`. A dialog-free
+  `print_to_file` drives a named driver straight to a file — the ignored
+  `print_smoke` test spools the corpus through *Microsoft Print to PDF* and
+  reads the result back.
+- Verified live on the resume: five pages exported, page-for-page with the
+  screen and with Word, split-row borders closed at the cuts, `PAGE` fields
+  right on every page, rasterised through Windows' own PDF engine to look.
+
+Stated limits: run `w:shd` shading and tab leaders are not painted — the
+screen does not paint them either, and print mirrors the screen; Calx still
+does not print (a spreadsheet's print model — areas, scaling, repeat rows — is
+its own project).
+
 ## Deferred
 
-- [-] **PDF** — dropped per Q3. Revisit after Phase 5.
+- [x] **PDF** — was dropped per Q3; built after ship as `wp-print`. See above.
 - [-] **.doc / .xls writing** — never; save-as-modern is the escape hatch.
 - [-] **Macros / VBA** — preserved verbatim, never executed.
 - [-] **PowerPoint** — out of scope.

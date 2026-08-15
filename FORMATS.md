@@ -82,7 +82,8 @@ Three columns, because a file format has three different questions:
 | Content controls | as content | yes | yes |
 | Text wrap around a floating picture | no | — | yes |
 | Column balancing | no | — | yes |
-| Printing | no | — | yes |
+| Printing (Ctrl+P, system dialog) | — | yes | — |
+| PDF export, fonts embedded | — | yes | — |
 
 ---
 
@@ -120,8 +121,9 @@ so, which is why the title bar shows a `.docx` name from the moment it opens.
 5. **A large document is laid out in full on every edit.** Eight thousand
    paragraphs cost about a third of a second; a twenty-page document is
    imperceptible. Incremental layout is not implemented.
-6. **No printing**, in either application. This was excluded from scope
-   deliberately, not left undone.
+6. **No printing in Calx.** Scriva prints through the system dialog and
+   exports PDF; the spreadsheet's page-setup model (print areas, scaling,
+   repeat rows) is its own project and has not been started.
 
 ---
 

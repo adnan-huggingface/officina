@@ -27,6 +27,8 @@ pub enum Command {
     ForgetRecent,
     Save,
     SaveAs,
+    Print,
+    ExportPdf,
     Close,
     Exit,
     Undo,
@@ -647,6 +649,79 @@ impl Scriva {
         self.save()
     }
 
+    /// The images the current pages draw, decoded for a paper renderer.
+    fn page_images(&self) -> std::collections::HashMap<String, wp_print::Raster> {
+        crate::publish::rasters(
+            self.package.as_ref(),
+            self.parts.as_ref(),
+            self.view.pages(),
+        )
+    }
+
+    /// What this document is called off the screen: for a PDF's title, for the
+    /// print queue's entry.
+    fn published_name(&self) -> String {
+        self.path
+            .as_ref()
+            .and_then(|path| path.file_stem())
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "Document".to_owned())
+    }
+
+    fn export_pdf(&mut self) {
+        let stem = self.published_name();
+        let mut chooser = rfd::FileDialog::new()
+            .add_filter("PDF", &["pdf"])
+            .set_file_name(format!("{stem}.pdf"));
+        // Next to the document itself, which is where a resume's PDF belongs.
+        if let Some(directory) = self.path.as_ref().and_then(|path| path.parent()) {
+            chooser = chooser.set_directory(directory);
+        } else if let Some(directory) = self.recent.directory() {
+            chooser = chooser.set_directory(directory);
+        }
+        let Some(path) = chooser.save_file() else {
+            return;
+        };
+        let path = if path.extension().is_none() {
+            path.with_extension("pdf")
+        } else {
+            path
+        };
+        let images = self.page_images();
+        let mut faces = crate::publish::SystemFaces::new();
+        let pdf = wp_print::pdf::export(self.view.pages(), &mut faces, &images, Some(&stem));
+        if let Err(error) = std::fs::write(&path, pdf) {
+            self.message = Some((
+                "Cannot export".to_owned(),
+                format!("{}\n\n{error}", path.display()),
+            ));
+        }
+    }
+
+    #[cfg(windows)]
+    fn print(&mut self) {
+        let images = self.page_images();
+        let name = self.published_name();
+        match wp_print::win::print(
+            self.view.pages(),
+            &images,
+            &name,
+            &ui_kit::fonts::gdi_family,
+        ) {
+            Ok(_) => {}
+            Err(error) => self.message = Some(("Cannot print".to_owned(), error)),
+        }
+    }
+
+    #[cfg(not(windows))]
+    fn print(&mut self) {
+        self.message = Some((
+            "Cannot print".to_owned(),
+            "Printing is not wired up on this platform yet. Export a PDF and print that."
+                .to_owned(),
+        ));
+    }
+
     /// Writes the document as text, keeping the encoding and the line endings
     /// the file came in with.
     fn save_text(&mut self, path: &Path, format: Format) -> bool {
@@ -729,6 +804,8 @@ impl Scriva {
             Command::SaveAs => {
                 self.save_as();
             }
+            Command::Print => self.print(),
+            Command::ExportPdf => self.export_pdf(),
             Command::Close => self.close_document(),
             Command::Exit => {}
             Command::Undo => {
@@ -1321,6 +1398,7 @@ impl Scriva {
             (ctrl, Key::O, Command::Open),
             (ctrl, Key::S, Command::Save),
             (ctrl_shift, Key::S, Command::SaveAs),
+            (ctrl, Key::P, Command::Print),
             (ctrl, Key::W, Command::Close),
             (ctrl, Key::Z, Command::Undo),
             (ctrl, Key::Y, Command::Redo),
