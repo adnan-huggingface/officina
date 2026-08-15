@@ -61,6 +61,17 @@ pub enum Placed {
     Fill([u8; 3]),
     /// One edge of a border.
     Edge { border: Border, side: Side },
+    /// One edge of a border that is only real if a page break cuts the row
+    /// at this end of the band.
+    ///
+    /// A row is flowed in bands before anybody knows where the pages fall.
+    /// Word closes a row cut by a page with the cell's own border — a bottom
+    /// rule on the fragment above the cut and a top rule on the one below —
+    /// but drawing those on every band would rule lines across the middle of
+    /// whole cells. So the maybe-edges travel with the band, and pagination,
+    /// which is what knows where the cut landed, turns the ones at a real cut
+    /// into [`Placed::Edge`] and drops the rest.
+    BreakEdge { border: Border, side: Side },
     /// A drawing, by the relationship naming the part that holds its bytes.
     ///
     /// `anchor` is the drawing itself, for a renderer that has to work out where
@@ -275,11 +286,44 @@ fn layout_once(document: &Document, ctx: &Context<'_>, shaper: &mut dyn Shaper) 
             let column = columns.first().map(|c| c.width.points()).unwrap_or(width);
             let _ = column;
             let mut y = page.geometry.top;
-            for item in &flow.items[placed..*end] {
+            let slice = &flow.items[placed..*end];
+            for (offset, item) in slice.iter().enumerate() {
+                // A maybe-edge is real only where the page actually cut its
+                // row: above the first item when the same row continues from
+                // the previous page, below the last when it runs on to the
+                // next. Everywhere else the row is whole and the edge is not.
+                let cut_above = offset == 0
+                    && placed > 0
+                    && item.table.is_some()
+                    && flow.items[placed - 1].table == item.table
+                    && flow.items[placed - 1].group == item.group;
+                let cut_below = offset + 1 == slice.len()
+                    && *end < flow.items.len()
+                    && item.table.is_some()
+                    && flow.items[*end].table == item.table
+                    && flow.items[*end].group == item.group;
                 for part in &item.parts {
+                    let kind = match &part.kind {
+                        Placed::BreakEdge { border, side } => {
+                            let cut = match side {
+                                Side::Top => cut_above,
+                                Side::Bottom => cut_below,
+                                _ => false,
+                            };
+                            if !cut {
+                                continue;
+                            }
+                            Placed::Edge {
+                                border: *border,
+                                side: *side,
+                            }
+                        }
+                        other => other.clone(),
+                    };
                     page.content.push(Placement {
                         x: page.geometry.start + part.x,
                         y: y + part.y,
+                        kind,
                         ..part.clone()
                     });
                 }
@@ -428,6 +472,10 @@ fn band(
     let mut y = 0.0;
     for item in flow.items {
         for part in item.parts {
+            // A band is never cut by a page, so a maybe-edge never fires.
+            if matches!(part.kind, Placed::BreakEdge { .. }) {
+                continue;
+            }
             out.push(Placement {
                 y: y + part.y,
                 ..part
@@ -899,6 +947,19 @@ fn flow_table(
                     // on every band would rule a line across the middle of a
                     // cell wherever a page break happened to fall.
                     if (side == Side::Top && !is_first) || (side == Side::Bottom && !is_last) {
+                        // Unless a page break cuts the row right here — then
+                        // Word closes the fragment with the cell's border.
+                        // Pagination knows where the cuts land; the edge goes
+                        // along as a maybe.
+                        if let Some(border) = border.filter(|b| b.style.draws()) {
+                            parts.push(Placement {
+                                x: cell.x,
+                                y: 0.0,
+                                width: cell.width,
+                                height: band_height,
+                                kind: Placed::BreakEdge { border, side },
+                            });
+                        }
                         continue;
                     }
                     if let Some(border) = border.filter(|b| b.style.draws()) {
@@ -1521,8 +1582,12 @@ mod tests {
     }
 
     #[test]
-    fn a_split_row_draws_its_top_edge_once_and_its_bottom_edge_once() {
-        // Otherwise a page break rules a line across the middle of a cell.
+    fn a_row_cut_by_a_page_is_closed_on_both_sides_of_the_cut() {
+        // The page break must not rule a line across the middle of a cell —
+        // but where it genuinely cuts the row, Word closes both fragments
+        // with the cell's own border: a bottom rule above the cut and a top
+        // rule below it, so each page shows a whole box rather than three
+        // sides and a hole.
         let border = Border {
             style: wp_model::prop::BorderStyle::Single,
             size: Some(wp_model::units::Eighth(4)),
@@ -1548,19 +1613,28 @@ mod tests {
         let mut document = document(vec![Block::Table(table)]);
         document.section = page_of(5);
         let pages = pages(&document);
-        let count = |side: Side| -> usize {
-            pages
+        assert_eq!(pages.len(), 2, "the row splits across two pages");
+        let count = |page: &Page, side: Side| -> usize {
+            page.content
                 .iter()
-                .flat_map(|page| page.content.iter())
                 .filter(|p| matches!(&p.kind, Placed::Edge { side: s, .. } if *s == side))
                 .count()
         };
-        assert_eq!(count(Side::Top), 1, "one top edge for the whole row");
-        assert_eq!(count(Side::Bottom), 1, "one bottom edge for the whole row");
-        assert!(
-            count(Side::Start) >= 2,
-            "the side edge is drawn on every band it passes through"
-        );
+        for page in &pages {
+            assert_eq!(count(page, Side::Top), 1, "each fragment closed above");
+            assert_eq!(count(page, Side::Bottom), 1, "each fragment closed below");
+            assert!(
+                count(page, Side::Start) >= 1,
+                "the side edge is drawn on every band it passes through"
+            );
+            assert!(
+                !page
+                    .content
+                    .iter()
+                    .any(|p| matches!(p.kind, Placed::BreakEdge { .. })),
+                "a maybe-edge never reaches a page unresolved"
+            );
+        }
     }
 
     fn cell(text: &str) -> Cell {

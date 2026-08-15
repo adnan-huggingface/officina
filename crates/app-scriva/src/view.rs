@@ -731,6 +731,8 @@ fn paint_placement(
             );
             paint_image(painter, pictures, rel.as_deref(), rect);
         }
+        // Resolved into `Edge` or dropped at pagination; never on a page.
+        Placed::BreakEdge { .. } => {}
         Placed::FootnoteSeparator => {}
     }
 }
