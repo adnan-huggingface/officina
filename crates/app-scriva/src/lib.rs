@@ -9,6 +9,7 @@
 pub mod app;
 pub mod drawings;
 pub mod edit;
+pub mod find;
 mod icons;
 mod menus;
 pub mod pictures;

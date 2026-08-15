@@ -26,6 +26,7 @@ impl Scriva {
         // closure cannot borrow `self` while `self` is drawing it.
         let recent: Vec<std::path::PathBuf> = self.recent_paths();
         let (undo, redo) = self.can_undo_redo();
+        let selected = self.has_selection();
         let marks = self.showing_marks();
         let revisions = self.showing_revisions();
         let zoom = self.zoom();
@@ -90,6 +91,25 @@ impl Scriva {
                     }
                 });
                 menu::sep(ui);
+                ui.add_enabled_ui(selected, |ui| {
+                    if menu::item(ui, "Cu&t", "Ctrl+X").clicked() {
+                        chosen = Some(Command::Cut);
+                    }
+                    if menu::item(ui, "&Copy", "Ctrl+C").clicked() {
+                        chosen = Some(Command::Copy);
+                    }
+                });
+                if menu::item(ui, "&Paste", "Ctrl+V").clicked() {
+                    chosen = Some(Command::Paste);
+                }
+                menu::sep(ui);
+                if menu::item(ui, "&Find…", "Ctrl+F").clicked() {
+                    chosen = Some(Command::Find);
+                }
+                if menu::item(ui, "R&eplace…", "Ctrl+H").clicked() {
+                    chosen = Some(Command::Replace);
+                }
+                menu::sep(ui);
                 if menu::item(ui, "Select &All", "Ctrl+A").clicked() {
                     chosen = Some(Command::SelectAll);
                 }
@@ -111,7 +131,7 @@ impl Scriva {
                 if menu::check(ui, "Tracked &Changes", "", revisions).clicked() {
                     chosen = Some(Command::ShowRevisions);
                 }
-                if menu::check(ui, "&Navigation Pane", "Ctrl+F", navigator).clicked() {
+                if menu::check(ui, "&Navigation Pane", "", navigator).clicked() {
                     chosen = Some(Command::Navigator);
                 }
             });

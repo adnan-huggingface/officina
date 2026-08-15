@@ -13,6 +13,7 @@ use wp_model::prop::{Justify, LineSpacing, Toggle};
 use wp_model::units::{HalfPoint, Line240, Twips};
 
 use crate::edit::{self, Caret, History, Selection};
+use crate::find::{self, Finder};
 use crate::shaper::Egui;
 use crate::text;
 use crate::view::{self, View};
@@ -31,6 +32,15 @@ pub enum Command {
     Undo,
     Redo,
     SelectAll,
+    Cut,
+    Copy,
+    Paste,
+    /// Open the find bar, or bring it back to the keyboard.
+    Find,
+    /// The find bar with the replace controls showing.
+    Replace,
+    FindNext,
+    FindPrevious,
     Bold,
     Italic,
     Underline,
@@ -173,6 +183,20 @@ pub struct Scriva {
     ending: wp_text::LineEnding,
     /// Where the view should scroll to, once it knows where that is.
     reveal: Option<Caret>,
+    /// The find bar, when it is open.
+    finder: Option<Finder>,
+    /// Whether one of the find bar's fields held the keyboard last frame —
+    /// while it does, keys type into the bar and not into the document.
+    finder_focused: bool,
+    /// Every match of the finder's query, for the view to highlight.
+    find_matches: Vec<Selection>,
+    /// What `find_matches` was computed from, so it is not recomputed while
+    /// neither the document nor the query has changed.
+    matches_for: (u64, String),
+    /// The page surface's widget id, for giving the keyboard back to it.
+    surface_id: Option<egui::Id>,
+    /// How tall the visible desk is, in screen points — the size of a Page Down.
+    viewport: f32,
 }
 
 impl Default for Scriva {
@@ -213,6 +237,12 @@ impl Scriva {
             encoding: wp_text::Encoding::Utf8,
             ending: wp_text::LineEnding::Crlf,
             reveal: None,
+            finder: None,
+            finder_focused: false,
+            find_matches: Vec::new(),
+            matches_for: (u64::MAX, String::new()),
+            surface_id: None,
+            viewport: 0.0,
         }
     }
 
@@ -281,6 +311,10 @@ impl Scriva {
 
     pub(crate) fn showing_marks(&self) -> bool {
         self.view.show_marks
+    }
+
+    pub(crate) fn has_selection(&self) -> bool {
+        !self.selection.is_empty()
     }
 
     pub(crate) fn showing_revisions(&self) -> bool {
@@ -674,6 +708,27 @@ impl Scriva {
                     },
                 };
             }
+            Command::Copy => {
+                if let Some(text) = self.selected_text() {
+                    clipboard_set(&text);
+                }
+            }
+            Command::Cut => {
+                if let Some(text) = self.selected_text() {
+                    clipboard_set(&text);
+                    self.replace_selection("");
+                    self.reveal = Some(self.caret());
+                }
+            }
+            Command::Paste => {
+                if let Some(text) = clipboard_get() {
+                    self.paste_text(&text);
+                }
+            }
+            Command::Find => self.open_finder(false),
+            Command::Replace => self.open_finder(true),
+            Command::FindNext => self.jump_match(true),
+            Command::FindPrevious => self.jump_match(false),
             Command::Bold => self.toggle(Toggle::Bold),
             Command::Italic => self.toggle(Toggle::Italic),
             Command::Strike => self.toggle(Toggle::Strike),
@@ -968,6 +1023,173 @@ impl Scriva {
         self.changed();
     }
 
+    // ------------------------------------------------------------ clipboard
+
+    /// The text the selection covers, paragraphs joined by newlines.
+    fn selected_text(&self) -> Option<String> {
+        if self.selection.is_empty() {
+            return None;
+        }
+        let (start, end) = self.selection.ordered();
+        if start.paragraph == end.paragraph {
+            let content = self.paragraph_text(start.paragraph);
+            return content.get(start.offset..end.offset).map(str::to_owned);
+        }
+        let mut parts = Vec::new();
+        let first = self.paragraph_text(start.paragraph);
+        parts.push(first.get(start.offset..).unwrap_or_default().to_owned());
+        for index in start.paragraph + 1..end.paragraph {
+            parts.push(self.paragraph_text(index));
+        }
+        let last = self.paragraph_text(end.paragraph);
+        parts.push(last.get(..end.offset).unwrap_or_default().to_owned());
+        Some(parts.join("\n"))
+    }
+
+    /// Replaces the selection with `replacement` — typing it when there is
+    /// something to type, deleting when there is not. Tracking applies either
+    /// way, because both go through the same paths typing does.
+    fn replace_selection(&mut self, replacement: &str) {
+        if !replacement.is_empty() {
+            self.type_text(replacement);
+            return;
+        }
+        if self.selection.is_empty() {
+            return;
+        }
+        if self.document.settings.track_changes {
+            self.record_delete();
+        } else {
+            let caret =
+                edit::delete_selection(&mut self.document, &mut self.history, self.selection);
+            self.selection = Selection::at(clamp(&self.document, caret));
+            self.changed();
+        }
+    }
+
+    /// Pastes text at the selection: the first line types over it, and each
+    /// newline after that presses Enter.
+    fn paste_text(&mut self, input: &str) {
+        let input = input.replace("\r\n", "\n").replace('\r', "\n");
+        if input.is_empty() {
+            return;
+        }
+        let mut segments = input.split('\n');
+        match segments.next() {
+            Some(first) if !first.is_empty() => self.type_text(first),
+            _ => {}
+        }
+        for segment in segments {
+            let caret =
+                edit::split_paragraph(&mut self.document, &mut self.history, self.selection);
+            self.selection = Selection::at(clamp(&self.document, caret));
+            self.changed();
+            if !segment.is_empty() {
+                self.type_text(segment);
+            }
+        }
+        self.reveal = Some(self.caret());
+    }
+
+    // ------------------------------------------------------------ find
+
+    /// Opens the find bar, pre-filled from the selection the way Word does.
+    fn open_finder(&mut self, with_replace: bool) {
+        let mut finder = self
+            .finder
+            .take()
+            .unwrap_or_else(|| Finder::new(with_replace));
+        finder.with_replace = with_replace;
+        finder.focus = true;
+        finder.note = None;
+        if let Some(selected) = self
+            .selected_text()
+            .filter(|text| !text.contains('\n') && text.len() <= 100)
+        {
+            finder.query = selected;
+        }
+        self.finder = Some(finder);
+    }
+
+    /// Recomputes the matches when the document or the query has changed.
+    fn refresh_matches(&mut self) {
+        let query = self
+            .finder
+            .as_ref()
+            .map(|finder| finder.query.clone())
+            .unwrap_or_default();
+        if self.matches_for == (self.stamp, query.clone()) {
+            return;
+        }
+        self.find_matches = find::matches(&self.document, &query);
+        self.matches_for = (self.stamp, query);
+    }
+
+    /// Selects the next or previous match and scrolls to it.
+    fn jump_match(&mut self, forward: bool) {
+        self.refresh_matches();
+        let (start, end) = self.selection.ordered();
+        let found = if forward {
+            // From the selection's end, so the match already selected is
+            // stepped past — but a match starting right at a bare caret counts.
+            find::after(
+                &self.find_matches,
+                if self.selection.is_empty() {
+                    start
+                } else {
+                    end
+                },
+            )
+        } else {
+            find::before(&self.find_matches, start)
+        };
+        if let Some(found) = found {
+            self.selection = found;
+            self.reveal = Some(found.ordered().0);
+        }
+    }
+
+    /// Replaces the selected match and moves to the next one.
+    fn replace_current(&mut self) {
+        let Some(finder) = &self.finder else {
+            return;
+        };
+        if finder.query.is_empty() {
+            return;
+        }
+        let (query, replacement) = (finder.query.clone(), finder.replacement.clone());
+        let selection_matches = self
+            .selected_text()
+            .is_some_and(|text| find::equals(&text, &query));
+        if selection_matches {
+            self.replace_selection(&replacement);
+        }
+        self.jump_match(true);
+    }
+
+    /// Replaces every match, back to front so earlier offsets stay true.
+    fn replace_all(&mut self) {
+        let Some(finder) = &self.finder else {
+            return;
+        };
+        if finder.query.is_empty() {
+            return;
+        }
+        let replacement = finder.replacement.clone();
+        self.refresh_matches();
+        let all = self.find_matches.clone();
+        for found in all.iter().rev() {
+            self.selection = *found;
+            self.replace_selection(&replacement);
+        }
+        if let Some(finder) = &mut self.finder {
+            finder.note = Some(match all.len() {
+                0 => "No matches".to_owned(),
+                n => format!("Replaced {n}"),
+            });
+        }
+    }
+
     // ------------------------------------------------------------ keys
 
     /// Word's keyboard, as far as it is implemented.
@@ -1006,7 +1228,10 @@ impl Scriva {
             (ctrl, Key::M, Command::Indent(1)),
             (ctrl_shift, Key::M, Command::Indent(-1)),
             (ctrl, Key::Space, Command::ClearFormatting),
-            (ctrl, Key::F, Command::Navigator),
+            (ctrl, Key::F, Command::Find),
+            (ctrl, Key::H, Command::Replace),
+            (egui::Modifiers::NONE, Key::F3, Command::FindNext),
+            (egui::Modifiers::SHIFT, Key::F3, Command::FindPrevious),
             (egui::Modifiers::NONE, Key::F9, Command::UpdateToc),
             (ctrl_shift, Key::E, Command::TrackChanges),
             (
@@ -1048,7 +1273,13 @@ impl Scriva {
                 // does nothing here rather than doing something surprising.
                 egui::Event::Text(text) if !text.is_empty() && self.picked.is_none() => {
                     self.type_text(&text);
+                    self.reveal = Some(self.caret());
                 }
+                // Ctrl+C, Ctrl+X and Ctrl+V arrive as their own events, with
+                // the pasted text already read from the OS.
+                egui::Event::Copy => self.run(Command::Copy),
+                egui::Event::Cut if self.picked.is_none() => self.run(Command::Cut),
+                egui::Event::Paste(text) if self.picked.is_none() => self.paste_text(&text),
                 egui::Event::Key {
                     key,
                     pressed: true,
@@ -1079,6 +1310,7 @@ impl Scriva {
         let caret = self.caret();
         let content = self.paragraph_text(caret.paragraph);
         let last = self.paragraph_count().saturating_sub(1);
+        let was = (self.selection, self.stamp);
 
         match key {
             Key::ArrowLeft => {
@@ -1130,6 +1362,10 @@ impl Scriva {
                 let next = self.line_step(caret, key == Key::ArrowDown);
                 self.set_caret(next, extend);
             }
+            Key::PageUp | Key::PageDown => {
+                let next = self.page_step(caret, key == Key::PageDown);
+                self.set_caret(next, extend);
+            }
             Key::Home => {
                 let next = if modifiers.command {
                     Caret {
@@ -1159,13 +1395,44 @@ impl Scriva {
                 self.set_caret(next, extend);
             }
             Key::Backspace => {
-                let caret = edit::backspace(&mut self.document, &mut self.history, self.selection);
+                // Ctrl+Backspace takes the whole word before the caret.
+                let caret = if word && self.selection.is_empty() && caret.offset > 0 {
+                    let from = Caret {
+                        paragraph: caret.paragraph,
+                        offset: text::word_start_before(&content, caret.offset),
+                    };
+                    edit::delete_selection(
+                        &mut self.document,
+                        &mut self.history,
+                        Selection {
+                            anchor: from,
+                            head: caret,
+                        },
+                    )
+                } else {
+                    edit::backspace(&mut self.document, &mut self.history, self.selection)
+                };
                 self.selection = Selection::at(clamp(&self.document, caret));
                 self.changed();
             }
             Key::Delete => {
-                let caret =
-                    edit::delete_forward(&mut self.document, &mut self.history, self.selection);
+                // Ctrl+Delete takes the whole word after the caret.
+                let caret = if word && self.selection.is_empty() && caret.offset < content.len() {
+                    let to = Caret {
+                        paragraph: caret.paragraph,
+                        offset: text::word_start_after(&content, caret.offset),
+                    };
+                    edit::delete_selection(
+                        &mut self.document,
+                        &mut self.history,
+                        Selection {
+                            anchor: caret,
+                            head: to,
+                        },
+                    )
+                } else {
+                    edit::delete_forward(&mut self.document, &mut self.history, self.selection)
+                };
                 self.selection = Selection::at(clamp(&self.document, caret));
                 self.changed();
             }
@@ -1182,9 +1449,21 @@ impl Scriva {
                 self.changed();
             }
             Key::Escape => {
-                self.selection = Selection::at(caret);
+                // Escape leaves things, nearest first: the find bar, then the
+                // selection.
+                if self.finder.is_some() {
+                    self.finder = None;
+                    self.finder_focused = false;
+                } else {
+                    self.selection = Selection::at(caret);
+                }
             }
             _ => {}
+        }
+        // Wherever the keyboard put the caret, the view follows it — otherwise
+        // arrowing or typing below the window edge walks the caret out of sight.
+        if (self.selection, self.stamp) != was {
+            self.reveal = Some(self.caret());
         }
     }
 
@@ -1272,19 +1551,21 @@ impl Scriva {
         self.changed();
     }
 
-    /// One line up or down, using the laid-out lines.
+    /// One line up or down, using the laid-out lines. Measured down the stack
+    /// of pages, so the last line of one page steps onto the first of the next.
     fn line_step(&self, caret: Caret, down: bool) -> Caret {
-        let Some((page, rect)) = view::caret_rect(&self.view, caret) else {
+        let Some((_, rect)) = view::caret_rect(&self.view, caret) else {
             return caret;
         };
-        let step = rect.height().max(1.0) as f64;
-        let y = rect.center().y as f64 + if down { step } else { -step };
-        let spot = view::Spot {
-            page,
-            x: rect.min.x as f64,
-            y,
-        };
-        view::caret_at(&self.view, spot).unwrap_or(caret)
+        let step = rect.height().max(1.0) as f64 * if down { 1.0 } else { -1.0 };
+        view::step_from(&self.view, caret, step).unwrap_or(caret)
+    }
+
+    /// One screenful up or down — Page Up and Page Down.
+    fn page_step(&self, caret: Caret, down: bool) -> Caret {
+        let screen = (self.viewport.max(60.0) as f64) / self.view.zoom.max(0.01);
+        let step = screen * if down { 1.0 } else { -1.0 };
+        view::step_from(&self.view, caret, step).unwrap_or(caret)
     }
 }
 
@@ -1299,6 +1580,18 @@ fn clamp(document: &Document, caret: Caret) -> Caret {
         paragraph: index,
         offset: caret.offset.min(paragraphs[index].text().len()),
     }
+}
+
+/// Puts text on the OS clipboard, with the line endings Windows programs read.
+fn clipboard_set(text: &str) {
+    if let Ok(mut board) = arboard::Clipboard::new() {
+        let _ = board.set_text(text.replace('\n', "\r\n"));
+    }
+}
+
+/// What the OS clipboard holds, as text.
+fn clipboard_get() -> Option<String> {
+    arboard::Clipboard::new().ok()?.get_text().ok()
 }
 
 fn with_extension(path: PathBuf) -> PathBuf {
@@ -1372,6 +1665,18 @@ impl DocumentApp for Scriva {
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(format!("{}%", (self.view.zoom * 100.0).round() as i32));
+                let mut zoom = self.view.zoom * 100.0;
+                if ui
+                    .add(
+                        egui::Slider::new(&mut zoom, 25.0..=400.0)
+                            .show_value(false)
+                            .trailing_fill(false),
+                    )
+                    .on_hover_text("Zoom")
+                    .changed()
+                {
+                    self.view.zoom = zoom / 100.0;
+                }
             });
         });
     }
@@ -1485,9 +1790,23 @@ impl DocumentApp for Scriva {
                 self.run(command);
             }
         }
+        if self.finder.is_some() {
+            self.find_bar(ui);
+        }
 
-        let blocked =
-            self.pending.is_some() || self.message.is_some() || egui::Popup::is_any_open(ui.ctx());
+        // Ctrl+scroll and a trackpad pinch zoom the page, like Word.
+        let zoom_delta = ui.input(|i| i.zoom_delta());
+        if zoom_delta != 1.0 {
+            self.view.zoom = (self.view.zoom * zoom_delta as f64).clamp(0.25, 4.0);
+        }
+
+        // While a dialog or the find bar holds the keyboard, keys belong to it:
+        // without this, searching for "bug" also types "bug" into the document.
+        let blocked = self.pending.is_some()
+            || self.message.is_some()
+            || self.drafting.is_some()
+            || self.finder_focused
+            || egui::Popup::is_any_open(ui.ctx());
         if !blocked {
             if let Some(command) = self.keys(ui) {
                 match command {
@@ -1556,6 +1875,146 @@ impl Scriva {
         }
     }
 
+    /// The find bar across the top of the document.
+    fn find_bar(&mut self, ui: &mut egui::Ui) {
+        self.refresh_matches();
+        let total = self.find_matches.len();
+        let current = self
+            .find_matches
+            .iter()
+            .position(|found| found.ordered() == self.selection.ordered());
+
+        let Some(finder) = &self.finder else {
+            return;
+        };
+        let mut query = finder.query.clone();
+        let mut replacement = finder.replacement.clone();
+        let with_replace = finder.with_replace;
+        let take_focus = finder.focus;
+        let note = finder.note.clone();
+        let bar_focused = self.finder_focused;
+
+        let mut close = false;
+        let mut forward = false;
+        let mut back = false;
+        let mut replace_one = false;
+        let mut replace_every = false;
+        let mut focused_now = false;
+
+        egui::Panel::top("scriva-find").show(ui, |ui| {
+            // Read before the fields are drawn: a TextEdit consumes the Escape
+            // and the Enter it is given, and by then the answer is gone.
+            if bar_focused {
+                let (escape, enter, f3, shift) = ui.input(|i| {
+                    (
+                        i.key_pressed(egui::Key::Escape),
+                        i.key_pressed(egui::Key::Enter),
+                        i.key_pressed(egui::Key::F3),
+                        i.modifiers.shift,
+                    )
+                });
+                if escape {
+                    close = true;
+                }
+                if enter || f3 {
+                    if shift {
+                        back = true;
+                    } else {
+                        forward = true;
+                    }
+                }
+            }
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.label("Find");
+                let field = ui.add(
+                    egui::TextEdit::singleline(&mut query)
+                        .desired_width(220.0)
+                        .hint_text("Find in document"),
+                );
+                if take_focus || ((forward || back) && bar_focused) {
+                    field.request_focus();
+                }
+                focused_now |= field.has_focus();
+                if crate::icons::button(
+                    ui,
+                    crate::icons::Icon::ChevronUp,
+                    false,
+                    "Previous match (Shift+F3)",
+                ) {
+                    back = true;
+                }
+                if crate::icons::button(
+                    ui,
+                    crate::icons::Icon::ChevronDown,
+                    false,
+                    "Next match (F3)",
+                ) {
+                    forward = true;
+                }
+                let standing = match &note {
+                    Some(note) => note.clone(),
+                    None if query.is_empty() => String::new(),
+                    None => match (current, total) {
+                        (Some(index), _) => format!("{} of {total}", index + 1),
+                        (None, 0) => "No matches".to_owned(),
+                        (None, n) => format!("{n} matches"),
+                    },
+                };
+                ui.label(egui::RichText::new(standing).weak());
+                if with_replace {
+                    ui.separator();
+                    ui.label("Replace with");
+                    let field =
+                        ui.add(egui::TextEdit::singleline(&mut replacement).desired_width(180.0));
+                    focused_now |= field.has_focus();
+                    if ui.button("Replace").clicked() {
+                        replace_one = true;
+                    }
+                    if ui.button("Replace All").clicked() {
+                        replace_every = true;
+                    }
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.small_button("×").on_hover_text("Close (Esc)").clicked() {
+                        close = true;
+                    }
+                });
+            });
+            ui.add_space(6.0);
+        });
+
+        if let Some(finder) = &mut self.finder {
+            if finder.query != query {
+                finder.note = None;
+            }
+            finder.query = query;
+            finder.replacement = replacement;
+            finder.focus = false;
+        }
+        self.finder_focused = focused_now;
+        if close {
+            self.finder = None;
+            self.finder_focused = false;
+            if let Some(id) = self.surface_id {
+                ui.ctx().memory_mut(|m| m.request_focus(id));
+            }
+            return;
+        }
+        if replace_one {
+            self.replace_current();
+        }
+        if replace_every {
+            self.replace_all();
+        }
+        if forward {
+            self.jump_match(true);
+        }
+        if back {
+            self.jump_match(false);
+        }
+    }
+
     fn finish(&mut self, command: Command, ctx: &egui::Context) {
         match command {
             Command::Exit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
@@ -1568,6 +2027,7 @@ impl Scriva {
         let zoom = self.view.zoom as f32;
         let (extent_w, extent_h) = self.view.extent();
         let outer = ui.available_rect_before_wrap();
+        self.viewport = outer.height();
         ui.painter().rect_filled(outer, 0.0, view::desk());
         // At least as wide as the window, so a page narrower than the desk is
         // centred on it rather than pinned to the left edge.
@@ -1581,13 +2041,25 @@ impl Scriva {
             .show(ui, |ui| {
                 let (rect, response) =
                     ui.allocate_exact_size(desired, egui::Sense::click_and_drag());
+                self.surface_id = Some(response.id);
                 // The pages are laid out against their own width; the extra
                 // width the desk has goes half to each side.
                 let slack = ((rect.width() - extent_w as f32 * zoom) / 2.0).max(0.0);
                 let origin = rect.min + egui::vec2(slack, 0.0);
                 let painter = ui.painter_at(rect);
+                // Over the paper the pointer is a text cursor, which is how a
+                // window says "this is a place where clicking means something".
+                if response.hovered() && self.dragging.is_none() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
+                }
 
-                self.focused = ui.ctx().memory(|m| m.focused().is_none());
+                // A click on the desk gives keyboard focus to the surface itself
+                // (below), so that typing goes somewhere. The caret must stay
+                // visible when the surface holds its own focus — only some other
+                // widget (a dialog's text field) holding it should hide the caret.
+                self.focused = ui
+                    .ctx()
+                    .memory(|m| m.focused().is_none_or(|id| id == response.id));
                 // Decode before painting: the painter borrows the pages, and the
                 // cache cannot be borrowed mutably at the same time.
                 self.pictures.prepare(
@@ -1600,11 +2072,16 @@ impl Scriva {
                     &painter,
                     &self.view,
                     self.selection,
+                    if self.finder.is_some() {
+                        &self.find_matches
+                    } else {
+                        &[]
+                    },
                     Some(self.caret()),
                     self.focused,
                     zoom,
                     origin,
-                    self.shaper.as_ref().expect("a shaper by now"),
+                    self.shaper.as_mut().expect("a shaper by now"),
                     &self.pictures,
                     self.picked,
                 );
@@ -1637,6 +2114,85 @@ impl Scriva {
                             }
                         }
                     }
+                    // A second click takes the word and a third takes the
+                    // paragraph, the way every word processor since has.
+                    if response.double_clicked() {
+                        let caret = self.caret();
+                        let content = self.paragraph_text(caret.paragraph);
+                        let word = text::word_at(&content, caret.offset);
+                        self.selection = Selection {
+                            anchor: Caret {
+                                paragraph: caret.paragraph,
+                                offset: word.start,
+                            },
+                            head: Caret {
+                                paragraph: caret.paragraph,
+                                offset: word.end,
+                            },
+                        };
+                    }
+                    if response.triple_clicked() {
+                        let caret = self.caret();
+                        let length = self.paragraph_text(caret.paragraph).len();
+                        self.selection = Selection {
+                            anchor: Caret {
+                                paragraph: caret.paragraph,
+                                offset: 0,
+                            },
+                            head: Caret {
+                                paragraph: caret.paragraph,
+                                offset: length,
+                            },
+                        };
+                    }
+                    // A right-click outside the selection moves the caret
+                    // there first, so the menu acts on what was clicked.
+                    if response.secondary_clicked() {
+                        if let Some(caret) = response
+                            .interact_pointer_pos()
+                            .and_then(|pointer| self.spot_at(pointer, origin, zoom))
+                            .and_then(|spot| view::caret_at(&self.view, spot))
+                        {
+                            let (start, end) = self.selection.ordered();
+                            let inside =
+                                !self.selection.is_empty() && caret >= start && caret <= end;
+                            if !inside {
+                                self.set_caret(caret, false);
+                            }
+                        }
+                        ui.ctx().memory_mut(|m| m.request_focus(response.id));
+                    }
+                }
+                let has_selection = !self.selection.is_empty();
+                let mut chosen: Option<Command> = None;
+                response.context_menu(|ui| {
+                    ui.set_min_width(160.0);
+                    if ui
+                        .add_enabled(has_selection, egui::Button::new("Cut"))
+                        .clicked()
+                    {
+                        chosen = Some(Command::Cut);
+                        ui.close();
+                    }
+                    if ui
+                        .add_enabled(has_selection, egui::Button::new("Copy"))
+                        .clicked()
+                    {
+                        chosen = Some(Command::Copy);
+                        ui.close();
+                    }
+                    if ui.button("Paste").clicked() {
+                        chosen = Some(Command::Paste);
+                        ui.close();
+                    }
+                    ui.separator();
+                    if ui.button("Select All").clicked() {
+                        chosen = Some(Command::SelectAll);
+                        ui.close();
+                    }
+                });
+                if let Some(command) = chosen {
+                    self.run(command);
                 }
                 if response.drag_started() {
                     self.sweeping = false;
@@ -1667,6 +2223,24 @@ impl Scriva {
                 // which is what makes typing go somewhere.
                 if response.clicked() && self.picked.is_none() {
                     ui.ctx().memory_mut(|m| m.request_focus(response.id));
+                }
+                // Scroll to wherever asked for, once the layout is current —
+                // a caret has no place on the page until the page exists.
+                if self.reveal.is_some() && self.view.is_stale(self.stamp) {
+                    ui.ctx().request_repaint();
+                } else if let Some(caret) = self.reveal.take() {
+                    if let Some((page, rect)) = view::caret_rect(&self.view, caret) {
+                        let (page_x, page_y) = self.view.page_origin(page);
+                        let min = origin
+                            + egui::vec2(
+                                (page_x as f32 + rect.min.x) * zoom,
+                                (page_y as f32 + rect.min.y) * zoom,
+                            );
+                        let target =
+                            egui::Rect::from_min_size(min, egui::vec2(2.0, rect.height() * zoom))
+                                .expand2(egui::vec2(0.0, 24.0));
+                        ui.scroll_to_rect(target, None);
+                    }
                 }
                 response
             });
@@ -1812,6 +2386,103 @@ mod tests {
             app.document.styles.get(normal).unwrap().id.as_ref(),
             "Normal"
         );
+    }
+
+    #[test]
+    fn the_selection_reads_out_as_text_across_paragraphs() {
+        let mut app = app_with(&["first line", "second"]);
+        assert_eq!(app.selected_text(), None, "an empty selection is nothing");
+        app.selection = Selection {
+            anchor: Caret {
+                paragraph: 0,
+                offset: 6,
+            },
+            head: Caret {
+                paragraph: 1,
+                offset: 3,
+            },
+        };
+        assert_eq!(app.selected_text().as_deref(), Some("line\nsec"));
+    }
+
+    #[test]
+    fn pasting_types_over_the_selection_and_newlines_press_enter() {
+        let mut app = app_with(&["first line", "second"]);
+        app.selection = Selection {
+            anchor: Caret {
+                paragraph: 0,
+                offset: 6,
+            },
+            head: Caret {
+                paragraph: 1,
+                offset: 3,
+            },
+        };
+        app.paste_text("X\r\nY");
+        assert_eq!(app.document.text(), "first X\nYond");
+        assert_eq!(app.caret().paragraph, 1);
+        assert_eq!(app.caret().offset, 1);
+    }
+
+    #[test]
+    fn ctrl_backspace_deletes_the_word_before_the_caret() {
+        let mut app = app_with(&["hello world"]);
+        app.selection = Selection::at(Caret {
+            paragraph: 0,
+            offset: 11,
+        });
+        app.key(egui::Key::Backspace, egui::Modifiers::COMMAND);
+        assert_eq!(app.document.text(), "hello ");
+        app.history.undo(&mut app.document);
+        assert_eq!(app.document.text(), "hello world");
+    }
+
+    #[test]
+    fn ctrl_delete_deletes_the_word_after_the_caret() {
+        let mut app = app_with(&["hello world"]);
+        app.selection = Selection::at(Caret {
+            paragraph: 0,
+            offset: 0,
+        });
+        app.key(egui::Key::Delete, egui::Modifiers::COMMAND);
+        assert_eq!(app.document.text(), "world");
+    }
+
+    #[test]
+    fn find_next_selects_the_match_and_moving_on_wraps() {
+        let mut app = app_with(&["alpha beta alpha"]);
+        app.finder = Some(Finder {
+            query: "alpha".into(),
+            ..Finder::default()
+        });
+        app.jump_match(true);
+        assert_eq!(app.selection.ordered().0.offset, 0, "the first occurrence");
+        assert_eq!(app.selection.ordered().1.offset, 5, "selected whole");
+        app.jump_match(true);
+        assert_eq!(app.selection.ordered().0.offset, 11);
+        app.jump_match(true);
+        assert_eq!(app.selection.ordered().0.offset, 0, "wrapped around");
+        assert!(app.reveal.is_some(), "and the view was asked to follow");
+    }
+
+    #[test]
+    fn replace_all_replaces_every_match_and_says_how_many() {
+        let mut app = app_with(&["one two one", "one more"]);
+        app.finder = Some(Finder {
+            query: "ONE".into(),
+            replacement: "1".into(),
+            ..Finder::default()
+        });
+        app.replace_all();
+        assert_eq!(app.document.text(), "1 two 1\n1 more");
+        assert_eq!(
+            app.finder.as_ref().unwrap().note.as_deref(),
+            Some("Replaced 3")
+        );
+        // A replace is a deletion and an insertion, so it comes back in two.
+        app.history.undo(&mut app.document);
+        app.history.undo(&mut app.document);
+        assert_eq!(app.document.text(), "one two 1\n1 more", "undo, one by one");
     }
 
     #[test]

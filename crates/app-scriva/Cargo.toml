@@ -23,6 +23,9 @@ wp-text.workspace = true
 ooxml.workspace = true
 # Default features: the XDG portal on Linux, so a build needs no GTK headers.
 rfd = "0.15"
+# Menu-driven paste has no key event to ride, so the OS clipboard has to be
+# read directly. Same choice as Calx, for the same reason.
+arboard = { version = "3", default-features = false }
 # Only the formats a .docx actually embeds. The default feature set pulls in a
 # dozen decoders for formats no document has ever contained.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp"] }

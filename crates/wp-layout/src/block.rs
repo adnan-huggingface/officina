@@ -722,7 +722,15 @@ fn flow_table(
             // no content of its own — the content is in the cell that started
             // the merge.
             let is_continuation = cell.props.is_merged_up();
-            let mut cell_flow = Flow::default();
+            // The cell flows into its own Flow so the row can be banded, but
+            // the paragraph numbering is the document's: a fresh counter here
+            // once numbered every cell from zero, and a caret in any table then
+            // named a paragraph near the top of the document — clicking in a
+            // cell edited text the user was not looking at.
+            let mut cell_flow = Flow {
+                items: Vec::new(),
+                paragraphs: into.paragraphs,
+            };
             if !is_continuation {
                 for block in &cell.content {
                     flow_block(
@@ -735,6 +743,11 @@ fn flow_table(
                         &mut cell_flow,
                     );
                 }
+                into.paragraphs = cell_flow.paragraphs;
+            } else {
+                // Not laid out, but still in the document's flattened order:
+                // the numbering has to step over it all the same.
+                into.paragraphs += count_paragraphs_in(&cell.content);
             }
 
             // Each of the cell's lines, with where it starts. Kept apart rather
@@ -886,6 +899,25 @@ fn flow_table(
             });
         }
     }
+}
+
+/// How many paragraphs a run of blocks holds, counted exactly the way
+/// [`wp_model::Document::paragraphs`] flattens them.
+fn count_paragraphs_in(blocks: &[Block]) -> usize {
+    blocks
+        .iter()
+        .map(|block| match block {
+            Block::Paragraph(_) => 1,
+            Block::Table(table) => table
+                .rows
+                .iter()
+                .flat_map(|row| &row.cells)
+                .map(|cell| count_paragraphs_in(&cell.content))
+                .sum(),
+            Block::Structured(sdt) => count_paragraphs_in(&sdt.content),
+            _ => 0,
+        })
+        .sum()
 }
 
 /// Half a thousandth of a point: what split points are compared at.
@@ -1495,6 +1527,56 @@ mod tests {
             props: CellProps::new(),
             content: vec![Block::Paragraph(Paragraph::of(text))],
         }
+    }
+
+    #[test]
+    fn every_line_names_the_paragraph_the_document_flattening_names() {
+        // A fresh counter per cell once numbered every cell's paragraphs from
+        // zero — and a caret in a table then edited text near the top of the
+        // document instead of the text under it.
+        let table = Table {
+            grid: vec![Twips(1440), Twips(1440)],
+            rows: vec![
+                Row {
+                    cells: vec![cell("cell-a"), cell("cell-b")],
+                    ..Row::new()
+                },
+                Row {
+                    cells: vec![cell("cell-c"), cell("cell-d")],
+                    ..Row::new()
+                },
+            ],
+            ..Table::new()
+        };
+        let mut blocks = vec![Block::Paragraph(Paragraph::of("before"))];
+        blocks.push(Block::Table(table));
+        blocks.push(Block::Paragraph(Paragraph::of("after")));
+        let mut document = document(blocks);
+        document.section = page_of(30);
+        let flattened = document.paragraphs();
+        let mut seen = 0;
+        for page in pages(&document) {
+            for placement in &page.content {
+                let Placed::Line { line, paragraph } = &placement.kind else {
+                    continue;
+                };
+                let text: String = line
+                    .fragments
+                    .iter()
+                    .filter_map(|fragment| match &fragment.content {
+                        crate::inline::Content::Text { text, .. } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(
+                    flattened[*paragraph].text(),
+                    text,
+                    "line claims paragraph {paragraph}"
+                );
+                seen += 1;
+            }
+        }
+        assert_eq!(seen, 6, "one line per paragraph, tables included");
     }
 
     #[test]

@@ -12,6 +12,7 @@
 use ui_kit::egui;
 use wp_layout::block::{Placed, Placement};
 use wp_layout::inline::Content;
+use wp_layout::shape::Shaper;
 use wp_model::Document;
 
 use crate::drawings::{Picked, GRIP};
@@ -25,6 +26,8 @@ const DESK: egui::Color32 = egui::Color32::from_rgb(0x62, 0x62, 0x66);
 const PAPER: egui::Color32 = egui::Color32::WHITE;
 const EDGE: egui::Color32 = egui::Color32::from_rgb(0xB0, 0xB0, 0xB4);
 const SELECTION: egui::Color32 = egui::Color32::from_rgba_premultiplied(0x2A, 0x5C, 0xAA, 0x50);
+/// Every match of the find bar's query, Word's own yellow.
+const MATCH: egui::Color32 = egui::Color32::from_rgba_premultiplied(0x92, 0x84, 0x28, 0x60);
 /// The outline and grips of a selected drawing.
 const HANDLE: egui::Color32 = egui::Color32::from_rgb(0x2A, 0x5C, 0xAA);
 
@@ -130,7 +133,7 @@ impl View {
     }
 
     /// Where a page's top-left sits, in points from the top of the stack.
-    fn page_origin(&self, index: usize) -> (f64, f64) {
+    pub fn page_origin(&self, index: usize) -> (f64, f64) {
         let width = self.extent().0;
         let mut y = GAP as f64;
         for page in self.pages.iter().take(index) {
@@ -268,6 +271,36 @@ pub fn caret_rect(view: &View, caret: Caret) -> Option<(usize, egui::Rect)> {
         }
     }
     None
+}
+
+/// The caret nearest the point `dy` points above or below where `caret` is
+/// drawn — measured down the whole stack of pages, so a step can cross from the
+/// last line of one page onto the first line of the next.
+///
+/// Arrow keys and Page Up/Down both come here: the only difference is the size
+/// of the step.
+pub fn step_from(view: &View, caret: Caret, dy: f64) -> Option<Caret> {
+    let (page, rect) = caret_rect(view, caret)?;
+    let (page_x, page_y) = view.page_origin(page);
+    let x = page_x + rect.min.x as f64;
+    let y = page_y + rect.center().y as f64 + dy;
+    let mut chosen = view.pages.len().checked_sub(1)?;
+    for index in 0..view.pages.len() {
+        let (_, top) = view.page_origin(index);
+        if y < top + view.pages[index].geometry.height {
+            chosen = index;
+            break;
+        }
+    }
+    let (chosen_x, chosen_y) = view.page_origin(chosen);
+    caret_at(
+        view,
+        Spot {
+            page: chosen,
+            x: x - chosen_x,
+            y: y - chosen_y,
+        },
+    )
 }
 
 /// The byte range of the paragraph text a line covers.
@@ -494,11 +527,12 @@ pub fn paint(
     painter: &egui::Painter,
     view: &View,
     selection: Selection,
+    highlights: &[Selection],
     caret: Option<Caret>,
     focused: bool,
     zoom: f32,
     origin: egui::Pos2,
-    shaper: &Egui,
+    shaper: &mut Egui,
     pictures: &crate::pictures::Pictures,
     picked: Option<Picked>,
 ) {
@@ -529,6 +563,7 @@ pub fn paint(
                 zoom,
                 shaper,
                 selection,
+                highlights,
                 pictures,
                 &page.geometry,
             );
@@ -571,8 +606,9 @@ fn paint_placement(
     placement: &Placement,
     page: egui::Pos2,
     zoom: f32,
-    shaper: &Egui,
+    shaper: &mut Egui,
     selection: Selection,
+    highlights: &[Selection],
     pictures: &crate::pictures::Pictures,
     geometry: &wp_model::PageBox,
 ) {
@@ -613,7 +649,8 @@ fn paint_placement(
         }
         Placed::Line { line, paragraph } => {
             paint_line(
-                painter, placement, line, *paragraph, page, zoom, shaper, selection, pictures,
+                painter, placement, line, *paragraph, page, zoom, shaper, selection, highlights,
+                pictures,
             );
         }
         Placed::Drawing { rel, anchor, .. } => {
@@ -644,18 +681,22 @@ fn paint_line(
     paragraph: usize,
     page: egui::Pos2,
     zoom: f32,
-    shaper: &Egui,
+    shaper: &mut Egui,
     selection: Selection,
+    highlights: &[Selection],
     pictures: &crate::pictures::Pictures,
 ) {
     let baseline = placement.y + line.baseline;
-    let (start, end) = selection.ordered();
-    let selected = |from: usize, to: usize| -> bool {
-        if selection.is_empty() {
-            return false;
+    // How much of the bytes `from..to` a selection covers, in bytes of this
+    // paragraph — so a find match can be painted over just the letters it
+    // matched rather than over the whole fragment they sit in.
+    let covered = |of: &Selection, from: usize, to: usize| -> Option<(usize, usize)> {
+        if of.is_empty() {
+            return None;
         }
+        let (start, end) = of.ordered();
         if paragraph < start.paragraph || paragraph > end.paragraph {
-            return false;
+            return None;
         }
         let low = if paragraph == start.paragraph {
             start.offset
@@ -667,13 +708,23 @@ fn paint_line(
         } else {
             usize::MAX
         };
-        from < high && to > low
+        let overlap = from.max(low)..to.min(high);
+        (overlap.start < overlap.end).then_some((overlap.start, overlap.end))
     };
 
     for fragment in &line.fragments {
         let x = placement.x + fragment.x;
         if let Some(source) = fragment.source {
-            if selected(source.start, source.end) {
+            for highlight in highlights {
+                if let Some((from, to)) = covered(highlight, source.start, source.end) {
+                    if let Some(rect) =
+                        span_rect(placement, fragment, source.start, from, to, page, zoom)
+                    {
+                        painter.rect_filled(rect, 0.0, MATCH);
+                    }
+                }
+            }
+            if covered(&selection, source.start, source.end).is_some() {
                 let rect = egui::Rect::from_min_size(
                     page + egui::vec2(x as f32 * zoom, placement.y as f32 * zoom),
                     egui::vec2(fragment.width as f32 * zoom, placement.height as f32 * zoom),
@@ -715,13 +766,20 @@ fn paint_line(
             .unwrap_or(egui::Color32::BLACK);
         let mut font = shaper.font_id(&style.font);
         font.size *= zoom;
-        let y = baseline - style.raise;
-        let pos = page + egui::vec2(x as f32 * zoom, y as f32 * zoom);
-        painter.text(pos, egui::Align2::LEFT_BOTTOM, text, font.clone(), color);
+        // Anchored by the glyph box's *top*, at baseline minus the face's own
+        // ascent. Anchoring the bottom at the baseline — the obvious thing —
+        // draws everything a descent too high, because a galley's bottom is
+        // baseline plus descent. That was the text poking through table rules.
+        let ascent = shaper.metrics(&style.font).ascent;
+        let top = baseline - style.raise - ascent;
+        let pos = page + egui::vec2(x as f32 * zoom, top as f32 * zoom);
+        painter.text(pos, egui::Align2::LEFT_TOP, text, font.clone(), color);
 
+        // The baseline point, which the underline and the strike hang off.
+        let base = page + egui::vec2(x as f32 * zoom, (baseline - style.raise) as f32 * zoom);
         let width = fragment.width as f32 * zoom;
         if style.underline.draws() {
-            let under = pos + egui::vec2(0.0, 2.0 * zoom);
+            let under = base + egui::vec2(0.0, 2.0 * zoom);
             painter.line_segment(
                 [under, under + egui::vec2(width, 0.0)],
                 egui::Stroke::new(
@@ -734,13 +792,54 @@ fn paint_line(
             );
         }
         if style.strike || style.double_strike {
-            let middle = pos - egui::vec2(0.0, font.size * 0.3);
+            let middle = base - egui::vec2(0.0, font.size * 0.3);
             painter.line_segment(
                 [middle, middle + egui::vec2(width, 0.0)],
                 egui::Stroke::new(1.0 * zoom, color),
             );
         }
     }
+}
+
+/// The rectangle the bytes `from..to` occupy within one fragment, walked from
+/// the fragment's own advances so a highlight covers exactly the letters it
+/// matched.
+fn span_rect(
+    placement: &Placement,
+    fragment: &wp_layout::inline::Fragment,
+    source_start: usize,
+    from: usize,
+    to: usize,
+    page: egui::Pos2,
+    zoom: f32,
+) -> Option<egui::Rect> {
+    let Content::Text { text, advances, .. } = &fragment.content else {
+        // A tab or an object is one thing: the whole fragment or nothing.
+        let left = placement.x + fragment.x;
+        return Some(egui::Rect::from_min_size(
+            page + egui::vec2(left as f32 * zoom, placement.y as f32 * zoom),
+            egui::vec2(fragment.width as f32 * zoom, placement.height as f32 * zoom),
+        ));
+    };
+    let mut left = 0.0f64;
+    let mut width = 0.0f64;
+    for (index, (byte, c)) in text.char_indices().enumerate() {
+        let advance = advances.get(index).copied().unwrap_or(0.0);
+        let at = source_start + byte;
+        if at + c.len_utf8() <= from {
+            left += advance;
+        } else if at < to {
+            width += advance;
+        }
+    }
+    if width <= 0.0 {
+        return None;
+    }
+    let x = placement.x + fragment.x + left;
+    Some(egui::Rect::from_min_size(
+        page + egui::vec2(x as f32 * zoom, placement.y as f32 * zoom),
+        egui::vec2(width as f32 * zoom, placement.height as f32 * zoom),
+    ))
 }
 
 /// The colour the desk is painted.

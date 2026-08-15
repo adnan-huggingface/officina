@@ -24,6 +24,10 @@ pub enum Icon {
     Justify,
     Grow,
     Shrink,
+    /// The find bar's previous-match button.
+    ChevronUp,
+    /// And its next-match button.
+    ChevronDown,
 }
 
 /// Draws one icon button and reports whether it was pressed.
@@ -101,6 +105,18 @@ fn draw(painter: &egui::Painter, icon: Icon, at: egui::Pos2, ink: egui::Color32)
                 );
             }
         }
+        Icon::ChevronUp | Icon::ChevronDown => {
+            let sign = if icon == Icon::ChevronUp { -1.0 } else { 1.0 };
+            let tip = at + egui::vec2(0.0, 2.5 * sign);
+            painter.add(egui::Shape::line(
+                vec![
+                    tip + egui::vec2(-4.5, -3.0 * sign),
+                    tip,
+                    tip + egui::vec2(4.5, -3.0 * sign),
+                ],
+                stroke,
+            ));
+        }
         Icon::Grow | Icon::Shrink => {
             // A big A and a small one, with an arrow saying which way.
             let up = icon == Icon::Grow;
@@ -175,6 +191,8 @@ mod tests {
             Icon::Justify,
             Icon::Grow,
             Icon::Shrink,
+            Icon::ChevronUp,
+            Icon::ChevronDown,
         ] {
             let mut out = ctx.run_ui(
                 egui::RawInput {

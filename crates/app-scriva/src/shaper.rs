@@ -133,14 +133,25 @@ impl Shaper for Egui {
             return metrics;
         }
         let id = key.font_id();
-        let height = self.ctx.fonts_mut(|fonts| fonts.row_height(&id)) as f64;
-        // epaint reports one number for a row and does not expose the face's own
-        // ascent and descent. The split is Word's usual proportion for a text
-        // face, and it decides where a baseline sits rather than how tall a line
-        // is — which is what `row_height` already answers.
+        let pixels_per_point = self.ctx.pixels_per_point();
+        // `FontsView::row_height` throws away the split between ascent and
+        // descent that produced it. A fixed 80/20 guess at that split put a
+        // real face's cap-height above the ascent line we assumed — invisible
+        // in ordinary text, but a capital letter drawn flush against a cell's
+        // top border (no padding, no leading) then pokes through the rule
+        // above it. `styled_metrics` is the same computation `row_height`
+        // already does, with the face's own ascent kept rather than discarded.
+        let (ascent, row_height) = self.ctx.fonts_mut(|fonts| {
+            let styled = fonts.fonts.font(&id.family).styled_metrics(
+                pixels_per_point,
+                id.size,
+                &egui::epaint::text::VariationCoords::default(),
+            );
+            (styled.ascent as f64, styled.row_height as f64)
+        });
         let metrics = Metrics {
-            ascent: height * 0.8,
-            descent: height * 0.2,
+            ascent,
+            descent: (row_height - ascent).max(0.0),
             line_gap: 0.0,
         };
         self.metrics.insert(key, metrics);
