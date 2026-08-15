@@ -1367,34 +1367,62 @@ impl Scriva {
                 self.set_caret(next, extend);
             }
             Key::Home => {
+                // The *visual* line's start — in a paragraph that wraps, Home
+                // does not go all the way back to the paragraph's first word.
                 let next = if modifiers.command {
                     Caret {
                         paragraph: 0,
                         offset: 0,
                     }
                 } else {
+                    let offset = view::line_span(&self.view, caret)
+                        .map(|(start, _)| start)
+                        .unwrap_or(0);
                     Caret {
                         paragraph: caret.paragraph,
-                        offset: 0,
+                        offset,
                     }
                 };
                 self.set_caret(next, extend);
             }
             Key::End => {
+                // The visual line's end. On a wrapped line that is the last
+                // letter before the break — the space the wrap ate is after
+                // it, and Word does not put the caret beyond it either.
                 let next = if modifiers.command {
                     Caret {
                         paragraph: last,
                         offset: self.paragraph_text(last).len(),
                     }
                 } else {
+                    let offset = match view::line_span(&self.view, caret) {
+                        Some((start, mut end)) if end < content.len() => {
+                            while end > start && content.as_bytes().get(end - 1) == Some(&b' ') {
+                                end -= 1;
+                            }
+                            end
+                        }
+                        Some((_, end)) => end,
+                        None => content.len(),
+                    };
                     Caret {
                         paragraph: caret.paragraph,
-                        offset: content.len(),
+                        offset,
                     }
                 };
                 self.set_caret(next, extend);
             }
             Key::Backspace => {
+                // At the start of a list item the first Backspace takes the
+                // bullet, and only the next one joins paragraphs — Word's way
+                // of leaving a list without merging into the item above.
+                if self.selection.is_empty()
+                    && caret.offset == 0
+                    && self.numbering_at(caret.paragraph).is_some()
+                {
+                    self.format_paragraphs(|props| props.numbering = None);
+                    return;
+                }
                 // Ctrl+Backspace takes the whole word before the caret.
                 let caret = if word && self.selection.is_empty() && caret.offset > 0 {
                     let from = Caret {
@@ -1437,16 +1465,50 @@ impl Scriva {
                 self.changed();
             }
             Key::Enter => {
-                let caret =
-                    edit::split_paragraph(&mut self.document, &mut self.history, self.selection);
-                self.selection = Selection::at(clamp(&self.document, caret));
-                self.changed();
+                // Enter on an empty list item ends the list rather than
+                // adding another empty bullet — Word's way out.
+                if self.selection.is_empty()
+                    && content.is_empty()
+                    && self.numbering_at(caret.paragraph).is_some()
+                {
+                    self.format_paragraphs(|props| props.numbering = None);
+                } else {
+                    let caret = edit::split_paragraph(
+                        &mut self.document,
+                        &mut self.history,
+                        self.selection,
+                    );
+                    self.selection = Selection::at(clamp(&self.document, caret));
+                    self.changed();
+                }
             }
             Key::Tab => {
-                let caret =
-                    edit::type_text(&mut self.document, &mut self.history, self.selection, "\t");
-                self.selection = Selection::at(caret);
-                self.changed();
+                // At the start of a list item, Tab goes a level deeper and
+                // Shift+Tab comes back up. Anywhere else it is a tab.
+                if self.selection.is_empty()
+                    && caret.offset == 0
+                    && self.numbering_at(caret.paragraph).is_some()
+                {
+                    let deeper = !modifiers.shift;
+                    self.format_paragraphs(move |props| {
+                        if let Some(numbering) = &mut props.numbering {
+                            numbering.level = if deeper {
+                                (numbering.level + 1).min(8)
+                            } else {
+                                numbering.level.saturating_sub(1)
+                            };
+                        }
+                    });
+                } else {
+                    let caret = edit::type_text(
+                        &mut self.document,
+                        &mut self.history,
+                        self.selection,
+                        "\t",
+                    );
+                    self.selection = Selection::at(caret);
+                    self.changed();
+                }
             }
             Key::Escape => {
                 // Escape leaves things, nearest first: the find bar, then the
@@ -1549,6 +1611,16 @@ impl Scriva {
         drop(paragraphs);
         self.selection = Selection::at(start);
         self.changed();
+    }
+
+    /// The list the caret's paragraph is directly in, when it is a real one —
+    /// `numId` zero is how a style's list is cancelled, not a list.
+    fn numbering_at(&self, paragraph: usize) -> Option<wp_model::prop::NumRef> {
+        self.document
+            .paragraphs()
+            .get(paragraph)
+            .and_then(|p| p.props.numbering)
+            .filter(|n| n.is_numbered())
     }
 
     /// One line up or down, using the laid-out lines. Measured down the stack
@@ -2042,6 +2114,21 @@ impl Scriva {
                 let (rect, response) =
                     ui.allocate_exact_size(desired, egui::Sense::click_and_drag());
                 self.surface_id = Some(response.id);
+                // The surface is an editor, not a button. Without this filter
+                // egui reads a bare arrow key as "move keyboard focus to the
+                // neighbouring widget" — Up walked the focus onto the toolbar,
+                // and the caret vanished with it.
+                ui.ctx().memory_mut(|m| {
+                    m.set_focus_lock_filter(
+                        response.id,
+                        egui::EventFilter {
+                            tab: true,
+                            horizontal_arrows: true,
+                            vertical_arrows: true,
+                            escape: true,
+                        },
+                    );
+                });
                 // The pages are laid out against their own width; the extra
                 // width the desk has goes half to each side.
                 let slack = ((rect.width() - extent_w as f32 * zoom) / 2.0).max(0.0);
@@ -2386,6 +2473,146 @@ mod tests {
             app.document.styles.get(normal).unwrap().id.as_ref(),
             "Normal"
         );
+    }
+
+    /// An app whose view has really been laid out, for keys that ask the
+    /// layout where the caret is — Home, End and the arrows.
+    fn laid_app(text: &str, text_width: f64) -> Scriva {
+        let ctx = egui::Context::default();
+        ui_kit::fonts::register(&ctx, &[]);
+        let mut out = ctx.run_ui(egui::RawInput::default(), |_| {});
+        out.textures_delta.clear();
+        let mut app = app_with(&[text]);
+        let margins =
+            app.document.section.margins.start.points() + app.document.section.margins.end.points();
+        app.document.section.page.width = Twips::from_points(text_width + margins);
+        let mut shaper = Egui::new(&ctx);
+        app.view.refresh(
+            &app.document,
+            &wp_layout::FieldValues::new(),
+            app.stamp,
+            &mut shaper,
+        );
+        app.shaper = Some(shaper);
+        app
+    }
+
+    #[test]
+    fn home_and_end_move_on_the_visual_line_not_the_paragraph() {
+        let text = "aa bb cc dd ee ff gg hh";
+        // 60 points of text: a few words per line, so the paragraph wraps.
+        let mut app = laid_app(text, 60.0);
+        app.selection = Selection::at(Caret {
+            paragraph: 0,
+            offset: 0,
+        });
+        app.key(egui::Key::End, egui::Modifiers::NONE);
+        let end = app.caret();
+        assert_eq!(end.paragraph, 0);
+        assert!(
+            end.offset > 0 && end.offset < text.len(),
+            "End stops at the end of the first visual line, not at {:?}",
+            text.len()
+        );
+        assert_ne!(
+            &text[end.offset - 1..end.offset],
+            " ",
+            "and not beyond the space the wrap ate"
+        );
+
+        // Down one visual line, still inside the same paragraph.
+        app.key(egui::Key::ArrowDown, egui::Modifiers::NONE);
+        let down = app.caret();
+        assert_eq!(down.paragraph, 0);
+        assert!(
+            down.offset >= end.offset,
+            "the line below, not the line above"
+        );
+
+        app.key(egui::Key::Home, egui::Modifiers::NONE);
+        let home = app.caret();
+        assert_eq!(home.paragraph, 0);
+        assert!(
+            home.offset >= end.offset,
+            "Home goes to this line's start, not the paragraph's"
+        );
+
+        // Ctrl+End still means the end of the document.
+        app.key(egui::Key::End, egui::Modifiers::COMMAND);
+        assert_eq!(app.caret().offset, text.len());
+    }
+
+    fn bulleted(app: &mut Scriva, paragraph: usize) {
+        let mut paragraphs = app.document.paragraphs_mut();
+        paragraphs[paragraph].props.numbering = Some(wp_model::prop::NumRef {
+            num_id: 1,
+            level: 0,
+        });
+    }
+
+    #[test]
+    fn enter_on_an_empty_list_item_ends_the_list() {
+        let mut app = app_with(&["item", ""]);
+        bulleted(&mut app, 0);
+        bulleted(&mut app, 1);
+        app.selection = Selection::at(Caret {
+            paragraph: 1,
+            offset: 0,
+        });
+        app.key(egui::Key::Enter, egui::Modifiers::NONE);
+        assert_eq!(app.paragraph_count(), 2, "no new paragraph was added");
+        assert_eq!(
+            app.document.paragraphs()[1].props.numbering,
+            None,
+            "the bullet is gone instead"
+        );
+        app.run(Command::Undo);
+        assert!(
+            app.document.paragraphs()[1].props.numbering.is_some(),
+            "and undo puts it back"
+        );
+    }
+
+    #[test]
+    fn backspace_at_the_start_of_a_list_item_takes_the_bullet_first() {
+        let mut app = app_with(&["first", "second"]);
+        bulleted(&mut app, 1);
+        app.selection = Selection::at(Caret {
+            paragraph: 1,
+            offset: 0,
+        });
+        app.key(egui::Key::Backspace, egui::Modifiers::NONE);
+        assert_eq!(app.paragraph_count(), 2, "nothing joined yet");
+        assert_eq!(app.document.paragraphs()[1].props.numbering, None);
+        app.key(egui::Key::Backspace, egui::Modifiers::NONE);
+        assert_eq!(app.document.text(), "firstsecond", "the second one joins");
+    }
+
+    #[test]
+    fn tab_at_the_start_of_a_list_item_changes_its_depth() {
+        let mut app = app_with(&["item", "plain"]);
+        bulleted(&mut app, 0);
+        app.selection = Selection::at(Caret {
+            paragraph: 0,
+            offset: 0,
+        });
+        app.key(egui::Key::Tab, egui::Modifiers::NONE);
+        assert_eq!(
+            app.document.paragraphs()[0].props.numbering.unwrap().level,
+            1
+        );
+        app.key(egui::Key::Tab, egui::Modifiers::SHIFT);
+        assert_eq!(
+            app.document.paragraphs()[0].props.numbering.unwrap().level,
+            0
+        );
+        // Anywhere else, Tab is still a tab.
+        app.selection = Selection::at(Caret {
+            paragraph: 1,
+            offset: 5,
+        });
+        app.key(egui::Key::Tab, egui::Modifiers::NONE);
+        assert_eq!(app.paragraph_text(1), "plain\t");
     }
 
     #[test]

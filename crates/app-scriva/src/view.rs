@@ -163,15 +163,21 @@ pub struct Spot {
 /// line has to land at the end of the line rather than nowhere.
 pub fn caret_at(view: &View, spot: Spot) -> Option<Caret> {
     let page = view.pages.get(spot.page)?;
-    let mut best: Option<(f64, &Placement, usize)> = None;
+    let mut best: Option<((f64, f64), &Placement, usize)> = None;
     for placement in &page.content {
         let Placed::Line { paragraph, .. } = &placement.kind else {
             continue;
         };
-        let middle = placement.y + placement.height / 2.0;
-        let distance = (middle - spot.y).abs();
-        if best.as_ref().is_none_or(|(best, _, _)| distance < *best) {
-            best = Some((distance, placement, *paragraph));
+        // Vertically first, then horizontally: the row the click is level
+        // with decides, and the cell under the pointer breaks the tie.
+        // Vertical distance alone sent a click in a right-hand table cell to
+        // the left-hand cell whose line shares the same y.
+        let score = (
+            distance_to(spot.y, placement.y, placement.height),
+            distance_to(spot.x, placement.x, placement.width),
+        );
+        if best.as_ref().is_none_or(|(best, _, _)| score < *best) {
+            best = Some((score, placement, *paragraph));
         }
     }
     let (_, placement, paragraph) = best?;
@@ -182,6 +188,16 @@ pub fn caret_at(view: &View, spot: Spot) -> Option<Caret> {
         paragraph,
         offset: offset_in(line, spot.x - placement.x),
     })
+}
+
+/// How far `at` sits outside the span from `from` to `from + size` — zero
+/// anywhere inside it.
+fn distance_to(at: f64, from: f64, size: f64) -> f64 {
+    if at < from {
+        from - at
+    } else {
+        (at - (from + size)).max(0.0)
+    }
 }
 
 /// The byte offset of the character nearest `x` along a line.
@@ -221,15 +237,39 @@ fn offset_in(line: &wp_layout::inline::Line, x: f64) -> usize {
             return offset;
         }
     }
-    // Past the end of the line: the end of its last piece of text.
+    // Past the end of the line: the end of its last piece of text — minus the
+    // space a wrap ate, whose byte belongs to this line but whose caret would
+    // draw at the start of the next. Word puts a click out here after the last
+    // letter, and so does this.
     if line.fragments.is_empty() {
         return 0;
     }
-    last.max(first.unwrap_or(0))
+    let mut end = last.max(first.unwrap_or(0));
+    for fragment in line.fragments.iter().rev() {
+        let (Content::Text { text, .. }, Some(source)) = (&fragment.content, fragment.source)
+        else {
+            continue;
+        };
+        if source.end != end {
+            break;
+        }
+        while end > source.start && text.as_bytes().get(end - source.start - 1) == Some(&b' ') {
+            end -= 1;
+        }
+        break;
+    }
+    end
 }
 
-/// Where a caret sits on the page, as a vertical stroke.
-pub fn caret_rect(view: &View, caret: Caret) -> Option<(usize, egui::Rect)> {
+/// The line placement the caret belongs to, and which page it is on.
+///
+/// A wrapped line's end is byte-identical to the next line's start, and the
+/// caret there belongs to the line *below*: Down and Home land on that offset,
+/// and drawing it at the end of the line above looks like the caret refused to
+/// move. Only the paragraph's true end — which no later line shares — keeps
+/// the caret on the line that ends there.
+fn line_holding(view: &View, caret: Caret) -> Option<(usize, &Placement)> {
+    let mut at_end: Option<(usize, &Placement)> = None;
     for (index, page) in view.pages.iter().enumerate() {
         for placement in &page.content {
             let Placed::Line { line, paragraph } = &placement.kind else {
@@ -239,15 +279,26 @@ pub fn caret_rect(view: &View, caret: Caret) -> Option<(usize, egui::Rect)> {
                 continue;
             }
             let (start, end) = line_range(line);
-            if caret.offset < start || caret.offset > end {
-                continue;
+            if caret.offset >= start && caret.offset < end {
+                return Some((index, placement));
             }
+            if caret.offset >= start && caret.offset == end && at_end.is_none() {
+                at_end = Some((index, placement));
+            }
+        }
+    }
+    at_end
+}
+
+/// Where a caret sits on the page, as a vertical stroke.
+pub fn caret_rect(view: &View, caret: Caret) -> Option<(usize, egui::Rect)> {
+    if let Some((index, placement)) = line_holding(view, caret) {
+        if let Placed::Line { line, .. } = &placement.kind {
             let x = x_of(line, caret.offset).unwrap_or(0.0) + placement.x;
-            let top = placement.y;
             return Some((
                 index,
                 egui::Rect::from_min_size(
-                    egui::pos2(x as f32, top as f32),
+                    egui::pos2(x as f32, placement.y as f32),
                     egui::vec2(1.0, placement.height as f32),
                 ),
             ));
@@ -271,6 +322,17 @@ pub fn caret_rect(view: &View, caret: Caret) -> Option<(usize, egui::Rect)> {
         }
     }
     None
+}
+
+/// The byte range of the *visual* line the caret sits on — what Home and End
+/// mean in a paragraph that wraps. The paragraph's own ends are Ctrl+Home and
+/// Ctrl+End's business.
+pub fn line_span(view: &View, caret: Caret) -> Option<(usize, usize)> {
+    let (_, placement) = line_holding(view, caret)?;
+    let Placed::Line { line, .. } = &placement.kind else {
+        return None;
+    };
+    Some(line_range(line))
 }
 
 /// The caret nearest the point `dy` points above or below where `caret` is
@@ -1002,6 +1064,136 @@ mod tests {
             },
         );
         assert!(found.is_some());
+    }
+
+    /// A narrow document whose one paragraph wraps into several lines, and the
+    /// first two of those line placements.
+    fn wrapped() -> (View, Vec<(usize, usize, f64)>) {
+        let ctx = context();
+        let mut shaper = Egui::new(&ctx);
+        let mut view = View::default();
+        let mut document = document(&["aa bb cc dd ee ff gg hh"]);
+        let margins =
+            document.section.margins.start.points() + document.section.margins.end.points();
+        document.section.page.width = wp_model::Twips::from_points(60.0 + margins);
+        view.refresh(&document, &wp_layout::FieldValues::new(), 1, &mut shaper);
+        let mut lines = Vec::new();
+        for placement in &view.pages()[0].content {
+            if let Placed::Line { line, paragraph } = &placement.kind {
+                if *paragraph == 0 {
+                    let (start, end) = line_range(line);
+                    lines.push((start, end, placement.y));
+                }
+            }
+        }
+        assert!(lines.len() >= 2, "the paragraph did not wrap");
+        (view, lines)
+    }
+
+    #[test]
+    fn a_caret_on_the_wrap_boundary_draws_on_the_line_below() {
+        // Down and Home land exactly on the byte where one line ends and the
+        // next begins. Drawing that caret at the end of the line above looks
+        // like the caret refused to move.
+        let (view, lines) = wrapped();
+        let boundary = lines[1].0;
+        assert_eq!(lines[0].1, boundary, "wrapped lines share the byte");
+        let (_, rect) = caret_rect(
+            &view,
+            Caret {
+                paragraph: 0,
+                offset: boundary,
+            },
+        )
+        .expect("a caret");
+        assert!(
+            (rect.min.y as f64 - lines[1].2).abs() < 0.1,
+            "drawn on the second line, not the first"
+        );
+        assert_eq!(
+            line_span(
+                &view,
+                Caret {
+                    paragraph: 0,
+                    offset: boundary
+                }
+            ),
+            Some((lines[1].0, lines[1].1)),
+            "and Home/End mean the second line too"
+        );
+    }
+
+    #[test]
+    fn a_click_past_a_wrapped_lines_end_stays_on_that_line() {
+        let (view, lines) = wrapped();
+        let caret = caret_at(
+            &view,
+            Spot {
+                page: 0,
+                x: 10_000.0,
+                y: lines[0].2 + 1.0,
+            },
+        )
+        .expect("a caret");
+        assert!(
+            caret.offset < lines[0].1,
+            "before the space the wrap ate, not on the boundary"
+        );
+        let (_, rect) = caret_rect(&view, caret).expect("a rect");
+        assert!(
+            (rect.min.y as f64 - lines[0].2).abs() < 0.1,
+            "and it draws on the clicked line"
+        );
+    }
+
+    #[test]
+    fn a_click_level_with_two_cells_lands_in_the_cell_under_the_pointer() {
+        // Two cells side by side hold lines at the same y. Choosing by
+        // vertical distance alone sent every click on the row to the left
+        // cell, whichever cell the pointer was really in.
+        use wp_model::table::{Cell, CellProps, Row, Table};
+        use wp_model::Twips;
+        let table = Table {
+            grid: vec![Twips(1440), Twips(1440)],
+            rows: vec![Row {
+                cells: vec![
+                    Cell {
+                        props: CellProps::new(),
+                        content: vec![Block::Paragraph(Paragraph::of("left"))],
+                    },
+                    Cell {
+                        props: CellProps::new(),
+                        content: vec![Block::Paragraph(Paragraph::of("right"))],
+                    },
+                ],
+                ..Row::new()
+            }],
+            ..Table::new()
+        };
+        let ctx = context();
+        let mut shaper = Egui::new(&ctx);
+        let mut view = View::default();
+        let mut document = document(&[]);
+        document.body = vec![Block::Table(table)];
+        view.refresh(&document, &wp_layout::FieldValues::new(), 1, &mut shaper);
+
+        for want in [0usize, 1] {
+            let placement = view.pages()[0]
+                .content
+                .iter()
+                .find(|p| matches!(&p.kind, Placed::Line { paragraph, .. } if *paragraph == want))
+                .expect("both cells have a line");
+            let caret = caret_at(
+                &view,
+                Spot {
+                    page: 0,
+                    x: placement.x + placement.width / 2.0,
+                    y: placement.y + placement.height / 2.0,
+                },
+            )
+            .expect("a caret");
+            assert_eq!(caret.paragraph, want, "the click landed in the other cell");
+        }
     }
 
     #[test]

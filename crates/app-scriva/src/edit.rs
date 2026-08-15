@@ -80,6 +80,11 @@ pub enum Change {
     Range {
         first: usize,
         before: Vec<Paragraph>,
+        /// How many paragraphs stand in the range *after* the change. A
+        /// deletion leaves fewer than it found, and an undo that assumed the
+        /// count never moved restored the originals over whatever paragraphs
+        /// happened to follow.
+        now: usize,
     },
 }
 
@@ -212,18 +217,22 @@ fn apply(document: &mut Document, change: Change) -> (Change, Caret) {
                 },
             )
         }
-        Change::Range { first, before } => {
-            let count = before.len();
-            let now: Vec<Paragraph> = {
+        Change::Range { first, before, now } => {
+            let current: Vec<Paragraph> = {
                 let paragraphs = document.paragraphs();
-                paragraphs[first..(first + count).min(paragraphs.len())]
+                paragraphs[first.min(paragraphs.len())..(first + now).min(paragraphs.len())]
                     .iter()
                     .map(|p| (*p).clone())
                     .collect()
             };
-            replace_range(document, first..first + now.len(), before);
+            let restored = before.len();
+            replace_range(document, first..first + current.len(), before);
             (
-                Change::Range { first, before: now },
+                Change::Range {
+                    first,
+                    before: current,
+                    now: restored,
+                },
                 Caret {
                     paragraph: first,
                     offset: 0,
@@ -235,69 +244,77 @@ fn apply(document: &mut Document, change: Change) -> (Change, Caret) {
 
 /// Replaces a run of paragraphs, by index into the document's flattened walk.
 ///
-/// Only paragraphs directly in the body can be added or removed: a paragraph
-/// inside a table cell belongs to that cell, and inserting one beside it is a
-/// change to the *table* rather than to the body. Stated rather than hidden —
-/// pressing Enter inside a cell splits the paragraph within the cell, which is
-/// what Word does, and that path goes through `replace_in_place` below.
+/// Paragraphs can be added or removed wherever the whole range is the direct
+/// children of *one* container — the body, one table cell, or one content
+/// control. That is what pressing Enter or Backspace inside a cell needs: a
+/// bullet list in a table splits and joins within its cell, the way it does in
+/// Word. Only a range that crosses containers — a selection reaching from
+/// inside a cell out to the body — cannot change how many paragraphs there
+/// are, and is overwritten in place instead.
 pub fn replace_range(document: &mut Document, range: std::ops::Range<usize>, with: Vec<Paragraph>) {
-    if let Some(body) = body_range(document, range.clone()) {
-        document
-            .body
-            .splice(body, with.into_iter().map(Block::Paragraph));
+    let mut with = Some(with);
+    let mut flat = 0usize;
+    if splice_blocks(&mut document.body, &mut flat, &range, &mut with) {
         return;
     }
-    replace_in_place(document, range, with);
+    if let Some(with) = with.take() {
+        replace_in_place(document, range, with);
+    }
 }
 
-/// The body indices covering a run of flattened paragraph indices, when all of
-/// them are direct children of the body.
-fn body_range(
-    document: &Document,
-    range: std::ops::Range<usize>,
-) -> Option<std::ops::Range<usize>> {
-    let mut flat = 0usize;
+/// Splices `with` over `range` when every paragraph of the range is a direct
+/// child of one container, walking containers in the same order as
+/// [`Document::paragraphs`]. Consumes `with` only on success.
+fn splice_blocks(
+    blocks: &mut Vec<Block>,
+    flat: &mut usize,
+    range: &std::ops::Range<usize>,
+    with: &mut Option<Vec<Paragraph>>,
+) -> bool {
     let mut start = None;
-    let mut end = None;
-    for (index, block) in document.body.iter().enumerate() {
-        match block {
+    let mut found: Option<(usize, usize)> = None;
+    let mut index = 0;
+    while index < blocks.len() {
+        match &mut blocks[index] {
             Block::Paragraph(_) => {
-                if flat == range.start {
+                if *flat == range.start {
                     start = Some(index);
                 }
-                flat += 1;
-                if flat == range.end {
-                    end = Some(index + 1);
+                *flat += 1;
+                if *flat == range.end {
+                    match start {
+                        Some(start) => found = Some((start, index + 1)),
+                        // The range began in some other container: it cannot
+                        // be spliced anywhere.
+                        None => return false,
+                    }
                 }
             }
-            other => {
-                flat += count_paragraphs(other);
-                if flat > range.start && end.is_none() && start.is_some() {
-                    // The run reaches into a table or a control: not a body edit.
-                    return None;
+            Block::Table(table) => {
+                for row in &mut table.rows {
+                    for cell in &mut row.cells {
+                        if splice_blocks(&mut cell.content, flat, range, with) {
+                            return true;
+                        }
+                    }
                 }
             }
+            Block::Structured(sdt) => {
+                if splice_blocks(&mut sdt.content, flat, range, with) {
+                    return true;
+                }
+            }
+            _ => {}
         }
+        if let Some((from, to)) = found {
+            if let Some(with) = with.take() {
+                blocks.splice(from..to, with.into_iter().map(Block::Paragraph));
+            }
+            return true;
+        }
+        index += 1;
     }
-    match (start, end) {
-        (Some(start), Some(end)) => Some(start..end),
-        _ => None,
-    }
-}
-
-fn count_paragraphs(block: &Block) -> usize {
-    match block {
-        Block::Paragraph(_) => 1,
-        Block::Table(table) => table
-            .rows
-            .iter()
-            .flat_map(|row| &row.cells)
-            .flat_map(|cell| &cell.content)
-            .map(count_paragraphs)
-            .sum(),
-        Block::Structured(sdt) => sdt.content.iter().map(count_paragraphs).sum(),
-        _ => 0,
-    }
+    false
 }
 
 /// Overwrites paragraphs in place, without changing how many there are.
@@ -384,6 +401,8 @@ pub fn delete_selection(
     history.push(Change::Range {
         first: start.paragraph,
         before: before.clone(),
+        // The range becomes the one joined paragraph.
+        now: 1,
     });
 
     let mut head = before[0].clone();
@@ -539,6 +558,7 @@ pub fn format_runs(
     };
     history.push(Change::Range {
         first: start.paragraph,
+        now: before.len(),
         before,
     });
 
@@ -701,6 +721,7 @@ pub fn format_paragraphs(
     };
     history.push(Change::Range {
         first: start.paragraph,
+        now: before.len(),
         before,
     });
     let mut paragraphs = document.paragraphs_mut();
@@ -926,6 +947,21 @@ mod tests {
     }
 
     #[test]
+    fn undoing_a_deletion_restores_without_eating_what_follows() {
+        // The undo once assumed the paragraph count never changed, and put the
+        // two originals back over the joined paragraph *and* the innocent one
+        // after it.
+        let mut document = document(&["aa", "bb", "cc", "dd"]);
+        let mut history = History::new();
+        delete_selection(&mut document, &mut history, span((1, 1), (2, 1)));
+        assert_eq!(document.text(), "aa\nbc\ndd");
+        history.undo(&mut document);
+        assert_eq!(document.text(), "aa\nbb\ncc\ndd");
+        history.redo(&mut document);
+        assert_eq!(document.text(), "aa\nbc\ndd");
+    }
+
+    #[test]
     fn typing_over_a_selection_replaces_it() {
         let mut document = document(&["hello world"]);
         let mut history = History::new();
@@ -1005,6 +1041,113 @@ mod tests {
         history.redo(&mut document);
         history.redo(&mut document);
         assert_eq!(document.text(), after);
+    }
+
+    fn cell_document(texts: &[&str]) -> Document {
+        let cell = wp_model::table::Cell {
+            props: wp_model::table::CellProps::new(),
+            content: texts
+                .iter()
+                .map(|text| Block::Paragraph(Paragraph::of(text)))
+                .collect(),
+        };
+        let table = wp_model::table::Table {
+            rows: vec![wp_model::table::Row {
+                cells: vec![cell],
+                ..wp_model::table::Row::new()
+            }],
+            ..wp_model::table::Table::new()
+        };
+        Document {
+            body: vec![
+                Block::Table(table),
+                Block::Paragraph(Paragraph::of("after the table")),
+            ],
+            ..Document::new()
+        }
+    }
+
+    /// Every paragraph's text, in flattened order — `Document::text` puts its
+    /// own separators around a table, which is not what these tests measure.
+    fn texts(document: &Document) -> Vec<String> {
+        document
+            .paragraphs()
+            .iter()
+            .map(|paragraph| paragraph.text())
+            .collect()
+    }
+
+    #[test]
+    fn enter_inside_a_cell_splits_without_eating_the_next_paragraph() {
+        // The resume's bullet lists live in table cells. Splitting used to
+        // overwrite the paragraph after the split with the split-off tail —
+        // pressing Enter in one bullet destroyed the next.
+        let mut document = cell_document(&["first item", "second item"]);
+        let mut history = History::new();
+        let caret = split_paragraph(&mut document, &mut history, at(0, 5));
+        assert_eq!(
+            texts(&document),
+            ["first", " item", "second item", "after the table"]
+        );
+        assert_eq!(
+            caret,
+            Caret {
+                paragraph: 1,
+                offset: 0
+            }
+        );
+        let Block::Table(table) = &document.body[0] else {
+            panic!("the table is still there");
+        };
+        assert_eq!(
+            table.rows[0].cells[0].content.len(),
+            3,
+            "the cell gained the new paragraph"
+        );
+        history.undo(&mut document);
+        assert_eq!(
+            texts(&document),
+            ["first item", "second item", "after the table"]
+        );
+    }
+
+    #[test]
+    fn joining_inside_a_cell_does_not_leave_a_duplicate_behind() {
+        // Backspace at the start of the second cell paragraph joins it onto
+        // the first. It used to write the joined text over the first and keep
+        // the second as well — every join duplicated a paragraph.
+        let mut document = cell_document(&["first item", "second item"]);
+        let mut history = History::new();
+        let caret = backspace(&mut document, &mut history, at(1, 0));
+        assert_eq!(
+            texts(&document),
+            ["first itemsecond item", "after the table"]
+        );
+        assert_eq!(
+            caret,
+            Caret {
+                paragraph: 0,
+                offset: 10
+            }
+        );
+        history.undo(&mut document);
+        assert_eq!(
+            texts(&document),
+            ["first item", "second item", "after the table"]
+        );
+    }
+
+    #[test]
+    fn deleting_a_selection_across_cell_paragraphs_joins_them() {
+        let mut document = cell_document(&["first item", "second item"]);
+        let mut history = History::new();
+        delete_selection(&mut document, &mut history, span((0, 5), (1, 6)));
+        assert_eq!(texts(&document), ["first item", "after the table"]);
+        history.undo(&mut document);
+        assert_eq!(
+            texts(&document),
+            ["first item", "second item", "after the table"]
+        );
     }
 
     #[test]

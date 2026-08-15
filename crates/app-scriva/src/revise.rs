@@ -151,11 +151,6 @@ pub fn resolve_all(document: &mut Document, history: &mut History, how: Resolve)
     if count == 0 {
         return 0;
     }
-    history.push(Change::Range {
-        first: 0,
-        before: before.clone(),
-    });
-
     let mut resolved: Vec<Paragraph> = before
         .iter()
         .map(|paragraph| settle_paragraph(paragraph, how, None))
@@ -177,6 +172,13 @@ pub fn resolve_all(document: &mut Document, history: &mut History, how: Resolve)
             resolved[index - 1].mark_revision = None;
         }
     }
+    history.push(Change::Range {
+        first: 0,
+        before: before.clone(),
+        // Rejected paragraph marks joined their paragraphs, so fewer may
+        // stand here than were recorded.
+        now: resolved.len(),
+    });
     crate::edit::replace_range(document, 0..before.len(), resolved);
     count
 }
@@ -594,6 +596,7 @@ pub fn add_comment(
     history.push(Change::Range {
         first: start.paragraph,
         before: before.clone(),
+        now: before.len(),
     });
 
     let mut comment = wp_model::Comment::new(id, author);
@@ -632,6 +635,7 @@ pub fn delete_comment(document: &mut Document, history: &mut History, id: u32) -
     history.push(Change::Range {
         first: 0,
         before: before.clone(),
+        now: before.len(),
     });
     document.comments.retain(|comment| comment.id != id);
 

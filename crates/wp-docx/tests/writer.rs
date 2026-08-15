@@ -132,6 +132,61 @@ fn an_edit_changes_the_paragraph_it_was_made_in_and_nothing_else() {
 }
 
 #[test]
+fn a_paragraph_added_inside_a_table_cell_survives_the_round_trip() {
+    // Pressing Enter in a table-cell bullet adds a paragraph to the *cell*.
+    // The writer has to serialise a paragraph it has no bytes for, in a place
+    // no corpus edit had exercised before.
+    use wp_model::doc::{Block, Paragraph};
+    const MARKER: &str = "scriva cell split test";
+    let mut checked = 0;
+    for name in ["nested-tables.docx", "table-spanning-pages.docx"] {
+        let path = corpus().join(name);
+        let package = Package::open(&path).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let mut document = wp_docx::read(&package).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let parts = wp_docx::DocumentParts::locate_in(&package).expect("the document part");
+        let before = package
+            .part(&parts.document)
+            .expect("it is there")
+            .data()
+            .to_vec();
+
+        let mut inserted = false;
+        for block in &mut document.body {
+            if let Block::Table(table) = block {
+                let cell = &mut table.rows[0].cells[0];
+                cell.content
+                    .insert(0, Block::Paragraph(Paragraph::of(MARKER)));
+                inserted = true;
+                break;
+            }
+        }
+        assert!(inserted, "{name}: no table to edit");
+        let expected: Vec<String> = document
+            .paragraphs()
+            .iter()
+            .map(|paragraph| paragraph.text())
+            .collect();
+
+        let after = wp_docx::document_out(&before, &document);
+        let mut rebuilt = Package::open(&path).unwrap_or_else(|e| panic!("{name}: {e}"));
+        rebuilt.put_part(
+            parts.document.clone(),
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml",
+            after,
+        );
+        let reopened = wp_docx::read(&rebuilt).unwrap_or_else(|e| panic!("{name}: reread {e}"));
+        let got: Vec<String> = reopened
+            .paragraphs()
+            .iter()
+            .map(|paragraph| paragraph.text())
+            .collect();
+        assert_eq!(got, expected, "{name}: the cell edit did not round-trip");
+        checked += 1;
+    }
+    assert_eq!(checked, 2);
+}
+
+#[test]
 fn the_bytes_around_an_edited_paragraph_are_the_producers_own() {
     // A stronger form of the test above, and the one that catches a writer that
     // rebuilt more than it had to: everything the file said outside the one
