@@ -13,6 +13,7 @@ members = [
     "crates/wp-docx",
     "crates/wp-text",
     "crates/cfb",
+    "crates/dpi-guard",
     "crates/ui-kit",
     "crates/app-calx",
     "crates/app-scriva",
@@ -39,6 +40,7 @@ wp-doc = { path = "crates/wp-doc" }
 wp-docx = { path = "crates/wp-docx" }
 wp-text = { path = "crates/wp-text" }
 cfb-reader = { path = "crates/cfb" }
+dpi-guard = { path = "crates/dpi-guard" }
 ui-kit = { path = "crates/ui-kit" }
 
 # Release profile: optimize for a small, fast, self-contained binary.

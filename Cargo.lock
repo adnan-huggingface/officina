@@ -685,6 +685,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
 
 [[package]]
+name = "dpi-guard"
+version = "0.1.0"
+dependencies = [
+ "raw-window-handle",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "ecolor"
 version = "0.36.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3113,6 +3121,7 @@ dependencies = [
 name = "ui-kit"
 version = "0.1.0"
 dependencies = [
+ "dpi-guard",
  "eframe",
 ]
 

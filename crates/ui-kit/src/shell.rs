@@ -87,6 +87,10 @@ pub fn run(app: impl DocumentApp + 'static) -> eframe::Result<()> {
         Box::new(move |cc| {
             crate::fonts::install(&cc.egui_ctx);
             theme(&cc.egui_ctx);
+            // Windows: a window dragged between monitors of different scales
+            // is resized mid-drag until the drag jams. The guard defers the
+            // scale change until the user lets go. See dpi-guard's own story.
+            dpi_guard::install(cc);
             Ok(Box::new(Host {
                 app,
                 // A document window fills the screen the *first* time it opens,
