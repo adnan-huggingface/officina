@@ -48,6 +48,16 @@ pub enum Command {
     Superscript,
     Subscript,
     ClearFormatting,
+    /// Ctrl+Enter: a page break at the caret.
+    PageBreak,
+    /// One of the margin presets, whole. Header, footer and gutter distances
+    /// ride along unchanged.
+    Margins(wp_model::PageMargins),
+    /// The dialog for margins none of the presets offer.
+    CustomMargins,
+    Orient(wp_model::Orientation),
+    /// A paper size, stated portrait; the section's orientation re-applies.
+    Paper(wp_model::units::Twips, wp_model::units::Twips),
     Grow,
     Shrink,
     Size(HalfPoint),
@@ -178,6 +188,8 @@ pub struct Scriva {
     author: crate::revise::Author,
     /// The comment being written, before it is added.
     drafting: Option<String>,
+    /// The custom-margins dialog: top, bottom, left, right, in inches.
+    margins_draft: Option<[String; 4]>,
     /// How the open document was written, so a save puts it back the same way.
     encoding: wp_text::Encoding,
     ending: wp_text::LineEnding,
@@ -228,6 +240,7 @@ impl Scriva {
             reviewer: false,
             author: crate::revise::Author::new("Scriva user"),
             drafting: None,
+            margins_draft: None,
             parts: None,
             picked: None,
             dragging: None,
@@ -332,6 +345,19 @@ impl Scriva {
 
     pub(crate) fn zoom(&self) -> f64 {
         self.view.zoom
+    }
+
+    /// The page setup the Layout menu ticks against: the orientation, the
+    /// paper stated portrait-way-up, and the margins.
+    pub(crate) fn page_setup(
+        &self,
+    ) -> (wp_model::Orientation, (Twips, Twips), wp_model::PageMargins) {
+        let section = &self.document.section;
+        let paper = match section.page.orientation {
+            wp_model::Orientation::Portrait => (section.page.width, section.page.height),
+            wp_model::Orientation::Landscape => (section.page.height, section.page.width),
+        };
+        (section.page.orientation, paper, section.margins)
     }
 
     /// The styles worth offering: the ones Word marks for its own gallery.
@@ -792,6 +818,72 @@ impl Scriva {
                 props.indent.start = Some(Twips((start.0 + by * 720).max(0)));
             }),
             Command::Style(style) => self.format_paragraphs(move |props| props.style = Some(style)),
+            Command::PageBreak => {
+                let caret = edit::insert_break(
+                    &mut self.document,
+                    &mut self.history,
+                    self.selection,
+                    wp_model::doc::Break::Page,
+                );
+                self.selection = Selection::at(caret);
+                self.reveal = Some(caret);
+                self.changed();
+            }
+            Command::Margins(margins) => {
+                let mut section = self.document.section.clone();
+                // The presets say where the text goes; where the header and
+                // footer sit, and the binding gutter, are not theirs to move.
+                section.margins = wp_model::PageMargins {
+                    header: section.margins.header,
+                    footer: section.margins.footer,
+                    gutter: section.margins.gutter,
+                    ..margins
+                };
+                self.set_section(section);
+            }
+            Command::CustomMargins => {
+                let inches = |t: Twips| format!("{:.2}", t.0 as f64 / 1440.0);
+                let m = self.document.section.margins;
+                self.margins_draft = Some([
+                    inches(m.top),
+                    inches(m.bottom),
+                    inches(m.start),
+                    inches(m.end),
+                ]);
+            }
+            Command::Orient(orientation) => {
+                let mut section = self.document.section.clone();
+                if section.page.orientation != orientation {
+                    std::mem::swap(&mut section.page.width, &mut section.page.height);
+                    section.page.orientation = orientation;
+                    // Word turns the margins with the paper.
+                    let m = section.margins;
+                    section.margins = wp_model::PageMargins {
+                        top: m.start,
+                        bottom: m.end,
+                        start: m.top,
+                        end: m.bottom,
+                        ..m
+                    };
+                    self.set_section(section);
+                }
+            }
+            Command::Paper(width, height) => {
+                let mut section = self.document.section.clone();
+                let landscape = section.page.orientation == wp_model::Orientation::Landscape;
+                let (w, h) = if landscape {
+                    (height, width)
+                } else {
+                    (width, height)
+                };
+                if section.page.width != w || section.page.height != h {
+                    section.page.width = w;
+                    section.page.height = h;
+                    // The old paper's printer-tray code would now be a lie.
+                    section.page.code = None;
+                    self.set_section(section);
+                }
+            }
             Command::Zoom(zoom) => self.view.zoom = zoom,
             Command::ShowMarks => {
                 self.view.show_marks = !self.view.show_marks;
@@ -1250,6 +1342,7 @@ impl Scriva {
             (ctrl, Key::M, Command::Indent(1)),
             (ctrl_shift, Key::M, Command::Indent(-1)),
             (ctrl, Key::Space, Command::ClearFormatting),
+            (ctrl, Key::Enter, Command::PageBreak),
             (ctrl, Key::F, Command::Find),
             (ctrl, Key::H, Command::Replace),
             (egui::Modifiers::NONE, Key::F3, Command::FindNext),
@@ -1795,6 +1888,10 @@ impl DocumentApp for Scriva {
             self.comment_dialog(ctx);
             return;
         }
+        if self.margins_draft.is_some() {
+            self.margins_dialog(ctx);
+            return;
+        }
         if let Some(Pending::Lossy(path, format)) = self.pending.clone() {
             let what = match format {
                 Format::Markdown => {
@@ -1899,6 +1996,7 @@ impl DocumentApp for Scriva {
         let blocked = self.pending.is_some()
             || self.message.is_some()
             || self.drafting.is_some()
+            || self.margins_draft.is_some()
             || self.finder_focused
             || egui::Popup::is_any_open(ui.ctx());
         if !blocked {
@@ -1918,6 +2016,73 @@ impl DocumentApp for Scriva {
 }
 
 impl Scriva {
+    /// Replaces the page setup, undoably, and relays the document out.
+    fn set_section(&mut self, section: wp_model::SectionProps) {
+        let caret = self.caret();
+        edit::set_section(&mut self.document, &mut self.history, caret, section);
+        self.changed();
+    }
+
+    /// The custom-margins box: four numbers in inches, the way Word asks.
+    fn margins_dialog(&mut self, ctx: &egui::Context) {
+        let Some(mut draft) = self.margins_draft.clone() else {
+            return;
+        };
+        let mut done: Option<bool> = None;
+        egui::Modal::new(egui::Id::new("scriva-margins"))
+            .frame(dialog::frame(ctx))
+            .show(ctx, |ui| {
+                ui.set_width(260.0);
+                ui.add_space(16.0);
+                ui.label(egui::RichText::new("Margins").font(dialog::heading_font(16.0)));
+                ui.add_space(8.0);
+                for (label, field) in ["Top:", "Bottom:", "Left:", "Right:"]
+                    .into_iter()
+                    .zip(draft.iter_mut())
+                {
+                    ui.horizontal(|ui| {
+                        ui.add_sized([56.0, 20.0], egui::Label::new(label));
+                        ui.add(egui::TextEdit::singleline(field).desired_width(64.0));
+                        ui.label("in");
+                    });
+                }
+                ui.add_space(12.0);
+                if let Some(answer) = dialog::confirm(ui, "Set") {
+                    done = Some(answer);
+                }
+                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    done = Some(false);
+                }
+            });
+        self.margins_draft = Some(draft.clone());
+        match done {
+            Some(true) => {
+                self.margins_draft = None;
+                // A field that does not parse keeps the margin it had — the
+                // dialog is not the place to argue about a typo.
+                let m = self.document.section.margins;
+                let parse = |text: &str, was: Twips| {
+                    text.trim()
+                        .parse::<f64>()
+                        .ok()
+                        .filter(|v| (0.0..=5.0).contains(v))
+                        .map(|v| Twips((v * 1440.0).round() as i32))
+                        .unwrap_or(was)
+                };
+                let mut section = self.document.section.clone();
+                section.margins.top = parse(&draft[0], m.top);
+                section.margins.bottom = parse(&draft[1], m.bottom);
+                section.margins.start = parse(&draft[2], m.start);
+                section.margins.end = parse(&draft[3], m.end);
+                if section.margins != m {
+                    self.set_section(section);
+                }
+            }
+            Some(false) => self.margins_draft = None,
+            None => {}
+        }
+    }
+
     /// The box a new comment is written in.
     fn comment_dialog(&mut self, ctx: &egui::Context) {
         let Some(mut text) = self.drafting.clone() else {
@@ -2479,6 +2644,48 @@ mod tests {
             .collect();
         app.stamp += 1;
         app
+    }
+
+    #[test]
+    fn the_layout_commands_change_the_page_and_undo_back() {
+        use wp_model::{Orientation, PageMargins};
+        let mut app = app_with(&["hello"]);
+        let was = app.document.section.page;
+
+        app.run(Command::Orient(Orientation::Landscape));
+        assert_eq!(
+            app.document.section.page.orientation,
+            Orientation::Landscape
+        );
+        assert_eq!(
+            app.document.section.page.width, was.height,
+            "the paper turned"
+        );
+        app.run(Command::Undo);
+        assert_eq!(app.document.section.page, was, "and undo turns it back");
+
+        let narrow = PageMargins {
+            top: Twips(720),
+            bottom: Twips(720),
+            start: Twips(720),
+            end: Twips(720),
+            ..app.document.section.margins
+        };
+        app.run(Command::Margins(narrow));
+        assert_eq!(app.document.section.margins.start, Twips(720));
+
+        app.run(Command::PageBreak);
+        let has_break = app.document.paragraphs()[0]
+            .runs()
+            .iter()
+            .flat_map(|run| run.content.iter())
+            .any(|piece| {
+                matches!(
+                    piece,
+                    wp_model::doc::Piece::Break(wp_model::doc::Break::Page)
+                )
+            });
+        assert!(has_break, "Ctrl+Enter left a page break at the caret");
     }
 
     #[test]

@@ -229,6 +229,49 @@ fn the_bytes_around_an_edited_paragraph_are_the_producers_own() {
 }
 
 #[test]
+fn a_page_setup_change_survives_the_round_trip() {
+    // The Layout menu edits the section: new margins have to come back from
+    // the file, and everything before the body's closing `<w:sectPr>` has to
+    // come back byte for byte, because nothing else was edited.
+    use wp_model::units::Twips;
+    let path = corpus().join("nested-tables.docx");
+    let package = Package::open(&path).expect("the corpus document opens");
+    let mut document = wp_docx::read(&package).expect("and reads");
+    let parts = wp_docx::DocumentParts::locate_in(&package).expect("the document part");
+    let before = package
+        .part(&parts.document)
+        .expect("it is there")
+        .data()
+        .to_vec();
+
+    document.section.margins.top = Twips(2880);
+    document.section.margins.start = Twips(720);
+    let after = wp_docx::document_out(&before, &document);
+
+    let mut rebuilt = Package::open(&path).expect("the package again");
+    rebuilt.put_part(
+        parts.document.clone(),
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml",
+        after.clone(),
+    );
+    let reopened = wp_docx::read(&rebuilt).expect("the edited document reads back");
+    assert_eq!(reopened.section.margins.top, Twips(2880));
+    assert_eq!(reopened.section.margins.start, Twips(720));
+
+    // The body itself was not edited, so the bytes up to the section are the
+    // producer's own.
+    let sect = after
+        .windows(b"<w:sectPr".len())
+        .position(|w| w == b"<w:sectPr")
+        .expect("the section is still there");
+    assert_eq!(
+        &before[..sect],
+        &after[..sect],
+        "only the section changed on the way through"
+    );
+}
+
+#[test]
 fn a_resized_picture_survives_being_saved_and_read_back() {
     // The whole point of splicing the drawing's own bytes. Before this, a
     // paragraph holding a picture could not be rewritten at all, so a resize was

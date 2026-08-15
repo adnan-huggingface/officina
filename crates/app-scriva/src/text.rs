@@ -113,6 +113,53 @@ pub fn insert(paragraph: &mut Paragraph, offset: usize, text: &str) -> usize {
     offset + text.len()
 }
 
+/// Inserts a non-text piece — a page break, a tab — at a text offset.
+///
+/// A text piece the offset lands inside is split around the newcomer; a
+/// boundary needs no splitting. Returns how many bytes of *text* the piece
+/// added, which for a page break is none: the caret's world is bytes, and a
+/// break is not a byte.
+pub fn insert_piece(paragraph: &mut Paragraph, offset: usize, piece: Piece) -> usize {
+    let added = piece_len(&piece);
+    match spot_at(paragraph, offset) {
+        Some(spot) => {
+            let Some(run) = nth_run_mut(paragraph, spot.run) else {
+                return 0;
+            };
+            match run.content.get_mut(spot.piece) {
+                Some(Piece::Text(existing)) if spot.offset > 0 && spot.offset < existing.len() => {
+                    let owned = existing.to_string();
+                    let (left, right) = owned.split_at(spot.offset);
+                    *existing = left.into();
+                    run.content.insert(spot.piece + 1, piece);
+                    run.content
+                        .insert(spot.piece + 2, Piece::Text(right.into()));
+                }
+                Some(_) => {
+                    let at = if spot.offset == 0 {
+                        spot.piece
+                    } else {
+                        spot.piece + 1
+                    };
+                    run.content.insert(at, piece);
+                }
+                None => run.content.push(piece),
+            }
+        }
+        // The paragraph has no text to land in: the piece starts a run of the
+        // mark's own formatting, same as typing into an empty paragraph.
+        None => {
+            let props = props_at(paragraph, 0);
+            paragraph.content.push(Inline::Run(Run {
+                props,
+                content: vec![piece],
+                prop_change: None,
+            }));
+        }
+    }
+    added
+}
+
 fn insert_at(paragraph: &mut Paragraph, spot: Spot, text: &str) {
     let Some(run) = nth_run_mut(paragraph, spot.run) else {
         return;

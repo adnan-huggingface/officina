@@ -86,6 +86,14 @@ pub enum Change {
         /// happened to follow.
         now: usize,
     },
+    /// The section's page setup — margins, size, orientation.
+    ///
+    /// Carries the caret because a page-setup change has no text position of
+    /// its own: undo puts the user back where they were when they made it.
+    Section {
+        before: Box<wp_model::SectionProps>,
+        caret: Caret,
+    },
 }
 
 /// The undo and redo stacks.
@@ -239,6 +247,60 @@ fn apply(document: &mut Document, change: Change) -> (Change, Caret) {
                 },
             )
         }
+        Change::Section { before, caret } => {
+            let was = std::mem::replace(&mut document.section, *before);
+            (
+                Change::Section {
+                    before: Box::new(was),
+                    caret,
+                },
+                caret,
+            )
+        }
+    }
+}
+
+/// Replaces the section's page setup, undoably.
+pub fn set_section(
+    document: &mut Document,
+    history: &mut History,
+    caret: Caret,
+    section: wp_model::SectionProps,
+) {
+    let before = std::mem::replace(&mut document.section, section);
+    history.push(Change::Section {
+        before: Box::new(before),
+        caret,
+    });
+}
+
+/// Inserts a break — a page break, mostly — at the caret, Ctrl+Enter's job.
+///
+/// The caret's offset does not move for a page break: a break is not a byte
+/// of text, so the caret's world has no address for the far side of it. The
+/// line the caret is drawn on follows the text that now sits after the break.
+pub fn insert_break(
+    document: &mut Document,
+    history: &mut History,
+    selection: Selection,
+    kind: wp_model::doc::Break,
+) -> Caret {
+    let caret = delete_selection(document, history, selection);
+    let Some(before) = paragraph_at(document, caret.paragraph) else {
+        return caret;
+    };
+    history.push(Change::Paragraph {
+        index: caret.paragraph,
+        before: Box::new(before),
+    });
+    let mut paragraphs = document.paragraphs_mut();
+    let Some(target) = paragraphs.get_mut(caret.paragraph) else {
+        return caret;
+    };
+    let added = text::insert_piece(target, caret.offset, wp_model::doc::Piece::Break(kind));
+    Caret {
+        paragraph: caret.paragraph,
+        offset: caret.offset + added,
     }
 }
 
@@ -803,6 +865,64 @@ mod tests {
                 offset: to.1,
             },
         }
+    }
+
+    #[test]
+    fn a_page_setup_change_is_one_undo_step_that_returns_the_caret() {
+        use wp_model::units::Twips;
+        let mut document = document(&["hello"]);
+        let mut history = History::new();
+        let was = document.section.margins.top;
+        let mut section = document.section.clone();
+        section.margins.top = Twips(2880);
+        let here = Caret {
+            paragraph: 0,
+            offset: 3,
+        };
+        set_section(&mut document, &mut history, here, section);
+        assert_eq!(document.section.margins.top, Twips(2880));
+
+        let caret = history.undo(&mut document).expect("there is an undo");
+        assert_eq!(
+            document.section.margins.top, was,
+            "the old margins are back"
+        );
+        assert_eq!(caret, here, "undo returns to where the user was");
+        history.redo(&mut document);
+        assert_eq!(document.section.margins.top, Twips(2880));
+    }
+
+    #[test]
+    fn a_page_break_lands_at_the_caret_and_undoes_away() {
+        use wp_model::doc::{Break, Piece};
+        let mut document = document(&["hello world"]);
+        let mut history = History::new();
+        let caret = insert_break(&mut document, &mut history, at(0, 5), Break::Page);
+        // A break is not a byte of text: nothing the caret counts has changed.
+        assert_eq!(
+            caret,
+            Caret {
+                paragraph: 0,
+                offset: 5
+            }
+        );
+        let has_break = |document: &Document| {
+            document.paragraphs()[0]
+                .runs()
+                .iter()
+                .flat_map(|run| run.content.iter())
+                .any(|piece| matches!(piece, Piece::Break(Break::Page)))
+        };
+        assert!(has_break(&document), "the break is in the paragraph");
+        assert_eq!(
+            document.paragraphs()[0].text(),
+            "hello world",
+            "and the text reads straight through it"
+        );
+
+        history.undo(&mut document);
+        assert!(!has_break(&document), "undo takes the break out");
+        assert_eq!(document.paragraphs()[0].text(), "hello world");
     }
 
     #[test]

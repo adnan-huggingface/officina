@@ -13,7 +13,7 @@ use ui_kit::{egui, menu};
 
 use crate::icons::{self, Icon};
 use wp_model::prop::Justify;
-use wp_model::units::{HalfPoint, Line240};
+use wp_model::units::{HalfPoint, Line240, Twips};
 
 use crate::app::{Command, Scriva};
 
@@ -33,6 +33,7 @@ impl Scriva {
         let styles = self.quick_styles();
         let navigator = self.showing_navigator();
         let (tracking, reviewer) = self.reviewing();
+        let (orientation, paper, margins) = self.page_setup();
 
         menu::bar(ui, |ui| {
             let mut chosen = None;
@@ -207,6 +208,60 @@ impl Scriva {
                 }
                 if menu::item(ui, "&Decrease Indent", "Ctrl+Shift+M").clicked() {
                     chosen = Some(Command::Indent(-1));
+                }
+            });
+
+            menu::top(ui, "&Layout", |ui| {
+                menu::sub(ui, "&Margins", |ui| {
+                    for (name, top, bottom, side) in [
+                        ("&Normal — 1\" all round", 1440, 1440, 1440),
+                        ("N&arrow — ½\" all round", 720, 720, 720),
+                        ("M&oderate — 1\" × ¾\"", 1440, 1440, 1080),
+                        ("&Wide — 1\" × 2\"", 1440, 1440, 2880),
+                    ] {
+                        let ticked = margins.top == Twips(top)
+                            && margins.bottom == Twips(bottom)
+                            && margins.start == Twips(side)
+                            && margins.end == Twips(side);
+                        if menu::check(ui, name, "", ticked).clicked() {
+                            chosen = Some(Command::Margins(wp_model::PageMargins {
+                                top: Twips(top),
+                                bottom: Twips(bottom),
+                                start: Twips(side),
+                                end: Twips(side),
+                                ..margins
+                            }));
+                        }
+                    }
+                    menu::sep(ui);
+                    if menu::item(ui, "&Custom Margins…", "").clicked() {
+                        chosen = Some(Command::CustomMargins);
+                    }
+                });
+                menu::sub(ui, "&Orientation", |ui| {
+                    let portrait = orientation == wp_model::Orientation::Portrait;
+                    if menu::check(ui, "&Portrait", "", portrait).clicked() {
+                        chosen = Some(Command::Orient(wp_model::Orientation::Portrait));
+                    }
+                    if menu::check(ui, "&Landscape", "", !portrait).clicked() {
+                        chosen = Some(Command::Orient(wp_model::Orientation::Landscape));
+                    }
+                });
+                menu::sub(ui, "&Size", |ui| {
+                    for (name, width, height) in [
+                        ("&Letter — 8.5\" × 11\"", 12240, 15840),
+                        ("Le&gal — 8.5\" × 14\"", 12240, 20160),
+                        ("&A4 — 210 × 297 mm", 11906, 16838),
+                    ] {
+                        let ticked = paper == (Twips(width), Twips(height));
+                        if menu::check(ui, name, "", ticked).clicked() {
+                            chosen = Some(Command::Paper(Twips(width), Twips(height)));
+                        }
+                    }
+                });
+                menu::sep(ui);
+                if menu::item(ui, "Page &Break", "Ctrl+Enter").clicked() {
+                    chosen = Some(Command::PageBreak);
                 }
             });
 
