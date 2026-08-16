@@ -882,13 +882,15 @@ impl Calx {
                 from: corner(left, range.start.row),
                 to: corner(left + 7, range.start.row.saturating_add(15)),
             },
-            kind,
-            grouping: ss_model::chart::Grouping::Clustered,
-            horizontal: false,
-            title: None,
-            title_ref: None,
-            legend: (series.len() > 1).then_some(ss_model::chart::LegendPosition::Right),
-            series,
+            plot: ss_model::chart::Plot {
+                kind,
+                grouping: ss_model::chart::Grouping::Clustered,
+                horizontal: false,
+                title: None,
+                title_ref: None,
+                legend: (series.len() > 1).then_some(ss_model::chart::LegendPosition::Right),
+                series,
+            },
         };
 
         let Some(target) = self.doc.workbook.sheet_mut(index) else {
@@ -3744,7 +3746,7 @@ impl Calx {
             .workbook
             .sheet(sheet)
             .and_then(|s| s.charts.get(index))
-            .map(|c| c.title.clone().unwrap_or_default())
+            .map(|c| c.plot.title.clone().unwrap_or_default())
         else {
             return;
         };

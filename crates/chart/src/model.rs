@@ -1,17 +1,16 @@
-//! Charts, and where they sit on a sheet.
+//! Charts, and where they sit.
 //!
-//! A chart is three parts in the package, not one: the *drawing* says where on
-//! the sheet it goes, the *chart* says what it plots, and the worksheet points
-//! at the drawing. Nothing here is authored from scratch — this is a view over
-//! parts that are preserved verbatim, so that a workbook whose chart we render
-//! imperfectly still saves back exactly as it opened.
+//! A chart is more than one part in the package: the *chart* part says what it
+//! plots, and something else says where it goes — a drawing anchored to cells
+//! in a workbook, an inline or anchored `<w:drawing>` in a document. Nothing
+//! here is authored from scratch. This is a view over parts that are preserved
+//! verbatim, so that a file whose chart we render imperfectly still saves back
+//! exactly as it opened.
 //!
 //! What is modeled is what a *reader* needs: the shape, the series and where
 //! their numbers come from, the labels, and the rectangle. Everything else in
 //! `chartSpace` — gradients, 3-D rotation, trendlines, the several dozen
 //! elements of axis formatting — is not, and is carried through untouched.
-
-use crate::color::Color;
 
 /// EMUs (English Metric Units) per point. Office measures drawings in these:
 /// 914,400 to the inch and 12,700 to the point, chosen so that both inches and
@@ -158,20 +157,23 @@ pub struct Series {
     pub values: Vec<Option<f64>>,
     pub categories_ref: Option<String>,
     pub categories: Vec<String>,
-    pub color: Option<Color>,
+    /// `<a:srgbClr>` on the series' shape properties, as plain sRGB.
+    ///
+    /// A triple rather than a workbook `Color` because that is all a chart
+    /// part ever states here — the theme-coloured case writes `<a:schemeClr>`,
+    /// which is not read — and because a document has no workbook theme to
+    /// resolve one against.
+    pub color: Option<[u8; 3]>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Chart {
-    /// The chart part's name, so a writer can find the bytes again.
-    pub part: String,
-    /// The drawing part whose anchor places this chart, and which anchor it
-    /// is, counted over *every* anchor in that drawing in document order —
-    /// the same identity contract pictures carry, and for the same reason:
-    /// it is what survives a save when the anchor itself has changed.
-    pub drawing_part: String,
-    pub anchor_index: usize,
-    pub anchor: Anchor,
+/// What a chart part plots, which is everything a painter needs.
+///
+/// Separate from where it sits, because where it sits is the one thing the two
+/// formats do not share: a workbook anchors a chart to cells, a document puts
+/// it in a line of text or on the page. This half is identical in both, and is
+/// what the reader produces.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Plot {
     pub kind: ChartKind,
     pub grouping: Grouping,
     /// `<c:barDir val="bar"/>`: bars lie down, columns stand up.
@@ -183,7 +185,7 @@ pub struct Chart {
     pub series: Vec<Series>,
 }
 
-impl Chart {
+impl Plot {
     /// The categories to label the axis with: the first series that has any.
     ///
     /// Excel writes the same category reference on every series and draws one
@@ -204,6 +206,21 @@ impl Chart {
             .max()
             .unwrap_or(0)
     }
+}
+
+/// A chart on a sheet: what it plots, and which cells it is pinned to.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Chart {
+    /// The chart part's name, so a writer can find the bytes again.
+    pub part: String,
+    /// The drawing part whose anchor places this chart, and which anchor it
+    /// is, counted over *every* anchor in that drawing in document order —
+    /// the same identity contract pictures carry, and for the same reason:
+    /// it is what survives a save when the anchor itself has changed.
+    pub drawing_part: String,
+    pub anchor_index: usize,
+    pub anchor: Anchor,
+    pub plot: Plot,
 }
 
 #[cfg(test)]
@@ -228,20 +245,8 @@ mod tests {
 
     #[test]
     fn the_axis_labels_come_from_whichever_series_has_them() {
-        let chart = Chart {
-            part: "/xl/charts/chart1.xml".to_string(),
-            drawing_part: "/xl/drawings/drawing1.xml".to_string(),
-            anchor_index: 0,
-            anchor: Anchor::TwoCell {
-                from: AnchorPoint::default(),
-                to: AnchorPoint::default(),
-            },
+        let plot = Plot {
             kind: ChartKind::Bar,
-            grouping: Grouping::Clustered,
-            horizontal: false,
-            title: None,
-            title_ref: None,
-            legend: None,
             series: vec![
                 Series::default(),
                 Series {
@@ -250,8 +255,9 @@ mod tests {
                     ..Default::default()
                 },
             ],
+            ..Plot::default()
         };
-        assert_eq!(chart.categories(), ["Q1", "Q2"]);
-        assert_eq!(chart.points(), 3);
+        assert_eq!(plot.categories(), ["Q1", "Q2"]);
+        assert_eq!(plot.points(), 3);
     }
 }

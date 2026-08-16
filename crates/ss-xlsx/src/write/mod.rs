@@ -218,12 +218,13 @@ impl XlsxDocument {
                 let Some(part) = self.package.part(&name) else {
                     continue;
                 };
-                let body = crate::chart::parse(name.as_str(), part.data())?;
-                if body.title == chart.title {
+                let stored = ss_model::chart::read::plot(part.data());
+                if stored.and_then(|plot| plot.title) == chart.plot.title {
                     continue;
                 }
                 let content_type = part.content_type.clone();
-                let data = chart_out::retitle(name.as_str(), part.data(), chart.title.as_deref())?;
+                let data =
+                    chart_out::retitle(name.as_str(), part.data(), chart.plot.title.as_deref())?;
                 written.push((name, content_type, data));
             }
         }

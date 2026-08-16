@@ -154,6 +154,7 @@ mod tests {
             anchored: true,
             extent: (Emu(914400), Emu(457200)),
             rel: None,
+            chart: None,
             name: None,
             description: None,
             wrap: wp_model::Wrap::Square,

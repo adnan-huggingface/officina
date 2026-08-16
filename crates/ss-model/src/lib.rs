@@ -8,7 +8,6 @@
 #![forbid(unsafe_code)]
 
 pub mod cell;
-pub mod chart;
 pub mod color;
 pub mod comment;
 pub mod cond;
@@ -25,8 +24,13 @@ pub mod style;
 pub mod table;
 pub mod workbook;
 
+/// Charts live in their own crate, because a document has them too and there
+/// is only one `<c:chartSpace>` in the world. Re-exported here so that a
+/// workbook's chart is still `ss_model::chart::Chart`, which is where it has
+/// always been.
+pub use ::chart;
+pub use ::chart::{Anchor, Chart, ChartKind, Series};
 pub use cell::{column_index, column_name, Cell, CellError, CellRef, CellValue, FormulaId};
-pub use chart::{Anchor, Chart, ChartKind, Series};
 pub use color::{Color, Theme};
 pub use comment::Comment;
 pub use cond::{ConditionalFormat, DataValidation};

@@ -482,6 +482,7 @@ fn read_drawing(reader: &mut Reader<&[u8]>) -> Option<Drawing> {
         anchored: false,
         extent: (Emu(0), Emu(0)),
         rel: None,
+        chart: None,
         name: None,
         description: None,
         wrap: Wrap::None,
@@ -536,6 +537,9 @@ fn read_drawing(reader: &mut Reader<&[u8]>) -> Option<Drawing> {
                             .or_else(|| attr(&e, b"link"))
                             .map(Into::into)
                     }
+                    // `<c:chart r:id>`: the same shape as a picture's blip,
+                    // naming a chart part instead of an image one.
+                    b"chart" => drawing.chart = attr(&e, b"id").map(Into::into),
                     b"wrapNone" => drawing.wrap = Wrap::None,
                     b"wrapSquare" => drawing.wrap = Wrap::Square,
                     b"wrapTight" | b"wrapThrough" => drawing.wrap = Wrap::Tight,

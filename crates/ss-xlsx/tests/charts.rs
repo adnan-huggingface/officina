@@ -27,13 +27,13 @@ fn a_real_workbooks_charts_come_back_with_their_data() {
     let charts: Vec<_> = doc.workbook.sheets.iter().flat_map(|s| &s.charts).collect();
     assert!(!charts.is_empty(), "the corpus file has charts in it");
 
-    let kinds: Vec<&ChartKind> = charts.iter().map(|c| &c.kind).collect();
+    let kinds: Vec<&ChartKind> = charts.iter().map(|c| &c.plot.kind).collect();
     assert!(kinds.contains(&&ChartKind::Bar), "{kinds:?}");
     assert!(kinds.contains(&&ChartKind::Line), "{kinds:?}");
     assert!(kinds.contains(&&ChartKind::Pie), "{kinds:?}");
 
     for chart in &charts {
-        let series = chart.series.first().expect("a series");
+        let series = chart.plot.series.first().expect("a series");
         assert!(
             series.values_ref.is_some(),
             "the reference is what makes it redraw"
@@ -42,7 +42,7 @@ fn a_real_workbooks_charts_come_back_with_their_data() {
             series.values.iter().any(Option::is_some),
             "and the cache is what makes it drawable without one"
         );
-        assert!(!chart.categories().is_empty());
+        assert!(!chart.plot.categories().is_empty());
     }
 }
 
@@ -57,14 +57,14 @@ fn retitling_a_chart_survives_a_save_and_changes_nothing_else() {
         .collect();
 
     let target = doc.workbook.sheets[0].charts[0].part.clone();
-    doc.workbook.sheets[0].charts[0].title = Some("Sales by month".to_string());
+    doc.workbook.sheets[0].charts[0].plot.title = Some("Sales by month".to_string());
 
     let mut bytes = Vec::new();
     doc.write_to(Cursor::new(&mut bytes)).expect("writes");
     let reopened = XlsxDocument::read(Cursor::new(bytes)).expect("reads back");
 
     assert_eq!(
-        reopened.workbook.sheets[0].charts[0].title.as_deref(),
+        reopened.workbook.sheets[0].charts[0].plot.title.as_deref(),
         Some("Sales by month")
     );
     assert_eq!(
@@ -264,21 +264,23 @@ fn a_chart_inserted_into_a_blank_workbook_comes_back_as_a_chart() {
             from: corner(3, 1),
             to: corner(9, 16),
         },
-        kind: ChartKind::Bar,
-        grouping: ss_model::chart::Grouping::Clustered,
-        horizontal: false,
-        title: Some("Sales".to_string()),
-        title_ref: None,
-        legend: Some(LegendPosition::Right),
-        series: vec![Series {
-            name: Some("Sales".to_string()),
-            name_ref: Some("Sheet1!$B$1".to_string()),
-            values_ref: Some("Sheet1!$B$2:$B$4".to_string()),
-            values: vec![Some(10.0), Some(12.5), Some(9.0)],
-            categories_ref: Some("Sheet1!$A$2:$A$4".to_string()),
-            categories: vec!["Jan".into(), "Feb".into(), "Mar".into()],
-            color: None,
-        }],
+        plot: ss_model::chart::Plot {
+            kind: ChartKind::Bar,
+            grouping: ss_model::chart::Grouping::Clustered,
+            horizontal: false,
+            title: Some("Sales".to_string()),
+            title_ref: None,
+            legend: Some(LegendPosition::Right),
+            series: vec![Series {
+                name: Some("Sales".to_string()),
+                name_ref: Some("Sheet1!$B$1".to_string()),
+                values_ref: Some("Sheet1!$B$2:$B$4".to_string()),
+                values: vec![Some(10.0), Some(12.5), Some(9.0)],
+                categories_ref: Some("Sheet1!$A$2:$A$4".to_string()),
+                categories: vec!["Jan".into(), "Feb".into(), "Mar".into()],
+                color: None,
+            }],
+        },
     });
 
     let mut doc = XlsxDocument::new(book).expect("authors a package");
@@ -293,12 +295,15 @@ fn a_chart_inserted_into_a_blank_workbook_comes_back_as_a_chart() {
         "one chart, found by a reader that is not us"
     );
     let chart = &charts[0];
-    assert_eq!(chart.kind, ChartKind::Bar);
-    assert_eq!(chart.title.as_deref(), Some("Sales"));
-    assert_eq!(chart.legend, Some(LegendPosition::Right));
-    assert_eq!(chart.series.len(), 1);
-    assert_eq!(chart.series[0].values, [Some(10.0), Some(12.5), Some(9.0)]);
-    assert_eq!(chart.series[0].categories, ["Jan", "Feb", "Mar"]);
+    assert_eq!(chart.plot.kind, ChartKind::Bar);
+    assert_eq!(chart.plot.title.as_deref(), Some("Sales"));
+    assert_eq!(chart.plot.legend, Some(LegendPosition::Right));
+    assert_eq!(chart.plot.series.len(), 1);
+    assert_eq!(
+        chart.plot.series[0].values,
+        [Some(10.0), Some(12.5), Some(9.0)]
+    );
+    assert_eq!(chart.plot.series[0].categories, ["Jan", "Feb", "Mar"]);
     assert_eq!(
         chart.anchor,
         Anchor::TwoCell {

@@ -14,6 +14,7 @@ name = "scriva"
 path = "src/main.rs"
 
 [dependencies]
+chart.workspace = true
 ui-kit.workspace = true
 wp-model.workspace = true
 wp-layout.workspace = true

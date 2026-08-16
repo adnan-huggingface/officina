@@ -6,5 +6,6 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+chart.workspace = true
 dpi-guard.workspace = true
 eframe = { version = "0.36.1", default-features = false, features = ["wgpu", "default_fonts", "x11", "wayland"] }

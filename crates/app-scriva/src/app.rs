@@ -2609,6 +2609,11 @@ impl Scriva {
                     self.parts.as_ref(),
                     view::image_rels(&self.view).into_iter(),
                 );
+                self.pictures.prepare_charts(
+                    self.package.as_ref(),
+                    self.parts.as_ref(),
+                    view::chart_rels(&self.view).into_iter(),
+                );
                 view::paint(
                     &painter,
                     &self.view,

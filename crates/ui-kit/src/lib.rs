@@ -6,6 +6,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod chart;
 pub mod dialog;
 pub mod fonts;
 pub mod menu;

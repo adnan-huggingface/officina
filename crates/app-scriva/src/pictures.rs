@@ -1,4 +1,10 @@
-//! Decoding the images a document carries, and holding them for the painter.
+//! Decoding the drawings a document carries, and holding them for the painter.
+//!
+//! Pictures and charts together, because a `<w:drawing>` is either one and the
+//! painter meets them at the same place — a rectangle in a line, or a
+//! rectangle on the page. A chart costs a parse rather than a decode, and is
+//! held for the same reason: re-reading `chart1.xml` on every frame is the
+//! same waste as decoding the JPEG on every frame.
 //!
 //! **The bytes are shared and decoded once per part.** A logo repeated in a
 //! header on forty pages is one relationship, one part and one texture upload —
@@ -13,11 +19,13 @@ use std::collections::HashMap;
 
 use ui_kit::egui;
 
-/// The images of one document, decoded on demand.
+/// The drawings of one document, decoded on demand.
 #[derive(Default)]
 pub struct Pictures {
     /// By relationship id, because that is what a `<a:blip r:embed>` names.
     loaded: HashMap<String, Option<egui::TextureHandle>>,
+    /// The same, for the `<c:chart r:id>` of a chart drawing.
+    charts: HashMap<String, Option<chart::Plot>>,
 }
 
 impl Pictures {
@@ -28,6 +36,7 @@ impl Pictures {
     /// Throws away every texture, for a document that has been closed.
     pub fn clear(&mut self) {
         self.loaded.clear();
+        self.charts.clear();
     }
 
     /// The texture for a relationship, decoding it the first time.
@@ -71,6 +80,32 @@ impl Pictures {
     /// The texture for a relationship that [`Pictures::prepare`] has seen.
     pub fn texture(&self, rel: &str) -> Option<&egui::TextureHandle> {
         self.loaded.get(rel).and_then(|slot| slot.as_ref())
+    }
+
+    /// Reads every chart part a laid-out view draws, before the frame is
+    /// painted — the same contract as [`Pictures::prepare`], for the same
+    /// borrow reason.
+    pub fn prepare_charts(
+        &mut self,
+        package: Option<&ooxml::Package>,
+        parts: Option<&wp_docx::DocumentParts>,
+        rels: impl Iterator<Item = String>,
+    ) {
+        for rel in rels {
+            if self.charts.contains_key(&rel) {
+                continue;
+            }
+            let plot = (|| -> Option<chart::Plot> {
+                let name = parts?.target(&rel)?;
+                chart::read::plot(package?.part(name)?.data())
+            })();
+            self.charts.insert(rel, plot);
+        }
+    }
+
+    /// The chart for a relationship that [`Pictures::prepare_charts`] has seen.
+    pub fn chart(&self, rel: &str) -> Option<&chart::Plot> {
+        self.charts.get(rel).and_then(|slot| slot.as_ref())
     }
 
     /// How many parts have been looked at, for a test.
@@ -137,6 +172,7 @@ mod tests {
             anchored: true,
             extent: (Emu::from_points(100.0), Emu::from_points(50.0)),
             rel: Some("rId5".into()),
+            chart: None,
             name: None,
             description: None,
             wrap: wp_model::Wrap::Square,

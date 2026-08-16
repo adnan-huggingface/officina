@@ -572,6 +572,15 @@ pub struct Drawing {
     pub extent: (Emu, Emu),
     /// `r:embed` on the image's blip — the part holding the bytes.
     pub rel: Option<Arc<str>>,
+    /// `r:id` on a `<c:chart>` — the chart part this draws instead of a
+    /// picture.
+    ///
+    /// A drawing is one or the other: `<a:graphicData>` names either a picture
+    /// or a chart, and a document that puts a bar chart between two paragraphs
+    /// carries it exactly as it carries a photograph, one `<w:drawing>` with a
+    /// relationship inside. Without this the chart is laid out at its stated
+    /// size and painted as nothing, which is a hole in the page.
+    pub chart: Option<Arc<str>>,
     /// `<wp:docPr>` name and description: what a screen reader says, and what
     /// the selection pane lists.
     pub name: Option<Arc<str>>,

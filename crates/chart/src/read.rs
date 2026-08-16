@@ -1,6 +1,10 @@
-//! Chart parts: `xl/charts/chartN.xml`.
+//! Chart parts: `xl/charts/chartN.xml`, `word/charts/chartN.xml`.
 //!
-//! Read for what it takes to draw the thing — the type, the series, where their
+//! The same part in both formats — a `<c:chartSpace>` — so it is read once
+//! here and the two applications differ only in how they find it and where
+//! they put the result.
+//!
+//! Read for what it takes to draw the thing: the type, the series, where their
 //! numbers come from, and the labels. `chartSpace` holds an enormous amount
 //! besides, all of which is preserved verbatim and none of which is modeled.
 //!
@@ -10,32 +14,16 @@
 //! numbers live; `<c:numCache>` says what the producing application last
 //! computed. Both are kept — the reference is what lets a chart redraw when a
 //! cell changes, and the cache is what lets it draw at all when the reference
-//! names a workbook we cannot open.
+//! names a workbook we cannot open, which is every chart in a document.
 //!
 //! **`<c:idx>` and `<c:order>` are not the same as document order**, and
 //! `<c:pt idx="3">` may skip indices. A cache read as a flat list puts every
 //! point after a gap in the wrong place.
 
-use quick_xml::events::Event;
-use quick_xml::Reader;
+use quick_xml::events::{BytesEnd, BytesStart, Event};
+use quick_xml::{Reader, XmlVersion};
 
-use ss_model::chart::{ChartKind, Grouping, LegendPosition, Series};
-use ss_model::Color;
-
-use crate::error::{xml_err, Result};
-use crate::xml::{attr_raw, attr_text, attr_u32, end_local_name, local_name, push_text};
-
-/// Everything read out of one chart part. The anchor comes from the drawing.
-#[derive(Debug, Clone, Default)]
-pub(crate) struct ChartBody {
-    pub kind: Option<ChartKind>,
-    pub grouping: Grouping,
-    pub horizontal: bool,
-    pub title: Option<String>,
-    pub title_ref: Option<String>,
-    pub legend: Option<LegendPosition>,
-    pub series: Vec<Series>,
-}
+use crate::{ChartKind, Grouping, LegendPosition, Plot, Series};
 
 /// Which reference of a series is being read. `<c:f>` and `<c:pt>` are the same
 /// elements under `<c:tx>`, `<c:cat>`, and `<c:val>`.
@@ -47,11 +35,23 @@ enum Slot {
     Values,
 }
 
-pub(crate) fn parse(part: &str, data: &[u8]) -> Result<ChartBody> {
+/// Reads one `<c:chartSpace>`.
+///
+/// `None` when the part names no plot type this understands — which is also
+/// what a part that is not a chart at all looks like. A caller draws an empty
+/// frame for those rather than axes around nothing, and a workbook keeps them
+/// out of the model entirely so that an anchor with nothing behind it is not
+/// mistaken for a deleted chart.
+///
+/// A part that will not parse is not an error worth refusing a file over: the
+/// bytes are preserved either way, and a chart drawn as an empty frame beats a
+/// document that will not open. So the plot comes back as far as it was read.
+pub fn plot(data: &[u8]) -> Option<Plot> {
     let mut reader = Reader::from_reader(data);
     reader.config_mut().check_end_names = false;
 
-    let mut out = ChartBody::default();
+    let mut out = Plot::default();
+    let mut kind: Option<ChartKind> = None;
     let mut buf = Vec::new();
 
     let mut series = Series::default();
@@ -69,10 +69,7 @@ pub(crate) fn parse(part: &str, data: &[u8]) -> Result<ChartBody> {
     // element inside an axis is not.
     let mut depth_in_series_props = 0usize;
 
-    loop {
-        let ev = reader
-            .read_event_into(&mut buf)
-            .map_err(|e| xml_err(part, e))?;
+    while let Ok(ev) = reader.read_event_into(&mut buf) {
         let empty = matches!(ev, Event::Empty(_));
 
         match ev {
@@ -112,23 +109,20 @@ pub(crate) fn parse(part: &str, data: &[u8]) -> Result<ChartBody> {
                     }
                 }
                 b"barDir" => {
-                    out.horizontal = attr_raw(e, b"val").as_deref() == Some(b"bar");
+                    out.horizontal = attr_text(e, b"val").as_deref() == Some("bar");
                 }
                 b"spPr" if in_series => depth_in_series_props += 1,
                 b"srgbClr" if depth_in_series_props > 0 && series.color.is_none() => {
                     if let Some(hex) = attr_text(e, b"val") {
-                        series.color = Color::from_hex(&hex);
+                        series.color = rgb(&hex);
                     }
                 }
                 other => {
                     // The plot-type element is what names the chart. The first
                     // one wins: a combination chart has several, and drawing it
                     // as its first type is closer than drawing nothing.
-                    if out.kind.is_none() {
-                        if let Some(kind) = ChartKind::from_element(&String::from_utf8_lossy(other))
-                        {
-                            out.kind = Some(kind);
-                        }
+                    if kind.is_none() {
+                        kind = ChartKind::from_element(&String::from_utf8_lossy(other));
                     }
                     if empty {
                         continue;
@@ -197,9 +191,7 @@ pub(crate) fn parse(part: &str, data: &[u8]) -> Result<ChartBody> {
             },
 
             Event::Eof => break,
-            ref other if sink.is_some() => {
-                push_text(&mut text, other)?;
-            }
+            ref other if sink.is_some() => push_text(&mut text, other),
             _ => {}
         }
         buf.clear();
@@ -210,7 +202,8 @@ pub(crate) fn parse(part: &str, data: &[u8]) -> Result<ChartBody> {
     if out.title.is_none() {
         out.title_ref = None;
     }
-    Ok(out)
+    out.kind = kind?;
+    Some(out)
 }
 
 /// Places points at the indices they claim, filling gaps.
@@ -218,15 +211,101 @@ pub(crate) fn parse(part: &str, data: &[u8]) -> Result<ChartBody> {
 /// `<c:pt idx="3">` after `idx="1"` means index 2 has no value. Pushing them in
 /// document order shifts every point after a gap onto the wrong category.
 fn flatten(points: Vec<(u32, String)>) -> Vec<String> {
-    let Some(highest) = points.iter().map(|(i, _)| *i).max() else {
-        return Vec::new();
-    };
-    let mut out = vec![String::new(); highest as usize + 1];
+    let size = points
+        .iter()
+        .map(|(i, _)| *i as usize + 1)
+        .max()
+        .unwrap_or(0);
+    let mut out = vec![String::new(); size];
     for (index, value) in points {
         out[index as usize] = value;
     }
     out
 }
+
+/// `RRGGBB`, or `AARRGGBB` with the alpha dropped — a chart draws opaque.
+fn rgb(hex: &str) -> Option<[u8; 3]> {
+    let hex = hex.trim();
+    let bytes: Vec<u8> = (0..hex.len() / 2)
+        .map(|i| u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16))
+        .collect::<Result<_, _>>()
+        .ok()?;
+    match bytes.len() {
+        4 => Some([bytes[1], bytes[2], bytes[3]]),
+        3 => Some([bytes[0], bytes[1], bytes[2]]),
+        _ => None,
+    }
+}
+
+fn strip_prefix(name: &[u8]) -> &[u8] {
+    match name.iter().position(|b| *b == b':') {
+        Some(at) => &name[at + 1..],
+        None => name,
+    }
+}
+
+fn local_name<'a>(e: &'a BytesStart<'a>) -> &'a [u8] {
+    strip_prefix(e.name().into_inner())
+}
+
+fn end_local_name<'a>(e: &'a BytesEnd<'a>) -> &'a [u8] {
+    strip_prefix(e.name().into_inner())
+}
+
+fn attr_text(e: &BytesStart<'_>, want: &[u8]) -> Option<String> {
+    let mut attrs = e.attributes();
+    attrs.with_checks(false);
+    for a in attrs.flatten() {
+        if strip_prefix(a.key.as_ref()) == want {
+            return a.normalized_value(XML_VERSION).ok().map(|v| v.into_owned());
+        }
+    }
+    None
+}
+
+fn attr_u32(e: &BytesStart<'_>, want: &[u8]) -> Option<u32> {
+    attr_text(e, want)?.trim().parse().ok()
+}
+
+/// Appends one text event, entity references resolved.
+///
+/// A title reading `Sales & Costs` arrives as three events — text, a general
+/// reference, text — and a reader that takes the raw bytes of each drops the
+/// ampersand on the floor.
+fn push_text(out: &mut String, ev: &Event<'_>) {
+    match ev {
+        Event::Text(t) => {
+            if let Ok(s) = t.xml_content(XML_VERSION) {
+                out.push_str(&s);
+            }
+        }
+        Event::CData(c) => {
+            if let Ok(s) = c.xml_content(XML_VERSION) {
+                out.push_str(&s);
+            }
+        }
+        Event::GeneralRef(r) => {
+            if let Ok(Some(ch)) = r.resolve_char_ref() {
+                out.push(ch);
+            } else if let Ok(name) = r.decode() {
+                match quick_xml::escape::resolve_predefined_entity(&name) {
+                    Some(text) => out.push_str(text),
+                    // An entity we cannot resolve is written back as it came
+                    // in. Losing it outright would corrupt the text; guessing
+                    // would corrupt it differently.
+                    None => {
+                        out.push('&');
+                        out.push_str(&name);
+                        out.push(';');
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+const XML_VERSION: XmlVersion = XmlVersion::Explicit1_0;
 
 #[cfg(test)]
 mod tests {
@@ -260,14 +339,14 @@ mod tests {
  </c:chart>
 </c:chartSpace>"#;
 
-    fn body() -> ChartBody {
-        parse("chart1.xml", CHART.as_bytes()).expect("parses")
+    fn chart() -> Plot {
+        plot(CHART.as_bytes()).expect("parses")
     }
 
     #[test]
     fn the_type_the_title_and_the_legend_come_back() {
-        let chart = body();
-        assert_eq!(chart.kind, Some(ChartKind::Bar));
+        let chart = chart();
+        assert_eq!(chart.kind, ChartKind::Bar);
         assert!(!chart.horizontal, "barDir=col means columns stand up");
         assert_eq!(chart.grouping, Grouping::Clustered);
         assert_eq!(chart.title.as_deref(), Some("Quarterly revenue"));
@@ -280,7 +359,7 @@ mod tests {
 
     #[test]
     fn a_series_keeps_both_where_its_numbers_are_and_what_they_were() {
-        let chart = body();
+        let chart = chart();
         assert_eq!(chart.series.len(), 1);
         let series = &chart.series[0];
         assert_eq!(series.name.as_deref(), Some("Widgets"));
@@ -293,7 +372,7 @@ mod tests {
         // The cache skips idx 2. Pushing points in document order would put 40
         // against Q3 and leave Q4 empty — a chart that is wrong rather than
         // incomplete.
-        let chart = body();
+        let chart = chart();
         assert_eq!(
             chart.series[0].values,
             [Some(10.0), Some(20.0), None, Some(40.0)]
@@ -303,11 +382,39 @@ mod tests {
     #[test]
     fn a_series_colour_is_its_own_and_not_the_axiss() {
         // `<a:srgbClr>` appears under the value axis too, later in the file.
-        let chart = body();
+        let chart = chart();
         assert_eq!(
             chart.series[0].color,
-            Some(Color::rgb(0x44, 0x72, 0xC4)),
+            Some([0x44, 0x72, 0xC4]),
             "the axis's red must not have overwritten it"
         );
+    }
+
+    #[test]
+    fn a_part_that_names_no_plot_type_is_not_a_chart() {
+        // Both a `chartSpace` of a kind nobody draws and a part that is not a
+        // chart at all: the caller draws a frame rather than empty axes.
+        assert!(plot(b"<html><body>not a chart</body></html>").is_none());
+        assert!(
+            plot(br#"<c:chartSpace><c:chart><c:plotArea/></c:chart></c:chartSpace>"#).is_none()
+        );
+    }
+
+    #[test]
+    fn a_document_chart_reads_the_same_as_a_workbook_one() {
+        // Word writes the reference as a bare label rather than a cell range,
+        // and the cache is all a document ever has to draw from.
+        let word = br#"<c:chartSpace xmlns:c="x" xmlns:a="y"><c:chart><c:plotArea><c:barChart>
+            <c:barDir val="col"/><c:grouping val="clustered"/>
+            <c:ser><c:idx val="0"/>
+              <c:tx><c:strRef><c:f>label 0</c:f><c:strCache><c:pt idx="0"><c:v>Column 1</c:v></c:pt></c:strCache></c:strRef></c:tx>
+              <c:cat><c:strRef><c:f>categories</c:f><c:strCache>
+                <c:pt idx="0"><c:v>Row 1</c:v></c:pt><c:pt idx="1"><c:v>Row 2</c:v></c:pt></c:strCache></c:strRef></c:cat>
+              <c:val><c:numRef><c:f>0</c:f><c:numCache>
+                <c:pt idx="0"><c:v>9.1</c:v></c:pt><c:pt idx="1"><c:v>2.4</c:v></c:pt></c:numCache></c:numRef></c:val>
+            </c:ser></c:barChart></c:plotArea></c:chart></c:chartSpace>"#;
+        let plot = plot(word).expect("parses");
+        assert_eq!(plot.series[0].values, [Some(9.1), Some(2.4)]);
+        assert_eq!(plot.categories(), ["Row 1", "Row 2"]);
     }
 }

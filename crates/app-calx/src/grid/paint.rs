@@ -1499,7 +1499,7 @@ impl GridView {
             super::chart::draw(
                 &painter,
                 rect,
-                chart,
+                &chart.plot,
                 &series,
                 &super::chart::Style {
                     background: palette.background,
@@ -1507,6 +1507,7 @@ impl GridView {
                     text: palette.text,
                     grid: palette.header_text,
                     zoom: self.zoom as f32,
+                    label: ss_model::format_general,
                 },
             );
         }
@@ -4648,13 +4649,11 @@ mod tests {
                     row_offset: 0,
                 },
             },
-            kind: ss_model::ChartKind::Bar,
-            grouping: Grouping::Clustered,
-            horizontal: false,
-            title: None,
-            title_ref: None,
-            legend: None,
-            series: Vec::new(),
+            plot: ss_model::chart::Plot {
+                kind: ss_model::ChartKind::Bar,
+                grouping: Grouping::Clustered,
+                ..Default::default()
+            },
         });
         book
     }

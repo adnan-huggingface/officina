@@ -68,6 +68,8 @@ pub enum Content {
     Object {
         height: f64,
         rel: Option<std::sync::Arc<str>>,
+        /// The chart part, when the drawing is a chart rather than a picture.
+        chart: Option<std::sync::Arc<str>>,
         /// Which of the paragraph's drawings this is.
         nth: usize,
     },
@@ -218,6 +220,7 @@ enum UnitKind {
     Object {
         height: f64,
         rel: Option<std::sync::Arc<str>>,
+        chart: Option<std::sync::Arc<str>>,
         nth: usize,
     },
     Label {
@@ -655,6 +658,7 @@ fn push_run(
                     kind: UnitKind::Object {
                         height: drawing.extent.1.points(),
                         rel: drawing.rel.clone(),
+                        chart: drawing.chart.clone(),
                         // Filled in once the whole paragraph is walked: a unit
                         // does not know how many drawings came before it.
                         nth: 0,
@@ -937,9 +941,15 @@ fn fragment_of(unit: &Unit, x: f64) -> Fragment {
             hyphen: *hyphen,
         },
         UnitKind::Tab { leader, .. } => Content::Tab { leader: *leader },
-        UnitKind::Object { height, rel, nth } => Content::Object {
+        UnitKind::Object {
+            height,
+            rel,
+            chart,
+            nth,
+        } => Content::Object {
             height: *height,
             rel: rel.clone(),
+            chart: chart.clone(),
             nth: *nth,
         },
         UnitKind::Label { text, advances } => Content::Label {
@@ -1735,6 +1745,7 @@ mod tests {
                 wp_model::Emu::from_points(40.0),
             ),
             rel: None,
+            chart: None,
             name: None,
             description: None,
             wrap: wp_model::Wrap::None,

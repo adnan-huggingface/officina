@@ -11,7 +11,6 @@
 #![forbid(unsafe_code)]
 
 mod autofilter;
-mod chart;
 mod comments;
 mod drawing;
 mod error;
@@ -209,8 +208,7 @@ fn read_drawing(
         if !part.content_type.contains("chart") {
             continue;
         }
-        let body = chart::parse(target.as_str(), part.data())?;
-        let Some(kind) = body.kind else {
+        let Some(plot) = ss_model::chart::read::plot(part.data()) else {
             continue;
         };
         drawn.charts.push(ss_model::Chart {
@@ -218,13 +216,7 @@ fn read_drawing(
             drawing_part: drawing_name.as_str().to_string(),
             anchor_index: found.index,
             anchor: found.anchor,
-            kind,
-            grouping: body.grouping,
-            horizontal: body.horizontal,
-            title: body.title,
-            title_ref: body.title_ref,
-            legend: body.legend,
-            series: body.series,
+            plot,
         });
     }
     Ok(drawn)
@@ -295,14 +287,10 @@ pub(crate) fn object_anchors(
         // Chart anchors, but only the charts the *reader* keeps: a chart of a
         // kind we do not recognize never reaches the model, and an anchor in
         // this map with no model object behind it would read as "deleted".
-        if target_part.content_type.contains("chart") {
-            let known = chart::parse(target.as_str(), target_part.data())
-                .ok()
-                .and_then(|body| body.kind)
-                .is_some();
-            if known {
-                out.insert(found.index, found.anchor);
-            }
+        if target_part.content_type.contains("chart")
+            && ss_model::chart::read::plot(target_part.data()).is_some()
+        {
+            out.insert(found.index, found.anchor);
         }
     }
     Ok(out)

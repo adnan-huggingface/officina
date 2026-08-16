@@ -384,7 +384,7 @@ fn pic_anchor(picture: &Picture, rel_id: &str, id: u32) -> Vec<u8> {
 /// has the numbers to draw.
 fn chart_part(chart: &Chart) -> Vec<u8> {
     let mut series = String::new();
-    for (index, s) in chart.series.iter().enumerate() {
+    for (index, s) in chart.plot.series.iter().enumerate() {
         series.push_str(&format!(
             r#"<c:ser><c:idx val="{index}"/><c:order val="{index}"/>"#
         ));
@@ -438,7 +438,7 @@ fn chart_part(chart: &Chart) -> Vec<u8> {
         series.push_str("</c:ser>");
     }
 
-    let (element, shape) = match chart.kind {
+    let (element, shape) = match chart.plot.kind {
         ss_model::ChartKind::Line => ("lineChart", String::new()),
         ss_model::ChartKind::Pie => ("pieChart", String::new()),
         ss_model::ChartKind::Doughnut => ("doughnutChart", String::new()),
@@ -447,11 +447,11 @@ fn chart_part(chart: &Chart) -> Vec<u8> {
             "barChart",
             format!(
                 r#"<c:barDir val="{}"/>"#,
-                if chart.horizontal { "bar" } else { "col" }
+                if chart.plot.horizontal { "bar" } else { "col" }
             ),
         ),
     };
-    let grouping = match (element, chart.grouping) {
+    let grouping = match (element, chart.plot.grouping) {
         ("pieChart" | "doughnutChart", _) => String::new(),
         (_, ss_model::chart::Grouping::Stacked) => r#"<c:grouping val="stacked"/>"#.to_string(),
         (_, ss_model::chart::Grouping::PercentStacked) => {
@@ -463,7 +463,7 @@ fn chart_part(chart: &Chart) -> Vec<u8> {
 
     // The axes a plot with axes must declare, and their ids, which the plot
     // itself repeats. Excel picks arbitrary numbers; these are ours.
-    let axes = if chart.kind.has_axes() {
+    let axes = if chart.plot.kind.has_axes() {
         concat!(
             r#"<c:catAx><c:axId val="111111111"/><c:scaling><c:orientation val="minMax"/></c:scaling>"#,
             r#"<c:delete val="0"/><c:axPos val="b"/><c:crossAx val="222222222"/></c:catAx>"#,
@@ -473,13 +473,13 @@ fn chart_part(chart: &Chart) -> Vec<u8> {
     } else {
         ""
     };
-    let axis_ids = if chart.kind.has_axes() {
+    let axis_ids = if chart.plot.kind.has_axes() {
         r#"<c:axId val="111111111"/><c:axId val="222222222"/>"#
     } else {
         ""
     };
 
-    let title = match &chart.title {
+    let title = match &chart.plot.title {
         Some(text) => {
             let mut out = String::from("<c:title><c:tx><c:rich><a:bodyPr/><a:p><a:r><a:t>");
             out.push_str(&xml_escape(text));
@@ -489,7 +489,7 @@ fn chart_part(chart: &Chart) -> Vec<u8> {
         }
         None => r#"<c:autoTitleDeleted val="1"/>"#.to_string(),
     };
-    let legend = match chart.legend {
+    let legend = match chart.plot.legend {
         Some(position) => format!(
             r#"<c:legend><c:legendPos val="{}"/><c:overlay val="0"/></c:legend>"#,
             match position {
@@ -582,29 +582,31 @@ mod tests {
                 from: at(3, 1),
                 to: at(9, 16),
             },
-            kind: ss_model::ChartKind::Bar,
-            grouping: ss_model::chart::Grouping::Clustered,
-            horizontal: false,
-            title: Some("Sales & Costs".to_string()),
-            title_ref: None,
-            legend: Some(ss_model::chart::LegendPosition::Right),
-            series: vec![ss_model::chart::Series {
-                name: Some("Sales".to_string()),
-                name_ref: Some("Sheet1!$B$1".to_string()),
-                values_ref: Some("Sheet1!$B$2:$B$4".to_string()),
-                values: vec![Some(1.0), Some(2.5), None],
-                categories_ref: Some("Sheet1!$A$2:$A$4".to_string()),
-                categories: vec!["Jan".into(), "Feb".into(), "Mar".into()],
-                color: None,
-            }],
+            plot: ss_model::chart::Plot {
+                kind: ss_model::ChartKind::Bar,
+                grouping: ss_model::chart::Grouping::Clustered,
+                horizontal: false,
+                title: Some("Sales & Costs".to_string()),
+                title_ref: None,
+                legend: Some(ss_model::chart::LegendPosition::Right),
+                series: vec![ss_model::chart::Series {
+                    name: Some("Sales".to_string()),
+                    name_ref: Some("Sheet1!$B$1".to_string()),
+                    values_ref: Some("Sheet1!$B$2:$B$4".to_string()),
+                    values: vec![Some(1.0), Some(2.5), None],
+                    categories_ref: Some("Sheet1!$A$2:$A$4".to_string()),
+                    categories: vec!["Jan".into(), "Feb".into(), "Mar".into()],
+                    color: None,
+                }],
+            },
         }
     }
 
     #[test]
     fn an_authored_chart_part_reads_back_as_the_chart_it_was() {
         let bytes = chart_part(&a_chart());
-        let read = crate::chart::parse("/xl/charts/chart1.xml", &bytes).expect("parses");
-        assert_eq!(read.kind, Some(ss_model::ChartKind::Bar));
+        let read = ss_model::chart::read::plot(&bytes).expect("parses");
+        assert_eq!(read.kind, ss_model::ChartKind::Bar);
         assert_eq!(read.title.as_deref(), Some("Sales & Costs"));
         assert_eq!(read.series.len(), 1);
         assert_eq!(read.series[0].name.as_deref(), Some("Sales"));
@@ -631,7 +633,7 @@ mod tests {
     #[test]
     fn a_pie_chart_declares_no_axes_and_a_bar_chart_does() {
         let mut chart = a_chart();
-        chart.kind = ss_model::ChartKind::Pie;
+        chart.plot.kind = ss_model::ChartKind::Pie;
         let text = String::from_utf8(chart_part(&chart)).expect("utf-8");
         assert!(!text.contains("catAx"), "{text}");
         assert!(text.contains("<c:pieChart>"), "{text}");

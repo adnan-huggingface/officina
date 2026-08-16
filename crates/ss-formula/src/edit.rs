@@ -325,7 +325,7 @@ fn apply_patch(book: &mut Workbook, patch: Patch) -> Vec<Patch> {
             let Some(target) = book.sheet_mut(sheet).and_then(|s| s.charts.get_mut(chart)) else {
                 return Vec::new();
             };
-            let before = std::mem::replace(&mut target.title, title);
+            let before = std::mem::replace(&mut target.plot.title, title);
             vec![Patch::ChartTitle {
                 sheet,
                 chart,

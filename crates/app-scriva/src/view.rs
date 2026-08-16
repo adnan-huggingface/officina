@@ -441,12 +441,100 @@ pub fn image_rels(view: &View) -> Vec<String> {
     rels
 }
 
-/// Draws one picture, or the frame that stands in for a picture that could not
-/// be decoded.
+/// Every chart relationship the view draws, for the reader to work through.
+pub fn chart_rels(view: &View) -> Vec<String> {
+    let mut rels = Vec::new();
+    for page in &view.pages {
+        for placement in page.everything() {
+            match &placement.kind {
+                // An anchored drawing keeps the whole `Drawing`, chart and all.
+                Placed::Drawing {
+                    anchor: Some(drawing),
+                    ..
+                } => rels.extend(drawing.chart.as_deref().map(str::to_string)),
+                Placed::Line { line, .. } => {
+                    for fragment in &line.fragments {
+                        if let wp_layout::inline::Content::Object {
+                            chart: Some(rel), ..
+                        } = &fragment.content
+                        {
+                            rels.push(rel.to_string());
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    rels
+}
+
+/// Draws one drawing: a picture, a chart, or the frame that stands in for
+/// either when it could not be read.
 ///
 /// A missing picture draws a frame rather than nothing, because a hole in the
 /// page is a fact the reader should be able to see — silence would look like a
 /// document that never had the picture.
+fn paint_drawing(
+    painter: &egui::Painter,
+    pictures: &crate::pictures::Pictures,
+    rel: Option<&str>,
+    chart: Option<&str>,
+    rect: egui::Rect,
+    zoom: f32,
+) {
+    if let Some(plot) = chart.and_then(|rel| pictures.chart(rel)) {
+        let series: Vec<ui_kit::chart::Plotted> = plot
+            .series
+            .iter()
+            .enumerate()
+            .map(|(index, series)| {
+                let [r, g, b] = series.color.unwrap_or(
+                    ui_kit::chart::SERIES_COLORS[index % ui_kit::chart::SERIES_COLORS.len()],
+                );
+                ui_kit::chart::Plotted {
+                    name: series
+                        .name
+                        .clone()
+                        .unwrap_or_else(|| format!("Series {}", index + 1)),
+                    // A document's chart has no cells to read: what the
+                    // producing application cached is the whole of it.
+                    values: series.values.clone(),
+                    color: egui::Color32::from_rgb(r, g, b),
+                }
+            })
+            .collect();
+        ui_kit::chart::draw(
+            painter,
+            rect,
+            plot,
+            &series,
+            &ui_kit::chart::Style {
+                background: PAPER,
+                outline: EDGE,
+                text: egui::Color32::BLACK,
+                grid: EDGE,
+                zoom,
+                label: axis_label,
+            },
+        );
+        return;
+    }
+    paint_image(painter, pictures, rel, rect);
+}
+
+/// An axis number, as an axis writes it.
+///
+/// Not a document's business to format: a chart's numbers are its own, and a
+/// label with fifteen decimal places of binary rounding on it is unreadable.
+fn axis_label(value: f64) -> String {
+    if value == value.trunc() && value.abs() < 1e15 {
+        return format!("{}", value as i64);
+    }
+    let text = format!("{value:.4}");
+    text.trim_end_matches('0').trim_end_matches('.').to_string()
+}
+
 fn paint_image(
     painter: &egui::Painter,
     pictures: &crate::pictures::Pictures,
@@ -738,7 +826,14 @@ fn paint_placement(
                     placement.height as f32 * zoom,
                 ),
             );
-            paint_image(painter, pictures, rel.as_deref(), rect);
+            paint_drawing(
+                painter,
+                pictures,
+                rel.as_deref(),
+                anchor.as_ref().and_then(|d| d.chart.as_deref()),
+                rect,
+                zoom,
+            );
         }
         // Resolved into `Edge` or dropped at pagination; never on a page.
         Placed::BreakEdge { .. } => {}
@@ -805,14 +900,24 @@ fn paint_line(
                 painter.rect_filled(rect, 0.0, SELECTION);
             }
         }
-        if let Content::Object { height, rel, .. } = &fragment.content {
+        if let Content::Object {
+            height, rel, chart, ..
+        } = &fragment.content
+        {
             // An inline drawing sits on the baseline like a very large letter.
             let top = baseline - height;
             let rect = egui::Rect::from_min_size(
                 page + egui::vec2(x as f32 * zoom, top as f32 * zoom),
                 egui::vec2(fragment.width as f32 * zoom, *height as f32 * zoom),
             );
-            paint_image(painter, pictures, rel.as_deref(), rect);
+            paint_drawing(
+                painter,
+                pictures,
+                rel.as_deref(),
+                chart.as_deref(),
+                rect,
+                zoom,
+            );
             continue;
         }
         // A list label draws exactly like text — it just is not text the

@@ -191,6 +191,7 @@ mod tests {
             anchored,
             extent: (Emu::from_points(100.0), Emu::from_points(50.0)),
             rel: Some("rId5".into()),
+            chart: None,
             name: None,
             description: None,
             wrap: wp_model::Wrap::Square,
