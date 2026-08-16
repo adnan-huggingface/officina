@@ -334,7 +334,16 @@ fn units(
             .next()
             .map(resolve::face_for)
             .unwrap_or(wp_model::prop::Script::Ascii);
-        let style = resolve::text_style(&props, ctx.theme, script, ctx.fallback_font);
+        let mut style = resolve::text_style(&props, ctx.theme, script, ctx.fallback_font);
+        // A label is never underlined or struck through. Word takes the
+        // paragraph mark's bold, italic and size into the number — but not its
+        // underline: a mark carrying `w:u` (LibreOffice copies the run's
+        // formatting there) bolds "1." without drawing a line under it, and
+        // the tab after the label stays bare too.
+        style.underline = wp_model::prop::UnderlineKind::None;
+        style.underline_color = None;
+        style.strike = false;
+        style.double_strike = false;
         let mut advances = Vec::new();
         let width = measure(&label.text, &style, shaper, &mut advances);
         out.push(Unit {
@@ -1594,6 +1603,56 @@ mod tests {
             "the suffix is a tab and lands on a stop"
         );
         assert_eq!(texts(line), ["item"]);
+    }
+
+    #[test]
+    fn a_label_takes_the_marks_bold_but_never_its_underline() {
+        // Measured against Word on a probe: a paragraph mark carrying
+        // `<w:b/><w:u/>` (LibreOffice copies the run's formatting onto the
+        // mark) draws the number bold but *not* underlined, and the tab after
+        // it stays bare too. Underline and strikethrough simply never reach a
+        // list label; everything else layers as usual.
+        let label = ListLabel {
+            text: "1.".to_string(),
+            props: RunProps::default(),
+            suffix: Suffix::Tab,
+        };
+        let mut paragraph = Paragraph::of("item");
+        let mut mark = RunProps::default();
+        mark.toggles.set(wp_model::Toggle::Bold, true);
+        mark.underline = Some(wp_model::prop::Underline {
+            kind: wp_model::prop::UnderlineKind::Single,
+            color: None,
+        });
+        paragraph.props.mark = Some(Box::new(mark));
+        let theme = theme();
+        let mut shaper = crate::shape::Fixed;
+        let laid = layout(
+            &paragraph,
+            0,
+            &layers(),
+            Some(&label),
+            &ctx(&theme),
+            500.0,
+            &mut shaper,
+        );
+        let line = &laid.lines[0];
+        let fragment = &line.fragments[0];
+        assert!(
+            matches!(&fragment.content, Content::Label { .. }),
+            "the first fragment is the label"
+        );
+        assert!(fragment.style.font.bold, "the mark's bold applies");
+        assert_eq!(
+            fragment.style.underline,
+            wp_model::prop::UnderlineKind::None,
+            "the mark's underline does not"
+        );
+        assert_eq!(
+            line.fragments[1].style.underline,
+            wp_model::prop::UnderlineKind::None,
+            "nor does it reach the tab after the label"
+        );
     }
 
     #[test]
