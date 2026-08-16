@@ -156,6 +156,10 @@ pub struct Item {
     pub table: Option<usize>,
     /// Footnotes referenced by this item, and how tall they are.
     pub footnotes: Vec<(i32, f64)>,
+    /// The part of `height` that is space-after, which Word lets vanish into
+    /// the bottom margin: a line whose type fits on the page stays there even
+    /// when its trailing space would not.
+    pub slack: f64,
 }
 
 /// A document, flowed into items and not yet paginated.
@@ -177,6 +181,16 @@ pub struct Flow {
     /// page. Empty on a first pass, because pages do not exist yet; filled for
     /// the second from where the first pass broke them.
     pub resets: Vec<usize>,
+    /// The previous paragraph's space-after, in points.
+    ///
+    /// Word does not stack the gap between two paragraphs: the space between
+    /// them is the *larger* of the first's space-after and the second's
+    /// space-before, like CSS margins collapsing. Measured on
+    /// file-sample_100kB.docx — 11.25pt after against 12pt before came out as
+    /// exactly 12. The after has already been paid into the previous item's
+    /// height, so the following paragraph pays only what its before exceeds it
+    /// by.
+    pub last_after: f64,
 }
 
 /// Everything the block layout needs beyond the document.
@@ -558,7 +572,13 @@ fn flow_block(
         Block::Paragraph(paragraph) => {
             flow_paragraph(paragraph, document, ctx, shaper, counters, width, 0.0, into)
         }
-        Block::Table(table) => flow_table(table, document, ctx, shaper, counters, width, into),
+        Block::Table(table) => {
+            // A table does not collapse spacing with the text around it: the
+            // paragraph above keeps its space-after whole, and the paragraph
+            // below starts its space-before fresh.
+            into.last_after = 0.0;
+            flow_table(table, document, ctx, shaper, counters, width, into)
+        }
         Block::Structured(sdt) => {
             for inner in &sdt.content {
                 flow_block(inner, document, ctx, shaper, counters, width, into);
@@ -648,16 +668,33 @@ fn push_paragraph(
     // it is anchored to and starts the paragraph below it. Measured on
     // file-sample_500kB.docx — image bottom 516.5, anchor line 543.0, following
     // heading 581.5 — and the reservation reproduces all three.
+    //
+    // An *empty* line directly above the float is pushed below it, and the
+    // slot it vacated stays blank — Word renders the sample's preceding empty
+    // paragraph at 516.5, exactly where the picture ends, with dead space
+    // where the line would have been. A line with text stays where it is.
+    let mut displaced: Vec<Item> = Vec::new();
+    if anchored(paragraph)
+        .iter()
+        .any(|(_, drawing)| displaces(drawing, width))
+    {
+        while into.items.last().is_some_and(is_empty_line) {
+            displaced.push(into.items.pop().expect("just checked"));
+        }
+        displaced.reverse();
+    }
+    let mut dead: f64 = displaced.iter().map(|item| item.height).sum();
     for (nth, drawing) in anchored(paragraph) {
         if !displaces(drawing, width) {
             continue;
         }
         let (dist_top, _, dist_bottom, _) = drawing.distance;
+        let above = std::mem::take(&mut dead);
         into.items.push(Item {
-            height: dist_top.points() + drawing.extent.1.points() + dist_bottom.points(),
+            height: above + dist_top.points() + drawing.extent.1.points() + dist_bottom.points(),
             parts: vec![Placement {
                 x: left,
-                y: dist_top.points(),
+                y: above + dist_top.points(),
                 width: drawing.extent.0.points(),
                 height: drawing.extent.1.points(),
                 kind: Placed::Drawing {
@@ -667,7 +704,9 @@ fn push_paragraph(
                     nth,
                 },
             }],
-            group: into.items.len(),
+            // Counted from the top so it cannot collide with a group already
+            // assigned to an item put back below the float.
+            group: usize::MAX - into.items.len(),
             index_in_group: 0,
             items_in_group: 1,
             // The picture must not sit at the bottom of one page with its
@@ -679,8 +718,10 @@ fn push_paragraph(
             repeat: false,
             table: None,
             footnotes: Vec::new(),
+            slack: 0.0,
         });
     }
+    into.items.append(&mut displaced);
 
     let group = into.items.len();
     into.paragraphs += 1;
@@ -690,8 +731,11 @@ fn push_paragraph(
         .iter()
         .flat_map(|run| &run.content)
         .any(|piece| matches!(piece, Piece::Break(Break::Page)));
-    let before = laid.space_before;
+    // See [`Flow::last_after`]: the gap between paragraphs is the larger of
+    // the two spacings, and the previous one's share is already placed.
+    let before = (laid.space_before - into.last_after).max(0.0);
     let after = laid.space_after;
+    into.last_after = after;
 
     // Any other anchored drawing is placed on the page rather than in the line,
     // so it rides with the paragraph's first item and is positioned from there.
@@ -777,6 +821,9 @@ fn push_paragraph(
             repeat: false,
             table: None,
             footnotes: Vec::new(),
+            // The space-after may sink into the bottom margin rather than
+            // pushing this line to the next page.
+            slack: if is_last { after } else { 0.0 },
         });
         if ends_page {
             if let Some(last) = into.items.last_mut() {
@@ -797,6 +844,7 @@ fn push_paragraph(
                 repeat: false,
                 table: None,
                 footnotes: Vec::new(),
+                slack: 0.0,
             });
         }
     }
@@ -817,6 +865,7 @@ fn push_paragraph(
             repeat: false,
             table: None,
             footnotes: Vec::new(),
+            slack: 0.0,
         });
     }
 }
@@ -1156,6 +1205,7 @@ fn flow_table(
                 repeat: still_header,
                 table: Some(table_id),
                 footnotes: Vec::new(),
+                slack: 0.0,
             });
         }
     }
@@ -1268,7 +1318,7 @@ pub fn paginate(items: &[Item], height: f64) -> Vec<usize> {
             if item.break_before && end > start {
                 break;
             }
-            if y + item.height > height + 0.01 && end > start {
+            if y + item.height - item.slack > height + 0.01 && end > start {
                 break;
             }
             y += item.height;
@@ -1481,6 +1531,14 @@ fn displaces(drawing: &wp_model::Drawing, width: f64) -> bool {
         }
         Wrap::None => false,
     }
+}
+
+/// Whether an item is a single line with nothing on it — an empty paragraph.
+fn is_empty_line(item: &Item) -> bool {
+    item.parts.len() == 1
+        && !item.break_before
+        && matches!(&item.parts[0].kind,
+            Placed::Line { line, .. } if line.fragments.is_empty())
 }
 
 /// Every anchored drawing of a paragraph.

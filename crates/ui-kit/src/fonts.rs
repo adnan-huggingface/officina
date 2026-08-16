@@ -278,10 +278,19 @@ const SUBSTITUTES: &[(&str, &str)] = &[
 /// Word's substitute for a missing face. Asked with a lowercase name;
 /// answers in display case, for a caller that hands the name on to GDI.
 pub fn substitute(name: &str) -> Option<&'static str> {
+    let name = first_name(name);
     SUBSTITUTES
         .iter()
         .find(|(from, _)| *from == name)
         .map(|(_, to)| *to)
+}
+
+/// The first name of a `Liberation Sans;Arial` chain.
+///
+/// LibreOffice writes its own fallback list straight into `w:rFonts`, and the
+/// first entry is the face being asked for — Word reads it the same way.
+fn first_name(name: &str) -> &str {
+    name.split(';').next().unwrap_or(name).trim()
 }
 
 /// The faces from [`NAMED`] that were actually found and registered.
@@ -298,7 +307,7 @@ static NAMED_FACES: OnceLock<BTreeMap<(String, bool, bool), egui::FontFamily>> =
 /// `None` says to fall back to [`face`] of [`Family::of`] the same name — the
 /// substitution that was previously the only answer.
 pub fn named_face(name: &str, bold: bool, italic: bool) -> Option<egui::FontFamily> {
-    let lower = name.to_ascii_lowercase();
+    let lower = first_name(name).to_ascii_lowercase();
     if let Some(exact) = exact_face(&lower, bold, italic) {
         return Some(exact);
     }
@@ -315,7 +324,7 @@ pub fn named_face(name: &str, bold: bool, italic: bool) -> Option<egui::FontFami
 pub fn exact_face(name: &str, bold: bool, italic: bool) -> Option<egui::FontFamily> {
     let faces = NAMED_FACES.get()?;
     faces
-        .get(&(name.to_ascii_lowercase(), bold, italic))
+        .get(&(first_name(name).to_ascii_lowercase(), bold, italic))
         .cloned()
 }
 
@@ -538,6 +547,7 @@ pub fn face_file(name: &str, bold: bool, italic: bool) -> Option<(PathBuf, Vec<u
     // the same order the screen resolves in. The substitute's own generic
     // shape matters: Liberation Serif's stand-in is Times New Roman, which is
     // not in the exact-name table but is the serif chain's first candidate.
+    let name = first_name(name);
     let lower = name.to_ascii_lowercase();
     let mut files: Vec<&str> = Vec::new();
     let push_named = |files: &mut Vec<&str>, name: &str| {
@@ -575,6 +585,7 @@ pub fn face_file(name: &str, bold: bool, italic: bool) -> Option<(PathBuf, Vec<u
 /// keeps the printout in the type the user approved — GDI's own fuzzy
 /// matching would pick something else for an unknown name.
 pub fn gdi_family(name: &str) -> String {
+    let name = first_name(name);
     let lower = name.to_ascii_lowercase();
     if exact_face(&lower, false, false).is_some() {
         return name.to_owned();

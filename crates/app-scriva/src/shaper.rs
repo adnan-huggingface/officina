@@ -211,8 +211,15 @@ impl Shaper for Egui {
     fn pitch(&mut self, font: &FontRequest) -> Pitch {
         // The measured bases are recorded under the face that actually draws:
         // a missing face's pitch is its substitute's pitch, exactly as its
-        // glyphs are the substitute's glyphs.
-        let mut family = font.family.to_ascii_lowercase();
+        // glyphs are the substitute's glyphs. A `Liberation Sans;Arial` chain
+        // is asked for by its first name, the way Word reads the attribute.
+        let mut family = font
+            .family
+            .split(';')
+            .next()
+            .unwrap_or(&font.family)
+            .trim()
+            .to_ascii_lowercase();
         if ui_kit::fonts::exact_face(&family, font.bold, font.italic).is_none() {
             if let Some(sub) = ui_kit::fonts::substitute(&family) {
                 family = sub.to_ascii_lowercase();

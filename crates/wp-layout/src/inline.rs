@@ -315,9 +315,15 @@ fn units(
     let mut out = Vec::new();
 
     if let Some(label) = label {
-        // The label takes the level's own formatting laid over the paragraph's,
-        // which is what keeps a bullet in Symbol while the text stays in Calibri.
+        // The label takes the level's own formatting laid over the paragraph
+        // *mark's*, which is what keeps a bullet in Symbol while the text
+        // stays in Calibri — and sizes it with the paragraph rather than with
+        // the document default, which is what keeps a 10.5pt list item's line
+        // from being as tall as 12pt type.
         let mut props = layers.run.clone();
+        if let Some(mark) = &paragraph.props.mark {
+            props.layer(mark, wp_model::prop::Layer::Direct);
+        }
         props.layer(&label.props, wp_model::prop::Layer::Direct);
         let script = label
             .text
@@ -1066,12 +1072,20 @@ fn finish(
         // of the dance — a face whose *measured* box is a hair taller than
         // its design height (they all are; hinting rounds up) must not.
         let mut boost: f64 = 0.0;
+        // Inline pictures apart from raised type: a spacing multiple scales
+        // type but never a picture, so the two must be told apart below.
+        let mut object: f64 = 0.0;
         for fragment in &line.fragments {
             let metrics = fragment_metrics(fragment, shaper);
             ascent = ascent.max(metrics.ascent + fragment.style.raise);
             descent = descent.max(metrics.descent - fragment.style.raise);
             if let Content::Object { height, .. } = &fragment.content {
-                boost = boost.max(*height);
+                object = object.max(*height);
+                // The picture sits on the baseline, and the type of the run
+                // holding it still hangs below — measured: Word lays a
+                // 162.15pt picture in a 12pt run on a 164.74pt line, the
+                // difference being that face's descent.
+                descent = descent.max(shaper.metrics(&fragment.style.font).descent);
             } else {
                 let pitch = shaper.pitch(&fragment.style.font);
                 base = base.max(pitch.base);
@@ -1099,7 +1113,11 @@ fn finish(
         line.ascent = ascent;
         line.descent = descent;
         line.height = match spacing {
-            LineSpacing::Multiple(n) => base * n.multiple(),
+            // The multiple scales the type; a line whose height is really an
+            // inline picture is laid at the picture's natural extent instead
+            // (measured: a 1.2-spaced paragraph holds its 162.15pt picture on
+            // a 164.74pt line, not a 194.6pt one).
+            LineSpacing::Multiple(n) => (base * n.multiple()).max(natural.min(object + descent)),
             LineSpacing::AtLeast(t) => natural.max(t.points()),
             // `exact` clips a tall glyph rather than growing the line, which is
             // what makes a document with a pasted large font lose the tops of
@@ -1107,7 +1125,7 @@ fn finish(
             LineSpacing::Exact(t) => t.points(),
         };
         line.ideal = match spacing {
-            LineSpacing::Multiple(n) => ideal * n.multiple(),
+            LineSpacing::Multiple(n) => (ideal * n.multiple()).max(natural.min(object + descent)),
             _ => line.height,
         };
         line.baseline = ascent + (line.height - natural).max(0.0) / 2.0;
