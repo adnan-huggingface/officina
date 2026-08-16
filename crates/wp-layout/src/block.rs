@@ -612,6 +612,7 @@ pub fn flow_paragraph(
             text: desymbol(&text, level.run.fonts.ascii.as_deref()),
             props: level.run.clone(),
             suffix: level.suffix,
+            bullet: level.format == wp_model::numbering::NumFormat::Bullet,
         })
     });
 

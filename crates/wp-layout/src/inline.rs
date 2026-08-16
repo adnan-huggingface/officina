@@ -150,6 +150,9 @@ pub struct ListLabel {
     /// Wingdings bullet does not turn the paragraph into Wingdings.
     pub props: RunProps,
     pub suffix: Suffix,
+    /// A bullet keeps only its size from the paragraph; a *number* takes the
+    /// paragraph mark's bold and italic too. Measured against Word.
+    pub bullet: bool,
 }
 
 /// What the layout needs beyond the paragraph itself.
@@ -326,6 +329,21 @@ fn units(
         let mut props = layers.run.clone();
         if let Some(mark) = &paragraph.props.mark {
             props.layer(mark, wp_model::prop::Layer::Direct);
+        }
+        if label.bullet {
+            // A bullet glyph never goes bold or italic with its paragraph —
+            // Word draws the same dot beside a bold item and a plain one, and
+            // the same dash whether or not the mark carries `<w:b/>`. Only the
+            // size follows the text. The level's own rPr goes on next, so a
+            // numbering that *defines* a bold bullet still gets one.
+            for toggle in [
+                wp_model::Toggle::Bold,
+                wp_model::Toggle::BoldCs,
+                wp_model::Toggle::Italic,
+                wp_model::Toggle::ItalicCs,
+            ] {
+                props.toggles.set(toggle, false);
+            }
         }
         props.layer(&label.props, wp_model::prop::Layer::Direct);
         let script = label
@@ -1578,6 +1596,7 @@ mod tests {
                 ..RunProps::default()
             },
             suffix: Suffix::Tab,
+            bullet: true,
         };
         let theme = theme();
         let mut shaper = crate::shape::Fixed;
@@ -1607,15 +1626,19 @@ mod tests {
 
     #[test]
     fn a_label_takes_the_marks_bold_but_never_its_underline() {
-        // Measured against Word on a probe: a paragraph mark carrying
+        // Measured against Word on probes: a paragraph mark carrying
         // `<w:b/><w:u/>` (LibreOffice copies the run's formatting onto the
-        // mark) draws the number bold but *not* underlined, and the tab after
+        // mark) draws the *number* bold but not underlined, and the tab after
         // it stays bare too. Underline and strikethrough simply never reach a
-        // list label; everything else layers as usual.
+        // list label; everything else layers as usual — for a number. A
+        // *bullet* takes none of it: Word draws the same dot beside a bold
+        // item and a plain one, and the same dash bullet either way, so only
+        // the mark's size follows through.
         let label = ListLabel {
             text: "1.".to_string(),
             props: RunProps::default(),
             suffix: Suffix::Tab,
+            bullet: false,
         };
         let mut paragraph = Paragraph::of("item");
         let mut mark = RunProps::default();
@@ -1653,6 +1676,28 @@ mod tests {
             wp_model::prop::UnderlineKind::None,
             "nor does it reach the tab after the label"
         );
+
+        // The same paragraph with a bullet: the mark's bold stays out.
+        let bullet = ListLabel {
+            text: "\u{2022}".to_string(),
+            props: RunProps::default(),
+            suffix: Suffix::Tab,
+            bullet: true,
+        };
+        let laid = layout(
+            &paragraph,
+            0,
+            &layers(),
+            Some(&bullet),
+            &ctx(&theme),
+            500.0,
+            &mut shaper,
+        );
+        let fragment = &laid.lines[0].fragments[0];
+        assert!(
+            !fragment.style.font.bold,
+            "a bullet does not go bold with its paragraph"
+        );
     }
 
     #[test]
@@ -1665,6 +1710,7 @@ mod tests {
             text: "\u{2022}".to_string(),
             props: RunProps::default(),
             suffix: Suffix::Tab,
+            bullet: true,
         };
         let mut layers = layers();
         layers.para.indent = Indent {
