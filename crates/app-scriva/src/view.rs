@@ -684,7 +684,7 @@ pub fn paint(
             egui::StrokeKind::Outside,
         );
 
-        for placement in page.everything() {
+        for placement in page.painted() {
             paint_placement(
                 painter,
                 placement,

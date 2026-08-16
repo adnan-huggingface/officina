@@ -83,7 +83,7 @@ pub enum Op {
 pub fn flatten(page: &Page) -> Vec<Op> {
     let mut ops = Vec::new();
     let theme = wp_model::Theme::default();
-    for placement in page.everything() {
+    for placement in page.painted() {
         match &placement.kind {
             Placed::Fill(rgb) => ops.push(Op::Fill {
                 x: placement.x,

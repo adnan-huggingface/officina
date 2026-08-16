@@ -124,6 +124,22 @@ impl Page {
             .chain(&self.footer)
             .chain(&self.footnotes)
     }
+
+    /// Everything on the page, in the order a renderer must draw it: border
+    /// edges after all else.
+    ///
+    /// Word paints shading below borders, always. In document order the two
+    /// meet exactly on a table's row and column boundaries — the next row's
+    /// cell fill starts where this row's hairline bottom rule was just drawn —
+    /// and whichever the rasterizer rounds wider wins. On the screen that ate
+    /// the borders under three white-shaded rows; in the PDF it ate a column
+    /// rule. Putting every edge after every fill ends the coin-toss.
+    pub fn painted(&self) -> impl Iterator<Item = &Placement> {
+        let edge = |p: &&Placement| matches!(p.kind, Placed::Edge { .. });
+        self.everything()
+            .filter(move |p| !edge(p))
+            .chain(self.everything().filter(edge))
+    }
 }
 
 /// One breakable unit in the flow.
@@ -1790,6 +1806,61 @@ mod tests {
         assert!(
             (boxed_tops[1] - (plain_tops[1] + 1.0)).abs() < 1e-9,
             "the rule between the rows displaces the second again"
+        );
+    }
+
+    #[test]
+    fn borders_paint_after_every_fill_so_shading_cannot_eat_a_rule() {
+        // The corpus sample's table shades every cell white and rules every
+        // row boundary with a quarter-point hairline. In document order the
+        // next row's fill begins exactly where this row's bottom rule was just
+        // drawn, and whichever the rasterizer rounds wider wins: on the screen
+        // three row rules vanished; in the PDF a column rule did. Word never
+        // rolls that die — shading is painted below borders, always.
+        use wp_model::color::Color;
+        use wp_model::prop::{Border, BorderStyle, Shading};
+        use wp_model::units::Eighth;
+        let rule = Border {
+            style: BorderStyle::Single,
+            size: Some(Eighth(2)),
+            space: None,
+            color: None,
+            shadow: false,
+        };
+        let white = Shading {
+            fill: Some(Color::Rgb([255, 255, 255])),
+            ..Shading::default()
+        };
+        let row = || {
+            let mut cell = cell("a");
+            cell.props.shading = Some(white);
+            cell.props.borders.top = Some(rule);
+            cell.props.borders.bottom = Some(rule);
+            cell.props.borders.start = Some(rule);
+            Row {
+                cells: vec![cell],
+                ..Row::new()
+            }
+        };
+        let mut document = document(vec![Block::Table(Table {
+            grid: vec![Twips(1440)],
+            rows: vec![row(), row(), row()],
+            ..Table::new()
+        })]);
+        document.section = page_of(20);
+        let page = &pages(&document)[0];
+        let order: Vec<u8> = page
+            .painted()
+            .filter_map(|p| match p.kind {
+                Placed::Fill(_) => Some(0),
+                Placed::Edge { .. } => Some(1),
+                _ => None,
+            })
+            .collect();
+        assert!(order.contains(&0) && order.contains(&1));
+        assert!(
+            order.windows(2).all(|w| w[0] <= w[1]),
+            "every fill before every edge: {order:?}"
         );
     }
 
