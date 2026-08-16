@@ -73,6 +73,13 @@ pub fn plot(data: &[u8]) -> Option<Plot> {
     let mut in_chart = false;
     let mut in_area_props = false;
     let mut in_ln = false;
+    // The plotArea's own `<c:spPr>` is a *direct* child among the axes: an
+    // axis, its gridlines, a title or a label block each carry one of their
+    // own, and depth alone cannot tell them apart — the exclusions can.
+    let mut in_plot_area = false;
+    let mut in_axis = false;
+    let mut in_dlbls = false;
+    let mut in_plot_props = false;
 
     while let Ok(ev) = reader.read_event_into(&mut buf) {
         let empty = matches!(ev, Event::Empty(_));
@@ -80,6 +87,9 @@ pub fn plot(data: &[u8]) -> Option<Plot> {
         match ev {
             Event::Start(ref e) | Event::Empty(ref e) => match local_name(e) {
                 b"chart" => in_chart = in_chart || !empty,
+                b"plotArea" => in_plot_area = in_plot_area || !empty,
+                b"catAx" | b"valAx" | b"dateAx" | b"serAx" => in_axis = in_axis || !empty,
+                b"dLbls" => in_dlbls = in_dlbls || !empty,
                 b"ser" => {
                     series = Series::default();
                     in_series = true;
@@ -124,20 +134,27 @@ pub fn plot(data: &[u8]) -> Option<Plot> {
                 }
                 b"spPr" if in_series => depth_in_series_props += 1,
                 b"spPr" if !in_chart => in_area_props = true,
-                b"ln" if in_area_props => in_ln = true,
-                b"noFill" if in_area_props => {
-                    if in_ln {
-                        out.area_line = Paint::None;
-                    } else {
-                        out.area_fill = Paint::None;
+                b"spPr" if in_plot_area && !in_axis && !in_title && !in_dlbls => {
+                    in_plot_props = true
+                }
+                b"ln" if in_area_props || in_plot_props => in_ln = true,
+                b"noFill" if in_area_props || in_plot_props => {
+                    let paint = Paint::None;
+                    match (in_area_props, in_ln) {
+                        (true, true) => out.area_line = paint,
+                        (true, false) => out.area_fill = paint,
+                        (false, true) => out.plot_line = paint,
+                        (false, false) => out.plot_fill = paint,
                     }
                 }
-                b"srgbClr" if in_area_props => {
-                    if let Some(paint) = attr_text(e, b"val").as_deref().and_then(rgb) {
-                        if in_ln {
-                            out.area_line = Paint::Rgb(paint);
-                        } else {
-                            out.area_fill = Paint::Rgb(paint);
+                b"srgbClr" if in_area_props || in_plot_props => {
+                    if let Some(rgb) = attr_text(e, b"val").as_deref().and_then(rgb) {
+                        let paint = Paint::Rgb(rgb);
+                        match (in_area_props, in_ln) {
+                            (true, true) => out.area_line = paint,
+                            (true, false) => out.area_fill = paint,
+                            (false, true) => out.plot_line = paint,
+                            (false, false) => out.plot_fill = paint,
                         }
                     }
                 }
@@ -161,6 +178,9 @@ pub fn plot(data: &[u8]) -> Option<Plot> {
 
             Event::End(ref e) => match end_local_name(e) {
                 b"chart" => in_chart = false,
+                b"plotArea" => in_plot_area = false,
+                b"catAx" | b"valAx" | b"dateAx" | b"serAx" => in_axis = false,
+                b"dLbls" => in_dlbls = false,
                 b"f" | b"v" | b"t" => {
                     let value = std::mem::take(&mut text);
                     match (sink, slot) {
@@ -212,6 +232,7 @@ pub fn plot(data: &[u8]) -> Option<Plot> {
                 b"spPr" => {
                     depth_in_series_props = depth_in_series_props.saturating_sub(1);
                     in_area_props = false;
+                    in_plot_props = false;
                     in_ln = false;
                 }
                 b"ln" => in_ln = false,
@@ -461,6 +482,39 @@ mod tests {
         assert_eq!(silent.area_fill, Paint::Auto);
         assert_eq!(silent.area_line, Paint::Auto);
         assert_eq!(silent.gap, 150.0, "Office's own default");
+    }
+
+    #[test]
+    fn the_plot_areas_own_paint_is_read_and_an_axiss_is_not_mistaken_for_it() {
+        // The sample writes the plotArea's spPr *after* the axes, each of
+        // which carries its own — and the value axis carries gridlines with a
+        // third. Only the direct child names the box Word draws around the
+        // bars.
+        let part = br#"<c:chartSpace xmlns:c="x" xmlns:a="y"><c:chart><c:plotArea><c:barChart>
+            <c:barDir val="col"/>
+            <c:ser><c:idx val="0"/>
+              <c:spPr><a:solidFill><a:srgbClr val="FF0000"/></a:solidFill></c:spPr>
+              <c:dLbls><c:spPr><a:ln><a:solidFill><a:srgbClr val="00FF00"/></a:solidFill></a:ln></c:spPr></c:dLbls>
+              <c:val><c:numRef><c:numCache><c:pt idx="0"><c:v>1</c:v></c:pt></c:numCache></c:numRef></c:val>
+            </c:ser></c:barChart>
+            <c:catAx><c:spPr><a:ln><a:solidFill><a:srgbClr val="111111"/></a:solidFill></a:ln></c:spPr></c:catAx>
+            <c:valAx><c:majorGridlines><c:spPr><a:ln><a:solidFill><a:srgbClr val="222222"/></a:solidFill></a:ln></c:spPr></c:majorGridlines>
+              <c:spPr><a:ln><a:solidFill><a:srgbClr val="333333"/></a:solidFill></a:ln></c:spPr></c:valAx>
+            <c:spPr><a:noFill/><a:ln><a:solidFill><a:srgbClr val="B3B3B3"/></a:solidFill></a:ln></c:spPr>
+            </c:plotArea></c:chart></c:chartSpace>"#;
+        let plot = plot(part).expect("parses");
+        assert_eq!(plot.plot_fill, Paint::None);
+        assert_eq!(plot.plot_line, Paint::Rgb([0xB3, 0xB3, 0xB3]));
+        assert_eq!(plot.series[0].color, Some([0xFF, 0, 0]));
+        // The chart area stays untouched by any of it.
+        assert_eq!(plot.area_fill, Paint::Auto);
+        assert_eq!(plot.area_line, Paint::Auto);
+
+        // A part whose plotArea says nothing leaves the painter its default,
+        // which draws no box.
+        let silent = chart();
+        assert_eq!(silent.plot_fill, Paint::Auto);
+        assert_eq!(silent.plot_line, Paint::Auto);
     }
 
     #[test]

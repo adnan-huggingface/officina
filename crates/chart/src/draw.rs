@@ -444,6 +444,16 @@ fn axes_chart(
 
     let y_of = |value: f64| area.bottom() - (value - low) / (high - low) * area.height;
 
+    // The plot area's own ground, under everything drawn inside it. Office's
+    // modern default is bare paper, so silence paints nothing.
+    if let Paint::Rgb(rgb) = plot.plot_fill {
+        out.push(Prim::Fill {
+            rect: area,
+            rgb,
+            round: 0.0,
+        });
+    }
+
     // A gridline and its label at every major unit, which is what makes the
     // heights readable.
     for (value, text) in labels {
@@ -467,6 +477,18 @@ fn axes_chart(
         thickness: 1.0,
         rgb: style.grid,
     });
+    // The box around the plot area, when the part states one — the frame Word
+    // draws around the sample's bars, right edge and ceiling included. Under
+    // the bars, like the baseline: a column standing on the axis is not cut
+    // by it.
+    if let Paint::Rgb(rgb) = plot.plot_line {
+        out.push(Prim::Frame {
+            rect: area,
+            rgb,
+            thickness: 1.0,
+            round: 0.0,
+        });
+    }
 
     let slot = area.width / points as f64;
     match plot.kind {
@@ -859,6 +881,41 @@ mod tests {
                 _ => false,
             }),
             "no ground and no frame"
+        );
+    }
+
+    #[test]
+    fn a_stated_plot_border_boxes_the_bars_and_silence_does_not() {
+        // The sample declares the plotArea's line as B3B3B3, and Word draws a
+        // gray box around the bars — right edge and ceiling included. A part
+        // that says nothing gets Office's modern default: no box.
+        let mut boxed = plot(ChartKind::Bar);
+        boxed.plot_line = Paint::Rgb([0xB3, 0xB3, 0xB3]);
+        boxed.series[0].values = vec![Some(1.0)];
+        let series = cached_series(&boxed);
+        let rect = Rect::new(0.0, 0.0, 400.0, 300.0);
+        let prims = primitives(rect, &boxed, &series, &style(), &mut Half);
+        let frame = prims
+            .iter()
+            .find_map(|p| match p {
+                Prim::Frame { rect, rgb, .. } if *rgb == [0xB3, 0xB3, 0xB3] => Some(*rect),
+                _ => None,
+            })
+            .expect("the plot box");
+        assert!(
+            frame.width < rect.width && frame.height < rect.height,
+            "the box is around the plot, not the whole chart"
+        );
+
+        let mut silent = plot(ChartKind::Bar);
+        silent.series[0].values = vec![Some(1.0)];
+        let series = cached_series(&silent);
+        let prims = primitives(rect, &silent, &series, &style(), &mut Half);
+        assert!(
+            !prims
+                .iter()
+                .any(|p| matches!(p, Prim::Frame { rect, .. } if rect.width < 350.0)),
+            "no box of our own invention inside the chart"
         );
     }
 

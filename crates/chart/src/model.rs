@@ -204,6 +204,12 @@ pub struct Plot {
     pub area_fill: Paint,
     /// The border around the whole chart, from the same place.
     pub area_line: Paint,
+    /// The plot area's own background, from the `plotArea` shape properties.
+    pub plot_fill: Paint,
+    /// The box around the plot area — the frame Word draws around the bars
+    /// when the part states one. Office's modern default is none, so `Auto`
+    /// draws nothing here, unlike the chart area's.
+    pub plot_line: Paint,
     /// `<c:gapWidth>`: the space between category groups, as a percentage of
     /// one bar's width. Office's default is 150 — the gap is one and a half
     /// bars wide — and it is what sets how fat the bars are.
@@ -222,6 +228,8 @@ impl Default for Plot {
             legend: None,
             area_fill: Paint::Auto,
             area_line: Paint::Auto,
+            plot_fill: Paint::Auto,
+            plot_line: Paint::Auto,
             gap: 150.0,
             series: Vec::new(),
         }
