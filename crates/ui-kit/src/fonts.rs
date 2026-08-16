@@ -191,7 +191,98 @@ const NAMED: &[(&str, [&str; 4])] = &[
         "arial narrow",
         ["arialn.ttf", "arialnb.ttf", "arialni.ttf", "arialnbi.ttf"],
     ),
+    (
+        "courier new",
+        ["cour.ttf", "courbd.ttf", "couri.ttf", "courbi.ttf"],
+    ),
+    // The faces LibreOffice documents name. Present on hardly any Windows
+    // machine — but when they are, the exact face must win over the
+    // substitution below, exactly as Word behaves.
+    (
+        "dejavu sans",
+        [
+            "DejaVuSans.ttf",
+            "DejaVuSans-Bold.ttf",
+            "DejaVuSans-Oblique.ttf",
+            "DejaVuSans-BoldOblique.ttf",
+        ],
+    ),
+    (
+        "dejavu serif",
+        [
+            "DejaVuSerif.ttf",
+            "DejaVuSerif-Bold.ttf",
+            "DejaVuSerif-Italic.ttf",
+            "DejaVuSerif-BoldItalic.ttf",
+        ],
+    ),
+    (
+        "open sans",
+        [
+            "OpenSans-Regular.ttf",
+            "OpenSans-Bold.ttf",
+            "OpenSans-Italic.ttf",
+            "OpenSans-BoldItalic.ttf",
+        ],
+    ),
+    (
+        "liberation sans",
+        [
+            "LiberationSans-Regular.ttf",
+            "LiberationSans-Bold.ttf",
+            "LiberationSans-Italic.ttf",
+            "LiberationSans-BoldItalic.ttf",
+        ],
+    ),
+    (
+        "liberation serif",
+        [
+            "LiberationSerif-Regular.ttf",
+            "LiberationSerif-Bold.ttf",
+            "LiberationSerif-Italic.ttf",
+            "LiberationSerif-BoldItalic.ttf",
+        ],
+    ),
+    (
+        "liberation mono",
+        [
+            "LiberationMono-Regular.ttf",
+            "LiberationMono-Bold.ttf",
+            "LiberationMono-Italic.ttf",
+            "LiberationMono-BoldItalic.ttf",
+        ],
+    ),
 ];
+
+/// What Word stands in for a face the machine does not have.
+///
+/// Not guessed: measured against Word 16 laying out the LibreOffice sample
+/// documents on this machine (2026-08-15). Open Sans rendered at Segoe UI's
+/// exact widths and line height — eight lines with every break point matching
+/// and a 13.96pt line at 10.5pt, which is Segoe UI's 1.33em — and DejaVu Sans
+/// at Verdana's, the closest advance fingerprint of all 270 installed
+/// families by a factor of arbitrariness over the runner-up, which was
+/// Verdana's own metric clone. The Liberation faces are metric clones of the
+/// classic trio by design, and their `w:altName` says the same.
+///
+/// Applied only when the exact face is not installed; keys and values are the
+/// lowercase the tables above use.
+const SUBSTITUTES: &[(&str, &str)] = &[
+    ("dejavu sans", "Verdana"),
+    ("open sans", "Segoe UI"),
+    ("liberation sans", "Arial"),
+    ("liberation serif", "Times New Roman"),
+    ("liberation mono", "Courier New"),
+];
+
+/// Word's substitute for a missing face. Asked with a lowercase name;
+/// answers in display case, for a caller that hands the name on to GDI.
+pub fn substitute(name: &str) -> Option<&'static str> {
+    SUBSTITUTES
+        .iter()
+        .find(|(from, _)| *from == name)
+        .map(|(_, to)| *to)
+}
 
 /// The faces from [`NAMED`] that were actually found and registered.
 ///
@@ -201,11 +292,27 @@ const NAMED: &[(&str, [&str; 4])] = &[
 /// process keeps the first answer, which is also the one epaint kept.
 static NAMED_FACES: OnceLock<BTreeMap<(String, bool, bool), egui::FontFamily>> = OnceLock::new();
 
-/// The registered face for a document's exact font name, if the machine has it.
+/// The registered face for a document's font name, if the machine has it —
+/// the exact face first, Word's substitute for it second.
 ///
 /// `None` says to fall back to [`face`] of [`Family::of`] the same name — the
 /// substitution that was previously the only answer.
 pub fn named_face(name: &str, bold: bool, italic: bool) -> Option<egui::FontFamily> {
+    let lower = name.to_ascii_lowercase();
+    if let Some(exact) = exact_face(&lower, bold, italic) {
+        return Some(exact);
+    }
+    let faces = NAMED_FACES.get()?;
+    faces
+        .get(&(substitute(&lower)?.to_ascii_lowercase(), bold, italic))
+        .cloned()
+}
+
+/// The registered face for exactly this name, substitution not applied.
+///
+/// This is how a caller keying its own tables — measured line pitches — asks
+/// whether the document's face is real on this machine or standing in.
+pub fn exact_face(name: &str, bold: bool, italic: bool) -> Option<egui::FontFamily> {
     let faces = NAMED_FACES.get()?;
     faces
         .get(&(name.to_ascii_lowercase(), bold, italic))
@@ -427,18 +534,26 @@ pub fn face_file(name: &str, bold: bool, italic: bool) -> Option<(PathBuf, Vec<u
         (false, true) => 2,
         (true, true) => 3,
     };
+    // The exact face, then Word's substitute for it, then the generic shape —
+    // the same order the screen resolves in. The substitute's own generic
+    // shape matters: Liberation Serif's stand-in is Times New Roman, which is
+    // not in the exact-name table but is the serif chain's first candidate.
     let lower = name.to_ascii_lowercase();
-    let candidates: Vec<&str> = match NAMED.iter().find(|(named, _)| *named == lower) {
-        Some((_, files)) if !files[index].is_empty() => {
-            // The exact face first, then the shape's own chain — the same
-            // order the screen falls back in when the exact file is missing.
-            let mut all = vec![files[index]];
-            all.extend(candidates(Family::of(name), bold, italic));
-            all
+    let mut files: Vec<&str> = Vec::new();
+    let push_named = |files: &mut Vec<&str>, name: &str| {
+        if let Some((_, faces)) = NAMED.iter().find(|(named, _)| *named == name) {
+            if !faces[index].is_empty() {
+                files.push(faces[index]);
+            }
         }
-        _ => candidates(Family::of(name), bold, italic),
     };
-    for file in candidates {
+    push_named(&mut files, &lower);
+    if let Some(sub) = substitute(&lower) {
+        push_named(&mut files, &sub.to_ascii_lowercase());
+        files.extend(candidates(Family::of(sub), bold, italic));
+    }
+    files.extend(candidates(Family::of(name), bold, italic));
+    for file in files {
         for dir in &dirs {
             let path = dir.join(file);
             if let Ok(bytes) = std::fs::read(&path) {
@@ -454,12 +569,19 @@ pub fn face_file(name: &str, bold: bool, italic: bool) -> Option<(PathBuf, Vec<u
 
 /// The family name GDI should be asked for, mirroring what the screen shows.
 ///
-/// A name in the exact-name table is real and GDI knows it. Anything else was
-/// drawn in the generic face of its shape, and naming that face keeps the
-/// printout in the type the user approved — GDI's own fuzzy matching would
-/// pick something else for an unknown name.
+/// A face the screen actually registered is real and GDI knows it. A face
+/// with a substitute prints as the substitute the screen drew it in. Anything
+/// else was drawn in the generic face of its shape, and naming that face
+/// keeps the printout in the type the user approved — GDI's own fuzzy
+/// matching would pick something else for an unknown name.
 pub fn gdi_family(name: &str) -> String {
     let lower = name.to_ascii_lowercase();
+    if exact_face(&lower, false, false).is_some() {
+        return name.to_owned();
+    }
+    if let Some(sub) = substitute(&lower) {
+        return sub.to_owned();
+    }
     if NAMED.iter().any(|(named, _)| *named == lower) {
         return name.to_owned();
     }
@@ -535,7 +657,20 @@ mod tests {
         assert_eq!(gdi_family("verdana"), "verdana", "case is GDI's problem");
         assert_eq!(gdi_family("Chalkduster Pro"), "Arial");
         assert_eq!(gdi_family("Cambria"), "Times New Roman");
-        assert_eq!(gdi_family("Courier New"), "Consolas");
+        assert_eq!(gdi_family("Courier New"), "Courier New");
+        // A missing face prints as Word's substitute for it, not as the
+        // generic shape.
+        assert_eq!(gdi_family("Open Sans"), "Segoe UI");
+        assert_eq!(gdi_family("DejaVu Sans"), "Verdana");
+        assert_eq!(gdi_family("Liberation Serif"), "Times New Roman");
+    }
+
+    #[test]
+    fn a_missing_face_substitutes_the_face_word_would() {
+        assert_eq!(substitute("dejavu sans"), Some("Verdana"));
+        assert_eq!(substitute("open sans"), Some("Segoe UI"));
+        assert_eq!(substitute("liberation sans"), Some("Arial"));
+        assert_eq!(substitute("verdana"), None, "real faces are not mapped");
     }
 
     #[test]

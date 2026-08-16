@@ -209,8 +209,17 @@ impl Shaper for Egui {
     }
 
     fn pitch(&mut self, font: &FontRequest) -> Pitch {
+        // The measured bases are recorded under the face that actually draws:
+        // a missing face's pitch is its substitute's pitch, exactly as its
+        // glyphs are the substitute's glyphs.
+        let mut family = font.family.to_ascii_lowercase();
+        if ui_kit::fonts::exact_face(&family, font.bold, font.italic).is_none() {
+            if let Some(sub) = ui_kit::fonts::substitute(&family) {
+                family = sub.to_ascii_lowercase();
+            }
+        }
         let ask = (
-            font.family.to_ascii_lowercase(),
+            family,
             font.bold,
             font.italic,
             (font.size * 2.0).round().max(1.0) as u32,
