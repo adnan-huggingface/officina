@@ -330,8 +330,15 @@ fn legend(
     let mut left = area;
     match position {
         LegendPosition::Bottom => {
+            // Office centres a bottom legend on the chart rather than running
+            // it from the left edge.
             let strip = area.bottom() - line;
-            let mut x = area.left();
+            let total: f64 = series
+                .iter()
+                .map(|entry| swatch + 3.0 + measure.size(&entry.name, size).0)
+                .sum::<f64>()
+                + 10.0 * style.zoom * (series.len().saturating_sub(1)) as f64;
+            let mut x = area.left() + (area.width - total).max(0.0) / 2.0;
             for entry in series {
                 out.push(Prim::Fill {
                     rect: Rect::new(x, strip + (line - swatch) / 2.0, swatch, swatch),
@@ -353,10 +360,22 @@ fn legend(
         _ => {
             // Top, left, right, and top-right all get the right-hand column:
             // at cell size the difference is a few pixels and the alternative
-            // is four near-identical blocks of layout arithmetic.
-            let width = (area.width * 0.28).min(110.0 * style.zoom);
+            // is four near-identical blocks of layout arithmetic. The column
+            // is as wide as its widest entry — a fixed fraction here is a
+            // plot area visibly narrower than the one Word draws — and, like
+            // Office's, it is centred vertically. A top or top-right legend
+            // keeps to the top.
+            let widest = series
+                .iter()
+                .map(|entry| measure.size(&entry.name, size).0)
+                .fold(0.0f64, f64::max);
+            let width = (swatch + 3.0 + widest + 4.0 * style.zoom).min(area.width * 0.4);
             let strip = Rect::new(area.right() - width, area.top(), width, area.height);
-            let mut y = strip.top();
+            let block = line * series.len() as f64;
+            let mut y = match position {
+                LegendPosition::Top | LegendPosition::TopRight => strip.top(),
+                _ => strip.top() + (strip.height - block).max(0.0) / 2.0,
+            };
             for entry in series {
                 out.push(Prim::Fill {
                     rect: Rect::new(strip.left(), y + (line - swatch) / 2.0, swatch, swatch),
@@ -871,6 +890,44 @@ mod tests {
             "bar {} in slot {}",
             first[0].width,
             slot
+        );
+    }
+
+    #[test]
+    fn a_right_legend_is_as_wide_as_its_widest_entry_and_stands_at_mid_height() {
+        // A fixed-fraction column reserved far more room than Word's legend
+        // takes, and the plot area came out visibly narrower than Word's.
+        let mut with_legend = plot(ChartKind::Bar);
+        with_legend.legend = Some(LegendPosition::Right);
+        with_legend.series[0].name = Some("Column 1".to_string());
+        with_legend.series[0].values = vec![Some(1.0), Some(2.0)];
+        let series = cached_series(&with_legend);
+        let rect = Rect::new(0.0, 0.0, 400.0, 300.0);
+        let prims = primitives(rect, &with_legend, &series, &style(), &mut Half);
+
+        let (entry, label) = prims
+            .iter()
+            .find_map(|p| match p {
+                Prim::Text { at, text, .. } if text == "Column 1" => Some((*at, text.clone())),
+                _ => None,
+            })
+            .expect("the legend entry");
+        assert_eq!(label, "Column 1");
+        // Swatch + gap + "Column 1" at half-size (8 chars × 4.5) + padding,
+        // measured from the padded area's right edge — not 28% of the chart.
+        let area_right = 400.0 - 8.0;
+        let width = 7.0 + 3.0 + 8.0 * 4.5 + 4.0;
+        assert!(
+            (entry.0 - (area_right - width + 7.0 + 3.0)).abs() < 0.001,
+            "the column starts at its measured width: {}",
+            entry.0
+        );
+        // One 13pt line centred in the 284pt-tall area: its top sits at the
+        // middle, not at the top of the chart.
+        assert!(
+            (entry.1 - (8.0 + (284.0 - 13.0) / 2.0)).abs() < 0.001,
+            "centred vertically: {}",
+            entry.1
         );
     }
 
