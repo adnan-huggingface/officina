@@ -79,6 +79,7 @@ fn lay(document: &Document) -> Vec<block::Page> {
         theme: &theme,
         default_tab: document.settings.default_tab_stop,
         fallback_font: "test",
+        has_face: |_| false,
         show_revisions: true,
         show_hidden: false,
         fields: &wp_layout::FieldValues::new(),

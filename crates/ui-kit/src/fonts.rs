@@ -195,6 +195,12 @@ const NAMED: &[(&str, [&str; 4])] = &[
         "courier new",
         ["cour.ttf", "courbd.ttf", "couri.ttf", "courbi.ttf"],
     ),
+    // The symbol-encoded faces Word's list galleries name. Their glyphs sit
+    // in the U+F0xx private-use range behind a (3,0) symbol cmap, which the
+    // shaper resolves like HarfBuzz does; a bullet drawn from the real file
+    // is the same dot Word draws, diameter and all.
+    ("symbol", ["symbol.ttf", "", "", ""]),
+    ("wingdings", ["wingding.ttf", "", "", ""]),
     // The faces LibreOffice documents name. Present on hardly any Windows
     // machine — but when they are, the exact face must win over the
     // substitution below, exactly as Word behaves.

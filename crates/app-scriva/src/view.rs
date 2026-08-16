@@ -101,6 +101,10 @@ impl View {
             } else {
                 "Times New Roman"
             },
+            // Symbol and Wingdings bullets keep their private-use characters
+            // when the machine's own font files were registered — the same
+            // glyphs Word draws — and are translated to Unicode otherwise.
+            has_face: |name| ui_kit::fonts::exact_face(name, false, false).is_some(),
             show_revisions: self.show_revisions,
             show_hidden: self.show_marks,
             fields: match self.settled.is_empty() {

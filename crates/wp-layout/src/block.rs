@@ -624,8 +624,15 @@ pub fn flow_paragraph(
     let label = reference.and_then(|r| {
         let text = counters.advance(&document.numbering, r)?;
         let level = document.numbering.level(r.num_id, r.level)?;
+        let font = level.run.fonts.ascii.as_deref();
         Some(ListLabel {
-            text: desymbol(&text, level.run.fonts.ascii.as_deref()),
+            // A machine that has the symbol font itself draws Word's own
+            // glyph; the translation is for the machine that does not.
+            text: if font.is_some_and(|f| (ctx.has_face)(f)) {
+                text
+            } else {
+                desymbol(&text, font)
+            },
             props: level.run.clone(),
             suffix: level.suffix,
             bullet: level.format == wp_model::numbering::NumFormat::Bullet,
@@ -1643,6 +1650,7 @@ mod tests {
             theme,
             default_tab: Twips(720),
             fallback_font: "test",
+            has_face: |_| false,
             show_revisions: true,
             show_hidden: false,
             fields: Box::leak(Box::new(crate::field::FieldValues::default())),
@@ -2686,6 +2694,28 @@ mod tests {
             .expect("a label");
         assert_eq!(label, "\u{2022}", "the bullet, not the private-use code");
 
+        // A machine that has Symbol itself keeps the private-use character
+        // and draws Word's own glyph from the real file — same diameter, same
+        // position — instead of a stand-in dot from a fallback face.
+        let theme = document.theme.clone();
+        let having = Context {
+            has_face: |name| name.eq_ignore_ascii_case("Symbol"),
+            ..ctx(&theme)
+        };
+        let mut shaper = crate::shape::Fixed;
+        let kept = layout(&document, &having, &mut shaper)
+            .iter()
+            .flat_map(|page| &page.content)
+            .find_map(|placement| match &placement.kind {
+                Placed::Line { line, .. } => line.fragments.iter().find_map(|f| match &f.content {
+                    crate::inline::Content::Label { text, .. } => Some(text.clone()),
+                    _ => None,
+                }),
+                _ => None,
+            })
+            .expect("a label");
+        assert_eq!(kept, "\u{F0B7}", "the real glyph when the face is real");
+
         // A numbered label passes through untouched — numbers are never PUA.
         assert_eq!(desymbol("3.", Some("Arial")), "3.");
         // The other gallery glyphs Word uses, and the fallback for a symbol
@@ -2751,6 +2781,7 @@ mod tests {
                 theme,
                 default_tab: document.settings.default_tab_stop,
                 fallback_font: "Calibri",
+                has_face: |_| false,
                 show_revisions: true,
                 show_hidden: false,
                 fields,

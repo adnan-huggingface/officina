@@ -163,6 +163,12 @@ pub struct Context<'a> {
     pub default_tab: Twips,
     /// The face to use when neither the run nor the theme names one.
     pub fallback_font: &'a str,
+    /// Whether the machine truly has a face of this name.
+    ///
+    /// Asked before translating a symbol font's private-use bullet to its
+    /// Unicode stand-in: a machine that has Symbol itself draws the same glyph
+    /// Word does, and the translation is only for the machine that does not.
+    pub has_face: fn(&str) -> bool,
     /// Whether tracked deletions are drawn. Word's default is to show them.
     pub show_revisions: bool,
     /// Whether `w:vanish` text is drawn — the formatting-marks switch.
@@ -183,6 +189,7 @@ impl Default for Context<'_> {
             theme: Box::leak(Box::new(wp_model::color::Theme::default())),
             default_tab: Twips(720),
             fallback_font: "Calibri",
+            has_face: |_| false,
             show_revisions: true,
             show_hidden: false,
             fields: Box::leak(Box::new(FieldValues::default())),
@@ -1253,6 +1260,7 @@ mod tests {
             theme,
             default_tab: Twips(720),
             fallback_font: "test",
+            has_face: |_| false,
             show_revisions: true,
             show_hidden: false,
             fields: Box::leak(Box::new(crate::field::FieldValues::default())),
