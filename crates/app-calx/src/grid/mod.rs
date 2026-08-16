@@ -1094,7 +1094,8 @@ impl GridView {
     }
 
     pub fn set_zoom(&mut self, zoom: f64) {
-        let zoom = zoom.clamp(0.25, 4.0);
+        // Excel's own range: 10% to 400%.
+        let zoom = zoom.clamp(0.10, 4.0);
         if zoom != self.zoom {
             self.zoom = zoom;
             self.invalidate();

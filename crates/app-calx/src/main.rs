@@ -182,6 +182,13 @@ enum Dialog {
         axis: Axis,
         text: String,
     },
+    /// Excel's Zoom box: preset magnifications and a percent you can type.
+    Zoom {
+        text: String,
+        /// True until the percent field is first touched. While set, the
+        /// number stays selected so the next keystroke replaces it.
+        fresh: bool,
+    },
     /// Excel's Name Manager: the workbook's defined names, all of them at once.
     ///
     /// A working copy rather than the workbook's own list, because the whole
@@ -4115,24 +4122,35 @@ impl Calx {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 // The zoom control, which belongs here rather than in the
                 // toolbar because it is about the view and not the document.
-                let mut zoom = self.grid.zoom * 100.0;
-                if ui
+                // Excel's corner, right to left: the percentage (click it to
+                // type an exact one), zoom in, the slider with its 100%
+                // detent, zoom out. The buttons step to the next round ten.
+                let shown = (self.grid.zoom * 100.0).round();
+                let mut percent = shown;
+                ui.spacing_mut().item_spacing.x = 4.0;
+                let label = ui
                     .add(
-                        egui::Slider::new(&mut zoom, 25.0..=400.0)
-                            .show_value(false)
-                            .trailing_fill(false),
+                        egui::Button::new(format!("{}%", percent as i32))
+                            .frame(false)
+                            .min_size(egui::vec2(40.0, 0.0)),
                     )
-                    .on_hover_text("Zoom (Ctrl+scroll)")
-                    .changed()
-                {
-                    self.grid.set_zoom(zoom / 100.0);
+                    .on_hover_text("Zoom level — click to set an exact zoom");
+                if label.clicked() {
+                    self.dialog = Some(Dialog::Zoom {
+                        text: (percent as i32).to_string(),
+                        fresh: true,
+                    });
                 }
-                if ui
-                    .small_button(format!("{:.0}%", self.grid.zoom * 100.0))
-                    .on_hover_text("Back to 100%")
-                    .clicked()
-                {
-                    self.grid.set_zoom(1.0);
+                if ui.small_button("+").on_hover_text("Zoom in").clicked() {
+                    percent = (percent / 10.0).floor() * 10.0 + 10.0;
+                }
+                zoom_slider(ui, &mut percent);
+                if ui.small_button("−").on_hover_text("Zoom out").clicked() {
+                    percent = (percent / 10.0).ceil() * 10.0 - 10.0;
+                }
+                let percent = percent.clamp(10.0, 400.0);
+                if percent != shown {
+                    self.grid.set_zoom(percent / 100.0);
                 }
                 if let Err(e) = &self.config_dir {
                     ui.colored_label(egui::Color32::RED, format!("config unavailable: {e}"));
@@ -4829,6 +4847,73 @@ impl Calx {
                                 format!("\"{}\" is not a number from 0 to {ceiling}", text.trim());
                         }
                     }
+                }
+            }
+
+            Dialog::Zoom { text, fresh } => {
+                let mut accept = false;
+                modal(ctx, "Zoom", |ui| {
+                    ui.label("Magnification");
+                    let mut preset: Option<i32> = None;
+                    ui.horizontal(|ui| {
+                        for percent in [200, 100, 75, 50, 25] {
+                            if ui.button(format!("{percent}%")).clicked() {
+                                preset = Some(percent);
+                            }
+                        }
+                    });
+                    if let Some(percent) = preset {
+                        *text = percent.to_string();
+                        *fresh = true;
+                    }
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        ui.label("Custom:");
+                        // While the field is untouched its number stays
+                        // selected, re-seeded every frame — egui clears the
+                        // selection on frames the field is not yet focused,
+                        // and a keystroke can arrive on any frame. First
+                        // touch ends it.
+                        if *fresh {
+                            select_zoom_percent(ui.ctx(), text);
+                        }
+                        let field = ui.add(
+                            egui::TextEdit::singleline(text)
+                                .id(egui::Id::new("calx-zoom-percent"))
+                                .desired_width(56.0),
+                        );
+                        ui.label("%");
+                        if field.changed() || field.clicked() || field.dragged() {
+                            *fresh = false;
+                        }
+                        field.request_focus();
+                    });
+                    // The percent field is the only thing to type into, so
+                    // Enter anywhere in the box means OK.
+                    if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        accept = true;
+                    }
+                    match dialog::confirm(ui, "OK") {
+                        Some(true) => accept = true,
+                        Some(false) => keep = false,
+                        None => {}
+                    }
+                });
+                if accept {
+                    // A percent that does not parse keeps the zoom it had.
+                    if let Ok(percent) = text.trim().trim_end_matches('%').trim().parse::<f64>() {
+                        self.grid.set_zoom(percent.clamp(10.0, 400.0) / 100.0);
+                    }
+                    keep = false;
+                }
+                if accept || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    // The box closes this frame, after the grid's key gate
+                    // was already decided — without this, the very Enter
+                    // that confirmed the zoom would also walk the cursor.
+                    ctx.input_mut(|i| {
+                        i.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
+                    });
+                    keep = false;
                 }
             }
 
@@ -6028,6 +6113,63 @@ fn modal(ctx: &egui::Context, title: &str, add: impl FnOnce(&mut egui::Ui)) {
                     add(ui);
                 });
         });
+}
+
+/// Excel's zoom slider: 10–400% with 100% at the centre of the track, a notch
+/// marking it, and a detent that snaps the thumb onto it. Each half of the
+/// track is linear in its own range, which is why 100% can sit in the middle.
+fn zoom_slider(ui: &mut egui::Ui, percent: &mut f64) {
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(100.0, 16.0), egui::Sense::click_and_drag());
+    if response.dragged() || response.clicked() {
+        if let Some(pointer) = response.interact_pointer_pos() {
+            let mut t = ((pointer.x - rect.left()) / rect.width()).clamp(0.0, 1.0) as f64;
+            if (t - 0.5).abs() < 0.04 {
+                t = 0.5;
+            }
+            *percent = if t <= 0.5 {
+                10.0 + t / 0.5 * 90.0
+            } else {
+                100.0 + (t - 0.5) / 0.5 * 300.0
+            }
+            .round();
+        }
+    }
+    if ui.is_rect_visible(rect) {
+        let line = egui::Stroke::new(1.0, ui.visuals().widgets.inactive.fg_stroke.color);
+        let y = rect.center().y;
+        let painter = ui.painter();
+        painter.hline(rect.x_range(), y, line);
+        painter.vline(rect.center().x, egui::Rangef::new(y - 4.0, y + 4.0), line);
+        let t = if *percent <= 100.0 {
+            (*percent - 10.0) / 90.0 * 0.5
+        } else {
+            0.5 + (*percent - 100.0) / 300.0 * 0.5
+        };
+        let x = rect.left() + t.clamp(0.0, 1.0) as f32 * rect.width();
+        let visuals = ui.style().interact(&response);
+        painter.rect(
+            egui::Rect::from_center_size(egui::pos2(x, y), egui::vec2(8.0, 14.0)),
+            2.0,
+            visuals.bg_fill,
+            visuals.fg_stroke,
+            egui::StrokeKind::Inside,
+        );
+    }
+    response.on_hover_text("Zoom (Ctrl+scroll)");
+}
+
+/// Leaves the Zoom box's percent field with its whole number selected, so the
+/// next keystroke replaces it — the way Excel's box behaves.
+fn select_zoom_percent(ctx: &egui::Context, text: &str) {
+    let mut state = egui::text_edit::TextEditState::default();
+    state
+        .cursor
+        .set_char_range(Some(egui::text::CCursorRange::two(
+            egui::text::CCursor::new(0),
+            egui::text::CCursor::new(text.chars().count()),
+        )));
+    state.store(ctx, egui::Id::new("calx-zoom-percent"));
 }
 
 /// Format Cells ▸ Number. A category list and the code behind it.
