@@ -15,7 +15,7 @@
 //! That approximation costs nothing, because both applications put back the
 //! bytes their file came with.
 
-use crate::{ChartKind, LegendPosition, Plot};
+use crate::{ChartKind, LegendPosition, Paint, Plot};
 
 /// The default palette Office assigns to series, accent 1 through 6.
 pub const SERIES_COLORS: [[u8; 3]; 6] = [
@@ -237,17 +237,37 @@ pub fn primitives(
     if rect.width < 24.0 || rect.height < 24.0 {
         return out;
     }
-    out.push(Prim::Fill {
-        rect,
-        rgb: style.background,
-        round: 2.0,
-    });
-    out.push(Prim::Frame {
-        rect,
-        rgb: style.outline,
-        thickness: 1.0,
-        round: 2.0,
-    });
+    // The chart area's own paint, as the part states it. LibreOffice writes
+    // `noFill` on both for a chart in a document — Office draws no box there,
+    // and neither does this.
+    match plot.area_fill {
+        Paint::None => {}
+        Paint::Auto => out.push(Prim::Fill {
+            rect,
+            rgb: style.background,
+            round: 2.0,
+        }),
+        Paint::Rgb(rgb) => out.push(Prim::Fill {
+            rect,
+            rgb,
+            round: 2.0,
+        }),
+    }
+    match plot.area_line {
+        Paint::None => {}
+        Paint::Auto => out.push(Prim::Frame {
+            rect,
+            rgb: style.outline,
+            thickness: 1.0,
+            round: 2.0,
+        }),
+        Paint::Rgb(rgb) => out.push(Prim::Frame {
+            rect,
+            rgb,
+            thickness: 1.0,
+            round: 2.0,
+        }),
+    }
 
     let small = 9.0 * style.zoom;
     let mut area = rect.shrink(8.0 * style.zoom);
@@ -372,14 +392,27 @@ fn axes_chart(
         return;
     }
     let stacked = plot.grouping.stacked();
-    let (low, high) = bounds(series, stacked);
+    let (data_low, data_high) = bounds(series, stacked);
+    let (low, high, major) = axis(data_low, data_high);
     if !(high - low).is_finite() || high <= low {
         return;
     }
 
-    // Room for the value labels down the left, and for the categories below.
-    let gutter = 34.0 * style.zoom;
-    let footer = 12.0 * style.zoom;
+    // Every tick's label, measured before anything is placed: the gutter is as
+    // wide as the widest of them, not a guess that pushes the plot around.
+    let ticks = ((high - low) / major).round() as usize;
+    let labels: Vec<(f64, String)> = (0..=ticks)
+        .map(|step| {
+            let value = low + major * step as f64;
+            (value, (style.label)(value))
+        })
+        .collect();
+    let widest = labels
+        .iter()
+        .map(|(_, text)| measure.size(text, size).0)
+        .fold(0.0f64, f64::max);
+    let gutter = widest + 5.0 * style.zoom;
+    let footer = measure.size("0", size).1 + 2.0 * style.zoom;
     let area = Rect::new(
         area.left() + gutter,
         area.top(),
@@ -392,16 +425,15 @@ fn axes_chart(
 
     let y_of = |value: f64| area.bottom() - (value - low) / (high - low) * area.height;
 
-    // Four gridlines and their labels, which is what makes the heights readable.
-    for step in 0..=4 {
-        let value = low + (high - low) * f64::from(step) / 4.0;
+    // A gridline and its label at every major unit, which is what makes the
+    // heights readable.
+    for (value, text) in labels {
         let y = y_of(value);
         out.push(Prim::Line {
             points: vec![(area.left(), y), (area.right(), y)],
             thickness: 1.0,
             rgb: blend(style.grid, style.background, 0.5),
         });
-        let text = (style.label)(round_label(value, high - low));
         let (width, height) = measure.size(&text, size);
         out.push(Prim::Text {
             at: (area.left() - 3.0 - width, y - height / 2.0),
@@ -469,9 +501,11 @@ fn axes_chart(
         }
         _ => {
             // Bars. Clustered puts the series side by side inside the slot;
-            // stacked puts each one on top of the running total.
+            // stacked puts each one on top of the running total. How fat they
+            // are is the file's `gapWidth`: the space between groups measured
+            // in bars, so a slot holds `lanes + gap/100` bar-widths of room.
             let lanes = if stacked { 1 } else { series.len().max(1) };
-            let bar = (slot * 0.72 / lanes as f64).max(1.0);
+            let bar = (slot / (lanes as f64 + plot.gap.max(0.0) / 100.0)).max(1.0);
             let mut totals = vec![0.0f64; points];
             for (index, entry) in series.iter().enumerate() {
                 for (i, value) in entry.values.iter().enumerate() {
@@ -480,7 +514,7 @@ fn axes_chart(
                     let x = if stacked {
                         centre - bar / 2.0
                     } else {
-                        centre - slot * 0.36 + bar * index as f64
+                        centre - bar * lanes as f64 / 2.0 + bar * index as f64
                     };
                     let (from, to) = if stacked {
                         let start = totals[i];
@@ -547,13 +581,42 @@ pub fn bounds(series: &[Plotted], stacked: bool) -> (f64, f64) {
     (low, high)
 }
 
-/// Rounds an axis label to something readable at the scale it is drawn.
-fn round_label(value: f64, span: f64) -> f64 {
-    if span == 0.0 {
-        return value;
+/// The axis Office draws over a data range: minimum, maximum, and the major
+/// unit its gridlines step by.
+///
+/// Word's chart of 9.7-at-most runs its axis 0 to 12 in steps of 2 — not 0 to
+/// 9.7 in quarters. The rule, measured against what Excel and Word draw: the
+/// major unit is the "nice" number (1, 2 or 5 times a power of ten) nearest a
+/// fifth of the range, and the ends are the data padded by 5% and pushed out
+/// to the next multiple of it. An axis that stops exactly at the tallest bar
+/// pins that bar to the ceiling, which no Office chart does.
+pub fn axis(low: f64, high: f64) -> (f64, f64, f64) {
+    let range = high - low;
+    if !range.is_finite() || range <= 0.0 {
+        return (low, low + 1.0, 0.25);
     }
-    let magnitude = 10f64.powf(span.abs().log10().floor() - 1.0);
-    (value / magnitude).round() * magnitude
+    let raw = range / 5.0;
+    let magnitude = 10f64.powf(raw.log10().floor());
+    let major = [1.0, 2.0, 5.0, 10.0]
+        .iter()
+        .map(|unit| unit * magnitude)
+        .min_by(|a, b| {
+            let fit = |x: &f64| (x / raw).ln().abs();
+            fit(a).total_cmp(&fit(b))
+        })
+        .expect("four candidates");
+    let pad = range * 0.05;
+    let max = if high > 0.0 {
+        ((high + pad) / major).ceil() * major
+    } else {
+        0.0
+    };
+    let min = if low < 0.0 {
+        ((low - pad) / major).floor() * major
+    } else {
+        0.0
+    };
+    (min, max, major)
 }
 
 fn pie(out: &mut Vec<Prim>, area: Rect, series: &[Plotted], doughnut: bool) {
@@ -624,11 +687,8 @@ mod tests {
         Plot {
             kind,
             grouping: Grouping::Clustered,
-            horizontal: false,
-            title: None,
-            title_ref: None,
-            legend: None,
             series: vec![Series::default()],
+            ..Plot::default()
         }
     }
 
@@ -739,6 +799,79 @@ mod tests {
         ];
         assert_eq!(bounds(&series, false).1, 40.0);
         assert_eq!(bounds(&series, true).1, 80.0, "the stack, not the tallest");
+    }
+
+    #[test]
+    fn the_axis_runs_past_the_tallest_bar_the_way_offices_does() {
+        // Word draws the sample's 9.7 maximum on an axis of 0 to 12 by twos —
+        // an axis stopping exactly at the data pins the tallest bar to the
+        // ceiling, which no Office chart does.
+        assert_eq!(axis(0.0, 9.7), (0.0, 12.0, 2.0));
+        assert_eq!(axis(0.0, 102.0), (0.0, 120.0, 20.0));
+        assert_eq!(axis(0.0, 3.0), (0.0, 3.5, 0.5));
+        // A negative floor is pushed down the same way the ceiling is pushed up.
+        let (min, max, major) = axis(-4.0, 9.7);
+        assert_eq!(major, 2.0);
+        assert_eq!((min, max), (-6.0, 12.0));
+    }
+
+    #[test]
+    fn a_chart_that_declines_all_paint_draws_no_box() {
+        // LibreOffice writes noFill for both the area and its border on every
+        // chart it puts in a document; Office draws no box there, and a frame
+        // of our own invention would be a box Word does not print.
+        let mut bare = plot(ChartKind::Bar);
+        bare.area_fill = Paint::None;
+        bare.area_line = Paint::None;
+        bare.series[0].values = vec![Some(1.0)];
+        let series = cached_series(&bare);
+        let prims = primitives(
+            Rect::new(0.0, 0.0, 400.0, 300.0),
+            &bare,
+            &series,
+            &style(),
+            &mut Half,
+        );
+        let whole = Rect::new(0.0, 0.0, 400.0, 300.0);
+        assert!(
+            !prims.iter().any(|p| match p {
+                Prim::Frame { .. } => true,
+                Prim::Fill { rect, .. } => *rect == whole,
+                _ => false,
+            }),
+            "no ground and no frame"
+        );
+    }
+
+    #[test]
+    fn the_gap_width_is_what_sets_how_fat_a_bar_is() {
+        // gapWidth 100: a group of three bars plus a one-bar gap fills the
+        // slot, so each bar is a quarter of it.
+        let mut plot = plot(ChartKind::Bar);
+        plot.gap = 100.0;
+        plot.series = vec![Series::default(), Series::default(), Series::default()];
+        for s in &mut plot.series {
+            s.values = vec![Some(2.0), Some(3.0)];
+        }
+        let series = cached_series(&plot);
+        let prims = primitives(
+            Rect::new(0.0, 0.0, 400.0, 300.0),
+            &plot,
+            &series,
+            &style(),
+            &mut Half,
+        );
+        let first = bars(&prims, SERIES_COLORS[0]);
+        assert_eq!(first.len(), 2, "series one, one bar per category");
+        // The distance between the two category centres is one slot, and with
+        // gapWidth 100 a slot holds four bar-widths: three bars and their gap.
+        let slot = (first[1].x - first[0].x).abs();
+        assert!(
+            (first[0].width - slot / 4.0).abs() < 1e-6,
+            "bar {} in slot {}",
+            first[0].width,
+            slot
+        );
     }
 
     #[test]

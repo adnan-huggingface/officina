@@ -166,13 +166,31 @@ pub struct Series {
     pub color: Option<[u8; 3]>,
 }
 
+/// One paint decision the chart part may state: the chart area's fill, or its
+/// border.
+///
+/// Three states because the file has three: an explicit colour, an explicit
+/// *nothing* (`<a:noFill/>`, which LibreOffice writes for every chart it puts
+/// in a document), and silence — for which Office supplies its own default,
+/// and so does the painter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Paint {
+    /// The part says nothing; the painter uses its default.
+    #[default]
+    Auto,
+    /// `<a:noFill/>`: deliberately not painted.
+    None,
+    /// `<a:solidFill><a:srgbClr/></a:solidFill>`.
+    Rgb([u8; 3]),
+}
+
 /// What a chart part plots, which is everything a painter needs.
 ///
 /// Separate from where it sits, because where it sits is the one thing the two
 /// formats do not share: a workbook anchors a chart to cells, a document puts
 /// it in a line of text or on the page. This half is identical in both, and is
 /// what the reader produces.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Plot {
     pub kind: ChartKind,
     pub grouping: Grouping,
@@ -182,7 +200,32 @@ pub struct Plot {
     /// The formula behind the title, when it is a cell rather than typed text.
     pub title_ref: Option<String>,
     pub legend: Option<LegendPosition>,
+    /// The chart area's own background, from the `chartSpace` shape properties.
+    pub area_fill: Paint,
+    /// The border around the whole chart, from the same place.
+    pub area_line: Paint,
+    /// `<c:gapWidth>`: the space between category groups, as a percentage of
+    /// one bar's width. Office's default is 150 — the gap is one and a half
+    /// bars wide — and it is what sets how fat the bars are.
+    pub gap: f64,
     pub series: Vec<Series>,
+}
+
+impl Default for Plot {
+    fn default() -> Plot {
+        Plot {
+            kind: ChartKind::default(),
+            grouping: Grouping::default(),
+            horizontal: false,
+            title: None,
+            title_ref: None,
+            legend: None,
+            area_fill: Paint::Auto,
+            area_line: Paint::Auto,
+            gap: 150.0,
+            series: Vec::new(),
+        }
+    }
 }
 
 impl Plot {

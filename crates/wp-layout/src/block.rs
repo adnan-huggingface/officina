@@ -609,7 +609,7 @@ pub fn flow_paragraph(
         let text = counters.advance(&document.numbering, r)?;
         let level = document.numbering.level(r.num_id, r.level)?;
         Some(ListLabel {
-            text,
+            text: desymbol(&text, level.run.fonts.ascii.as_deref()),
             props: level.run.clone(),
             suffix: level.suffix,
         })
@@ -626,6 +626,39 @@ pub fn flow_paragraph(
         shaper,
     );
     push_paragraph(paragraph, &layers, laid, width, left, into);
+}
+
+/// A bullet stated in a symbol font's private-use range, translated to the
+/// character everyone's fonts can draw.
+///
+/// Word's classic bullet is `U+F0B7` *in the Symbol font* — not a Unicode
+/// bullet but Symbol's own `0xB7`, parked in the private-use area. Word ships
+/// Symbol and Wingdings, so it draws the real glyph; this renderer does not,
+/// and without the translation every such bullet is a tofu box. The table maps
+/// the codes Word's list galleries actually use to their Unicode equivalents,
+/// and any other private-use character in a *label* falls back to a plain
+/// bullet — a label is a bullet or a number, and a number is never in the PUA.
+fn desymbol(text: &str, font: Option<&str>) -> String {
+    if !text.chars().any(|c| ('\u{F000}'..='\u{F0FF}').contains(&c)) {
+        return text.to_owned();
+    }
+    let font = font.map(str::to_ascii_lowercase);
+    text.chars()
+        .map(|c| {
+            if !('\u{F000}'..='\u{F0FF}').contains(&c) {
+                return c;
+            }
+            let code = (c as u32) & 0xFF;
+            match (font.as_deref(), code) {
+                (Some("symbol"), 0xB7) => '\u{2022}',    // •
+                (Some("wingdings"), 0xA7) => '\u{25AA}', // ▪
+                (Some("wingdings"), 0xFC) => '\u{2713}', // ✓
+                (Some("wingdings"), 0xD8) => '\u{25BA}', // ► (Word draws ➢)
+                (Some("wingdings"), 0x76) => '\u{2756}', // ❖
+                _ => '\u{2022}',
+            }
+        })
+        .collect()
 }
 
 /// Which list a paragraph is in, its style's numbering included.
@@ -2541,6 +2574,53 @@ mod tests {
             })
             .count();
         assert_eq!(labelled, 12, "every item got a label");
+    }
+
+    #[test]
+    fn a_symbol_bullet_is_drawn_as_the_character_it_stands_for() {
+        // Word's classic bullet is U+F0B7 *in the Symbol font* — the glyph at
+        // Symbol's own 0xB7, parked in the private-use area. Word ships the
+        // font; this renderer translates instead, because a reader shown a
+        // tofu box was told nothing.
+        let mut document = document(Vec::new());
+        let mut definition = wp_model::AbstractNum::new(0);
+        let mut level = wp_model::Level::new(0);
+        level.text = "\u{F0B7}".into();
+        level.run.fonts.ascii = Some("Symbol".into());
+        definition.set_level(level);
+        document.numbering.insert_abstract(definition);
+        document.numbering.insert_num(wp_model::Num::new(1, 0));
+        document.body = vec![Block::Paragraph(Paragraph {
+            props: ParaProps {
+                numbering: Some(wp_model::NumRef {
+                    num_id: 1,
+                    level: 0,
+                }),
+                ..ParaProps::default()
+            },
+            ..Paragraph::of("bulleted")
+        })];
+
+        let label = pages(&document)
+            .iter()
+            .flat_map(|page| &page.content)
+            .find_map(|placement| match &placement.kind {
+                Placed::Line { line, .. } => line.fragments.iter().find_map(|f| match &f.content {
+                    crate::inline::Content::Label { text, .. } => Some(text.clone()),
+                    _ => None,
+                }),
+                _ => None,
+            })
+            .expect("a label");
+        assert_eq!(label, "\u{2022}", "the bullet, not the private-use code");
+
+        // A numbered label passes through untouched — numbers are never PUA.
+        assert_eq!(desymbol("3.", Some("Arial")), "3.");
+        // The other gallery glyphs Word uses, and the fallback for a symbol
+        // code nobody recognises.
+        assert_eq!(desymbol("\u{F0A7}", Some("Wingdings")), "\u{25AA}");
+        assert_eq!(desymbol("\u{F0FC}", Some("Wingdings")), "\u{2713}");
+        assert_eq!(desymbol("\u{F0E4}", Some("Marlett")), "\u{2022}");
     }
 
     #[test]

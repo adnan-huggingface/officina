@@ -598,6 +598,7 @@ mod tests {
                     categories: vec!["Jan".into(), "Feb".into(), "Mar".into()],
                     color: None,
                 }],
+                ..ss_model::chart::Plot::default()
             },
         }
     }

@@ -280,6 +280,7 @@ fn a_chart_inserted_into_a_blank_workbook_comes_back_as_a_chart() {
                 categories: vec!["Jan".into(), "Feb".into(), "Mar".into()],
                 color: None,
             }],
+            ..ss_model::chart::Plot::default()
         },
     });
 

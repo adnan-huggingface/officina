@@ -143,6 +143,7 @@ mod tests {
                     values: vec![Some(1.0), Some(2.0), Some(3.0)],
                     ..Default::default()
                 }],
+                ..Plot::default()
             },
         }
     }

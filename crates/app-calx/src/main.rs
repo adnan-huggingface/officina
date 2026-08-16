@@ -890,6 +890,7 @@ impl Calx {
                 title_ref: None,
                 legend: (series.len() > 1).then_some(ss_model::chart::LegendPosition::Right),
                 series,
+                ..ss_model::chart::Plot::default()
             },
         };
 

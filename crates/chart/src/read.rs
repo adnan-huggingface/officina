@@ -23,7 +23,7 @@
 use quick_xml::events::{BytesEnd, BytesStart, Event};
 use quick_xml::{Reader, XmlVersion};
 
-use crate::{ChartKind, Grouping, LegendPosition, Plot, Series};
+use crate::{ChartKind, Grouping, LegendPosition, Paint, Plot, Series};
 
 /// Which reference of a series is being read. `<c:f>` and `<c:pt>` are the same
 /// elements under `<c:tx>`, `<c:cat>`, and `<c:val>`.
@@ -68,12 +68,18 @@ pub fn plot(data: &[u8]) -> Option<Plot> {
     // A `<c:srgbClr>` inside a series' shape properties is its colour; the same
     // element inside an axis is not.
     let mut depth_in_series_props = 0usize;
+    // The chartSpace's own `<c:spPr>` is the one *outside* `<c:chart>` — the
+    // chart area's fill and border. `in_ln` tells fill from line within it.
+    let mut in_chart = false;
+    let mut in_area_props = false;
+    let mut in_ln = false;
 
     while let Ok(ev) = reader.read_event_into(&mut buf) {
         let empty = matches!(ev, Event::Empty(_));
 
         match ev {
             Event::Start(ref e) | Event::Empty(ref e) => match local_name(e) {
+                b"chart" => in_chart = in_chart || !empty,
                 b"ser" => {
                     series = Series::default();
                     in_series = true;
@@ -111,7 +117,30 @@ pub fn plot(data: &[u8]) -> Option<Plot> {
                 b"barDir" => {
                     out.horizontal = attr_text(e, b"val").as_deref() == Some("bar");
                 }
+                b"gapWidth" => {
+                    if let Some(v) = attr_text(e, b"val").and_then(|v| v.trim().parse().ok()) {
+                        out.gap = v;
+                    }
+                }
                 b"spPr" if in_series => depth_in_series_props += 1,
+                b"spPr" if !in_chart => in_area_props = true,
+                b"ln" if in_area_props => in_ln = true,
+                b"noFill" if in_area_props => {
+                    if in_ln {
+                        out.area_line = Paint::None;
+                    } else {
+                        out.area_fill = Paint::None;
+                    }
+                }
+                b"srgbClr" if in_area_props => {
+                    if let Some(paint) = attr_text(e, b"val").as_deref().and_then(rgb) {
+                        if in_ln {
+                            out.area_line = Paint::Rgb(paint);
+                        } else {
+                            out.area_fill = Paint::Rgb(paint);
+                        }
+                    }
+                }
                 b"srgbClr" if depth_in_series_props > 0 && series.color.is_none() => {
                     if let Some(hex) = attr_text(e, b"val") {
                         series.color = rgb(&hex);
@@ -131,6 +160,7 @@ pub fn plot(data: &[u8]) -> Option<Plot> {
             },
 
             Event::End(ref e) => match end_local_name(e) {
+                b"chart" => in_chart = false,
                 b"f" | b"v" | b"t" => {
                     let value = std::mem::take(&mut text);
                     match (sink, slot) {
@@ -179,7 +209,12 @@ pub fn plot(data: &[u8]) -> Option<Plot> {
                     in_series = false;
                     depth_in_series_props = 0;
                 }
-                b"spPr" => depth_in_series_props = depth_in_series_props.saturating_sub(1),
+                b"spPr" => {
+                    depth_in_series_props = depth_in_series_props.saturating_sub(1);
+                    in_area_props = false;
+                    in_ln = false;
+                }
+                b"ln" => in_ln = false,
                 b"title" => {
                     in_title = false;
                     let text = title.trim().to_string();
@@ -398,6 +433,34 @@ mod tests {
         assert!(
             plot(br#"<c:chartSpace><c:chart><c:plotArea/></c:chart></c:chartSpace>"#).is_none()
         );
+    }
+
+    #[test]
+    fn the_chart_areas_own_paint_is_read_and_a_seriess_is_not_mistaken_for_it() {
+        // LibreOffice writes the chartSpace's spPr *after* </c:chart>: noFill
+        // for both the area and its border. The same elements inside a series
+        // or a legend mean something else and must not leak out.
+        let part = br#"<c:chartSpace xmlns:c="x" xmlns:a="y"><c:chart><c:plotArea><c:barChart>
+            <c:barDir val="col"/><c:gapWidth val="100"/>
+            <c:ser><c:idx val="0"/>
+              <c:spPr><a:solidFill><a:srgbClr val="FF0000"/></a:solidFill></c:spPr>
+              <c:val><c:numRef><c:numCache><c:pt idx="0"><c:v>1</c:v></c:pt></c:numCache></c:numRef></c:val>
+            </c:ser></c:barChart></c:plotArea>
+            <c:legend><c:legendPos val="r"/><c:spPr><a:noFill/><a:ln><a:noFill/></a:ln></c:spPr></c:legend>
+            </c:chart>
+            <c:spPr><a:noFill/><a:ln><a:noFill/></a:ln></c:spPr>
+            </c:chartSpace>"#;
+        let plot = plot(part).expect("parses");
+        assert_eq!(plot.area_fill, Paint::None);
+        assert_eq!(plot.area_line, Paint::None);
+        assert_eq!(plot.gap, 100.0);
+        assert_eq!(plot.series[0].color, Some([0xFF, 0, 0]));
+
+        // And a part that says nothing leaves the painter its defaults.
+        let silent = chart();
+        assert_eq!(silent.area_fill, Paint::Auto);
+        assert_eq!(silent.area_line, Paint::Auto);
+        assert_eq!(silent.gap, 150.0, "Office's own default");
     }
 
     #[test]

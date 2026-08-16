@@ -144,15 +144,12 @@ mod tests {
         Plot {
             kind,
             grouping: Grouping::Clustered,
-            horizontal: false,
-            title: None,
-            title_ref: None,
-            legend: None,
             series: vec![Series {
                 name: Some("Sales".to_string()),
                 values: vec![Some(1.0), Some(2.0), Some(3.0)],
                 ..Default::default()
             }],
+            ..Plot::default()
         }
     }
 
