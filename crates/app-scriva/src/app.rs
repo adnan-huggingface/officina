@@ -209,8 +209,14 @@ pub struct Scriva {
     matches_for: (u64, String),
     /// The page surface's widget id, for giving the keyboard back to it.
     surface_id: Option<egui::Id>,
-    /// How tall the visible desk is, in screen points — the size of a Page Down.
-    viewport: f32,
+    /// The visible desk, in screen points. Height is the size of a Page Down;
+    /// width is what "Page width" zoom fits the paper to.
+    viewport: egui::Vec2,
+    /// The Zoom box's percent field, while the box is open.
+    zoom_draft: Option<String>,
+    /// True until the percent field is first touched. While set, the whole
+    /// number stays selected so the next keystroke replaces it.
+    zoom_fresh: bool,
 }
 
 impl Default for Scriva {
@@ -257,7 +263,9 @@ impl Scriva {
             find_matches: Vec::new(),
             matches_for: (u64::MAX, String::new()),
             surface_id: None,
-            viewport: 0.0,
+            viewport: egui::Vec2::ZERO,
+            zoom_draft: None,
+            zoom_fresh: false,
         }
     }
 
@@ -1828,7 +1836,7 @@ impl Scriva {
 
     /// One screenful up or down — Page Up and Page Down.
     fn page_step(&self, caret: Caret, down: bool) -> Caret {
-        let screen = (self.viewport.max(60.0) as f64) / self.view.zoom.max(0.01);
+        let screen = (self.viewport.y.max(60.0) as f64) / self.view.zoom.max(0.01);
         let step = screen * if down { 1.0 } else { -1.0 };
         view::step_from(&self.view, caret, step).unwrap_or(caret)
     }
@@ -1845,6 +1853,63 @@ fn clamp(document: &Document, caret: Caret) -> Caret {
         paragraph: index,
         offset: caret.offset.min(paragraphs[index].text().len()),
     }
+}
+
+/// Leaves the Zoom box's percent field with its whole number selected, so the
+/// next keystroke replaces it — the way Word's box behaves.
+fn select_percent(ctx: &egui::Context, text: &str) {
+    let mut state = egui::text_edit::TextEditState::default();
+    state
+        .cursor
+        .set_char_range(Some(egui::text::CCursorRange::two(
+            egui::text::CCursor::new(0),
+            egui::text::CCursor::new(text.chars().count()),
+        )));
+    state.store(ctx, egui::Id::new("scriva-zoom-percent"));
+}
+
+/// Word's zoom slider: 10–500% with 100% at the centre of the track, a notch
+/// marking it, and a detent that snaps the thumb onto it. Each half of the
+/// track is linear in its own range, which is why 100% can sit in the middle.
+fn zoom_slider(ui: &mut egui::Ui, percent: &mut f64) {
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(100.0, 16.0), egui::Sense::click_and_drag());
+    if response.dragged() || response.clicked() {
+        if let Some(pointer) = response.interact_pointer_pos() {
+            let mut t = ((pointer.x - rect.left()) / rect.width()).clamp(0.0, 1.0) as f64;
+            if (t - 0.5).abs() < 0.04 {
+                t = 0.5;
+            }
+            *percent = if t <= 0.5 {
+                10.0 + t / 0.5 * 90.0
+            } else {
+                100.0 + (t - 0.5) / 0.5 * 400.0
+            }
+            .round();
+        }
+    }
+    if ui.is_rect_visible(rect) {
+        let line = egui::Stroke::new(1.0, ui.visuals().widgets.inactive.fg_stroke.color);
+        let y = rect.center().y;
+        let painter = ui.painter();
+        painter.hline(rect.x_range(), y, line);
+        painter.vline(rect.center().x, egui::Rangef::new(y - 4.0, y + 4.0), line);
+        let t = if *percent <= 100.0 {
+            (*percent - 10.0) / 90.0 * 0.5
+        } else {
+            0.5 + (*percent - 100.0) / 400.0 * 0.5
+        };
+        let x = rect.left() + t.clamp(0.0, 1.0) as f32 * rect.width();
+        let visuals = ui.style().interact(&response);
+        painter.rect(
+            egui::Rect::from_center_size(egui::pos2(x, y), egui::vec2(8.0, 14.0)),
+            2.0,
+            visuals.bg_fill,
+            visuals.fg_stroke,
+            egui::StrokeKind::Inside,
+        );
+    }
+    response.on_hover_text("Zoom");
 }
 
 /// Puts text on the OS clipboard, with the line endings Windows programs read.
@@ -1929,18 +1994,33 @@ impl DocumentApp for Scriva {
                 ui.separator();
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(format!("{}%", (self.view.zoom * 100.0).round() as i32));
-                let mut zoom = self.view.zoom * 100.0;
-                if ui
+                // Word's corner, right to left: the percentage (click it to
+                // type an exact one), zoom in, the slider with its 100%
+                // detent, zoom out. The buttons step to the next round ten.
+                let shown = (self.view.zoom * 100.0).round();
+                let mut percent = shown;
+                ui.spacing_mut().item_spacing.x = 4.0;
+                let label = ui
                     .add(
-                        egui::Slider::new(&mut zoom, 25.0..=400.0)
-                            .show_value(false)
-                            .trailing_fill(false),
+                        egui::Button::new(format!("{}%", percent as i32))
+                            .frame(false)
+                            .min_size(egui::vec2(40.0, 0.0)),
                     )
-                    .on_hover_text("Zoom")
-                    .changed()
-                {
-                    self.view.zoom = zoom / 100.0;
+                    .on_hover_text("Zoom level — click to set an exact zoom");
+                if label.clicked() {
+                    self.zoom_draft = Some((percent as i32).to_string());
+                    self.zoom_fresh = true;
+                }
+                if ui.small_button("+").on_hover_text("Zoom in").clicked() {
+                    percent = (percent / 10.0).floor() * 10.0 + 10.0;
+                }
+                zoom_slider(ui, &mut percent);
+                if ui.small_button("−").on_hover_text("Zoom out").clicked() {
+                    percent = (percent / 10.0).ceil() * 10.0 - 10.0;
+                }
+                let percent = percent.clamp(10.0, 500.0);
+                if percent != shown {
+                    self.view.zoom = percent / 100.0;
                 }
             });
         });
@@ -1968,6 +2048,10 @@ impl DocumentApp for Scriva {
         }
         if self.margins_draft.is_some() {
             self.margins_dialog(ctx);
+            return;
+        }
+        if self.zoom_draft.is_some() {
+            self.zoom_dialog(ctx);
             return;
         }
         if let Some(Pending::Lossy(path, format)) = self.pending.clone() {
@@ -2066,7 +2150,7 @@ impl DocumentApp for Scriva {
         // Ctrl+scroll and a trackpad pinch zoom the page, like Word.
         let zoom_delta = ui.input(|i| i.zoom_delta());
         if zoom_delta != 1.0 {
-            self.view.zoom = (self.view.zoom * zoom_delta as f64).clamp(0.25, 4.0);
+            self.view.zoom = (self.view.zoom * zoom_delta as f64).clamp(0.10, 5.0);
         }
 
         // While a dialog or the find bar holds the keyboard, keys belong to it:
@@ -2075,6 +2159,7 @@ impl DocumentApp for Scriva {
             || self.message.is_some()
             || self.drafting.is_some()
             || self.margins_draft.is_some()
+            || self.zoom_draft.is_some()
             || self.finder_focused
             || egui::Popup::is_any_open(ui.ctx());
         if !blocked {
@@ -2159,6 +2244,110 @@ impl Scriva {
             Some(false) => self.margins_draft = None,
             None => {}
         }
+    }
+
+    /// Word's Zoom box: presets, the two fits, and a percent you can type.
+    fn zoom_dialog(&mut self, ctx: &egui::Context) {
+        let Some(mut draft) = self.zoom_draft.clone() else {
+            return;
+        };
+        let mut done: Option<bool> = None;
+        egui::Modal::new(egui::Id::new("scriva-zoom"))
+            .frame(dialog::frame(ctx))
+            .show(ctx, |ui| {
+                ui.set_width(240.0);
+                ui.add_space(16.0);
+                ui.label(egui::RichText::new("Zoom").font(dialog::heading_font(16.0)));
+                ui.add_space(8.0);
+                ui.label("Zoom to");
+                let mut preset: Option<i32> = None;
+                ui.horizontal(|ui| {
+                    for percent in [200, 100, 75] {
+                        if ui.button(format!("{percent}%")).clicked() {
+                            preset = Some(percent);
+                        }
+                    }
+                });
+                ui.horizontal(|ui| {
+                    if ui.button("Page width").clicked() {
+                        preset = self.fit_percent(true);
+                    }
+                    if ui.button("Whole page").clicked() {
+                        preset = self.fit_percent(false);
+                    }
+                });
+                if let Some(percent) = preset {
+                    draft = percent.to_string();
+                    self.zoom_fresh = true;
+                }
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.label("Percent:");
+                    // While the field is untouched its number stays selected,
+                    // re-seeded every frame — egui clears the selection on
+                    // frames the field is not yet focused, and a keystroke
+                    // can arrive on any frame. First touch ends it.
+                    if self.zoom_fresh {
+                        select_percent(ui.ctx(), &draft);
+                    }
+                    let field = ui.add(
+                        egui::TextEdit::singleline(&mut draft)
+                            .id(egui::Id::new("scriva-zoom-percent"))
+                            .desired_width(56.0),
+                    );
+                    ui.label("%");
+                    if field.changed() || field.clicked() || field.dragged() {
+                        self.zoom_fresh = false;
+                    }
+                    field.request_focus();
+                });
+                ui.add_space(12.0);
+                if let Some(answer) = dialog::confirm(ui, "OK") {
+                    done = Some(answer);
+                }
+                // The percent field is the only thing to type into, so Enter
+                // anywhere in the box means OK — the way Word's box reads it.
+                if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    done = Some(true);
+                }
+                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    done = Some(false);
+                }
+            });
+        self.zoom_draft = Some(draft.clone());
+        if done.is_some() {
+            // The box closes this frame, and the typing gate has already been
+            // decided for it — without this, the very Enter that confirmed
+            // the zoom would fall through into the document as a new line.
+            ctx.input_mut(|i| {
+                i.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
+                i.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
+            });
+        }
+        match done {
+            Some(true) => {
+                self.zoom_draft = None;
+                // A percent that does not parse keeps the zoom it had.
+                if let Ok(percent) = draft.trim().trim_end_matches('%').trim().parse::<f64>() {
+                    self.view.zoom = percent.clamp(10.0, 500.0) / 100.0;
+                }
+            }
+            Some(false) => self.zoom_draft = None,
+            None => {}
+        }
+    }
+
+    /// The zoom that fits the paper to the desk — its width, or the whole
+    /// first page — leaving a little air for the scrollbar and the edges.
+    fn fit_percent(&self, width_only: bool) -> Option<i32> {
+        let geometry = &self.view.pages().first()?.geometry;
+        let fit_w = (self.viewport.x as f64 - 32.0).max(60.0) / geometry.width;
+        let percent = if width_only {
+            fit_w
+        } else {
+            fit_w.min((self.viewport.y as f64 - 24.0).max(60.0) / geometry.height)
+        };
+        Some(((percent * 100.0).floor() as i32).clamp(10, 500))
     }
 
     /// The box a new comment is written in.
@@ -2364,7 +2553,7 @@ impl Scriva {
         let zoom = self.view.zoom as f32;
         let (extent_w, extent_h) = self.view.extent();
         let outer = ui.available_rect_before_wrap();
-        self.viewport = outer.height();
+        self.viewport = outer.size();
         ui.painter().rect_filled(outer, 0.0, view::desk());
         // At least as wide as the window, so a page narrower than the desk is
         // centred on it rather than pinned to the left edge.
