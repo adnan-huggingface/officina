@@ -784,6 +784,7 @@ mod tests {
                         descent: 3.0,
                         x: 0.0,
                         width: 30.0,
+                        ideal: 0.0,
                         ended_by: None,
                     }),
                     paragraph: 0,

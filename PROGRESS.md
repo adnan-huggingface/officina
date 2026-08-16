@@ -1458,6 +1458,47 @@ screen does not paint them either, and print mirrors the screen; Calx still
 does not print (a spreadsheet's print model — areas, scaling, repeat rows — is
 its own project).
 
+## The half-point dance (2026-08-15, after printing)
+
+A printed page 4 laid over Word's was *very close but not pixel-perfect* —
+the tables the right size, the gaps between them a shade off. Chasing that
+to zero uncovered how Word actually spaces single lines, measured through
+COM probes (synthetic documents, thirty to fifty-five identical lines,
+positions read to the twip):
+
+- **Word does not lay lines at the font's design height.** Each line is laid
+  at a quantized, hinted *base pitch* (Verdana 10pt: 12.085pt, not the
+  12.153pt the hhea table says) while an accumulator tracks the exact ideal;
+  whenever the two drift half a point apart, one line is laid half a point
+  taller or shorter to pay the debt. Thirty lines of Verdana measure as
+  12.085pt pitches with a 12.585pt line every seventh, averaging the design
+  height to the third decimal.
+- The accumulator **resets at every page top** (identical jump patterns down
+  pages one, two, three of an unbroken run), **is shared across font sizes**
+  in a flow, and **starts at a quarter point inside a table cell**.
+- **A table's horizontal rules occupy their thickness**: content starts below
+  the rule above it and every row is taller by it — a 2pt-bordered probe
+  shifts its first line down exactly 2pt.
+- A document with no `docDefaults` falls back to **Times New Roman**, Word's
+  ancient default — not Calibri, which is only ever the default because
+  modern files say so.
+
+Implemented as `Shaper::pitch` (base + ideal per face and size; the measured
+bases for the resume's faces are a table in the app shaper, anything else
+rounds the ideal to a twenty-fourth of a point and lets the accumulator bound
+the difference below half a point), a drift accumulator in `Flow`, and a
+second flow pass with page-top resets — piggybacking on the same two-pass
+structure the PAGE field already needed. The fixed test shaper answers
+`base == ideal`, so the dance is a no-op in every arithmetic test.
+
+Verified against Word over COM: resume page 3 line tops within 0.1–0.3pt of
+Word's throughout, the half-point payments landing on the *same lines*; page
+4 gaps within 0.15pt. Stated limits: a row resumed after a page break sits
+about a point higher than Word resumes it (the continuation's headroom is
+not modelled); probed pitches cover Verdana 8/10/12/14, Arial 10/10.5 and
+Times New Roman 10 — other faces ride the ±0.5pt bound; layout now costs up
+to two flow passes when a half-point was ever paid.
+
 ## Deferred
 
 - [x] **PDF** — was dropped per Q3; built after ship as `wp-print`. See above.

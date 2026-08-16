@@ -15,7 +15,7 @@
 
 pub mod ops;
 pub mod pdf;
-mod ttf;
+pub mod ttf;
 #[cfg(windows)]
 pub mod win;
 

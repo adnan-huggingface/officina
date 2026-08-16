@@ -13,7 +13,7 @@
 use std::collections::HashMap;
 
 use ui_kit::egui;
-use wp_layout::shape::{Advance, FontRequest, Metrics, Shaper};
+use wp_layout::shape::{Advance, FontRequest, Metrics, Pitch, Shaper};
 
 /// How many measured strings to keep before starting again.
 ///
@@ -35,6 +35,10 @@ pub struct Egui {
     /// `None` remembers that the name has only the generic families to fall to.
     codes: HashMap<(String, bool, bool), Option<u16>>,
     named: Vec<egui::FontFamily>,
+    /// Word's laid and ideal line pitches per face and size — resolved from
+    /// the font file once, `None` when the machine has no file to ask.
+    #[allow(clippy::type_complexity)]
+    pitches: HashMap<(String, bool, bool, u32), Option<(f64, f64)>>,
 }
 
 /// A font, reduced to what epaint distinguishes.
@@ -75,6 +79,7 @@ impl Egui {
             metrics: HashMap::new(),
             codes: HashMap::new(),
             named: Vec::new(),
+            pitches: HashMap::new(),
         }
     }
 
@@ -202,6 +207,77 @@ impl Shaper for Egui {
             });
         }
     }
+
+    fn pitch(&mut self, font: &FontRequest) -> Pitch {
+        let ask = (
+            font.family.to_ascii_lowercase(),
+            font.bold,
+            font.italic,
+            (font.size * 2.0).round().max(1.0) as u32,
+        );
+        if let Some(&cached) = self.pitches.get(&ask) {
+            if let Some((base, ideal)) = cached {
+                return Pitch { base, ideal };
+            }
+            let metrics = self.metrics(font);
+            let natural = metrics.ascent + metrics.descent;
+            return Pitch {
+                base: natural,
+                ideal: natural,
+            };
+        }
+        // The exact hhea sum, from the same file the screen resolved the name
+        // to. epaint's metrics went through f32 and a pixel grid; the
+        // accumulator needs the design value to the unit.
+        let computed = ui_kit::fonts::face_file(&font.family, font.bold, font.italic).and_then(
+            |(_, bytes)| {
+                let face = wp_print::ttf::Face::parse(&bytes)?;
+                let units =
+                    f64::from(face.ascent) - f64::from(face.descent) + f64::from(face.line_gap);
+                let ideal = units / face.units_per_em() * font.size;
+                let base = measured_base(&ask.0, ask.3).unwrap_or((ideal * 24.0).round() / 24.0);
+                Some((base, ideal))
+            },
+        );
+        self.pitches.insert(ask, computed);
+        match computed {
+            Some((base, ideal)) => Pitch { base, ideal },
+            None => {
+                let metrics = self.metrics(font);
+                let natural = metrics.ascent + metrics.descent;
+                Pitch {
+                    base: natural,
+                    ideal: natural,
+                }
+            }
+        }
+    }
+}
+
+/// Word's laid line pitch, measured rather than derived.
+///
+/// Thirty to fifty-five single-spaced lines of one face at one size, positions
+/// read back over COM to the twip, and the pitch plus its half-point
+/// corrections fitted to within reporting noise — see the probe machinery in
+/// the session notes. No formula over the font's tables reproduces these
+/// numbers (they are hinted, per-ppem quantities); a face and size not in this
+/// table is laid at its ideal rounded to a twenty-fourth of a point, and the
+/// half-point accumulator bounds the difference from Word below half a point
+/// either way.
+fn measured_base(family: &str, half_points: u32) -> Option<f64> {
+    const MEASURED: &[(&str, u32, f64)] = &[
+        ("verdana", 16, 9.5662),
+        ("verdana", 20, 12.0847),
+        ("verdana", 24, 14.6017),
+        ("verdana", 28, 17.1194),
+        ("arial", 20, 11.5808),
+        ("arial", 21, 12.0839),
+        ("times new roman", 20, 11.5808),
+    ];
+    MEASURED
+        .iter()
+        .find(|(name, half, _)| *name == family && *half == half_points)
+        .map(|(_, _, base)| *base)
 }
 
 #[cfg(test)]

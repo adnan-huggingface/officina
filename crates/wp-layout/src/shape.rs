@@ -67,6 +67,27 @@ impl Metrics {
     }
 }
 
+/// The two heights Word gives a single-spaced line.
+///
+/// Word does not lay lines at the font's design height. Each line is laid at a
+/// quantized `base` — hinted metrics, a hair off the design value — while an
+/// accumulator tracks the exact `ideal` (the hhea sum, scaled). Whenever the
+/// two have drifted half a point apart, one line is made half a point taller
+/// or shorter to pay the debt. Thirty single-spaced lines of Verdana measure
+/// this directly: pitches of 12.083pt with a 12.583pt line every seventh, and
+/// the average is the design height to the third decimal.
+///
+/// A shaper that answers with `base == ideal` opts out: the drift is always
+/// zero and every line is its natural height, which is what the fixed test
+/// shaper and any font this cannot be measured for do.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Pitch {
+    /// What a line of this font is actually laid at, in points.
+    pub base: f64,
+    /// What the accumulator counts toward, in points.
+    pub ideal: f64,
+}
+
 /// One character's contribution to the width of a string.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Advance {
@@ -84,6 +105,19 @@ pub struct Advance {
 /// between characters of the document, not between glyphs of a font.
 pub trait Shaper {
     fn metrics(&mut self, font: &FontRequest) -> Metrics;
+
+    /// The laid and ideal single-line heights — see [`Pitch`].
+    ///
+    /// The default answers with the natural height for both, which disables
+    /// the half-point dance and keeps every line at its design height.
+    fn pitch(&mut self, font: &FontRequest) -> Pitch {
+        let metrics = self.metrics(font);
+        let natural = metrics.ascent + metrics.descent;
+        Pitch {
+            base: natural,
+            ideal: natural,
+        }
+    }
 
     /// Appends one entry per character of `text`.
     ///

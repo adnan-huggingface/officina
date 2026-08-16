@@ -269,6 +269,7 @@ mod tests {
                     descent: 3.0,
                     x: 0.0,
                     width,
+                    ideal: 0.0,
                     ended_by: None,
                 }),
                 paragraph: 0,

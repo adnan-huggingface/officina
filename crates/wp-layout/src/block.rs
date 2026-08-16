@@ -161,6 +161,18 @@ pub struct Flow {
     /// How many paragraphs have been flowed. Counts in the same order as
     /// [`wp_model::Document::paragraphs`], so it *is* the next paragraph's index.
     pub paragraphs: usize,
+    /// Word's half-point accumulator: how far the laid lines lag their ideal,
+    /// in points. See [`crate::shape::Pitch`]. It runs across paragraphs and
+    /// through table rows; a fresh flow — a cell, a header band — starts at
+    /// whatever its creator says, usually zero.
+    pub drift: f64,
+    /// Whether any half-point was actually paid. Only then can resetting the
+    /// accumulator at page tops change anything a second pass would see.
+    pub dumped: bool,
+    /// Item indices at which the accumulator resets — the first item of every
+    /// page. Empty on a first pass, because pages do not exist yet; filled for
+    /// the second from where the first pass broke them.
+    pub resets: Vec<usize>,
 }
 
 /// Everything the block layout needs beyond the document.
@@ -251,8 +263,9 @@ fn layout_once(document: &Document, ctx: &Context<'_>, shaper: &mut dyn Shaper) 
         let height = section.page.height.points() - top - bottom;
         let columns = section.columns.resolve(section.text_width());
 
+        let entry_counters = counters.clone();
         let mut flow = Flow::default();
-        for block in &document.body[range] {
+        for block in &document.body[range.clone()] {
             flow_block(
                 block,
                 document,
@@ -263,8 +276,38 @@ fn layout_once(document: &Document, ctx: &Context<'_>, shaper: &mut dyn Shaper) 
                 &mut flow,
             );
         }
+        let mut breaks = paginate(&flow.items, height);
 
-        let breaks = paginate(&flow.items, height);
+        // Word restarts the half-point accumulator at every page top — the
+        // same jump pattern repeats down every page of an unbroken run. Pages
+        // are only known after pagination, so a flow that actually paid a
+        // half-point somewhere is flowed once more with the resets in, and
+        // paginated again. A document where the debt never came due pays for
+        // one pass, exactly like the field pass above this one.
+        if flow.dumped {
+            let mut resets: Vec<usize> = Vec::with_capacity(breaks.len() + 1);
+            resets.push(0);
+            resets.extend(breaks.iter().copied());
+            resets.dedup();
+            counters = entry_counters;
+            let mut second = Flow {
+                resets,
+                ..Flow::default()
+            };
+            for block in &document.body[range] {
+                flow_block(
+                    block,
+                    document,
+                    ctx,
+                    shaper,
+                    &mut counters,
+                    width,
+                    &mut second,
+                );
+            }
+            flow = second;
+            breaks = paginate(&flow.items, height);
+        }
         let mut placed = 0usize;
         for (page_index, end) in breaks.iter().enumerate() {
             let mut page = Page {
@@ -615,6 +658,28 @@ fn push_paragraph(
     let mut floats = Some(floats);
 
     for (index, line) in laid.lines.into_iter().enumerate() {
+        let mut line = line;
+        // The half-point dance: lines are laid a hair off their exact height,
+        // the debt accumulates, and the line that tips it half a point pays.
+        // Measured from Word to the twip — thirty lines of Verdana at 12.083pt
+        // with a 12.583pt line every seventh, averaging the design height.
+        if into.resets.binary_search(&into.items.len()).is_ok() {
+            into.drift = 0.0;
+        }
+        if line.ideal != line.height {
+            into.drift += line.ideal - line.height;
+            // The epsilon keeps a debt built from inexact tenths from missing
+            // its own due date; no real font's drift sits on the knife edge.
+            if into.drift >= 0.5 - 1e-9 {
+                line.height += 0.5;
+                into.drift -= 0.5;
+                into.dumped = true;
+            } else if into.drift <= -0.5 + 1e-9 {
+                line.height -= 0.5;
+                into.drift += 0.5;
+                into.dumped = true;
+            }
+        }
         let is_first = index == 0;
         let is_last = index + 1 == count;
         let mut height = line.height;
@@ -791,8 +856,13 @@ fn flow_table(
     // stops at the first row that does not.
     let mut still_header = true;
 
-    for row in table.rows.iter() {
+    let row_count = table.rows.len();
+    for (row_index, row) in table.rows.iter().enumerate() {
+        let is_last_row = row_index + 1 == row_count;
         let mut cells: Vec<CellPlan> = Vec::new();
+        // Each cell's accumulator state on the way out, so the flow after the
+        // row can continue from the cell that decided the row's height.
+        let mut exits: Vec<(f64, bool)> = Vec::new();
         let mut column = row.props.grid_before;
         let mut x = indent
             + widths
@@ -821,6 +891,12 @@ fn flow_table(
             let mut cell_flow = Flow {
                 items: Vec::new(),
                 paragraphs: into.paragraphs,
+                // A cell's accumulator starts at half a quantum. Measured: a
+                // thirty-line cell pays its first half-point on line four,
+                // which places the entry debt at a quarter point — where a
+                // fresh flow's would take eight lines to come due.
+                drift: 0.25,
+                ..Flow::default()
             };
             if !is_continuation {
                 for block in &cell.content {
@@ -863,6 +939,7 @@ fn flow_table(
                 y += item.height;
             }
 
+            exits.push((cell_flow.drift, cell_flow.dumped));
             cells.push(CellPlan {
                 x,
                 width: cell_width,
@@ -899,6 +976,25 @@ fn flow_table(
         }
 
         let tallest = cells.iter().map(|c| c.content).fold(0.0f64, f64::max);
+        // The body's own accumulator is not advanced by the row — each cell
+        // ran its own, from the quarter-point entry. Only the fact that a
+        // half-point was paid somewhere matters to the page-reset pass.
+        into.dumped |= exits.iter().any(|(_, dumped)| *dumped);
+        // Word's horizontal rules occupy their thickness: a row is taller by
+        // the rule above it and its content starts below the rule. Measured:
+        // a 2pt-bordered table starts its text 2pt lower and pitches every
+        // row 2pt taller than the borderless twin.
+        let rule = |side: Side| -> f64 {
+            cells
+                .iter()
+                .flat_map(|cell| &cell.borders)
+                .filter(|(s, _)| *s == side)
+                .filter_map(|(_, border)| border.filter(|b| b.style.draws()))
+                .map(|border| border.size.map(|s| s.points()).unwrap_or(0.5))
+                .fold(0.0f64, f64::max)
+        };
+        let rule_above = rule(Side::Top);
+        let rule_below = if is_last_row { rule(Side::Bottom) } else { 0.0 };
         let mut height = tallest + pad_top + pad_bottom;
         // A stated row height is a floor or a ceiling depending on its rule.
         if let Some(rule) = row.props.height {
@@ -929,9 +1025,13 @@ fn flow_table(
             let is_first = band == 0;
             let is_last = band == last_band;
             let band_height = (bottom - top)
-                + if is_first { pad_top } else { 0.0 }
-                + if is_last { pad_bottom } else { 0.0 };
-            let above = if is_first { pad_top } else { 0.0 };
+                + if is_first { rule_above + pad_top } else { 0.0 }
+                + if is_last {
+                    pad_bottom + rule_below
+                } else {
+                    0.0
+                };
+            let above = if is_first { rule_above + pad_top } else { 0.0 };
             let mut parts: Vec<Placement> = Vec::new();
             for cell in &cells {
                 if let Some(fill) = cell.fill {
@@ -1347,6 +1447,159 @@ mod tests {
         let theme = document.theme.clone();
         let mut shaper = crate::shape::Fixed;
         layout(document, &ctx(&theme), &mut shaper)
+    }
+
+    /// The fixed shaper with Word's half-point dance switched on: lines laid a
+    /// tenth of a point short of their ideal, so the debt comes due every
+    /// fifth line.
+    struct Danced;
+
+    impl Shaper for Danced {
+        fn metrics(&mut self, font: &crate::shape::FontRequest) -> crate::shape::Metrics {
+            crate::shape::Fixed.metrics(font)
+        }
+
+        fn advances(
+            &mut self,
+            text: &str,
+            font: &crate::shape::FontRequest,
+            into: &mut Vec<crate::shape::Advance>,
+        ) {
+            crate::shape::Fixed.advances(text, font, into)
+        }
+
+        fn pitch(&mut self, font: &crate::shape::FontRequest) -> crate::shape::Pitch {
+            crate::shape::Pitch {
+                base: font.size - 0.1,
+                ideal: font.size,
+            }
+        }
+    }
+
+    #[test]
+    fn the_half_point_debt_is_paid_by_the_line_that_tips_it() {
+        // Ten-point lines laid at 9.9: drift reaches 0.5 on the fifth line,
+        // which is laid at 10.4, and again on the tenth.
+        let mut document = document(paragraphs(12));
+        document.section = page_of(30);
+        let theme = document.theme.clone();
+        let mut shaper = Danced;
+        let pages = layout(&document, &ctx(&theme), &mut shaper);
+        let ys: Vec<f64> = pages[0]
+            .content
+            .iter()
+            .filter(|p| matches!(p.kind, Placed::Line { .. }))
+            .map(|p| p.y - pages[0].geometry.top)
+            .collect();
+        assert!(
+            (ys[1] - 9.9).abs() < 1e-9,
+            "line two sits at one short pitch"
+        );
+        assert!(
+            (ys[5] - (4.0 * 9.9 + 10.4)).abs() < 1e-9,
+            "the fifth line paid the half point: {ys:?}"
+        );
+        assert!(
+            (ys[10] - (8.0 * 9.9 + 2.0 * 10.4)).abs() < 1e-9,
+            "and the tenth paid again: {ys:?}"
+        );
+    }
+
+    #[test]
+    fn the_dance_restarts_at_the_top_of_every_page() {
+        // Seven lines per page: page one pays on its fifth line. If the
+        // accumulator carried over, page two would pay on its third; Word
+        // starts every page from zero, so it pays on its fifth as well.
+        let mut document = document(paragraphs(14));
+        document.section = page_of(7);
+        let theme = document.theme.clone();
+        let mut shaper = Danced;
+        let pages = layout(&document, &ctx(&theme), &mut shaper);
+        assert!(pages.len() >= 2);
+        for page in pages.iter().take(2) {
+            let ys: Vec<f64> = page
+                .content
+                .iter()
+                .filter(|p| matches!(p.kind, Placed::Line { .. }))
+                .map(|p| p.y - page.geometry.top)
+                .collect();
+            assert!(
+                (ys[5] - (4.0 * 9.9 + 10.4)).abs() < 1e-9,
+                "each page pays on its own fifth line: {ys:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_tables_horizontal_rules_occupy_their_thickness() {
+        // A half-point border: the first line starts half a point lower and
+        // every row is half a point taller than the borderless twin. Measured
+        // from Word: a 2pt-bordered table shifts its text down 2pt exactly.
+        use wp_model::prop::{Border, BorderStyle};
+        use wp_model::units::Eighth;
+        let bordered = || {
+            let mut table = Table {
+                grid: vec![Twips(1440)],
+                rows: vec![
+                    Row {
+                        cells: vec![cell("a")],
+                        ..Row::new()
+                    },
+                    Row {
+                        cells: vec![cell("b")],
+                        ..Row::new()
+                    },
+                ],
+                ..Table::new()
+            };
+            let rule = Border {
+                style: BorderStyle::Single,
+                size: Some(Eighth(4)),
+                space: None,
+                color: None,
+                shadow: false,
+            };
+            table.props.borders.top = Some(rule);
+            table.props.borders.inside_h = Some(rule);
+            table.props.borders.bottom = Some(rule);
+            table
+        };
+        let mut plain = document(vec![Block::Table(Table {
+            grid: vec![Twips(1440)],
+            rows: vec![
+                Row {
+                    cells: vec![cell("a")],
+                    ..Row::new()
+                },
+                Row {
+                    cells: vec![cell("b")],
+                    ..Row::new()
+                },
+            ],
+            ..Table::new()
+        })]);
+        plain.section = page_of(20);
+        let mut boxed = document(vec![Block::Table(bordered())]);
+        boxed.section = page_of(20);
+
+        let tops = |document: &Document| -> Vec<f64> {
+            let page = &pages(document)[0];
+            page.content
+                .iter()
+                .filter(|p| matches!(p.kind, Placed::Line { .. }))
+                .map(|p| p.y - page.geometry.top)
+                .collect()
+        };
+        let plain_tops = tops(&plain);
+        let boxed_tops = tops(&boxed);
+        assert!(
+            (boxed_tops[0] - (plain_tops[0] + 0.5)).abs() < 1e-9,
+            "the top rule displaces the first line: {boxed_tops:?} vs {plain_tops:?}"
+        );
+        assert!(
+            (boxed_tops[1] - (plain_tops[1] + 1.0)).abs() < 1e-9,
+            "the rule between the rows displaces the second again"
+        );
     }
 
     /// A page holding exactly `lines` lines of ten-point text.

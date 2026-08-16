@@ -22,6 +22,7 @@ pub struct Face<'a> {
     /// From `hhea`, in font units.
     pub ascent: i16,
     pub descent: i16,
+    pub line_gap: i16,
     /// From `OS/2` when it says, else the ascent — a resume viewer never
     /// notices, only a text-selection rectangle does.
     pub cap_height: i16,
@@ -85,6 +86,7 @@ impl<'a> Face<'a> {
         let units_per_em = u16_at(head, 18)?;
         let ascent = i16_at(hhea, 4)?;
         let descent = i16_at(hhea, 6)?;
+        let line_gap = i16_at(hhea, 8)?;
         let number_of_h_metrics = u16_at(hhea, 34)?;
         let bbox = [
             i16_at(head, 36)?,
@@ -113,6 +115,7 @@ impl<'a> Face<'a> {
             number_of_h_metrics,
             ascent,
             descent,
+            line_gap,
             cap_height,
             italic_angle,
             bbox,

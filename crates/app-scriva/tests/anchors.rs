@@ -13,6 +13,42 @@
 use ui_kit::egui;
 
 #[test]
+#[ignore = "reads the document named by SCRIVA_MAP_DOC; run by hand"]
+fn where_every_line_landed() {
+    let path = std::env::var("SCRIVA_MAP_DOC").expect("SCRIVA_MAP_DOC names a document");
+    let ctx = egui::Context::default();
+    ui_kit::fonts::install(&ctx);
+    let mut out = ctx.run_ui(egui::RawInput::default(), |_| {});
+    out.textures_delta.clear();
+    let mut shaper = scriva::shaper::Egui::new(&ctx);
+    let (document, _package) = wp_docx::open(&path).expect("the document opens");
+    let mut view = scriva::view::View::default();
+    view.refresh(&document, &wp_layout::FieldValues::new(), 1, &mut shaper);
+    for page in view.pages() {
+        for placement in &page.content {
+            if let wp_layout::block::Placed::Line { line, .. } = &placement.kind {
+                let text: String = line
+                    .fragments
+                    .iter()
+                    .filter_map(|fragment| match &fragment.content {
+                        wp_layout::Content::Text { text, .. }
+                        | wp_layout::Content::Label { text, .. } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect();
+                println!(
+                    "page {} top={:.3} h={:.3} | {}",
+                    page.number,
+                    placement.y,
+                    line.height,
+                    text.chars().take(24).collect::<String>()
+                );
+            }
+        }
+    }
+}
+
+#[test]
 #[ignore = "reads the document named by SCRIVA_ANCHORS_DOC; run by hand"]
 fn where_each_anchor_landed() {
     let path = std::env::var("SCRIVA_ANCHORS_DOC").expect("SCRIVA_ANCHORS_DOC names a document");

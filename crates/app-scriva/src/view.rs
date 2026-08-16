@@ -91,7 +91,16 @@ impl View {
         let ctx = wp_layout::inline::Context {
             theme: &theme,
             default_tab: document.settings.default_tab_stop,
-            fallback_font: "Calibri",
+            // The font of last resort when nothing in the document names one.
+            // Word's is Calibri only because every document it writes carries
+            // docDefaults saying so; a file whose defaults are silent — the
+            // Google Docs dialect — falls back to Word's ancient default,
+            // Times New Roman, and Word renders it that way.
+            fallback_font: if document.styles.doc_defaults().run.fonts.ascii.is_some() {
+                "Calibri"
+            } else {
+                "Times New Roman"
+            },
             show_revisions: self.show_revisions,
             show_hidden: self.show_marks,
             fields: match self.settled.is_empty() {

@@ -112,6 +112,11 @@ pub struct Line {
     /// drawing a selection.
     pub x: f64,
     pub width: f64,
+    /// What Word's half-point accumulator counts toward for this line — see
+    /// [`crate::shape::Pitch`]. Equal to `height` when the line opts out
+    /// (fixed spacing, a picture taller than the type, a shaper that answers
+    /// naturally), which makes the drift zero and the dance a no-op.
+    pub ideal: f64,
     /// The break that ended this line, if it was not the margin.
     pub ended_by: Option<Break>,
 }
@@ -1019,6 +1024,7 @@ fn raw_line(fragments: Vec<Fragment>, width: f64, ended_by: Option<Break>) -> Li
         descent: 0.0,
         x: 0.0,
         width,
+        ideal: 0.0,
         ended_by,
     }
 }
@@ -1045,28 +1051,64 @@ fn finish(
     let last = lines.len().saturating_sub(1);
     let mut y = 0.0;
 
+    let mark_face = mark_font(paragraph, layers, ctx);
     for (index, line) in lines.iter_mut().enumerate() {
         let mut ascent: f64 = 0.0;
         let mut descent: f64 = 0.0;
+        // Word lays a line at the font's *laid* pitch — hinted, a hair off the
+        // design height — while an accumulator counts the exact value. Both
+        // are collected here; the debt is settled where lines stack, because
+        // it runs across paragraphs.
+        let mut base: f64 = 0.0;
+        let mut ideal: f64 = 0.0;
+        // Something that is not type demanding height: an inline picture, a
+        // superscript pushed above the ascender. Only these take a line out
+        // of the dance — a face whose *measured* box is a hair taller than
+        // its design height (they all are; hinting rounds up) must not.
+        let mut boost: f64 = 0.0;
         for fragment in &line.fragments {
             let metrics = fragment_metrics(fragment, shaper);
             ascent = ascent.max(metrics.ascent + fragment.style.raise);
             descent = descent.max(metrics.descent - fragment.style.raise);
+            if let Content::Object { height, .. } = &fragment.content {
+                boost = boost.max(*height);
+            } else {
+                let pitch = shaper.pitch(&fragment.style.font);
+                base = base.max(pitch.base);
+                ideal = ideal.max(pitch.ideal);
+                if fragment.style.raise != 0.0 {
+                    boost = boost.max(
+                        metrics.ascent + fragment.style.raise + metrics.descent
+                            - fragment.style.raise.min(0.0) * 2.0,
+                    );
+                }
+            }
         }
         if line.fragments.is_empty() {
             ascent = mark.ascent;
             descent = mark.descent;
+            let pitch = shaper.pitch(&mark_face);
+            base = pitch.base;
+            ideal = pitch.ideal;
         }
         let natural = ascent + descent;
+        if boost > ideal {
+            base = boost;
+            ideal = boost;
+        }
         line.ascent = ascent;
         line.descent = descent;
         line.height = match spacing {
-            LineSpacing::Multiple(n) => natural * n.multiple(),
+            LineSpacing::Multiple(n) => base * n.multiple(),
             LineSpacing::AtLeast(t) => natural.max(t.points()),
             // `exact` clips a tall glyph rather than growing the line, which is
             // what makes a document with a pasted large font lose the tops of
             // its letters. Matching that is the point.
             LineSpacing::Exact(t) => t.points(),
+        };
+        line.ideal = match spacing {
+            LineSpacing::Multiple(n) => ideal * n.multiple(),
+            _ => line.height,
         };
         line.baseline = ascent + (line.height - natural).max(0.0) / 2.0;
         line.y = y;
