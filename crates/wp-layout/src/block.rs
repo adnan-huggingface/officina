@@ -14,10 +14,14 @@
 //! "keep with next": by then the decision has already been made and the only way
 //! back is to unplace what was placed.
 //!
-//! **Stated limits**, rather than hidden ones. Text does not wrap *around* an
-//! anchored drawing — the drawing is placed where the document says and the text
-//! flows past it, which is right for `wrapNone` and `wrapTopAndBottom` and wrong
-//! for `wrapSquare`. Multi-column sections lay out column by column rather than
+//! **Stated limits**, rather than hidden ones. Text does not wrap *beside* an
+//! anchored drawing: a text-anchored float that displaces text — `topAndBottom`,
+//! or a square wrap with no usable measure left beside it — reserves its full
+//! height in the flow and the text resumes below, which is what Word does with
+//! the commonest float in the wild, the column-wide picture. A narrower square
+//! wrap should share its lines with the text and does not yet; a page- or
+//! margin-anchored float does not travel with the text and stays an overlay the
+//! text runs under. Multi-column sections lay out column by column rather than
 //! balancing the last page. A table row splits across pages between the lines
 //! of its cells, but only at a height that is a line boundary in *every* cell
 //! at once — where two columns of text line up on nothing, the row moves whole,
@@ -253,6 +257,11 @@ fn layout_once(document: &Document, ctx: &Context<'_>, shaper: &mut dyn Shaper) 
     let mut pages = Vec::new();
     let mut counters = Counters::new();
     let mut number = 1u32;
+    // Paragraph indices name positions in the whole document, so the count
+    // runs across sections. A per-section flow that restarted at zero made
+    // every line of a second section claim a paragraph from the first — and a
+    // click in that section landed pages away.
+    let mut flowed = 0usize;
 
     for (section_index, (range, section)) in document.sections().into_iter().enumerate() {
         if let Some(start) = section.page_numbering.start {
@@ -264,7 +273,10 @@ fn layout_once(document: &Document, ctx: &Context<'_>, shaper: &mut dyn Shaper) 
         let columns = section.columns.resolve(section.text_width());
 
         let entry_counters = counters.clone();
-        let mut flow = Flow::default();
+        let mut flow = Flow {
+            paragraphs: flowed,
+            ..Flow::default()
+        };
         for block in &document.body[range.clone()] {
             flow_block(
                 block,
@@ -292,6 +304,7 @@ fn layout_once(document: &Document, ctx: &Context<'_>, shaper: &mut dyn Shaper) 
             counters = entry_counters;
             let mut second = Flow {
                 resets,
+                paragraphs: flowed,
                 ..Flow::default()
             };
             for block in &document.body[range] {
@@ -308,6 +321,7 @@ fn layout_once(document: &Document, ctx: &Context<'_>, shaper: &mut dyn Shaper) 
             flow = second;
             breaks = paginate(&flow.items, height);
         }
+        flowed = flow.paragraphs;
         let mut placed = 0usize;
         for (page_index, end) in breaks.iter().enumerate() {
             let mut page = Page {
@@ -591,7 +605,7 @@ pub fn flow_paragraph(
         width,
         shaper,
     );
-    push_paragraph(paragraph, &layers, laid, left, into);
+    push_paragraph(paragraph, &layers, laid, width, left, into);
 }
 
 /// Which list a paragraph is in, its style's numbering included.
@@ -620,14 +634,55 @@ fn push_paragraph(
     paragraph: &Paragraph,
     layers: &Layers,
     laid: LaidParagraph,
+    width: f64,
     left: f64,
     into: &mut Flow,
 ) {
-    let group = into.items.len();
     // Named apart from the line loop's own `index` below, which shadowed this
     // one and gave every line the paragraph number *zero* — so every click
     // landed in the first paragraph of the document.
     let paragraph_index = into.paragraphs;
+
+    // A float that displaces text reserves its height here, before the anchor
+    // paragraph's first line: Word puts the picture at the top of the paragraph
+    // it is anchored to and starts the paragraph below it. Measured on
+    // file-sample_500kB.docx — image bottom 516.5, anchor line 543.0, following
+    // heading 581.5 — and the reservation reproduces all three.
+    for (nth, drawing) in anchored(paragraph) {
+        if !displaces(drawing, width) {
+            continue;
+        }
+        let (dist_top, _, dist_bottom, _) = drawing.distance;
+        into.items.push(Item {
+            height: dist_top.points() + drawing.extent.1.points() + dist_bottom.points(),
+            parts: vec![Placement {
+                x: left,
+                y: dist_top.points(),
+                width: drawing.extent.0.points(),
+                height: drawing.extent.1.points(),
+                kind: Placed::Drawing {
+                    rel: drawing.rel.clone(),
+                    anchor: Some(Box::new(drawing.clone())),
+                    paragraph: paragraph_index,
+                    nth,
+                },
+            }],
+            group: into.items.len(),
+            index_in_group: 0,
+            items_in_group: 1,
+            // The picture must not sit at the bottom of one page with its
+            // paragraph at the top of the next.
+            keep_with_next: true,
+            keep_lines: false,
+            widow_control: false,
+            break_before: false,
+            repeat: false,
+            table: None,
+            footnotes: Vec::new(),
+        });
+    }
+
+    let group = into.items.len();
     into.paragraphs += 1;
     let count = laid.lines.len().max(1);
     let explicit_break = paragraph
@@ -638,10 +693,11 @@ fn push_paragraph(
     let before = laid.space_before;
     let after = laid.space_after;
 
-    // An anchored drawing is placed on the page rather than in the line, so it
-    // rides with the paragraph's first item and is positioned from there.
+    // Any other anchored drawing is placed on the page rather than in the line,
+    // so it rides with the paragraph's first item and is positioned from there.
     let floats: Vec<Placement> = anchored(paragraph)
         .into_iter()
+        .filter(|(_, drawing)| !displaces(drawing, width))
         .map(|(nth, drawing)| Placement {
             x: 0.0,
             y: 0.0,
@@ -1333,7 +1389,16 @@ pub fn anchor_position(drawing: &wp_model::Drawing, page: &PageBox, line_top: f6
         (Some(align), _) => {
             let (top, bottom) = match position.vertical.relative_to {
                 RelativeTo::Page => (0.0, page.height),
-                _ => (page.top, page.height - page.bottom),
+                RelativeTo::Margin
+                | RelativeTo::TopMargin
+                | RelativeTo::BottomMargin
+                | RelativeTo::InsideMargin
+                | RelativeTo::OutsideMargin => (page.top, page.height - page.bottom),
+                // Relative to the paragraph or the line there is no band to
+                // align within, only the place the text is: `top` means "at
+                // the paragraph", and centre and bottom collapse to the same
+                // spot rather than to the page margins.
+                _ => (line_top, line_top + height),
             };
             match align {
                 Alignment::Center => (top + bottom) / 2.0 - height / 2.0,
@@ -1382,6 +1447,40 @@ pub fn anchor_base(drawing: &wp_model::Drawing, page: &PageBox, line_top: f64) -
         _ => line_top,
     };
     (x, y)
+}
+
+/// Whether an anchored drawing takes its height out of the text flow.
+///
+/// Word wraps text *beside* a square-wrapped float when a usable measure
+/// remains; that is still a stated limit. But the commonest square float in
+/// the wild is as wide as the column it sits in — a picture between
+/// paragraphs — and for those "no room beside" and `topAndBottom` are the
+/// same thing: the text resumes below. A float positioned relative to the
+/// page or a margin does not travel with the text, so its space cannot be
+/// reserved mid-flow and it stays an overlay.
+fn displaces(drawing: &wp_model::Drawing, width: f64) -> bool {
+    use wp_model::doc::{RelativeTo, Wrap};
+    let with_text = match &drawing.position {
+        None => true,
+        Some(position) => matches!(
+            position.vertical.relative_to,
+            RelativeTo::Paragraph | RelativeTo::Line | RelativeTo::Character | RelativeTo::Column
+        ),
+    };
+    if !with_text {
+        return false;
+    }
+    match drawing.wrap {
+        Wrap::TopAndBottom => true,
+        Wrap::Square | Wrap::Tight => {
+            let (_, right, _, left) = drawing.distance;
+            let beside = width - drawing.extent.0.points() - left.points() - right.points();
+            // Half an inch is the narrowest measure Word will still set text
+            // into beside a float.
+            beside < 36.0
+        }
+        Wrap::None => false,
+    }
 }
 
 /// Every anchored drawing of a paragraph.
@@ -2577,6 +2676,105 @@ mod tests {
             .find(|p| matches!(p.kind, Placed::Line { .. }))
             .expect("a line");
         assert!(line.width < 100.0);
+    }
+
+    #[test]
+    fn a_column_wide_square_float_reserves_its_height_before_its_paragraph() {
+        // The float from file-sample_500kB.docx, shrunk: as wide as the text
+        // column, square wrap, anchored to the paragraph. Word resumes the
+        // text below it, so the flow must hold its height open.
+        let mut section = SectionProps::new();
+        let column = section.text_width().points();
+        section.page.height = Twips::from_points(2000.0);
+        let drawing = wp_model::Drawing {
+            source: Vec::new().into(),
+            anchored: true,
+            extent: (
+                wp_model::Emu::from_points(column),
+                wp_model::Emu::from_points(50.0),
+            ),
+            rel: Some("rId7".into()),
+            name: None,
+            description: None,
+            wrap: wp_model::Wrap::Square,
+            distance: Default::default(),
+            position: None,
+            behind_text: false,
+        };
+        let paragraph = Paragraph {
+            content: vec![Inline::Run(Run {
+                content: vec![
+                    Piece::Drawing(Box::new(drawing)),
+                    Piece::Text("below".into()),
+                ],
+                ..Run::new()
+            })],
+            ..Paragraph::new()
+        };
+        let mut document = document(vec![Block::Paragraph(paragraph)]);
+        document.section = section;
+        let page = &pages(&document)[0];
+        let drawn = page
+            .content
+            .iter()
+            .find(|p| matches!(p.kind, Placed::Drawing { .. }))
+            .expect("the drawing was placed");
+        let line = page
+            .content
+            .iter()
+            .find(|p| matches!(p.kind, Placed::Line { .. }))
+            .expect("a line");
+        // The paragraph's own line starts below the reserved height, not
+        // beside or under the picture.
+        assert_eq!(drawn.height, 50.0);
+        assert!(
+            line.y >= drawn.y + drawn.height,
+            "line at {} should sit below the float ending at {}",
+            line.y,
+            drawn.y + drawn.height
+        );
+    }
+
+    #[test]
+    fn a_paragraph_anchored_top_alignment_hangs_from_the_line() {
+        // `<wp:positionV relativeFrom="paragraph"><wp:align>top</wp:align>` —
+        // the picture's top is the paragraph's top, not the page margin.
+        let geometry = PageBox {
+            width: 612.0,
+            height: 792.0,
+            top: 72.0,
+            bottom: 72.0,
+            start: 72.0,
+            end: 72.0,
+        };
+        let drawing = wp_model::Drawing {
+            source: Vec::new().into(),
+            anchored: true,
+            extent: (
+                wp_model::Emu::from_points(100.0),
+                wp_model::Emu::from_points(50.0),
+            ),
+            rel: None,
+            name: None,
+            description: None,
+            wrap: wp_model::Wrap::Square,
+            distance: Default::default(),
+            position: Some(Box::new(wp_model::doc::DrawingPosition {
+                horizontal: wp_model::doc::Offset {
+                    relative_to: wp_model::doc::RelativeTo::Column,
+                    offset: None,
+                    align: Some(wp_model::doc::Alignment::Center),
+                },
+                vertical: wp_model::doc::Offset {
+                    relative_to: wp_model::doc::RelativeTo::Paragraph,
+                    offset: None,
+                    align: Some(wp_model::doc::Alignment::Top),
+                },
+            })),
+            behind_text: false,
+        };
+        let (_, y) = anchor_position(&drawing, &geometry, 400.0);
+        assert_eq!(y, 400.0);
     }
 
     #[test]

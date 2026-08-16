@@ -236,10 +236,24 @@ impl StyleTable {
     /// style of the given kind.
     ///
     /// Falling back to nothing here is the bug that renders a whole document in
-    /// the wrong font.
+    /// the wrong font. LibreOffice marks no style as default at all, and Word
+    /// opens its files with the conventionally-named one standing in — `Normal`
+    /// and its siblings — so this does the same.
     pub fn default_style(&self, kind: StyleKind) -> Option<StyleId> {
-        self.iter()
+        if let Some((id, _)) = self
+            .iter()
             .find(|(_, style)| style.default && style.kind == kind)
+        {
+            return Some(id);
+        }
+        let conventional = match kind {
+            StyleKind::Paragraph => "Normal",
+            StyleKind::Character => "DefaultParagraphFont",
+            StyleKind::Table => "TableNormal",
+            StyleKind::Numbering => "NoList",
+        };
+        self.iter()
+            .find(|(_, style)| style.kind == kind && style.id.as_ref() == conventional)
             .map(|(id, _)| id)
     }
 

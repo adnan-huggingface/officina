@@ -88,16 +88,25 @@ fn lay(document: &Document) -> Vec<block::Page> {
     block::layout(document, &ctx, &mut shaper)
 }
 
-/// Everything the layout drew, with whitespace collapsed.
-fn drawn_text(pages: &[block::Page]) -> String {
-    let mut out = String::new();
+/// What the layout drew for each paragraph, keyed by the paragraph index the
+/// line placements carry.
+///
+/// Per paragraph rather than per page: a table row is flowed in bands across
+/// its cells, so the page's raw placement order interleaves the cells of a row
+/// — the second line of one cell comes after the first line of its neighbour.
+/// Within one paragraph the placements stay in reading order.
+fn drawn_by_paragraph(pages: &[block::Page], count: usize) -> Vec<String> {
+    let mut out = vec![String::new(); count];
     for page in pages {
         for placement in &page.content {
-            if let Placed::Line { line, .. } = &placement.kind {
+            if let Placed::Line { line, paragraph } = &placement.kind {
+                let Some(into) = out.get_mut(*paragraph) else {
+                    continue;
+                };
                 for fragment in &line.fragments {
                     match &fragment.content {
-                        Content::Text { text, .. } => out.push_str(text),
-                        Content::Tab { .. } => out.push(' '),
+                        Content::Text { text, .. } => into.push_str(text),
+                        Content::Tab { .. } => into.push(' '),
                         _ => {}
                     }
                 }
@@ -107,18 +116,13 @@ fn drawn_text(pages: &[block::Page]) -> String {
     out
 }
 
-/// The document's text as a revision-showing view draws it.
-fn shown_text(document: &Document) -> String {
-    document
-        .paragraphs()
-        .iter()
-        .map(|paragraph| paragraph.shown_text())
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn squashed(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
+/// Small capitals are drawn as capitals and a field's instruction is never
+/// drawn, so text is compared on its letters rather than exactly.
+fn letters(text: &str) -> String {
+    text.chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(|c| c.to_lowercase())
+        .collect()
 }
 
 #[test]
@@ -143,25 +147,17 @@ fn nothing_is_lost_between_the_document_and_the_page() {
         // The layout above shows revisions, so the text to compare against is
         // the one that is *drawn* — deletions included — rather than the one
         // that is in the document. `Document::text` is the other question.
-        let expected = squashed(&shown_text(&document));
-        let drawn = squashed(&drawn_text(&pages));
-        // Small capitals are drawn as capitals and a field's instruction is
-        // never drawn, so the comparison is on the letters rather than on the
-        // exact string.
-        let expected_letters: String = expected
-            .chars()
-            .filter(|c| c.is_alphanumeric())
-            .flat_map(|c| c.to_lowercase())
-            .collect();
-        let drawn_letters: String = drawn
-            .chars()
-            .filter(|c| c.is_alphanumeric())
-            .flat_map(|c| c.to_lowercase())
-            .collect();
-        assert_eq!(
-            expected_letters, drawn_letters,
-            "{name}: the page does not say what the document says"
-        );
+        // Comparing paragraph by paragraph also proves the line placements
+        // name the right paragraph, which is what a click stands on.
+        let paragraphs = document.paragraphs();
+        let drawn = drawn_by_paragraph(&pages, paragraphs.len());
+        for (index, paragraph) in paragraphs.iter().enumerate() {
+            assert_eq!(
+                letters(&paragraph.shown_text()),
+                letters(&drawn[index]),
+                "{name}, paragraph {index}: the page does not say what the document says"
+            );
+        }
     }
 }
 
