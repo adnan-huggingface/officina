@@ -1,49 +1,46 @@
-//! Drawing a chart.
+//! Drawing a chart on the screen.
 //!
 //! Shared, because a chart in a document and a chart on a sheet are the same
 //! picture of the same numbers — only the rectangle differs, and the caller
-//! knows that. What is drawn is an approximation of what Office draws: the
-//! shape, the series, the labels and the legend, and no gradients, no 3-D, no
-//! trendlines. That approximation costs nothing, because both applications put
-//! back the bytes their file came with.
+//! knows that.
+//!
+//! Where the ink goes is not decided here: [`chart::draw`] works that out in
+//! plain numbers, so the screen, a PDF and a printer cannot come to disagree
+//! about it. What is left for this module is the translation — one primitive
+//! into one egui shape — and answering the question the geometry cannot ask
+//! itself, which is how wide a string is in the faces this context loaded.
 
-use chart::{ChartKind, LegendPosition, Plot};
+use chart::draw::{Measure, Prim, Rect};
+use chart::Plot;
 
 use crate::egui;
+use crate::fonts::{self, Family};
 
-/// The default palette Office assigns to series, accent 1 through 6.
-pub const SERIES_COLORS: [[u8; 3]; 6] = [
-    [0x44, 0x72, 0xC4],
-    [0xED, 0x7D, 0x31],
-    [0xA5, 0xA5, 0xA5],
-    [0xFF, 0xC0, 0x00],
-    [0x5B, 0x9B, 0xD5],
-    [0x70, 0xAD, 0x47],
-];
+/// The series, the style and the palette are the geometry's own types: a
+/// second copy of them here would be a second thing to keep in step.
+pub use chart::draw::{Plotted, Style, SERIES_COLORS};
 
-/// One series, resolved to the numbers to draw.
-///
-/// A workbook resolves them from its cells so that editing B7 redraws the bar
-/// above it; a document has only the cache the file carries.
-pub struct Plotted {
-    pub name: String,
-    pub values: Vec<Option<f64>>,
-    pub color: egui::Color32,
+/// A colour as the geometry states them.
+pub fn rgb(color: egui::Color32) -> [u8; 3] {
+    [color.r(), color.g(), color.b()]
 }
 
-/// Everything the painter needs that is not the chart itself.
-pub struct Style {
-    pub background: egui::Color32,
-    pub outline: egui::Color32,
-    pub text: egui::Color32,
-    pub grid: egui::Color32,
-    pub zoom: f32,
-    /// How a number becomes an axis label.
-    ///
-    /// The caller's business, not the painter's: a workbook has Excel's
-    /// General format already written and tested, and handing the painter a
-    /// second implementation of it is how the two would come to disagree.
-    pub label: fn(f64) -> String,
+/// Measures with the application's own sans face — the same face a paper
+/// renderer sets a chart's labels in, so a title centred on the screen is
+/// centred on the page.
+struct Fonts<'a>(&'a egui::Painter);
+
+impl Measure for Fonts<'_> {
+    fn size(&mut self, text: &str, size: f64) -> (f64, f64) {
+        let galley =
+            self.0
+                .layout_no_wrap(text.to_string(), font(size), egui::Color32::PLACEHOLDER);
+        (f64::from(galley.size().x), f64::from(galley.size().y))
+    }
+}
+
+fn font(size: f64) -> egui::FontId {
+    egui::FontId::new(size as f32, fonts::face(Family::Sans, false, false))
 }
 
 pub fn draw(
@@ -53,369 +50,95 @@ pub fn draw(
     series: &[Plotted],
     style: &Style,
 ) {
-    if rect.width() < 24.0 || rect.height() < 24.0 {
-        return;
-    }
-    painter.rect_filled(rect, 2.0, style.background);
-    painter.rect_stroke(
-        rect,
-        2.0,
-        egui::Stroke::new(1.0, style.outline),
-        egui::StrokeKind::Inside,
+    let area = Rect::new(
+        f64::from(rect.left()),
+        f64::from(rect.top()),
+        f64::from(rect.width()),
+        f64::from(rect.height()),
     );
-
-    let font = egui::FontId::proportional(11.0 * style.zoom);
-    let small = egui::FontId::proportional(9.0 * style.zoom);
-    let mut area = rect.shrink(8.0 * style.zoom);
-
-    if let Some(title) = &plot.title {
-        let galley = painter.layout_no_wrap(
-            title.clone(),
-            egui::FontId::proportional(13.0 * style.zoom),
-            style.text,
-        );
-        painter.galley(
-            egui::pos2(rect.center().x - galley.size().x / 2.0, area.top()),
-            galley.clone(),
-            style.text,
-        );
-        area.min.y += galley.size().y + 4.0 * style.zoom;
-    }
-
-    // The legend takes its strip before the plot area is measured, so the plot
-    // never draws underneath it.
-    if let Some(position) = plot.legend {
-        area = draw_legend(painter, area, series, style, &small, position);
-    }
-    if area.width() < 16.0 || area.height() < 16.0 {
-        return;
-    }
-
-    let categories = plot.categories();
-    match plot.kind {
-        ChartKind::Pie | ChartKind::Doughnut => {
-            draw_pie(painter, area, series, plot.kind == ChartKind::Doughnut);
-        }
-        ChartKind::Other(_) => {
-            let galley = painter.layout_no_wrap("chart".to_string(), font, style.grid);
-            painter.galley(area.center() - galley.size() / 2.0, galley, style.grid);
-        }
-        _ => draw_axes_chart(painter, area, plot, series, categories, style, &small),
+    for prim in chart::draw::primitives(area, plot, series, style, &mut Fonts(painter)) {
+        paint(painter, &prim);
     }
 }
 
-fn draw_legend(
-    painter: &egui::Painter,
-    area: egui::Rect,
-    series: &[Plotted],
-    style: &Style,
-    font: &egui::FontId,
-    position: LegendPosition,
-) -> egui::Rect {
-    let swatch = 7.0 * style.zoom;
-    let line = 13.0 * style.zoom;
-    let mut left = area;
-    match position {
-        LegendPosition::Bottom => {
-            let strip = area.bottom() - line;
-            let mut x = area.left();
-            for entry in series {
-                painter.rect_filled(
-                    egui::Rect::from_min_size(
-                        egui::pos2(x, strip + (line - swatch) / 2.0),
-                        egui::vec2(swatch, swatch),
-                    ),
-                    1.0,
-                    entry.color,
-                );
-                x += swatch + 3.0;
-                let galley = painter.layout_no_wrap(entry.name.clone(), font.clone(), style.text);
-                painter.galley(egui::pos2(x, strip), galley.clone(), style.text);
-                x += galley.size().x + 10.0 * style.zoom;
-            }
-            left.max.y -= line + 2.0;
+fn paint(painter: &egui::Painter, prim: &Prim) {
+    match prim {
+        Prim::Fill { rect, rgb, round } => {
+            painter.rect_filled(egui_rect(*rect), *round as f32, color(*rgb));
         }
-        _ => {
-            // Top, left, right, and top-right all get the right-hand column:
-            // at cell size the difference is a few pixels and the alternative
-            // is four near-identical blocks of layout arithmetic.
-            let width = (area.width() * 0.28).min(110.0 * style.zoom);
-            let strip = egui::Rect::from_min_size(
-                egui::pos2(area.right() - width, area.top()),
-                egui::vec2(width, area.height()),
+        Prim::Frame {
+            rect,
+            rgb,
+            thickness,
+            round,
+        } => {
+            painter.rect_stroke(
+                egui_rect(*rect),
+                *round as f32,
+                egui::Stroke::new(*thickness as f32, color(*rgb)),
+                egui::StrokeKind::Inside,
             );
-            let mut y = strip.top();
-            for entry in series {
-                painter.rect_filled(
-                    egui::Rect::from_min_size(
-                        egui::pos2(strip.left(), y + (line - swatch) / 2.0),
-                        egui::vec2(swatch, swatch),
-                    ),
-                    1.0,
-                    entry.color,
-                );
-                let galley = painter.layout_no_wrap(entry.name.clone(), font.clone(), style.text);
-                painter.galley(
-                    egui::pos2(strip.left() + swatch + 3.0, y),
-                    galley,
-                    style.text,
-                );
-                y += line;
-            }
-            left.max.x -= width + 4.0;
         }
-    }
-    left
-}
-
-#[allow(clippy::too_many_arguments)]
-fn draw_axes_chart(
-    painter: &egui::Painter,
-    area: egui::Rect,
-    plot: &Plot,
-    series: &[Plotted],
-    categories: &[String],
-    style: &Style,
-    font: &egui::FontId,
-) {
-    let points = series.iter().map(|s| s.values.len()).max().unwrap_or(0);
-    if points == 0 {
-        return;
-    }
-    let stacked = plot.grouping.stacked();
-    let (low, high) = bounds(series, stacked);
-    if !(high - low).is_finite() || high <= low {
-        return;
-    }
-
-    // Room for the value labels down the left.
-    let gutter = 34.0 * style.zoom;
-    let footer = 12.0 * style.zoom;
-    let area = egui::Rect::from_min_max(
-        egui::pos2(area.left() + gutter, area.top()),
-        egui::pos2(area.right(), area.bottom() - footer),
-    );
-    if area.width() < 8.0 || area.height() < 8.0 {
-        return;
-    }
-
-    let y_of = |value: f64| {
-        area.bottom() - ((value - low) / (high - low) * f64::from(area.height())) as f32
-    };
-
-    // Four gridlines and their labels, which is what makes the heights readable.
-    for step in 0..=4 {
-        let value = low + (high - low) * f64::from(step) / 4.0;
-        let y = y_of(value);
-        painter.hline(
-            area.x_range(),
-            y,
-            egui::Stroke::new(1.0, style.grid.gamma_multiply(0.5)),
-        );
-        let galley = painter.layout_no_wrap(
-            (style.label)(round_label(value, high - low)),
-            font.clone(),
-            style.text,
-        );
-        painter.galley(
-            egui::pos2(
-                area.left() - 3.0 - galley.size().x,
-                y - galley.size().y / 2.0,
-            ),
-            galley,
-            style.text,
-        );
-    }
-    painter.hline(
-        area.x_range(),
-        y_of(0.0f64.clamp(low, high)),
-        egui::Stroke::new(1.0, style.grid),
-    );
-
-    let slot = area.width() / points as f32;
-    match plot.kind {
-        ChartKind::Line | ChartKind::Scatter => {
-            for entry in series {
-                let path: Vec<egui::Pos2> = entry
-                    .values
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(i, v)| {
-                        v.map(|v| egui::pos2(area.left() + slot * (i as f32 + 0.5), y_of(v)))
-                    })
-                    .collect();
-                if path.len() > 1 {
-                    painter.add(egui::Shape::line(
-                        path.clone(),
-                        egui::Stroke::new(1.6 * style.zoom, entry.color),
-                    ));
-                }
-                for point in path {
-                    painter.circle_filled(point, 1.8 * style.zoom, entry.color);
-                }
-            }
-        }
-        ChartKind::Area => {
-            for entry in series {
-                let mut path: Vec<egui::Pos2> = entry
-                    .values
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(i, v)| {
-                        v.map(|v| egui::pos2(area.left() + slot * (i as f32 + 0.5), y_of(v)))
-                    })
-                    .collect();
-                if path.len() < 2 {
-                    continue;
-                }
-                let base = y_of(0.0f64.clamp(low, high));
-                path.push(egui::pos2(path[path.len() - 1].x, base));
-                path.push(egui::pos2(path[0].x, base));
-                painter.add(egui::Shape::convex_polygon(
-                    path,
-                    entry.color.gamma_multiply(0.45),
-                    egui::Stroke::new(1.2 * style.zoom, entry.color),
-                ));
-            }
-        }
-        _ => {
-            // Bars. Clustered puts the series side by side inside the slot;
-            // stacked puts each one on top of the running total.
-            let lanes = if stacked { 1 } else { series.len().max(1) };
-            let bar = (slot * 0.72 / lanes as f32).max(1.0);
-            let mut totals = vec![0.0f64; points];
-            for (index, entry) in series.iter().enumerate() {
-                for (i, value) in entry.values.iter().enumerate() {
-                    let Some(value) = value else { continue };
-                    let centre = area.left() + slot * (i as f32 + 0.5);
-                    let x = if stacked {
-                        centre - bar / 2.0
-                    } else {
-                        centre - slot * 0.36 + bar * index as f32
-                    };
-                    let (from, to) = if stacked {
-                        let base = totals[i];
-                        totals[i] += value;
-                        (base, totals[i])
-                    } else {
-                        (0.0f64.clamp(low, high), *value)
-                    };
-                    // From the two corners rather than from two ranges: a
-                    // bigger value is a *smaller* y, so a range written low to
-                    // high is upside down, and egui fills a negative rectangle
-                    // with nothing at all. Every bar chart drew its axes, its
-                    // gridlines and no bars. `from_two_pos` sorts the corners,
-                    // so the mistake cannot come back.
-                    let rect = egui::Rect::from_two_pos(
-                        egui::pos2(x, y_of(from)),
-                        egui::pos2(x + bar, y_of(to)),
-                    );
-                    painter.rect_filled(rect, 0.0, entry.color);
-                }
-            }
-        }
-    }
-
-    // Category labels, thinned so they never overlap.
-    let step = ((painter
-        .layout_no_wrap("MMM".to_string(), font.clone(), style.text)
-        .size()
-        .x
-        / slot)
-        .ceil() as usize)
-        .max(1);
-    for (i, label) in categories.iter().enumerate().step_by(step) {
-        if label.is_empty() {
-            continue;
-        }
-        let galley = painter.layout_no_wrap(label.clone(), font.clone(), style.text);
-        painter.galley(
-            egui::pos2(
-                area.left() + slot * (i as f32 + 0.5) - galley.size().x / 2.0,
-                area.bottom() + 1.0,
-            ),
-            galley,
-            style.text,
-        );
-    }
-}
-
-/// The value range to area over, always including zero.
-///
-/// A bar chart whose axis starts at the smallest value exaggerates every
-/// difference on it, which is the most common way a chart lies.
-fn bounds(series: &[Plotted], stacked: bool) -> (f64, f64) {
-    let mut low = 0.0f64;
-    let mut high = 0.0f64;
-    if stacked {
-        let points = series.iter().map(|s| s.values.len()).max().unwrap_or(0);
-        for i in 0..points {
-            let total: f64 = series
-                .iter()
-                .filter_map(|s| s.values.get(i).copied().flatten())
-                .sum();
-            low = low.min(total);
-            high = high.max(total);
-        }
-    } else {
-        for value in series.iter().flat_map(|s| s.values.iter().flatten()) {
-            low = low.min(*value);
-            high = high.max(*value);
-        }
-    }
-    if high == low {
-        high = low + 1.0;
-    }
-    (low, high)
-}
-
-/// Rounds an axis label to something readable at the scale it is drawn.
-fn round_label(value: f64, span: f64) -> f64 {
-    if span == 0.0 {
-        return value;
-    }
-    let magnitude = 10f64.powf(span.abs().log10().floor() - 1.0);
-    (value / magnitude).round() * magnitude
-}
-
-fn draw_pie(painter: &egui::Painter, area: egui::Rect, series: &[Plotted], doughnut: bool) {
-    let Some(first) = series.first() else { return };
-    let total: f64 = first.values.iter().flatten().map(|v| v.abs()).sum();
-    if total <= 0.0 {
-        return;
-    }
-    let centre = area.center();
-    let radius = area.width().min(area.height()) / 2.0 - 2.0;
-    let hole = if doughnut { radius * 0.5 } else { 0.0 };
-    let mut from = -std::f32::consts::FRAC_PI_2;
-
-    for (index, value) in first.values.iter().enumerate() {
-        let Some(value) = value else { continue };
-        let sweep = (value.abs() / total) as f32 * std::f32::consts::TAU;
-        // A slice is drawn as a fan of triangles: epaint has no arc, and a
-        // polygon approximation is indistinguishable at this size.
-        let steps = ((sweep / 0.15).ceil() as usize).max(2);
-        let [r, g, b] = SERIES_COLORS[index % SERIES_COLORS.len()];
-        let color = egui::Color32::from_rgb(r, g, b);
-        for step in 0..steps {
-            let a = from + sweep * step as f32 / steps as f32;
-            let b_angle = from + sweep * (step + 1) as f32 / steps as f32;
-            let outer = |angle: f32| centre + egui::vec2(angle.cos(), angle.sin()) * radius;
-            let inner = |angle: f32| centre + egui::vec2(angle.cos(), angle.sin()) * hole;
-            painter.add(egui::Shape::convex_polygon(
-                vec![inner(a), outer(a), outer(b_angle), inner(b_angle)],
-                color,
-                egui::Stroke::NONE,
+        Prim::Line {
+            points,
+            thickness,
+            rgb,
+        } => {
+            painter.add(egui::Shape::line(
+                points.iter().map(|&(x, y)| pos(x, y)).collect(),
+                egui::Stroke::new(*thickness as f32, color(*rgb)),
             ));
         }
-        from += sweep;
+        Prim::Poly {
+            points,
+            rgb: fill,
+            edge,
+        } => {
+            let stroke = match edge {
+                Some((rgb, thickness)) => egui::Stroke::new(*thickness as f32, color(*rgb)),
+                None => egui::Stroke::NONE,
+            };
+            painter.add(egui::Shape::convex_polygon(
+                points.iter().map(|&(x, y)| pos(x, y)).collect(),
+                color(*fill),
+                stroke,
+            ));
+        }
+        Prim::Dot { at, radius, rgb } => {
+            painter.circle_filled(pos(at.0, at.1), *radius as f32, color(*rgb));
+        }
+        Prim::Text {
+            at,
+            size,
+            text,
+            rgb,
+        } => {
+            let ink = color(*rgb);
+            let galley = painter.layout_no_wrap(text.clone(), font(*size), ink);
+            painter.galley(pos(at.0, at.1), galley, ink);
+        }
     }
+}
+
+fn pos(x: f64, y: f64) -> egui::Pos2 {
+    egui::pos2(x as f32, y as f32)
+}
+
+fn egui_rect(rect: Rect) -> egui::Rect {
+    egui::Rect::from_min_size(
+        pos(rect.x, rect.y),
+        egui::vec2(rect.width as f32, rect.height as f32),
+    )
+}
+
+fn color(rgb: [u8; 3]) -> egui::Color32 {
+    egui::Color32::from_rgb(rgb[0], rgb[1], rgb[2])
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chart::{ChartKind, Grouping, Plot, Series};
+    use chart::{ChartKind, Grouping, Series};
 
     fn plot(kind: ChartKind) -> Plot {
         Plot {
@@ -448,12 +171,12 @@ mod tests {
         let mut out = ctx.run_ui(input, |ui| {
             let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 300.0));
             let style = Style {
-                background: egui::Color32::WHITE,
-                outline: egui::Color32::GRAY,
-                text: egui::Color32::BLACK,
-                grid: egui::Color32::GRAY,
+                background: [255, 255, 255],
+                outline: [128, 128, 128],
+                text: [0, 0, 0],
+                grid: [128, 128, 128],
                 zoom: 1.0,
-                label: |v| format!("{v}"),
+                label: chart::draw::plain_label,
             };
             draw(ui.painter(), rect, plot, series, &style);
         });
@@ -470,7 +193,7 @@ mod tests {
         let series = vec![Plotted {
             name: "Sales".to_string(),
             values: vec![Some(1.0), Some(2.0), Some(3.0)],
-            color: egui::Color32::RED,
+            rgb: [255, 0, 0],
         }];
         let bars: Vec<egui::Rect> = painted(&plot(ChartKind::Bar), &series)
             .iter()
@@ -497,47 +220,36 @@ mod tests {
         // application wrote into `<c:numCache>` is the whole of the picture.
         let mut plot = plot(ChartKind::Bar);
         plot.series[0].values_ref = None;
-        let series = vec![Plotted {
-            name: "Column 1".to_string(),
-            values: vec![Some(9.1), Some(2.4), Some(3.1)],
-            color: egui::Color32::BLUE,
-        }];
+        let series = chart::draw::cached_series(&plot);
         let bars = painted(&plot, &series)
             .iter()
-            .filter(|shape| matches!(shape, egui::Shape::Rect(r) if r.fill == egui::Color32::BLUE))
+            .filter(
+                |shape| matches!(shape, egui::Shape::Rect(r) if r.fill == color(SERIES_COLORS[0])),
+            )
             .count();
         assert_eq!(bars, 3);
     }
 
     #[test]
-    fn the_value_axis_always_includes_zero() {
-        // An axis starting at the smallest value exaggerates every difference
-        // on the chart, which is the most common way a chart lies.
-        let series = [Plotted {
-            name: "s".into(),
-            values: vec![Some(100.0), Some(102.0), Some(101.0)],
-            color: egui::Color32::RED,
-        }];
-        let (low, high) = bounds(&series, false);
-        assert_eq!(low, 0.0);
-        assert_eq!(high, 102.0);
-    }
-
-    #[test]
-    fn a_stacked_chart_is_measured_against_its_totals() {
-        let series = [
-            Plotted {
-                name: "a".into(),
-                values: vec![Some(30.0), Some(40.0)],
-                color: egui::Color32::RED,
-            },
-            Plotted {
-                name: "b".into(),
-                values: vec![Some(30.0), Some(40.0)],
-                color: egui::Color32::BLUE,
-            },
-        ];
-        assert_eq!(bounds(&series, false).1, 40.0);
-        assert_eq!(bounds(&series, true).1, 80.0, "the stack, not the tallest");
+    fn a_label_is_placed_by_the_width_this_contexts_fonts_give_it() {
+        // The geometry asks how wide a string is and centres it on the answer;
+        // a painter that measured with one font and drew with another would
+        // hang every title off the side of its chart.
+        let mut with_title = plot(ChartKind::Bar);
+        with_title.title = Some("Quarterly".to_string());
+        let series = chart::draw::cached_series(&with_title);
+        let title = painted(&with_title, &series)
+            .into_iter()
+            .find_map(|shape| match shape {
+                egui::Shape::Text(text) if text.galley.text() == "Quarterly" => Some(text),
+                _ => None,
+            })
+            .expect("the title is drawn");
+        let width = title.galley.size().x;
+        assert!(
+            (title.pos.x - (200.0 - width / 2.0)).abs() < 0.5,
+            "centred on the chart, not on a guess: {width} wide at {}",
+            title.pos.x
+        );
     }
 }

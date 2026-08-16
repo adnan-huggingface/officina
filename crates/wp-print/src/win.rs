@@ -19,11 +19,12 @@ use std::collections::HashMap;
 
 use wp_layout::block::Page;
 
-use crate::ops::{flatten, Op};
+use crate::ops::{draw_charts, flatten, Charts, Op};
 use crate::Raster;
 
-use windows_sys::Win32::Foundation::{GlobalFree, HGLOBAL, HWND};
+use windows_sys::Win32::Foundation::{GlobalFree, HGLOBAL, HWND, POINT};
 use windows_sys::Win32::Graphics::Gdi::ExtTextOutW;
+use windows_sys::Win32::Graphics::Gdi::Polygon;
 use windows_sys::Win32::Graphics::Gdi::{
     CreateDCW, CreateFontW, CreatePen, CreateSolidBrush, DeleteDC, DeleteObject, FillRect,
     GetDeviceCaps, LineTo, MoveToEx, ResetDCW, SelectObject, SetBkMode, SetBrushOrgEx,
@@ -49,6 +50,7 @@ use windows_sys::Win32::UI::Controls::Dialogs::{
 pub fn print(
     pages: &[Page],
     images: &HashMap<String, Raster>,
+    charts: Option<&mut Charts>,
     document_name: &str,
     gdi_family: &dyn Fn(&str) -> String,
 ) -> Result<bool, String> {
@@ -92,6 +94,7 @@ pub fn print(
         &chosen,
         copies,
         images,
+        charts,
         document_name,
         gdi_family,
     );
@@ -110,6 +113,7 @@ pub fn print_to_file(
     output: &std::path::Path,
     pages: &[Page],
     images: &HashMap<String, Raster>,
+    charts: Option<&mut Charts>,
     document_name: &str,
     gdi_family: &dyn Fn(&str) -> String,
 ) -> Result<(), String> {
@@ -134,6 +138,7 @@ pub fn print_to_file(
         &every,
         1,
         images,
+        charts,
         document_name,
         gdi_family,
     );
@@ -161,6 +166,7 @@ fn render_job(
     chosen: &[usize],
     copies: u16,
     images: &HashMap<String, Raster>,
+    charts: Option<&mut Charts>,
     document_name: &str,
     gdi_family: &dyn Fn(&str) -> String,
 ) -> Result<(), String> {
@@ -181,6 +187,7 @@ fn render_job(
     }
 
     let mut fonts = FontCache::default();
+    let mut charts = charts;
     let mut landscape_now: Option<bool> = None;
     let mut failed = None;
     'job: for _copy in 0..copies {
@@ -197,7 +204,14 @@ fn render_job(
                 failed = Some("The printer refused a page.".to_owned());
                 break 'job;
             }
-            render_page(hdc, page, images, &mut fonts, gdi_family);
+            render_page(
+                hdc,
+                page,
+                images,
+                charts.as_deref_mut(),
+                &mut fonts,
+                gdi_family,
+            );
             if unsafe { EndPage(hdc) } <= 0 {
                 failed = Some("The printer stopped mid-document.".to_owned());
                 break 'job;
@@ -290,6 +304,7 @@ fn render_page(
     hdc: HDC,
     page: &Page,
     images: &HashMap<String, Raster>,
+    charts: Option<&mut Charts>,
     fonts: &mut FontCache,
     gdi_family: &dyn Fn(&str) -> String,
 ) {
@@ -309,7 +324,11 @@ fn render_page(
         SetBrushOrgEx(hdc, 0, 0, std::ptr::null_mut());
     }
 
-    for op in flatten(page) {
+    let ops = match charts {
+        Some(charts) => draw_charts(flatten(page), charts),
+        None => flatten(page),
+    };
+    for op in ops {
         match op {
             Op::Fill {
                 x,
@@ -424,6 +443,32 @@ fn render_page(
                     );
                 }
             }
+            Op::Poly { points, rgb } => {
+                if points.len() < 3 {
+                    continue;
+                }
+                let device: Vec<POINT> = points
+                    .iter()
+                    .map(|&(x, y)| POINT { x: px(x), y: py(y) })
+                    .collect();
+                unsafe {
+                    // No outline: the fill is the shape, and a pen of the
+                    // paper's colour would still leave a hairline seam
+                    // between the slices of a pie.
+                    let brush = CreateSolidBrush(colorref(rgb));
+                    let old_brush = SelectObject(hdc, brush as HGDIOBJ);
+                    let pen = CreatePen(PS_SOLID, 1, colorref(rgb));
+                    let old_pen = SelectObject(hdc, pen as HGDIOBJ);
+                    Polygon(hdc, device.as_ptr(), device.len() as i32);
+                    SelectObject(hdc, old_pen);
+                    SelectObject(hdc, old_brush);
+                    DeleteObject(pen as HGDIOBJ);
+                    DeleteObject(brush as HGDIOBJ);
+                }
+            }
+            // A chart nobody expanded: its box stays empty, as it did before
+            // charts were drawn at all.
+            Op::Chart { .. } => {}
         }
     }
 }

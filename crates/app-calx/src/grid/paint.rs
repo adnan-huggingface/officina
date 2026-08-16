@@ -1502,11 +1502,11 @@ impl GridView {
                 &chart.plot,
                 &series,
                 &super::chart::Style {
-                    background: palette.background,
-                    outline: palette.grid,
-                    text: palette.text,
-                    grid: palette.header_text,
-                    zoom: self.zoom as f32,
+                    background: ui_kit::chart::rgb(palette.background),
+                    outline: ui_kit::chart::rgb(palette.grid),
+                    text: ui_kit::chart::rgb(palette.text),
+                    grid: ui_kit::chart::rgb(palette.header_text),
+                    zoom: self.zoom,
                     label: ss_model::format_general,
                 },
             );

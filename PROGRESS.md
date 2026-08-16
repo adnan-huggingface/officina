@@ -17,8 +17,8 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[-]` deferred
   "What one resume found" below. The short version: a `.docx` that Google Docs
   wrote is a different dialect from one Word wrote, and every corpus file was
   Word's.
-- **Phases 3 and 4 are done. `cargo xtask fidelity` is 27 of 27 on check 1 and
-  27 of 27 on check 2**, documents as well as spreadsheets — which is C22's
+- **Phases 3 and 4 are done. `cargo xtask fidelity` is 30 of 30 on check 1 and
+  30 of 30 on check 2**, documents as well as spreadsheets — which is C22's
   stated exit criterion and the gate that protects users' files. 1363 tests.
 - **A `.docx` can now be authored from nothing** (`wp_docx::write::blank`), so a
   new document saves and a `.doc` has somewhere to go. The authored package is
@@ -1498,6 +1498,48 @@ about a point higher than Word resumes it (the continuation's headroom is
 not modelled); probed pitches cover Verdana 8/10/12/14, Arial 10/10.5 and
 Times New Roman 10 — other faces ride the ±0.5pt bound; layout now costs up
 to two flow passes when a half-point was ever paid.
+
+## Charts in documents (2026-08-16, after the sample corpus)
+
+The three downloaded samples all draw a clustered bar chart on page one, and
+Scriva drew a correctly-sized hole where it should be. The inline drawing is
+not a picture at all — it is `<c:chart r:id="rId3">` — and the reader only
+ever looked for a picture's `r:embed`.
+
+Charts now have a crate of their own. A workbook and a document carry the
+*same* `<c:chartSpace>` part, so reading it twice would be reading it twice
+differently: the model and the reader moved out of `ss-xlsx` into `chart`,
+with `Plot` (what is plotted — the half both formats share) split from
+`Chart` (that, plus the cells a sheet anchors it to). `ss-model` re-exports
+it, so a sheet's chart is still `ss_model::chart::Chart` where it has always
+been.
+
+Where the ink goes is `chart::draw`, in plain numbers: rectangles, polylines,
+polygons and strings positioned by their top-left corner. Three renderers
+consume it — `ui_kit::chart` turns a primitive into an egui shape, the PDF
+writer into a content stream, GDI into a brush and a `Polygon` — because
+three renderers each doing their own arithmetic is three pictures. The one
+question the geometry cannot answer itself is how wide a string is, so it
+asks: `Measure` on the screen is an egui galley, on paper the *page's own
+shaper*, which is what makes a printed label sit where the screen's did.
+
+- `Op::Chart` carries the box and the relationship through the flattening;
+  `ops::draw_charts` expands it into ink. A backend that never calls it
+  leaves the box empty, which is what both of them did before.
+- `Op::Poly` arrived with charts and is the only op they needed: a pie slice
+  is a fan of quads and a marker is a twelve-sided ring, so no backend grew a
+  circle or an arc.
+- Translucency is *blended*, not carried — an area chart's 45% band is mixed
+  against the chart's own background here rather than becoming a PDF graphics
+  state and a GDI alpha blend that would disagree.
+- Verified in the running application and, through the export, rasterised out
+  of the PDF: three series, four categories, legend, gridlines, axis labels,
+  where Word puts them.
+
+Stated limits: a chart's own text is set in one sans face rather than in the
+faces the chart part names; no gradients, no 3-D, no trendlines, no
+per-point formatting — and none of that matters to the file, because both
+applications put back the bytes they opened.
 
 ## Deferred
 

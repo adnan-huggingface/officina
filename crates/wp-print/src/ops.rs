@@ -12,8 +12,11 @@
 //! selections, no find highlights, no hidden text. A printed page is the page,
 //! not the editing session.
 
+use std::collections::HashMap;
+
 use wp_layout::block::{anchor_position, Page, Placed, Side};
 use wp_layout::inline::Content;
+use wp_layout::shape::Shaper;
 use wp_layout::FontRequest;
 
 /// One device-independent drawing operation, in page points.
@@ -51,6 +54,28 @@ pub enum Op {
         width: f64,
         height: f64,
         rel: String,
+    },
+    /// A chart in a box, by the relationship that names its part.
+    ///
+    /// Unlike an image a chart has no bytes to hand a device: it is drawn,
+    /// from numbers, in whatever type the page is set in. [`draw_charts`]
+    /// turns one of these into the fills, rules and text every backend here
+    /// already knows — a backend that never calls it simply leaves the box
+    /// empty, which is what both of them did before charts were drawn at all.
+    Chart {
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+        rel: String,
+    },
+    /// A filled polygon: a pie's slice, an area chart's band, a marker.
+    ///
+    /// Only charts need one, which is why it arrived with them — everything
+    /// else a page draws is a rectangle, a rule or a word.
+    Poly {
+        points: Vec<(f64, f64)>,
+        rgb: [u8; 3],
     },
 }
 
@@ -94,15 +119,28 @@ pub fn flatten(page: &Page) -> Vec<Op> {
                 let baseline = placement.y + line.baseline;
                 for fragment in &line.fragments {
                     let x = placement.x + fragment.x;
-                    if let Content::Object { height, rel, .. } = &fragment.content {
+                    if let Content::Object {
+                        height, rel, chart, ..
+                    } = &fragment.content
+                    {
+                        // Inline drawings sit on the baseline like a very
+                        // large letter.
+                        let (x, y) = (x, baseline - height);
+                        let (width, height) = (fragment.width, *height);
                         if let Some(rel) = rel {
-                            // Inline drawings sit on the baseline like a very
-                            // large letter.
                             ops.push(Op::Image {
                                 x,
-                                y: baseline - height,
-                                width: fragment.width,
-                                height: *height,
+                                y,
+                                width,
+                                height,
+                                rel: rel.to_string(),
+                            });
+                        } else if let Some(rel) = chart {
+                            ops.push(Op::Chart {
+                                x,
+                                y,
+                                width,
+                                height,
                                 rel: rel.to_string(),
                             });
                         }
@@ -161,18 +199,31 @@ pub fn flatten(page: &Page) -> Vec<Op> {
                 }
             }
             Placed::Drawing { rel, anchor, .. } => {
-                let Some(rel) = rel else { continue };
                 let (x, y) = match anchor {
                     Some(drawing) => anchor_position(drawing, &page.geometry, placement.y),
                     None => (placement.x, placement.y),
                 };
-                ops.push(Op::Image {
-                    x,
-                    y,
-                    width: placement.width,
-                    height: placement.height,
-                    rel: rel.to_string(),
-                });
+                let width = placement.width;
+                let height = placement.height;
+                if let Some(rel) = rel {
+                    ops.push(Op::Image {
+                        x,
+                        y,
+                        width,
+                        height,
+                        rel: rel.to_string(),
+                    });
+                } else if let Some(rel) = anchor.as_ref().and_then(|d| d.chart.as_deref()) {
+                    // An anchored drawing keeps the whole `Drawing`, chart and
+                    // all — the screen finds a chart the same way.
+                    ops.push(Op::Chart {
+                        x,
+                        y,
+                        width,
+                        height,
+                        rel: rel.to_string(),
+                    });
+                }
             }
             // Resolved or dropped at pagination; never on a page. The screen
             // paints neither and neither does paper.
@@ -186,15 +237,198 @@ pub fn flatten(page: &Page) -> Vec<Op> {
 /// Every image relationship the pages mention, each once — what a caller
 /// decodes before rendering.
 pub fn image_rels<'a>(pages: impl Iterator<Item = &'a Page>) -> Vec<String> {
+    rels(pages, |op| match op {
+        Op::Image { rel, .. } => Some(rel),
+        _ => None,
+    })
+}
+
+/// The same, for the chart parts — what a caller *reads* before rendering.
+pub fn chart_rels<'a>(pages: impl Iterator<Item = &'a Page>) -> Vec<String> {
+    rels(pages, |op| match op {
+        Op::Chart { rel, .. } => Some(rel),
+        _ => None,
+    })
+}
+
+fn rels<'a>(pages: impl Iterator<Item = &'a Page>, of: fn(Op) -> Option<String>) -> Vec<String> {
     let mut seen = std::collections::BTreeSet::new();
     for page in pages {
-        for op in flatten(page) {
-            if let Op::Image { rel, .. } = op {
-                seen.insert(rel);
-            }
-        }
+        seen.extend(flatten(page).into_iter().filter_map(of));
     }
     seen.into_iter().collect()
+}
+
+/// The charts a document draws, and the shaper that measures their labels.
+///
+/// Both are needed and neither is this crate's to have: the plots are read
+/// from parts of a package, and how wide a string is depends on fonts the
+/// caller owns. Handing over the *same* shaper the screen laid the page with
+/// is what makes a printed chart the one the user approved.
+pub struct Charts<'a> {
+    pub plots: &'a HashMap<String, chart::Plot>,
+    pub shaper: &'a mut dyn Shaper,
+}
+
+/// The face a chart sets its own text in.
+///
+/// A chart's labels are not the document's type — Word does not set them in
+/// the body font either — so one readable sans face is the whole of the
+/// choice, and the screen makes the same one.
+const CHART_FACE: &str = "Arial";
+
+/// Turns every [`Op::Chart`] into the ink that draws it.
+///
+/// A backend calls this and then knows nothing about charts; one that does
+/// not simply leaves the box empty, which is what all of them did before.
+pub fn draw_charts(ops: Vec<Op>, charts: &mut Charts) -> Vec<Op> {
+    let mut out = Vec::with_capacity(ops.len());
+    for op in ops {
+        let Op::Chart {
+            x,
+            y,
+            width,
+            height,
+            rel,
+        } = &op
+        else {
+            out.push(op);
+            continue;
+        };
+        // A chart part that could not be read leaves its box empty rather
+        // than drawing a frame around nothing.
+        let Some(plot) = charts.plots.get(rel) else {
+            continue;
+        };
+        let prims = chart::draw::primitives(
+            chart::draw::Rect::new(*x, *y, *width, *height),
+            plot,
+            &chart::draw::cached_series(plot),
+            &chart::draw::Style {
+                background: [255, 255, 255],
+                outline: [0xC0, 0xC0, 0xC0],
+                text: [0, 0, 0],
+                grid: [0xC0, 0xC0, 0xC0],
+                // Points on paper are the unit the geometry was written in.
+                zoom: 1.0,
+                label: chart::draw::plain_label,
+            },
+            &mut Pen(&mut *charts.shaper),
+        );
+        for prim in prims {
+            ink(&mut out, prim, &mut *charts.shaper);
+        }
+    }
+    out
+}
+
+/// Measures a chart's labels with the page's own shaper.
+struct Pen<'a>(&'a mut dyn Shaper);
+
+impl chart::draw::Measure for Pen<'_> {
+    fn size(&mut self, text: &str, size: f64) -> (f64, f64) {
+        let font = FontRequest::new(CHART_FACE, size);
+        let metrics = self.0.metrics(&font);
+        (self.0.width(text, &font), metrics.ascent + metrics.descent)
+    }
+}
+
+/// One primitive as this page's drawing operations.
+fn ink(out: &mut Vec<Op>, prim: chart::draw::Prim, shaper: &mut dyn Shaper) {
+    use chart::draw::Prim;
+    match prim {
+        Prim::Fill { rect, rgb, .. } => out.push(Op::Fill {
+            x: rect.x,
+            y: rect.y,
+            width: rect.width,
+            height: rect.height,
+            rgb,
+        }),
+        Prim::Frame {
+            rect,
+            rgb,
+            thickness,
+            ..
+        } => {
+            // Four sides rather than a stroked box: `Op::Rule` is the only
+            // stroke either backend has, and a rectangle is four of them.
+            let corners = [
+                (rect.left(), rect.top()),
+                (rect.right(), rect.top()),
+                (rect.right(), rect.bottom()),
+                (rect.left(), rect.bottom()),
+            ];
+            for side in 0..4 {
+                out.push(Op::Rule {
+                    from: corners[side],
+                    to: corners[(side + 1) % 4],
+                    thickness,
+                    rgb,
+                });
+            }
+        }
+        Prim::Line {
+            points,
+            thickness,
+            rgb,
+        } => {
+            for segment in points.windows(2) {
+                out.push(Op::Rule {
+                    from: segment[0],
+                    to: segment[1],
+                    thickness,
+                    rgb,
+                });
+            }
+        }
+        Prim::Poly { points, rgb, edge } => {
+            out.push(Op::Poly {
+                points: points.clone(),
+                rgb,
+            });
+            if let Some((rgb, thickness)) = edge {
+                for segment in points.windows(2) {
+                    out.push(Op::Rule {
+                        from: segment[0],
+                        to: segment[1],
+                        thickness,
+                        rgb,
+                    });
+                }
+            }
+        }
+        Prim::Dot { at, radius, rgb } => {
+            // A twelve-sided ring is a circle at the size a marker is drawn,
+            // and it needs no operation of its own.
+            let points = (0..12)
+                .map(|step| {
+                    let angle = std::f64::consts::TAU * f64::from(step) / 12.0;
+                    (at.0 + angle.cos() * radius, at.1 + angle.sin() * radius)
+                })
+                .collect();
+            out.push(Op::Poly { points, rgb });
+        }
+        Prim::Text {
+            at,
+            size,
+            text,
+            rgb,
+        } => {
+            let font = FontRequest::new(CHART_FACE, size);
+            let mut measured = Vec::new();
+            shaper.advances(&text, &font, &mut measured);
+            out.push(Op::Text {
+                x: at.0,
+                // The geometry places text by its top-left corner, which is
+                // the corner that needs no font to compute.
+                baseline: at.1 + shaper.metrics(&font).ascent,
+                text,
+                advances: measured.iter().map(|a| a.width).collect(),
+                font,
+                rgb,
+            });
+        }
+    }
 }
 
 #[cfg(test)]
@@ -320,6 +554,115 @@ mod tests {
             })
             .expect("an underline rule");
         assert_eq!(rule, (113.0, 113.0), "baseline 111 plus two");
+    }
+
+    /// An inline drawing that is a chart rather than a picture.
+    fn chart_line(rel: &str) -> Placement {
+        let mut placement = text_line("");
+        if let Placed::Line { line, .. } = &mut placement.kind {
+            line.fragments[0].width = 300.0;
+            line.fragments[0].content = Content::Object {
+                height: 200.0,
+                rel: None,
+                chart: Some(rel.into()),
+                nth: 0,
+            };
+        }
+        placement
+    }
+
+    fn bar_chart() -> chart::Plot {
+        chart::Plot {
+            kind: chart::ChartKind::Bar,
+            series: vec![chart::Series {
+                name: Some("Sales".to_owned()),
+                values: vec![Some(1.0), Some(2.0), Some(3.0)],
+                categories: vec!["Q1".into(), "Q2".into(), "Q3".into()],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_chart_is_an_op_of_its_own_until_someone_draws_it() {
+        let ops = flatten(&page_with(vec![chart_line("rId5")]));
+        let [Op::Chart {
+            x,
+            y,
+            width,
+            height,
+            rel,
+        }] = ops.as_slice()
+        else {
+            panic!("one chart op, got {ops:?}");
+        };
+        assert_eq!((*x, *y), (72.0, 100.0 + 11.0 - 200.0), "on the baseline");
+        assert_eq!((*width, *height), (300.0, 200.0));
+        assert_eq!(rel, "rId5");
+        assert_eq!(
+            chart_rels([page_with(vec![chart_line("rId5")])].iter()),
+            ["rId5"]
+        );
+    }
+
+    #[test]
+    fn a_chart_becomes_the_ink_that_draws_it() {
+        // The whole reason `Op::Chart` exists: a chart has no bytes to hand a
+        // device, so it has to arrive as the fills, rules and words every
+        // backend already knows how to put down.
+        let page = page_with(vec![chart_line("rId5")]);
+        let plots = HashMap::from([("rId5".to_owned(), bar_chart())]);
+        let mut shaper = wp_layout::shape::Fixed;
+        let ops = draw_charts(
+            flatten(&page),
+            &mut Charts {
+                plots: &plots,
+                shaper: &mut shaper,
+            },
+        );
+
+        assert!(
+            !ops.iter().any(|op| matches!(op, Op::Chart { .. })),
+            "nothing is left for a backend to skip"
+        );
+        let fills = ops
+            .iter()
+            .filter(|op| matches!(op, Op::Fill { .. }))
+            .count();
+        assert!(fills >= 4, "the ground and three bars, at least: {fills}");
+        let labels: Vec<&str> = ops
+            .iter()
+            .filter_map(|op| match op {
+                Op::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(labels.contains(&"Q1"), "the categories: {labels:?}");
+        assert!(labels.contains(&"0"), "the value axis: {labels:?}");
+        // Every piece of it lands inside the box the layout gave it.
+        for op in &ops {
+            if let Op::Fill { x, y, .. } = op {
+                assert!(
+                    (72.0..=372.0).contains(x) && (-89.0..=111.0).contains(y),
+                    "outside its own box: {op:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_chart_part_that_could_not_be_read_leaves_its_box_empty() {
+        let page = page_with(vec![chart_line("rId5")]);
+        let mut shaper = wp_layout::shape::Fixed;
+        let ops = draw_charts(
+            flatten(&page),
+            &mut Charts {
+                plots: &HashMap::new(),
+                shaper: &mut shaper,
+            },
+        );
+        assert!(ops.is_empty(), "no frame around nothing: {ops:?}");
     }
 
     #[test]

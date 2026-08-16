@@ -8,6 +8,9 @@ license.workspace = true
 [dependencies]
 wp-model.workspace = true
 wp-layout.workspace = true
+# A chart is drawn from numbers rather than from bytes, and where its ink goes
+# is worked out once for the screen, the PDF and the printer alike.
+chart.workspace = true
 # The same deflate ooxml already links for zip parts. A PDF whose streams are
 # not compressed is three times the file for no reason.
 flate2 = "1"

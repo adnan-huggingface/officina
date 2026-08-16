@@ -44,6 +44,32 @@ impl wp_print::Faces for SystemFaces {
     }
 }
 
+/// Every chart the pages draw, parsed once, by relationship id.
+///
+/// The screen keeps its own cache keyed the same way — this is the one-shot
+/// equivalent for a renderer that runs once and throws its work away.
+pub fn plots(
+    package: Option<&ooxml::Package>,
+    parts: Option<&wp_docx::DocumentParts>,
+    pages: &[wp_layout::block::Page],
+) -> HashMap<String, chart::Plot> {
+    let mut out = HashMap::new();
+    let (Some(package), Some(parts)) = (package, parts) else {
+        return out;
+    };
+    for rel in wp_print::ops::chart_rels(pages.iter()) {
+        let Some(plot) = parts
+            .target(&rel)
+            .and_then(|name| package.part(name))
+            .and_then(|part| chart::read::plot(part.data()))
+        else {
+            continue;
+        };
+        out.insert(rel, plot);
+    }
+    out
+}
+
 /// Every image the pages draw, decoded once, by relationship id.
 pub fn rasters(
     package: Option<&ooxml::Package>,
@@ -112,7 +138,13 @@ mod tests {
         view.refresh(&document, &wp_layout::FieldValues::new(), 1, &mut shaper);
         assert!(!view.pages().is_empty());
         let mut faces = SystemFaces::new();
-        let pdf = wp_print::pdf::export(view.pages(), &mut faces, &HashMap::new(), Some("proof"));
+        let pdf = wp_print::pdf::export(
+            view.pages(),
+            &mut faces,
+            &HashMap::new(),
+            None,
+            Some("proof"),
+        );
         assert!(pdf.starts_with(b"%PDF-1.5"));
         assert!(pdf.ends_with(b"%%EOF\n"));
         assert!(pdf.len() > 500, "a page of text is not {} bytes", pdf.len());

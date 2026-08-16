@@ -4034,6 +4034,7 @@ version = "0.1.0"
 name = "wp-print"
 version = "0.1.0"
 dependencies = [
+ "chart",
  "flate2",
  "windows-sys 0.61.2",
  "wp-layout",

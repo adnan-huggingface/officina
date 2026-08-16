@@ -25,29 +25,41 @@ use flate2::Compression;
 use wp_layout::block::Page;
 use wp_layout::FontRequest;
 
-use crate::ops::{flatten, Op};
+use crate::ops::{draw_charts, flatten, Charts, Op};
 use crate::ttf::Face;
 use crate::{Faces, Raster};
 
 /// Turns pages into a complete PDF file.
 ///
 /// `images` is keyed by relationship id, prepared by the caller — see
-/// [`crate::ops::image_rels`] for the list worth decoding.
+/// [`crate::ops::image_rels`] for the list worth decoding, and
+/// [`crate::ops::chart_rels`] for the charts `charts` should hold. Without
+/// `charts` a chart's box is left empty, which is all a caller with no shaper
+/// could honestly draw.
 pub fn export(
     pages: &[Page],
     faces: &mut dyn Faces,
     images: &HashMap<String, Raster>,
+    charts: Option<&mut Charts>,
     title: Option<&str>,
 ) -> Vec<u8> {
     let mut writer = Writer::new();
     let mut fonts = Fonts::default();
     let mut xobjects = XObjects::default();
+    let mut charts = charts;
 
     // Content first: it discovers which fonts and images the pages actually
     // use, and the resource objects follow.
     let mut page_contents = Vec::new();
     for page in pages {
-        let content = content_stream(page, faces, &mut fonts, &mut xobjects, images);
+        let content = content_stream(
+            page,
+            faces,
+            &mut fonts,
+            &mut xobjects,
+            images,
+            charts.as_deref_mut(),
+        );
         page_contents.push((page.geometry.width, page.geometry.height, content));
     }
 
@@ -207,10 +219,15 @@ fn content_stream(
     fonts: &mut Fonts,
     xobjects: &mut XObjects,
     images: &HashMap<String, Raster>,
+    charts: Option<&mut Charts>,
 ) -> Vec<u8> {
     let height = page.geometry.height;
     let mut out = String::new();
-    for op in flatten(page) {
+    let ops = match charts {
+        Some(charts) => draw_charts(flatten(page), charts),
+        None => flatten(page),
+    };
+    for op in ops {
         match op {
             Op::Fill {
                 x,
@@ -284,6 +301,28 @@ fn content_stream(
                     number(height - y - h),
                 ));
             }
+            Op::Poly { points, rgb } => {
+                let Some(first) = points.first() else {
+                    continue;
+                };
+                out.push_str(&format!(
+                    "{} rg {} {} m\n",
+                    color(rgb),
+                    number(first.0),
+                    number(height - first.1),
+                ));
+                for point in &points[1..] {
+                    out.push_str(&format!(
+                        "{} {} l\n",
+                        number(point.0),
+                        number(height - point.1)
+                    ));
+                }
+                out.push_str("f\n");
+            }
+            // A chart nobody expanded: its box stays empty, as it did before
+            // charts were drawn at all.
+            Op::Chart { .. } => {}
         }
     }
     out.into_bytes()
@@ -839,7 +878,7 @@ mod tests {
 
     #[test]
     fn a_page_with_no_fonts_still_exports_a_wellformed_file() {
-        let pdf = export(&[page()], &mut NoFaces, &HashMap::new(), Some("Test"));
+        let pdf = export(&[page()], &mut NoFaces, &HashMap::new(), None, Some("Test"));
         assert!(pdf.starts_with(b"%PDF-1.5"));
         assert!(pdf.ends_with(b"%%EOF\n"));
         let text = String::from_utf8_lossy(&pdf);
@@ -855,7 +894,7 @@ mod tests {
         }
         let mut two_names = page();
         two_names.content.push(page().content[0].clone());
-        let pdf = export(&[two_names], &mut SystemFaces, &HashMap::new(), None);
+        let pdf = export(&[two_names], &mut SystemFaces, &HashMap::new(), None, None);
         let text = String::from_utf8_lossy(&pdf);
         assert_eq!(
             text.matches("/FontFile2").count(),
@@ -890,7 +929,7 @@ mod tests {
                 nth: 0,
             },
         });
-        let pdf = export(&[with_image], &mut NoFaces, &images, None);
+        let pdf = export(&[with_image], &mut NoFaces, &images, None, None);
         let text = String::from_utf8_lossy(&pdf);
         assert!(
             text.contains("/SMask"),

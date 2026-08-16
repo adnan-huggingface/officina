@@ -91,16 +91,15 @@ pub fn resolve(book: &Workbook, chart: &Chart) -> Vec<Plotted> {
                         .collect::<Vec<_>>()
                 })
                 .filter(|values: &Vec<Option<f64>>| !values.is_empty());
-            let [r, g, b] = series
-                .color
-                .unwrap_or(SERIES_COLORS[index % SERIES_COLORS.len()]);
             Plotted {
                 name: series
                     .name
                     .clone()
                     .unwrap_or_else(|| format!("Series {}", index + 1)),
                 values: live.unwrap_or_else(|| series.values.clone()),
-                color: egui::Color32::from_rgb(r, g, b),
+                rgb: series
+                    .color
+                    .unwrap_or(SERIES_COLORS[index % SERIES_COLORS.len()]),
             }
         })
         .collect()

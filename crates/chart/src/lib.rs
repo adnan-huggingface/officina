@@ -10,7 +10,12 @@
 //! What is *not* shared is where the chart goes: a workbook pins it to cells
 //! ([`Anchor`]), a document puts it in a line of text or on the page. That is
 //! why [`Plot`] — everything a painter needs — is a type of its own.
+//!
+//! [`draw`] is the same argument one level up: a chart is drawn on a screen,
+//! into a PDF and onto a printer, so where its ink goes is worked out once, in
+//! numbers, and each renderer only chooses ink.
 
+pub mod draw;
 mod model;
 pub mod read;
 

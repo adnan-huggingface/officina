@@ -666,6 +666,15 @@ impl Scriva {
         )
     }
 
+    /// The charts the current pages draw, read for a paper renderer.
+    fn page_plots(&self) -> std::collections::HashMap<String, chart::Plot> {
+        crate::publish::plots(
+            self.package.as_ref(),
+            self.parts.as_ref(),
+            self.view.pages(),
+        )
+    }
+
     /// What this document is called off the screen: for a PDF's title, for the
     /// print queue's entry.
     fn published_name(&self) -> String {
@@ -696,8 +705,21 @@ impl Scriva {
             path
         };
         let images = self.page_images();
+        let plots = self.page_plots();
         let mut faces = crate::publish::SystemFaces::new();
-        let pdf = wp_print::pdf::export(self.view.pages(), &mut faces, &images, Some(&stem));
+        // The shaper that measured the page measures the charts on it, so a
+        // printed label sits where the screen's did.
+        let mut charts = self.shaper.as_mut().map(|shaper| wp_print::ops::Charts {
+            plots: &plots,
+            shaper,
+        });
+        let pdf = wp_print::pdf::export(
+            self.view.pages(),
+            &mut faces,
+            &images,
+            charts.as_mut(),
+            Some(&stem),
+        );
         if let Err(error) = std::fs::write(&path, pdf) {
             self.message = Some((
                 "Cannot export".to_owned(),
@@ -709,10 +731,16 @@ impl Scriva {
     #[cfg(windows)]
     fn print(&mut self) {
         let images = self.page_images();
+        let plots = self.page_plots();
         let name = self.published_name();
+        let mut charts = self.shaper.as_mut().map(|shaper| wp_print::ops::Charts {
+            plots: &plots,
+            shaper,
+        });
         match wp_print::win::print(
             self.view.pages(),
             &images,
+            charts.as_mut(),
             &name,
             &ui_kit::fonts::gdi_family,
         ) {
