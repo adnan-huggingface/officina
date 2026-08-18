@@ -823,6 +823,99 @@ pub fn paragraph_at(document: &Document, index: usize) -> Option<Paragraph> {
     document.paragraphs().get(index).map(|p| (*p).clone())
 }
 
+/// What the selection covers, as paragraphs — runs, properties and all.
+///
+/// The paragraphs at the ends are the document's own with everything outside the
+/// selection removed, so a bold word stays bold and a bulleted item stays a
+/// bulleted item. Copying the *text* is what loses that, and copying the text is
+/// all the clipboard could do.
+pub fn copy_range(document: &Document, selection: Selection) -> Vec<Paragraph> {
+    if selection.is_empty() {
+        return Vec::new();
+    }
+    let (start, end) = selection.ordered();
+    let paragraphs = document.paragraphs();
+    if start.paragraph >= paragraphs.len() {
+        return Vec::new();
+    }
+    let last = end.paragraph.min(paragraphs.len() - 1);
+    if start.paragraph == last {
+        let mut only = paragraphs[start.paragraph].clone();
+        let total = text::len(&only);
+        text::remove(&mut only, end.offset.min(total)..total);
+        text::remove(&mut only, 0..start.offset.min(total));
+        return vec![only];
+    }
+    let mut out = Vec::with_capacity(last - start.paragraph + 1);
+    let mut first = paragraphs[start.paragraph].clone();
+    let head = start.offset.min(text::len(&first));
+    text::remove(&mut first, 0..head);
+    out.push(first);
+    for paragraph in &paragraphs[start.paragraph + 1..last] {
+        out.push((*paragraph).clone());
+    }
+    let mut tail = paragraphs[last].clone();
+    let total = text::len(&tail);
+    text::remove(&mut tail, end.offset.min(total)..total);
+    out.push(tail);
+    out
+}
+
+/// Pastes copied paragraphs over the selection, keeping their formatting.
+///
+/// The first one joins onto whatever the caret was in and the last one takes
+/// whatever followed it, which is what makes pasting half a sentence into the
+/// middle of another sentence give one sentence rather than three paragraphs.
+/// The paragraphs *between* those two arrive whole, with their own properties —
+/// paste a bulleted list and it is still a bulleted list.
+pub fn paste_paragraphs(
+    document: &mut Document,
+    history: &mut History,
+    selection: Selection,
+    clip: &[Paragraph],
+) -> Caret {
+    let caret = delete_selection(document, history, selection);
+    let Some(target) = paragraph_at(document, caret.paragraph) else {
+        return caret;
+    };
+    let Some((clip_first, rest)) = clip.split_first() else {
+        return caret;
+    };
+    let (head, tail) = text::split(&target, caret.offset);
+
+    if rest.is_empty() {
+        // All of it lands inside the one paragraph.
+        history.push(Change::Paragraph {
+            index: caret.paragraph,
+            before: Box::new(target),
+        });
+        let joined = text::merge(&text::merge(&head, clip_first), &tail);
+        replace_range(document, caret.paragraph..caret.paragraph + 1, vec![joined]);
+        return Caret {
+            paragraph: caret.paragraph,
+            offset: caret.offset + text::len(clip_first),
+        };
+    }
+
+    let mut built = Vec::with_capacity(clip.len());
+    built.push(text::merge(&head, clip_first));
+    let (clip_last, middle) = rest.split_last().expect("rest is not empty");
+    built.extend(middle.iter().cloned());
+    built.push(text::merge(clip_last, &tail));
+
+    history.push(Change::Range {
+        first: caret.paragraph,
+        before: vec![target],
+        now: built.len(),
+    });
+    let landed = Caret {
+        paragraph: caret.paragraph + built.len() - 1,
+        offset: text::len(clip_last),
+    };
+    replace_range(document, caret.paragraph..caret.paragraph + 1, built);
+    landed
+}
+
 /// The alignment of the paragraph the caret is in.
 pub fn justify_at(document: &Document, caret: Caret) -> Option<Justify> {
     let paragraphs = document.paragraphs();

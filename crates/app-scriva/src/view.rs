@@ -879,6 +879,15 @@ fn paint_line(
         (overlap.start < overlap.end).then_some((overlap.start, overlap.end))
     };
 
+    // The selection is one band across the line, not one rectangle per
+    // fragment. A line is one fragment per *word* and a fragment's width stops
+    // at its last letter — the space that follows hangs past it — so painting
+    // fragment by fragment left a gap of paper at every space and the selection
+    // came out striped, a separate block under each word.
+    if let Some(band) = selection_band(selection, paragraph, placement, line, page, zoom, shaper) {
+        painter.rect_filled(band, 0.0, SELECTION);
+    }
+
     for fragment in &line.fragments {
         let x = placement.x + fragment.x;
         if let Some(source) = fragment.source {
@@ -889,18 +898,6 @@ fn paint_line(
                     {
                         painter.rect_filled(rect, 0.0, MATCH);
                     }
-                }
-            }
-            // Exactly the letters the selection covers, not the whole fragment
-            // they sit in. A line is one fragment per *word*, so filling the
-            // fragment painted a whole word blue the moment two of its letters
-            // were selected — and the find bar, which had this right, drew its
-            // yellow over the correct letters right beside it.
-            if let Some((from, to)) = covered(&selection, source.start, source.end) {
-                if let Some(rect) =
-                    span_rect(placement, fragment, source.start, from, to, page, zoom)
-                {
-                    painter.rect_filled(rect, 0.0, SELECTION);
                 }
             }
         }
@@ -981,6 +978,77 @@ fn paint_line(
             );
         }
     }
+}
+
+/// The one band a selection covers on a line: from the first letter it takes to
+/// the last, the spaces between words included.
+///
+/// Word draws the paragraph mark. A selection that carries on past the end of a
+/// line shows about a space of blue after the last letter — that is the ¶, and
+/// it is how the reader can see that Delete will pull the next paragraph up onto
+/// this one. A wrapped line is given the same block, because the selection
+/// really does continue there and a line ending abruptly at its last letter
+/// reads as though it did not.
+#[allow(clippy::too_many_arguments)]
+fn selection_band(
+    selection: Selection,
+    paragraph: usize,
+    placement: &Placement,
+    line: &wp_layout::inline::Line,
+    page: egui::Pos2,
+    zoom: f32,
+    shaper: &mut Egui,
+) -> Option<egui::Rect> {
+    if selection.is_empty() {
+        return None;
+    }
+    let (start, end) = selection.ordered();
+    if paragraph < start.paragraph || paragraph > end.paragraph {
+        return None;
+    }
+    let low = match paragraph == start.paragraph {
+        true => start.offset,
+        false => 0,
+    };
+    let high = match paragraph == end.paragraph {
+        true => end.offset,
+        false => usize::MAX,
+    };
+    let (line_start, line_end) = line_range(line);
+    let from = line_start.max(low);
+    let to = line_end.min(high);
+    // Whether the selection reaches past the end of this line — into the next
+    // line of a paragraph that wrapped, or into the paragraph after it.
+    let beyond = high > line_end;
+    if from > to || (from == to && !beyond) {
+        return None;
+    }
+
+    let left = x_of(line, from).unwrap_or(0.0);
+    let mut right = x_of(line, to).unwrap_or(left);
+    if beyond {
+        // The mark's width, which is a space in whatever face the line ends in.
+        // An empty paragraph has no fragment to ask, and its own height is the
+        // next best guess: a space is about a quarter of an em and a line is
+        // about six.
+        right += match line.fragments.last() {
+            Some(fragment) => shaper.width(" ", &fragment.style.font),
+            None => placement.height / 4.8,
+        };
+    }
+    if right <= left {
+        return None;
+    }
+    Some(egui::Rect::from_min_max(
+        page + egui::vec2(
+            (placement.x + left) as f32 * zoom,
+            placement.y as f32 * zoom,
+        ),
+        page + egui::vec2(
+            (placement.x + right) as f32 * zoom,
+            (placement.y + placement.height) as f32 * zoom,
+        ),
+    ))
 }
 
 /// The rectangle the bytes `from..to` occupy within one fragment, walked from
@@ -1466,6 +1534,141 @@ mod tests {
             "the tab has width between them: {} then {}",
             before.min.x,
             after.min.x
+        );
+    }
+
+    /// A justified paragraph, narrow enough that its first line is a full one.
+    ///
+    /// Justification is what pulls the words of a line apart: it is done by
+    /// moving whole fragments, so the space between two of them is nobody's
+    /// fragment and belongs to no run.
+    fn justified() -> (View, Egui) {
+        let ctx = context();
+        let mut shaper = Egui::new(&ctx);
+        let mut view = View::default();
+        let mut document = document(&["one two three four five six seven eight nine"]);
+        let margins =
+            document.section.margins.start.points() + document.section.margins.end.points();
+        document.section.page.width = wp_model::Twips::from_points(120.0 + margins);
+        for paragraph in document.paragraphs_mut() {
+            paragraph.props.justify = Some(wp_model::prop::Justify::Both);
+        }
+        view.refresh(&document, &wp_layout::FieldValues::new(), 1, &mut shaper);
+        (view, shaper)
+    }
+
+    fn band_of<'a>(
+        view: &'a View,
+        shaper: &mut Egui,
+        paragraph: usize,
+        selection: Selection,
+    ) -> Option<(egui::Rect, &'a Placement, &'a wp_layout::inline::Line)> {
+        let placement = view.pages()[0]
+            .content
+            .iter()
+            .find(|p| matches!(&p.kind, Placed::Line { paragraph: n, .. } if *n == paragraph))?;
+        let Placed::Line { line, .. } = &placement.kind else {
+            return None;
+        };
+        let band = selection_band(
+            selection,
+            paragraph,
+            placement,
+            line,
+            egui::Pos2::ZERO,
+            1.0,
+            shaper,
+        )?;
+        Some((band, placement, line))
+    }
+
+    #[test]
+    fn a_selection_is_one_band_across_the_line_and_not_a_block_under_each_word() {
+        // A line is one fragment per word, and justification spreads the
+        // fragments apart — so the space between two words is nobody's fragment.
+        // Painting the selection fragment by fragment left a stripe of white
+        // paper at every one of those spaces, and a selected sentence came out
+        // looking like a row of separately selected words.
+        let (view, mut shaper) = justified();
+        let selection = Selection {
+            anchor: Caret {
+                paragraph: 0,
+                offset: 0,
+            },
+            head: Caret {
+                paragraph: 1,
+                offset: 0,
+            },
+        };
+        let (band, placement, line) =
+            band_of(&view, &mut shaper, 0, selection).expect("a selected line");
+        let first = &line.fragments[0];
+        let second = &line.fragments[1];
+        let gap = placement.x + (first.x + first.width + second.x) / 2.0;
+        assert!(
+            second.x > first.x + first.width,
+            "the words really are apart: {} then {}",
+            first.x + first.width,
+            second.x
+        );
+        assert!(
+            band.min.x as f64 <= gap && gap <= band.max.x as f64,
+            "the space between two words is selected too: {gap} not in {band:?}"
+        );
+    }
+
+    #[test]
+    fn a_selection_that_carries_on_past_a_line_shows_the_mark_at_its_end() {
+        // Word paints the ¶. Without it a selection reaching into the next
+        // paragraph stops dead at the last letter, and nothing on the page says
+        // that the paragraph mark is going with it.
+        let (view, mut shaper) = laid(&["first", "second"]);
+        let within = Selection {
+            anchor: Caret {
+                paragraph: 0,
+                offset: 0,
+            },
+            head: Caret {
+                paragraph: 0,
+                offset: 5,
+            },
+        };
+        let onward = Selection {
+            head: Caret {
+                paragraph: 1,
+                offset: 0,
+            },
+            ..within
+        };
+        let (stops, ..) = band_of(&view, &mut shaper, 0, within).expect("a band");
+        let (carries, ..) = band_of(&view, &mut shaper, 0, onward).expect("a band");
+        assert!(
+            carries.max.x > stops.max.x + 1.0,
+            "the mark is drawn past the last letter: {} then {}",
+            stops.max.x,
+            carries.max.x
+        );
+    }
+
+    #[test]
+    fn an_empty_paragraph_inside_a_selection_is_visibly_in_it() {
+        // It has no letters to paint over, so it painted nothing at all — a gap
+        // in the middle of a selection, exactly where the user had dragged.
+        let (view, mut shaper) = laid(&["before", "", "after"]);
+        let selection = Selection {
+            anchor: Caret {
+                paragraph: 0,
+                offset: 0,
+            },
+            head: Caret {
+                paragraph: 2,
+                offset: 5,
+            },
+        };
+        let (band, ..) = band_of(&view, &mut shaper, 1, selection).expect("the empty paragraph");
+        assert!(
+            band.width() > 1.0,
+            "a mark's worth of blue, not nothing: {band:?}"
         );
     }
 

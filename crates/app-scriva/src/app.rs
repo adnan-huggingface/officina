@@ -217,6 +217,22 @@ pub struct Scriva {
     /// True until the percent field is first touched. While set, the whole
     /// number stays selected so the next keystroke replaces it.
     zoom_fresh: bool,
+    /// What was last copied, with its formatting.
+    clipboard: Option<Clip>,
+}
+
+/// A copy of the document's own paragraphs, and the plain text that went to the
+/// OS clipboard beside them.
+///
+/// The OS clipboard holds text and nothing else — put a bold word on it and a
+/// bold word is not what comes back. Word gets around that by writing several
+/// formats at once and reading its own back. This does the cheaper half of the
+/// same trick: the formatting stays here, and the text on the board is the
+/// receipt. If the board still says what this copy said, nothing else has
+/// written to it since and these paragraphs are still what the user copied.
+struct Clip {
+    text: String,
+    paragraphs: Vec<wp_model::doc::Paragraph>,
 }
 
 impl Default for Scriva {
@@ -266,6 +282,7 @@ impl Scriva {
             viewport: egui::Vec2::ZERO,
             zoom_draft: None,
             zoom_fresh: false,
+            clipboard: None,
         }
     }
 
@@ -870,22 +887,15 @@ impl Scriva {
                 };
             }
             Command::Copy => {
-                if let Some(text) = self.selected_text() {
-                    clipboard_set(&text);
-                }
+                self.copy_selection();
             }
             Command::Cut => {
-                if let Some(text) = self.selected_text() {
-                    clipboard_set(&text);
+                if self.copy_selection() {
                     self.replace_selection("");
                     self.reveal = Some(self.caret());
                 }
             }
-            Command::Paste => {
-                if let Some(text) = clipboard_get() {
-                    self.paste_text(&text);
-                }
-            }
+            Command::Paste => self.paste_from_board(),
             Command::Find => self.open_finder(false),
             Command::Replace => self.open_finder(true),
             Command::FindNext => self.jump_match(true),
@@ -1273,6 +1283,58 @@ impl Scriva {
         Some(parts.join("\n"))
     }
 
+    /// Copies the selection: its text to the OS clipboard, its formatting here.
+    ///
+    /// Answers whether there was anything to copy, which is what tells Cut
+    /// whether to go on and delete it.
+    fn copy_selection(&mut self) -> bool {
+        let Some(text) = self.selected_text() else {
+            return false;
+        };
+        clipboard_set(&text);
+        self.clipboard = Some(Clip {
+            text,
+            paragraphs: edit::copy_range(&self.document, self.selection),
+        });
+        true
+    }
+
+    /// Pastes, with formatting when the board still holds what this copied.
+    ///
+    /// Anything else on the board — a line from a browser, a path from the shell
+    /// — is text and arrives as text, taking the formatting of wherever the
+    /// caret is. That is Word's rule for pasting from an application that offers
+    /// nothing richer, and it is the only rule available for text.
+    fn paste_from_board(&mut self) {
+        let Some(text) = clipboard_get() else {
+            return;
+        };
+        self.paste_matching(&text);
+    }
+
+    /// The body of a paste, once the board has been read.
+    fn paste_matching(&mut self, text: &str) {
+        let flattened = text.replace("\r\n", "\n").replace('\r', "\n");
+        let ours = self
+            .clipboard
+            .as_ref()
+            .filter(|clip| clip.text == flattened && !clip.paragraphs.is_empty())
+            .map(|clip| clip.paragraphs.clone());
+        let Some(paragraphs) = ours else {
+            self.paste_text(text);
+            return;
+        };
+        let caret = edit::paste_paragraphs(
+            &mut self.document,
+            &mut self.history,
+            self.selection,
+            &paragraphs,
+        );
+        self.selection = Selection::at(clamp(&self.document, caret));
+        self.changed();
+        self.reveal = Some(self.caret());
+    }
+
     /// Replaces the selection with `replacement` — typing it when there is
     /// something to type, deleting when there is not. Tracking applies either
     /// way, because both go through the same paths typing does.
@@ -1508,7 +1570,7 @@ impl Scriva {
                 // the pasted text already read from the OS.
                 egui::Event::Copy => self.run(Command::Copy),
                 egui::Event::Cut if self.picked.is_none() => self.run(Command::Cut),
-                egui::Event::Paste(text) if self.picked.is_none() => self.paste_text(&text),
+                egui::Event::Paste(text) if self.picked.is_none() => self.paste_matching(&text),
                 egui::Event::Key {
                     key,
                     pressed: true,
@@ -3296,6 +3358,142 @@ mod tests {
             runs.last().is_some_and(|run| !run.props.bold()),
             "and not the rest of the line"
         );
+    }
+
+    /// Selects `range` of the first paragraph and copies it, without going near
+    /// the machine's real clipboard — a test that wrote to it would throw away
+    /// whatever the user had on it.
+    fn copied(app: &mut Scriva, range: std::ops::Range<usize>) {
+        app.selection = Selection {
+            anchor: Caret {
+                paragraph: 0,
+                offset: range.start,
+            },
+            head: Caret {
+                paragraph: 0,
+                offset: range.end,
+            },
+        };
+        let text = app.selected_text().expect("something to copy");
+        app.clipboard = Some(Clip {
+            text,
+            paragraphs: edit::copy_range(&app.document, app.selection),
+        });
+    }
+
+    #[test]
+    fn pasting_what_this_copied_keeps_its_formatting() {
+        // The clipboard holds text and nothing else, so copy and paste went
+        // through a `String` and everything the runs knew was thrown away on
+        // the way: a bold phrase came back plain.
+        let mut app = app_with(&["make this bold please"]);
+        app.selection = Selection {
+            anchor: Caret {
+                paragraph: 0,
+                offset: 5,
+            },
+            head: Caret {
+                paragraph: 0,
+                offset: 14,
+            },
+        };
+        app.run(Command::Bold);
+        copied(&mut app, 5..14);
+
+        app.selection = Selection::at(Caret {
+            paragraph: 0,
+            offset: text_of(&app, 0).len(),
+        });
+        app.paste_matching("this bold");
+
+        assert_eq!(
+            text_of(&app, 0),
+            "make this bold please".to_string() + "this bold"
+        );
+        let paragraphs = app.document.paragraphs();
+        let bold: String = paragraphs[0]
+            .runs()
+            .iter()
+            .filter(|run| run.props.bold())
+            .map(|run| run.text())
+            .collect();
+        assert_eq!(bold, "this boldthis bold", "the pasted copy is bold too");
+    }
+
+    #[test]
+    fn pasting_something_another_program_copied_arrives_as_text() {
+        // The board no longer says what this copied, so whatever is on it came
+        // from somewhere else and is text — it takes the formatting of wherever
+        // the caret is, which is Word's rule.
+        let mut app = app_with(&["make this bold please"]);
+        app.selection = Selection {
+            anchor: Caret {
+                paragraph: 0,
+                offset: 5,
+            },
+            head: Caret {
+                paragraph: 0,
+                offset: 14,
+            },
+        };
+        app.run(Command::Bold);
+        copied(&mut app, 5..14);
+
+        app.selection = Selection::at(Caret {
+            paragraph: 0,
+            offset: 0,
+        });
+        app.paste_matching("from elsewhere");
+
+        assert!(text_of(&app, 0).starts_with("from elsewhere"));
+        let paragraphs = app.document.paragraphs();
+        let bold: String = paragraphs[0]
+            .runs()
+            .iter()
+            .filter(|run| run.props.bold())
+            .map(|run| run.text())
+            .collect();
+        assert_eq!(bold, "this bold", "only what was already bold");
+    }
+
+    #[test]
+    fn copying_across_paragraphs_pastes_them_back_as_paragraphs() {
+        let mut app = app_with(&["first line", "second line", "third line"]);
+        app.selection = Selection {
+            anchor: Caret {
+                paragraph: 0,
+                offset: 6,
+            },
+            head: Caret {
+                paragraph: 2,
+                offset: 5,
+            },
+        };
+        let text = app.selected_text().expect("something to copy");
+        app.clipboard = Some(Clip {
+            text: text.clone(),
+            paragraphs: edit::copy_range(&app.document, app.selection),
+        });
+        let was = app.document.paragraphs().len();
+
+        app.selection = Selection::at(Caret {
+            paragraph: 2,
+            offset: text_of(&app, 2).len(),
+        });
+        app.paste_matching(&text);
+
+        assert_eq!(
+            app.document.paragraphs().len(),
+            was + 2,
+            "three copied paragraphs join onto one and add two"
+        );
+        assert_eq!(text_of(&app, 2), "third lineline");
+        assert_eq!(text_of(&app, 3), "second line");
+        assert_eq!(text_of(&app, 4), "third");
+    }
+
+    fn text_of(app: &Scriva, index: usize) -> String {
+        app.document.paragraphs()[index].text()
     }
 
     #[test]
