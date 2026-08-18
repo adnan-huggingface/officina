@@ -16,7 +16,12 @@ fn corpus(name: &str) -> std::path::PathBuf {
 #[test]
 fn the_chart_a_document_carries_is_drawn_on_its_page() {
     let ctx = egui::Context::default();
-    ui_kit::fonts::register(&ctx, &[]);
+    // The machine's own type, not just the family names: a chart sets its
+    // labels in Calibri, which is an exactly-named face, and a context given
+    // no directories to read has none of those — every name falls back to the
+    // generic sans, and the page this test leaves behind is set in the wrong
+    // face while every assertion in it still passes.
+    ui_kit::fonts::install(&ctx);
     let mut out = ctx.run_ui(egui::RawInput::default(), |_| {});
     out.textures_delta.clear();
     let mut shaper = scriva::shaper::Egui::new(&ctx);

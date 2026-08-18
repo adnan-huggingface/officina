@@ -272,10 +272,15 @@ pub struct Charts<'a> {
 
 /// The face a chart sets its own text in.
 ///
-/// A chart's labels are not the document's type — Word does not set them in
-/// the body font either — so one readable sans face is the whole of the
-/// choice, and the screen makes the same one.
-const CHART_FACE: &str = "Arial";
+/// A chart's labels are not the document's type: the sample's chart part
+/// names no face at all — no `txPr`, no typeface — and its package carries no
+/// theme, so Word falls back to the minor latin font of its built-in one,
+/// which is Calibri. Identified by rendering the same string in ten installed
+/// sans faces, scaling each to the ink height Word drew, and overlapping it:
+/// Calibri matched nine tenths of the ink, the next best two thirds, Arial a
+/// seventh. The size that goes with it is [`chart::draw::TEXT`], and the
+/// screen makes the same two choices.
+const CHART_FACE: &str = "Calibri";
 
 /// Turns every [`Op::Chart`] into the ink that draws it.
 ///

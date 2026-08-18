@@ -25,9 +25,14 @@ pub fn rgb(color: egui::Color32) -> [u8; 3] {
     [color.r(), color.g(), color.b()]
 }
 
-/// Measures with the application's own sans face — the same face a paper
-/// renderer sets a chart's labels in, so a title centred on the screen is
-/// centred on the page.
+/// The face a chart sets its own text in, which is Word's rather than the
+/// document's: a chart part that names none gets the minor latin font of
+/// Office's built-in theme. `wp_print::ops` names the same one, so a label
+/// centred on the screen is centred on the page.
+const FACE: &str = "Calibri";
+
+/// Measures in that face — or in the application's own sans, on a machine
+/// that has no Calibri to give.
 struct Fonts<'a>(&'a egui::Painter);
 
 impl Measure for Fonts<'_> {
@@ -40,7 +45,9 @@ impl Measure for Fonts<'_> {
 }
 
 fn font(size: f64) -> egui::FontId {
-    egui::FontId::new(size as f32, fonts::face(Family::Sans, false, false))
+    let family = fonts::exact_face(FACE, false, false)
+        .unwrap_or_else(|| fonts::face(Family::Sans, false, false));
+    egui::FontId::new(size as f32, family)
 }
 
 pub fn draw(
@@ -124,11 +131,15 @@ fn pos(x: f64, y: f64) -> egui::Pos2 {
     egui::pos2(x as f32, y as f32)
 }
 
+/// Both corners narrowed from the geometry's own numbers.
+///
+/// Not a corner and a size: egui would add those back together in `f32`, and
+/// a bar whose base was worked out in `f64` as exactly the axis line comes
+/// back an ulp above or below it depending on how tall the bar is. Three
+/// columns then stand on three different baselines, by a distance no one can
+/// see and every equality test can.
 fn egui_rect(rect: Rect) -> egui::Rect {
-    egui::Rect::from_min_size(
-        pos(rect.x, rect.y),
-        egui::vec2(rect.width as f32, rect.height as f32),
-    )
+    egui::Rect::from_min_max(pos(rect.x, rect.y), pos(rect.right(), rect.bottom()))
 }
 
 fn color(rgb: [u8; 3]) -> egui::Color32 {

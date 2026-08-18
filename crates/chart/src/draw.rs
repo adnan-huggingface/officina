@@ -17,23 +17,41 @@
 
 use crate::{Axis, ChartKind, LegendPosition, Paint, Plot};
 
-/// How far the plot area stands clear of whatever is beside it — the value
-/// labels on one side, the legend on the other — in label sizes.
+/// The size a chart sets its own text in, before the caller's zoom.
 ///
-/// This and the two below are Word's, measured from charts Word rendered
+/// Word's default, and the one it uses whenever the part names none — which
+/// it does not here: the sample's `chartSpace` carries no `txPr`, no
+/// typeface, and its package no theme at all, so Word falls back to its
+/// built-in theme. See [`FACE`] in `wp_print::ops` for the face that goes
+/// with it.
+pub const TEXT: f64 = 10.0;
+
+/// How far the plot area stands clear of whatever is beside it — the value
+/// labels on one side, the legend on the other — in [`TEXT`] sizes.
+///
+/// This and the three below are Word's, measured from charts Word rendered
 /// itself: probe documents whose chart area carries a visible border, so that
 /// the plot rectangle could be read against the chart's own edges rather than
 /// guessed from the page. They hold whatever the chart's width, the labels'
 /// width, the legend's text, or the number of series — Office's automatic
-/// layout is constants, not fractions of the box.
-const CLEAR: f64 = 1.74;
+/// layout is constants, not fractions of the box. In points, at Word's own
+/// ten: 15.7 clear, 10.8 of margin, 22.0 below, and 9.0 between a value
+/// label and the axis it belongs to.
+const CLEAR: f64 = 1.566;
 
 /// The margin at the top of a chart and down its right edge.
-const MARGIN: f64 = 1.2;
+const MARGIN: f64 = 1.08;
 
 /// What is kept below the plot: the category labels, and the margin under
 /// them.
-const FOOTER: f64 = 2.45;
+const FOOTER: f64 = 2.202;
+
+/// How far a value label stands clear of the axis. Whatever [`CLEAR`] has
+/// left over after it is the margin at the chart's left edge.
+const LABEL_GAP: f64 = 0.904;
+
+/// The stub an axis marks a major unit with.
+const TICK: f64 = 0.31;
 
 /// The default palette Office assigns to series, accent 1 through 6.
 pub const SERIES_COLORS: [[u8; 3]; 6] = [
@@ -309,7 +327,7 @@ pub fn primitives(
         }),
     }
 
-    let small = 9.0 * style.zoom;
+    let small = TEXT * style.zoom;
     // Word's insets, which are not the same on all four sides: a margin at the
     // top and down the right, none at all on the left — the value labels begin
     // at the chart's very edge, and what holds the plot off is [`CLEAR`].
@@ -374,13 +392,13 @@ fn legend(
     position: LegendPosition,
     measure: &mut dyn Measure,
 ) -> Rect {
-    // Word's swatch is a square six tenths of its text, and stands three
-    // tenths clear of it. Its entries are set on a pitch of two — noticeably
+    // Word's swatch is a square just over half its text, and stands a quarter
+    // clear of it. Its entries are set on a pitch of nearly two — noticeably
     // airier than a line of type needs, and what makes a legend of three read
     // as three separate things rather than a paragraph.
-    let swatch = 0.6 * size;
-    let gap = 0.3 * size;
-    let line = 2.0 * size;
+    let swatch = 0.54 * size;
+    let gap = 0.26 * size;
+    let line = 1.81 * size;
     let mut left = area;
     // Both the swatch and the name stand at the middle of that pitch, which is
     // where Word has them: at this spacing, hanging either from the top of the
@@ -519,7 +537,7 @@ fn axes_chart(
     // Tick marks, in each axis's own ink. A third of the label's size is the
     // length Word's render measures to — a hair under three points against
     // the sample's nine-point labels.
-    let stub = size / 3.0;
+    let stub = TICK * size;
     let val_tick = tick_marks(&plot.val_axis, stub, style.grid);
     let cat_tick = tick_marks(&plot.cat_axis, stub, style.grid);
 
@@ -543,7 +561,7 @@ fn axes_chart(
         // widest of them at the chart's own left edge — where Word starts it.
         let (width, height) = measure.size(&text, size);
         out.push(Prim::Text {
-            at: (area.left() - size - width, y - height / 2.0),
+            at: (area.left() - LABEL_GAP * size - width, y - height / 2.0),
             size,
             text,
             rgb: style.text,
@@ -1066,10 +1084,12 @@ mod tests {
             .partition(|p| (p[1].0 - p[0].0).abs() > 20.0);
         assert_eq!(axis_line.len(), 1, "the category axis itself");
         assert_eq!(value_stubs.len(), 6, "one per major unit of 0..=5");
-        // Three points long — a third of the nine-point label — and reaching
-        // out of the plot, not into it.
+        // Word's own length, and reaching out of the plot, not into it.
         for stub in &value_stubs {
-            assert!((stub[1].0 - stub[0].0 - 3.0).abs() < 1e-9, "{stub:?}");
+            assert!(
+                (stub[1].0 - stub[0].0 - TICK * TEXT).abs() < 1e-9,
+                "{stub:?}"
+            );
             assert!(stub[0].0 < axis_line[0][0].0, "outside the plot");
         }
     }
@@ -1168,22 +1188,23 @@ mod tests {
             })
             .expect("the legend entry");
         assert_eq!(label, "Column 1");
-        // Swatch + gap + "Column 1" at half-size (8 chars × 4.5), measured
-        // from the chart's right margin — not 28% of the chart.
-        let area_right = 400.0 - MARGIN * 9.0;
-        let width = 0.6 * 9.0 + 0.3 * 9.0 + 8.0 * 4.5;
+        // Swatch + gap + "Column 1" at the test measurer's half-size,
+        // measured from the chart's right margin — not 28% of the chart.
+        let area_right = 400.0 - MARGIN * TEXT;
+        let block = 0.54 * TEXT + 0.26 * TEXT;
+        let width = block + 8.0 * 0.5 * TEXT;
         assert!(
-            (entry.0 - (area_right - width + 0.6 * 9.0 + 0.3 * 9.0)).abs() < 0.001,
+            (entry.0 - (area_right - width + block)).abs() < 0.001,
             "the column starts at its measured width: {}",
             entry.0
         );
-        // One entry on Word's pitch of two label-sizes, the block centred in
-        // the area between the top and bottom margins, and the name centred
-        // again within its own line — not hung from the top of the chart.
-        let inner = 300.0 - MARGIN * 9.0 * 2.0;
-        let line = 2.0 * 9.0;
+        // One entry on Word's pitch, the block centred in the area between
+        // the top and bottom margins, and the name centred again within its
+        // own line — not hung from the top of the chart.
+        let inner = 300.0 - MARGIN * TEXT * 2.0;
+        let line = 1.81 * TEXT;
         assert!(
-            (entry.1 - (MARGIN * 9.0 + (inner - line) / 2.0 + (line - 9.0) / 2.0)).abs() < 0.001,
+            (entry.1 - (MARGIN * TEXT + (inner - line) / 2.0 + (line - TEXT) / 2.0)).abs() < 0.001,
             "centred vertically: {}",
             entry.1
         );
@@ -1200,10 +1221,10 @@ mod tests {
             })
             .expect("the legend swatch");
         assert!(
-            (swatch.center().1 - (entry.1 + 9.0 / 2.0)).abs() < 0.001,
+            (swatch.center().1 - (entry.1 + TEXT / 2.0)).abs() < 0.001,
             "swatch {} against name {}",
             swatch.center().1,
-            entry.1 + 4.5
+            entry.1 + TEXT / 2.0
         );
     }
 
@@ -1230,12 +1251,13 @@ mod tests {
             .expect("the plot box");
 
         // The axis runs 0 to 5 by ones, so the widest label is one character
-        // wide: 4.5 at the test measurer's half-size.
-        let size = 9.0;
+        // wide: half the size, at the test measurer's half-size.
+        let size = TEXT;
+        let widest = 0.5 * size;
         let close = |a: f64, b: f64, what: &str| {
             assert!((a - b).abs() < 0.001, "{what}: {a} wanted {b}");
         };
-        close(plot_rect.left(), 4.5 + CLEAR * size, "left");
+        close(plot_rect.left(), widest + CLEAR * size, "left");
         close(
             plot_rect.right(),
             400.0 - MARGIN * size,
@@ -1258,7 +1280,7 @@ mod tests {
                 _ => None,
             })
             .expect("the plot box");
-        let column = 0.6 * size + 0.3 * size + 8.0 * 4.5;
+        let column = 0.54 * size + 0.26 * size + 8.0 * widest;
         close(legended.left(), plot_rect.left(), "left is unmoved");
         close(
             legended.right(),
