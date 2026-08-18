@@ -375,11 +375,17 @@ fn legend(
     measure: &mut dyn Measure,
 ) -> Rect {
     // Word's swatch is a square six tenths of its text, and stands three
-    // tenths clear of it.
+    // tenths clear of it. Its entries are set on a pitch of two — noticeably
+    // airier than a line of type needs, and what makes a legend of three read
+    // as three separate things rather than a paragraph.
     let swatch = 0.6 * size;
     let gap = 0.3 * size;
-    let line = 13.0 * style.zoom;
+    let line = 2.0 * size;
     let mut left = area;
+    // Both the swatch and the name stand at the middle of that pitch, which is
+    // where Word has them: at this spacing, hanging either from the top of the
+    // line puts it visibly above the other.
+    let middle = |y: f64, height: f64| y + (line - height) / 2.0;
     match position {
         LegendPosition::Bottom => {
             // Office centres a bottom legend on the chart rather than running
@@ -393,14 +399,14 @@ fn legend(
             let mut x = area.left() + (area.width - total).max(0.0) / 2.0;
             for entry in series {
                 out.push(Prim::Fill {
-                    rect: Rect::new(x, strip + (line - swatch) / 2.0, swatch, swatch),
+                    rect: Rect::new(x, middle(strip, swatch), swatch, swatch),
                     rgb: entry.rgb,
                     round: 1.0,
                 });
                 x += swatch + gap;
-                let (width, _) = measure.size(&entry.name, size);
+                let (width, height) = measure.size(&entry.name, size);
                 out.push(Prim::Text {
-                    at: (x, strip),
+                    at: (x, middle(strip, height)),
                     size,
                     text: entry.name.clone(),
                     rgb: style.text,
@@ -430,12 +436,13 @@ fn legend(
             };
             for entry in series {
                 out.push(Prim::Fill {
-                    rect: Rect::new(strip.left(), y + (line - swatch) / 2.0, swatch, swatch),
+                    rect: Rect::new(strip.left(), middle(y, swatch), swatch, swatch),
                     rgb: entry.rgb,
                     round: 1.0,
                 });
+                let height = measure.size(&entry.name, size).1;
                 out.push(Prim::Text {
-                    at: (strip.left() + swatch + gap, y),
+                    at: (strip.left() + swatch + gap, middle(y, height)),
                     size,
                     text: entry.name.clone(),
                     rgb: style.text,
@@ -1170,13 +1177,33 @@ mod tests {
             "the column starts at its measured width: {}",
             entry.0
         );
-        // One 13pt line centred in the area between the top and bottom
-        // margins: its top sits at the middle, not at the top of the chart.
+        // One entry on Word's pitch of two label-sizes, the block centred in
+        // the area between the top and bottom margins, and the name centred
+        // again within its own line — not hung from the top of the chart.
         let inner = 300.0 - MARGIN * 9.0 * 2.0;
+        let line = 2.0 * 9.0;
         assert!(
-            (entry.1 - (MARGIN * 9.0 + (inner - 13.0) / 2.0)).abs() < 0.001,
+            (entry.1 - (MARGIN * 9.0 + (inner - line) / 2.0 + (line - 9.0) / 2.0)).abs() < 0.001,
             "centred vertically: {}",
             entry.1
+        );
+
+        // And the swatch stands at the same middle, so the two read as one
+        // entry rather than as a square with a caption beside it.
+        let swatch = prims
+            .iter()
+            .find_map(|p| match p {
+                Prim::Fill { rect, rgb, .. } if *rgb == SERIES_COLORS[0] && rect.width < 20.0 => {
+                    Some(*rect)
+                }
+                _ => None,
+            })
+            .expect("the legend swatch");
+        assert!(
+            (swatch.center().1 - (entry.1 + 9.0 / 2.0)).abs() < 0.001,
+            "swatch {} against name {}",
+            swatch.center().1,
+            entry.1 + 4.5
         );
     }
 
