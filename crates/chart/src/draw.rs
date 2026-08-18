@@ -17,6 +17,24 @@
 
 use crate::{Axis, ChartKind, LegendPosition, Paint, Plot};
 
+/// How far the plot area stands clear of whatever is beside it — the value
+/// labels on one side, the legend on the other — in label sizes.
+///
+/// This and the two below are Word's, measured from charts Word rendered
+/// itself: probe documents whose chart area carries a visible border, so that
+/// the plot rectangle could be read against the chart's own edges rather than
+/// guessed from the page. They hold whatever the chart's width, the labels'
+/// width, the legend's text, or the number of series — Office's automatic
+/// layout is constants, not fractions of the box.
+const CLEAR: f64 = 1.74;
+
+/// The margin at the top of a chart and down its right edge.
+const MARGIN: f64 = 1.2;
+
+/// What is kept below the plot: the category labels, and the margin under
+/// them.
+const FOOTER: f64 = 2.45;
+
 /// The default palette Office assigns to series, accent 1 through 6.
 pub const SERIES_COLORS: [[u8; 3]; 6] = [
     [0x44, 0x72, 0xC4],
@@ -292,7 +310,16 @@ pub fn primitives(
     }
 
     let small = 9.0 * style.zoom;
-    let mut area = rect.shrink(8.0 * style.zoom);
+    // Word's insets, which are not the same on all four sides: a margin at the
+    // top and down the right, none at all on the left — the value labels begin
+    // at the chart's very edge, and what holds the plot off is [`CLEAR`].
+    let margin = MARGIN * small;
+    let mut area = Rect::new(
+        rect.x,
+        rect.y + margin,
+        (rect.width - margin).max(0.0),
+        (rect.height - margin * 2.0).max(0.0),
+    );
 
     if let Some(title) = &plot.title {
         let size = 13.0 * style.zoom;
@@ -347,7 +374,10 @@ fn legend(
     position: LegendPosition,
     measure: &mut dyn Measure,
 ) -> Rect {
-    let swatch = 7.0 * style.zoom;
+    // Word's swatch is a square six tenths of its text, and stands three
+    // tenths clear of it.
+    let swatch = 0.6 * size;
+    let gap = 0.3 * size;
     let line = 13.0 * style.zoom;
     let mut left = area;
     match position {
@@ -357,7 +387,7 @@ fn legend(
             let strip = area.bottom() - line;
             let total: f64 = series
                 .iter()
-                .map(|entry| swatch + 3.0 + measure.size(&entry.name, size).0)
+                .map(|entry| swatch + gap + measure.size(&entry.name, size).0)
                 .sum::<f64>()
                 + 10.0 * style.zoom * (series.len().saturating_sub(1)) as f64;
             let mut x = area.left() + (area.width - total).max(0.0) / 2.0;
@@ -367,7 +397,7 @@ fn legend(
                     rgb: entry.rgb,
                     round: 1.0,
                 });
-                x += swatch + 3.0;
+                x += swatch + gap;
                 let (width, _) = measure.size(&entry.name, size);
                 out.push(Prim::Text {
                     at: (x, strip),
@@ -391,7 +421,7 @@ fn legend(
                 .iter()
                 .map(|entry| measure.size(&entry.name, size).0)
                 .fold(0.0f64, f64::max);
-            let width = (swatch + 3.0 + widest + 4.0 * style.zoom).min(area.width * 0.4);
+            let width = (swatch + gap + widest).min(area.width * 0.4);
             let strip = Rect::new(area.right() - width, area.top(), width, area.height);
             let block = line * series.len() as f64;
             let mut y = match position {
@@ -405,14 +435,14 @@ fn legend(
                     round: 1.0,
                 });
                 out.push(Prim::Text {
-                    at: (strip.left() + swatch + 3.0, y),
+                    at: (strip.left() + swatch + gap, y),
                     size,
                     text: entry.name.clone(),
                     rgb: style.text,
                 });
                 y += line;
             }
-            left.width = (left.width - width - 4.0).max(0.0);
+            left.width = (left.width - width - CLEAR * size).max(0.0);
         }
     }
     left
@@ -452,8 +482,11 @@ fn axes_chart(
         .iter()
         .map(|(_, text)| measure.size(text, size).0)
         .fold(0.0f64, f64::max);
-    let gutter = widest + 5.0 * style.zoom;
-    let footer = measure.size("0", size).1 + 2.0 * style.zoom;
+    let gutter = widest + CLEAR * size;
+    // What is left below the plot, the outer margin already taken off. Word's
+    // is a constant rather than the height of a line, which is why this does
+    // not ask the shaper for one.
+    let footer = (FOOTER - MARGIN) * size;
     let area = Rect::new(
         area.left() + gutter,
         area.top(),
@@ -499,9 +532,11 @@ fn axes_chart(
                 rgb,
             });
         }
+        // Right-aligned one label-size clear of the axis, which puts the
+        // widest of them at the chart's own left edge — where Word starts it.
         let (width, height) = measure.size(&text, size);
         out.push(Prim::Text {
-            at: (area.left() - 3.0 - width, y - height / 2.0),
+            at: (area.left() - size - width, y - height / 2.0),
             size,
             text,
             rgb: style.text,
@@ -638,7 +673,7 @@ fn axes_chart(
         out.push(Prim::Text {
             at: (
                 area.left() + slot * (i as f64 + 0.5) - width / 2.0,
-                area.bottom() + 1.0,
+                area.bottom() + 0.5 * size,
             ),
             size,
             text: label.clone(),
@@ -1126,21 +1161,82 @@ mod tests {
             })
             .expect("the legend entry");
         assert_eq!(label, "Column 1");
-        // Swatch + gap + "Column 1" at half-size (8 chars × 4.5) + padding,
-        // measured from the padded area's right edge — not 28% of the chart.
-        let area_right = 400.0 - 8.0;
-        let width = 7.0 + 3.0 + 8.0 * 4.5 + 4.0;
+        // Swatch + gap + "Column 1" at half-size (8 chars × 4.5), measured
+        // from the chart's right margin — not 28% of the chart.
+        let area_right = 400.0 - MARGIN * 9.0;
+        let width = 0.6 * 9.0 + 0.3 * 9.0 + 8.0 * 4.5;
         assert!(
-            (entry.0 - (area_right - width + 7.0 + 3.0)).abs() < 0.001,
+            (entry.0 - (area_right - width + 0.6 * 9.0 + 0.3 * 9.0)).abs() < 0.001,
             "the column starts at its measured width: {}",
             entry.0
         );
-        // One 13pt line centred in the 284pt-tall area: its top sits at the
-        // middle, not at the top of the chart.
+        // One 13pt line centred in the area between the top and bottom
+        // margins: its top sits at the middle, not at the top of the chart.
+        let inner = 300.0 - MARGIN * 9.0 * 2.0;
         assert!(
-            (entry.1 - (8.0 + (284.0 - 13.0) / 2.0)).abs() < 0.001,
+            (entry.1 - (MARGIN * 9.0 + (inner - 13.0) / 2.0)).abs() < 0.001,
             "centred vertically: {}",
             entry.1
+        );
+    }
+
+    #[test]
+    fn the_plot_rectangle_sits_where_word_puts_it() {
+        // Measured from charts Word rendered itself: the plot stands 1.74
+        // label-sizes clear of the widest value label on one side and of the
+        // legend on the other, with a margin of 1.2 above and down the right
+        // and 2.45 below for the category labels. Everything about a bar —
+        // how fat it is, which slot it stands in — follows from this
+        // rectangle, so this is the test that keeps the bars where Word's are.
+        let mut boxed = plot(ChartKind::Bar);
+        boxed.plot_line = Paint::Rgb([1, 2, 3]);
+        boxed.series[0].values = vec![Some(1.0), Some(2.0), Some(3.0), Some(4.0)];
+        let series = cached_series(&boxed);
+        let rect = Rect::new(0.0, 0.0, 400.0, 300.0);
+        let prims = primitives(rect, &boxed, &series, &style(), &mut Half);
+        let plot_rect = prims
+            .iter()
+            .find_map(|p| match p {
+                Prim::Frame { rect, rgb, .. } if *rgb == [1, 2, 3] => Some(*rect),
+                _ => None,
+            })
+            .expect("the plot box");
+
+        // The axis runs 0 to 5 by ones, so the widest label is one character
+        // wide: 4.5 at the test measurer's half-size.
+        let size = 9.0;
+        let close = |a: f64, b: f64, what: &str| {
+            assert!((a - b).abs() < 0.001, "{what}: {a} wanted {b}");
+        };
+        close(plot_rect.left(), 4.5 + CLEAR * size, "left");
+        close(
+            plot_rect.right(),
+            400.0 - MARGIN * size,
+            "right (no legend)",
+        );
+        close(plot_rect.top(), MARGIN * size, "top");
+        close(plot_rect.bottom(), 300.0 - FOOTER * size, "bottom");
+
+        // With a legend the right edge gives up the column and another
+        // clearance, and nothing else moves.
+        let mut with = boxed.clone();
+        with.legend = Some(LegendPosition::Right);
+        with.series[0].name = Some("Column 1".to_string());
+        let series = cached_series(&with);
+        let prims = primitives(rect, &with, &series, &style(), &mut Half);
+        let legended = prims
+            .iter()
+            .find_map(|p| match p {
+                Prim::Frame { rect, rgb, .. } if *rgb == [1, 2, 3] => Some(*rect),
+                _ => None,
+            })
+            .expect("the plot box");
+        let column = 0.6 * size + 0.3 * size + 8.0 * 4.5;
+        close(legended.left(), plot_rect.left(), "left is unmoved");
+        close(
+            legended.right(),
+            400.0 - MARGIN * size - column - CLEAR * size,
+            "right",
         );
     }
 
