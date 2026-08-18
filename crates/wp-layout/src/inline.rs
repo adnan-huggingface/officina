@@ -44,7 +44,15 @@ use crate::shape::{FontRequest, Metrics, Shaper};
 pub struct Source {
     pub run: usize,
     pub piece: usize,
-    /// Byte range within that piece's text.
+    /// Byte range within the **paragraph's** text — [`Paragraph::text`], which
+    /// is what a caret's offset counts.
+    ///
+    /// Not within the piece. Naming the piece is the obvious thing and it is
+    /// wrong the moment a paragraph holds more than one: a click in the second
+    /// run comes back as an offset into the first, so the caret jumps to the
+    /// start of the paragraph and a selection paints the wrong letters. A
+    /// paragraph of one run — which is most of a test corpus and almost none of
+    /// a real document — cannot tell the difference.
     pub start: usize,
     pub end: usize,
 }
@@ -410,11 +418,25 @@ fn units(
     // Field state runs *across* runs: a field's begin, its instruction, its
     // separator and its result are very often four different `<w:r>` elements.
     let mut fields = FieldWalk::new(index, ctx.band);
+    // How far into the paragraph's text each run starts. Counted over every run
+    // in `runs()` order whether or not it is drawn, because that is the walk a
+    // caret's offset is counted along — see `Piece::text_len`.
+    let mut base = 0usize;
     for (run_index, run) in runs.iter().enumerate() {
-        if deleted.contains(&run_index) && !ctx.show_revisions {
-            continue;
+        let length: usize = run.content.iter().map(Piece::text_len).sum();
+        if !(deleted.contains(&run_index) && !ctx.show_revisions) {
+            push_run(
+                run,
+                run_index,
+                base,
+                layers,
+                ctx,
+                shaper,
+                &mut fields,
+                &mut out,
+            );
         }
-        push_run(run, run_index, layers, ctx, shaper, &mut fields, &mut out);
+        base += length;
     }
     number_drawings(paragraph, &mut out);
     out
@@ -558,10 +580,36 @@ fn number_drawings(paragraph: &Paragraph, out: &mut [Unit]) {
     }
 }
 
+/// How a slice of text being laid out maps back onto the paragraph's bytes.
+#[derive(Debug, Clone)]
+enum Mapping {
+    /// The text is the piece's own, starting at this byte of the paragraph, so
+    /// an offset into one is an offset into the other.
+    Verbatim(usize),
+    /// The text only stands *for* the piece — a field's computed value drawn
+    /// instead of the one the file cached, or a tracked deletion, which is drawn
+    /// and occupies none of the paragraph's text. Every fragment of it names the
+    /// whole span the piece occupies, so a caret cannot come to rest inside
+    /// something that has no bytes of its own to rest on.
+    WholeOf(std::ops::Range<usize>),
+}
+
+impl Mapping {
+    /// The range a unit covering `start..end` of the slice belongs to.
+    fn range(&self, start: usize, end: usize) -> (usize, usize) {
+        match self {
+            Mapping::Verbatim(base) => (base + start, base + end),
+            Mapping::WholeOf(span) => (span.start, span.end),
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn push_run(
     run: &Run,
     index: usize,
+    // Where this run's first piece begins in the paragraph's text.
+    base: usize,
     layers: &Layers,
     ctx: &Context<'_>,
     shaper: &mut dyn Shaper,
@@ -580,7 +628,13 @@ fn push_run(
     // A field's instruction is never drawn; only its cached result is. Between
     // `begin` and `separate` everything is code, and a renderer that draws it
     // shows the user ` PAGE \* MERGEFORMAT ` in the middle of the sentence.
+    // Where this piece begins in the paragraph's text. It advances for every
+    // piece, drawn or not: a run the reader skipped still holds bytes that the
+    // pieces after it are counted from.
+    let mut at = base;
     for (piece_index, piece) in run.content.iter().enumerate() {
+        let span = at..at + piece.text_len();
+        at = span.end;
         match piece {
             Piece::FieldStart { .. } => fields.begin(),
             Piece::FieldSeparate => fields.separate(),
@@ -595,7 +649,16 @@ fn push_run(
                     if !already_drawn(out, Some(mark)) {
                         match ctx.fields.get(mark) {
                             Some(value) => {
-                                push_text(value, &props, index, piece_index, ctx, shaper, out);
+                                push_text(
+                                    value,
+                                    &props,
+                                    index,
+                                    piece_index,
+                                    Mapping::WholeOf(span.clone()),
+                                    ctx,
+                                    shaper,
+                                    out,
+                                );
                                 mark_last(out, Some(mark));
                             }
                             None => out.push(Unit {
@@ -618,10 +681,9 @@ fn push_run(
             Piece::Instruction(text) => fields.instruction(text),
             Piece::DeletedInstruction(_) => {}
             _ if fields.in_instruction() => {}
-            Piece::Text(text) | Piece::Deleted(text) => {
-                if matches!(piece, Piece::Deleted(_)) && !ctx.show_revisions {
-                    continue;
-                }
+            Piece::Text(text) | Piece::Deleted(text)
+                if !(matches!(piece, Piece::Deleted(_)) && !ctx.show_revisions) =>
+            {
                 // A field whose value is known draws that instead of what the
                 // file cached — and the *whole* result is replaced by the first
                 // piece of it, because a cached `12` is very often a run `1` and
@@ -629,12 +691,28 @@ fn push_run(
                 let mark = fields.mark();
                 match mark.and_then(|mark| ctx.fields.get(mark)) {
                     Some(value) if !already_drawn(out, mark) => {
-                        push_text(value, &props, index, piece_index, ctx, shaper, out);
+                        push_text(
+                            value,
+                            &props,
+                            index,
+                            piece_index,
+                            Mapping::WholeOf(span.clone()),
+                            ctx,
+                            shaper,
+                            out,
+                        );
                         mark_last(out, mark);
                     }
                     Some(_) => {}
                     None => {
-                        push_text(text, &props, index, piece_index, ctx, shaper, out);
+                        // A deletion is drawn and holds none of the paragraph's
+                        // text, so its span is empty and `Verbatim` would run
+                        // its offsets over whatever follows it.
+                        let map = match piece {
+                            Piece::Deleted(_) => Mapping::WholeOf(span.clone()),
+                            _ => Mapping::Verbatim(span.start),
+                        };
+                        push_text(text, &props, index, piece_index, map, ctx, shaper, out);
                         mark_last(out, mark);
                     }
                 }
@@ -643,6 +721,14 @@ fn push_run(
                 let style = style_for('\t', &props, ctx);
                 let mut unit = tab_unit(&style, TabLeader::None, false);
                 unit.field = fields.mark();
+                // A tab is one byte of the paragraph's text and the caret has to
+                // be able to sit on either side of it.
+                unit.source = Some(Source {
+                    run: index,
+                    piece: piece_index,
+                    start: span.start,
+                    end: span.end,
+                });
                 out.push(unit);
             }
             Piece::Break(kind) => {
@@ -660,7 +746,16 @@ fn push_run(
                 // A non-breaking hyphen draws; a soft one draws only where the
                 // line actually breaks, which `linebreak` decides.
                 let text = if *breaking { "\u{00AD}" } else { "\u{2011}" };
-                push_text(text, &props, index, piece_index, ctx, shaper, out);
+                push_text(
+                    text,
+                    &props,
+                    index,
+                    piece_index,
+                    Mapping::Verbatim(span.start),
+                    ctx,
+                    shaper,
+                    out,
+                );
             }
             Piece::Symbol { ch, font } => {
                 let mut props = props.clone();
@@ -673,6 +768,7 @@ fn push_run(
                     &props,
                     index,
                     piece_index,
+                    Mapping::Verbatim(span.start),
                     ctx,
                     shaper,
                     out,
@@ -685,8 +781,8 @@ fn push_run(
                     source: Some(Source {
                         run: index,
                         piece: piece_index,
-                        start: 0,
-                        end: 0,
+                        start: span.start,
+                        end: span.end,
                     }),
                     field: None,
                     kind: UnitKind::Object {
@@ -743,11 +839,13 @@ fn measure(text: &str, style: &TextStyle, shaper: &mut dyn Shaper, into: &mut Ve
 
 /// Splits a run's text into units at its break opportunities, and at the script
 /// boundaries that change which face draws it.
+#[allow(clippy::too_many_arguments)]
 fn push_text(
     text: &str,
     props: &RunProps,
     run: usize,
     piece: usize,
+    map: Mapping,
     ctx: &Context<'_>,
     shaper: &mut dyn Shaper,
     out: &mut Vec<Unit>,
@@ -801,13 +899,14 @@ fn push_text(
         let content_chars = slice[..content_len].chars().count();
         let content_width: f64 = advances.iter().take(content_chars).sum();
 
+        let (from, to) = map.range(start, end);
         out.push(Unit {
             style,
             source: Some(Source {
                 run,
                 piece,
-                start,
-                end,
+                start: from,
+                end: to,
             }),
             field: None,
             kind: UnitKind::Text {
@@ -1048,8 +1147,11 @@ fn split_to_fit(unit: &Unit, limit: f64) -> Option<(Unit, Unit)> {
     let tail_width: f64 = advances[chars..].iter().sum();
     let tail = Unit {
         style: unit.style.clone(),
+        // Clamped, because a unit whose text only stands *for* its piece — a
+        // field's value, a tracked deletion — has fewer bytes in the paragraph
+        // than on the line, and the tail of one must not start past its end.
         source: unit.source.map(|s| Source {
-            start: s.start + split,
+            start: (s.start + split).min(s.end),
             ..s
         }),
         field: unit.field,
@@ -1805,6 +1907,90 @@ mod tests {
         };
         let again = layout(&paragraph, 3, &layers(), None, &knowing, 500.0, &mut shaper);
         assert_eq!(texts(&again.lines[0]), ["7"]);
+    }
+
+    #[test]
+    fn a_fragments_bytes_are_the_paragraphs_bytes_however_many_runs_it_has() {
+        // `Source` used to name a range within the *piece* it came from. A
+        // paragraph of one run cannot tell that apart from a range within the
+        // paragraph, so it read as correct for as long as the tests were built
+        // out of one-run paragraphs — and every run after the first handed the
+        // editor an offset counted from the wrong place, which put the caret at
+        // whatever byte of the first run happened to share the number.
+        let paragraph = Paragraph {
+            content: vec![
+                Inline::Run(Run::of("Hello ")),
+                Inline::Run(Run::of("brave ")),
+                Inline::Run(Run::of("world")),
+            ],
+            ..Paragraph::new()
+        };
+        let theme = theme();
+        let mut shaper = crate::shape::Fixed;
+        let laid = layout(
+            &paragraph,
+            0,
+            &layers(),
+            None,
+            &ctx(&theme),
+            500.0,
+            &mut shaper,
+        );
+        let text = paragraph.text();
+        for fragment in &laid.lines[0].fragments {
+            let source = fragment.source.expect("text came from somewhere");
+            let Content::Text { text: drawn, .. } = &fragment.content else {
+                continue;
+            };
+            assert_eq!(
+                &text[source.start..source.end],
+                drawn.as_str(),
+                "the fragment's range does not spell the fragment"
+            );
+        }
+        let end = laid.lines[0]
+            .fragments
+            .iter()
+            .filter_map(|f| f.source)
+            .map(|s| s.end)
+            .max();
+        assert_eq!(end, Some(text.len()), "and they reach the end of the text");
+    }
+
+    #[test]
+    fn a_tab_and_a_drawing_hold_the_place_they_occupy_in_the_text() {
+        // A tab is a byte of the paragraph's text and carried no source at all,
+        // so nothing on the line claimed it and a caret could not be put on
+        // either side of it.
+        let paragraph = Paragraph {
+            content: vec![Inline::Run(Run {
+                content: vec![
+                    Piece::Text("ab".into()),
+                    Piece::Tab,
+                    Piece::Text("cd".into()),
+                ],
+                ..Run::new()
+            })],
+            ..Paragraph::new()
+        };
+        let theme = theme();
+        let mut shaper = crate::shape::Fixed;
+        let laid = layout(
+            &paragraph,
+            0,
+            &layers(),
+            None,
+            &ctx(&theme),
+            500.0,
+            &mut shaper,
+        );
+        let spans: Vec<(usize, usize)> = laid.lines[0]
+            .fragments
+            .iter()
+            .filter_map(|f| f.source)
+            .map(|s| (s.start, s.end))
+            .collect();
+        assert_eq!(spans, [(0, 2), (2, 3), (3, 5)], "ab, the tab, cd");
     }
 
     #[test]

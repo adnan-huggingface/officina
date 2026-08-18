@@ -158,11 +158,47 @@ impl Egui {
                 let total: f64 = widths.iter().sum();
                 let each = if count > 0 { total / count as f64 } else { 0.0 };
                 widths = vec![each; count];
+            } else {
+                share_ligatures(text, &mut widths);
             }
             self.runs.insert((key, text.to_owned()), widths);
         }
         &self.runs[&(key, text.to_owned())]
     }
+}
+
+/// Shares a ligature's advance out over the characters it stands for.
+///
+/// epaint draws Calibri's `ti` and `tt` as one glyph and hands the whole pair's
+/// advance to the first character, leaving the second none — one entry per
+/// character, so the count agrees and nothing looks wrong until a caret has to
+/// go between them. It could not: `section` measured as though the `i` were not
+/// there, a click in front of it landed after it, and a selection that ended
+/// there covered a letter it did not include.
+///
+/// A combining mark keeps its nothing. Its advance is genuinely zero — it is
+/// drawn over the letter before it rather than after it — and a caret belongs at
+/// the end of the pair, not inside it.
+fn share_ligatures(text: &str, widths: &mut [f64]) {
+    let chars: Vec<char> = text.chars().collect();
+    let mut at = 0usize;
+    while at < widths.len() {
+        let mut run = at + 1;
+        while run < widths.len() && widths[run] == 0.0 && !is_combining(chars[run]) {
+            run += 1;
+        }
+        if run > at + 1 && widths[at] > 0.0 {
+            let each = widths[at] / (run - at) as f64;
+            widths[at..run].fill(each);
+        }
+        at = run;
+    }
+}
+
+fn is_combining(c: char) -> bool {
+    matches!(c as u32,
+        0x0300..=0x036F | 0x0483..=0x0489 | 0x1AB0..=0x1AFF
+        | 0x1DC0..=0x1DFF | 0x20D0..=0x20F0 | 0xFE20..=0xFE2F)
 }
 
 impl Shaper for Egui {
@@ -385,6 +421,32 @@ mod tests {
         assert!(metrics.line_height() > 0.0);
         assert!(metrics.ascent > metrics.descent);
         assert!((metrics.ascent + metrics.descent - metrics.line_height()).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_ligatures_width_is_shared_by_the_characters_it_stands_for() {
+        // Calibri draws `ti` as one glyph, and epaint reports the pair's whole
+        // advance on the `t` and nothing on the `i` — one entry per character,
+        // so the count agrees and only a caret notices. Measured here without a
+        // font at all: the arithmetic is the thing under test, and which pairs a
+        // given face ligates is the face's business.
+        let mut widths = vec![4.0, 6.0, 0.0, 5.0];
+        share_ligatures("stio", &mut widths);
+        assert_eq!(widths, vec![4.0, 3.0, 3.0, 5.0], "the t and the i halve it");
+        assert_eq!(
+            widths.iter().sum::<f64>(),
+            15.0,
+            "and the line is no wider than it was"
+        );
+    }
+
+    #[test]
+    fn a_combining_mark_keeps_its_nothing() {
+        // It is drawn *over* the letter before it, not after it, so its advance
+        // is genuinely zero and the caret belongs at the end of the pair.
+        let mut widths = vec![5.0, 0.0, 4.0];
+        share_ligatures("e\u{0301}b", &mut widths);
+        assert_eq!(widths, vec![5.0, 0.0, 4.0]);
     }
 
     #[test]

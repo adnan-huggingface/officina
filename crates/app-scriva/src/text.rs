@@ -60,16 +60,11 @@ pub fn spot_at(paragraph: &Paragraph, offset: usize) -> Option<Spot> {
 
 /// How many bytes of the paragraph's *text* a piece contributes.
 ///
-/// A deletion contributes none: it is drawn and it is not in the document.
+/// The model's own count, not a second one: `wp-layout` measures a fragment's
+/// place in the paragraph with the same function, and a caret placed by one
+/// definition and drawn by another lands somewhere neither of them meant.
 fn piece_len(piece: &Piece) -> usize {
-    match piece {
-        Piece::Text(text) => text.len(),
-        Piece::Tab => 1,
-        Piece::Break(wp_model::doc::Break::Line) => 1,
-        Piece::Symbol { .. } => 1,
-        Piece::Hyphen { .. } => "\u{2011}".len(),
-        _ => 0,
-    }
+    piece.text_len()
 }
 
 /// The formatting a caret at `offset` would type in.

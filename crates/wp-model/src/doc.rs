@@ -512,6 +512,33 @@ pub enum Piece {
     },
 }
 
+impl Piece {
+    /// How many bytes of the paragraph's text this piece contributes.
+    ///
+    /// The counterpart of [`Run::write_text`] with deletions skipped, and it has
+    /// to stay exactly that: a caret's offset is a byte offset into
+    /// [`Paragraph::text`], so anything that counts the bytes differently — the
+    /// editor placing a caret, the layout telling a renderer where a fragment
+    /// came from — puts the caret in the wrong place, and does it further wrong
+    /// the more runs the paragraph has.
+    pub fn text_len(&self) -> usize {
+        match self {
+            Piece::Text(text) => text.len(),
+            // Drawn, and not *in* the document: an offset never lands inside a
+            // tracked deletion.
+            Piece::Deleted(_) => 0,
+            Piece::Tab => 1,
+            Piece::Break(Break::Line) => 1,
+            // The character, not one byte: `<w:sym>` is very often a private-use
+            // code point that takes three.
+            Piece::Symbol { ch, .. } => ch.len_utf8(),
+            Piece::Hyphen { breaking: false } => '\u{2011}'.len_utf8(),
+            Piece::Hyphen { breaking: true } => '\u{00AD}'.len_utf8(),
+            _ => 0,
+        }
+    }
+}
+
 /// `<w:br>`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Break {

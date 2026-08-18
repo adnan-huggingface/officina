@@ -197,67 +197,33 @@ pub fn caret_at(view: &View, spot: Spot) -> Option<Caret> {
     let Placed::Line { line, .. } = &placement.kind else {
         return None;
     };
-    Some(Caret {
-        paragraph,
-        offset: offset_in(line, spot.x - placement.x),
+    let offset = offset_in(line, spot.x - placement.x);
+    // A click past the end of a line that *wrapped* belongs before the space the
+    // wrap ate: its byte is on this line and its caret would draw at the start of
+    // the next, so the click would look like it did nothing. The last line of a
+    // paragraph has no next line and its trailing space is real text the caret
+    // has to be able to sit after — which is where Word puts a click out there,
+    // and where this used to refuse to go.
+    let offset = match offset == line_range(line).1 && wraps_after(view, paragraph, offset) {
+        true => before_wrap_space(line, offset),
+        false => offset,
+    };
+    Some(Caret { paragraph, offset })
+}
+
+/// Whether another line of the same paragraph carries on from `end`.
+fn wraps_after(view: &View, paragraph: usize, end: usize) -> bool {
+    view.pages.iter().any(|page| {
+        page.content.iter().any(|placement| {
+            matches!(&placement.kind, Placed::Line { line, paragraph: p }
+                if *p == paragraph && line_range(line) != (end, end) && line_range(line).0 == end)
+        })
     })
 }
 
-/// How far `at` sits outside the span from `from` to `from + size` — zero
-/// anywhere inside it.
-fn distance_to(at: f64, from: f64, size: f64) -> f64 {
-    if at < from {
-        from - at
-    } else {
-        (at - (from + size)).max(0.0)
-    }
-}
-
-/// The byte offset of the character nearest `x` along a line.
-fn offset_in(line: &wp_layout::inline::Line, x: f64) -> usize {
-    let mut last = 0usize;
-    let mut first = None;
-    for fragment in &line.fragments {
-        let Content::Text { advances, .. } = &fragment.content else {
-            continue;
-        };
-        let Some(source) = fragment.source else {
-            continue;
-        };
-        if first.is_none() {
-            first = Some(source.start);
-        }
-        last = source.end;
-        if x < fragment.x {
-            return source.start;
-        }
-        if x <= fragment.x + fragment.width {
-            // Inside this fragment: walk the advances to the nearest boundary.
-            let mut at = fragment.x;
-            let mut offset = source.start;
-            let text = match &fragment.content {
-                Content::Text { text, .. } => text.as_str(),
-                _ => "",
-            };
-            for (index, (byte, c)) in text.char_indices().enumerate() {
-                let width = advances.get(index).copied().unwrap_or(0.0);
-                if x < at + width / 2.0 {
-                    return source.start + byte;
-                }
-                at += width;
-                offset = source.start + byte + c.len_utf8();
-            }
-            return offset;
-        }
-    }
-    // Past the end of the line: the end of its last piece of text — minus the
-    // space a wrap ate, whose byte belongs to this line but whose caret would
-    // draw at the start of the next. Word puts a click out here after the last
-    // letter, and so does this.
-    if line.fragments.is_empty() {
-        return 0;
-    }
-    let mut end = last.max(first.unwrap_or(0));
+/// `end` backed up over the spaces a wrap swallowed.
+fn before_wrap_space(line: &wp_layout::inline::Line, end: usize) -> usize {
+    let mut end = end;
     for fragment in line.fragments.iter().rev() {
         let (Content::Text { text, .. }, Some(source)) = (&fragment.content, fragment.source)
         else {
@@ -272,6 +238,60 @@ fn offset_in(line: &wp_layout::inline::Line, x: f64) -> usize {
         break;
     }
     end
+}
+
+/// How far `at` sits outside the span from `from` to `from + size` — zero
+/// anywhere inside it.
+fn distance_to(at: f64, from: f64, size: f64) -> f64 {
+    if at < from {
+        from - at
+    } else {
+        (at - (from + size)).max(0.0)
+    }
+}
+
+/// The byte offset of the character nearest `x` along a line.
+fn offset_in(line: &wp_layout::inline::Line, x: f64) -> usize {
+    let mut last = None;
+    for fragment in &line.fragments {
+        // A list label is drawn beside the text and is not *in* it: no offset
+        // belongs to it, so a click on the bullet falls through to the text.
+        let Some(source) = fragment.source else {
+            continue;
+        };
+        if x < fragment.x {
+            return source.start;
+        }
+        if x <= fragment.x + fragment.width {
+            return match &fragment.content {
+                // Inside a piece of text: walk the advances to the nearest
+                // character boundary.
+                Content::Text { text, advances, .. } => {
+                    let mut at = fragment.x;
+                    for (index, (byte, _)) in text.char_indices().enumerate() {
+                        let width = advances.get(index).copied().unwrap_or(0.0);
+                        if x < at + width / 2.0 {
+                            return source.start + byte;
+                        }
+                        at += width;
+                    }
+                    // The end the *paragraph* counts, not the end of the drawn
+                    // string: small capitals draw a text whose bytes are not the
+                    // document's.
+                    source.end
+                }
+                // A tab or a drawing is one thing, and the caret goes to
+                // whichever side of it the click was nearer.
+                _ => match x < fragment.x + fragment.width / 2.0 {
+                    true => source.start,
+                    false => source.end,
+                },
+            };
+        }
+        last = Some(source.end);
+    }
+    // Past the end of the line: after its last piece of text.
+    last.unwrap_or_else(|| line_range(line).0)
 }
 
 /// The line placement the caret belongs to, and which page it is on.
@@ -405,7 +425,12 @@ fn x_of(line: &wp_layout::inline::Line, offset: usize) -> Option<f64> {
             continue;
         }
         let Content::Text { text, advances, .. } = &fragment.content else {
-            return Some(fragment.x);
+            // A tab or a drawing has no inside: the caret is at one edge of it
+            // or the other.
+            return Some(match offset >= source.end && source.end > source.start {
+                true => fragment.x + fragment.width,
+                false => fragment.x,
+            });
         };
         let mut at = fragment.x;
         for (index, (byte, _)) in text.char_indices().enumerate() {
@@ -866,12 +891,17 @@ fn paint_line(
                     }
                 }
             }
-            if covered(&selection, source.start, source.end).is_some() {
-                let rect = egui::Rect::from_min_size(
-                    page + egui::vec2(x as f32 * zoom, placement.y as f32 * zoom),
-                    egui::vec2(fragment.width as f32 * zoom, placement.height as f32 * zoom),
-                );
-                painter.rect_filled(rect, 0.0, SELECTION);
+            // Exactly the letters the selection covers, not the whole fragment
+            // they sit in. A line is one fragment per *word*, so filling the
+            // fragment painted a whole word blue the moment two of its letters
+            // were selected — and the find bar, which had this right, drew its
+            // yellow over the correct letters right beside it.
+            if let Some((from, to)) = covered(&selection, source.start, source.end) {
+                if let Some(rect) =
+                    span_rect(placement, fragment, source.start, from, to, page, zoom)
+                {
+                    painter.rect_filled(rect, 0.0, SELECTION);
+                }
             }
         }
         if let Content::Object {
@@ -1310,5 +1340,171 @@ mod tests {
                 "offset {offset} did not survive the round trip"
             );
         }
+    }
+
+    /// One paragraph built from several runs, the way a document that has ever
+    /// been edited is: a bold word, a hyperlink, a spelling correction.
+    fn of_runs(pieces: &[&str]) -> (View, String) {
+        use wp_model::doc::{Inline, Run};
+        let ctx = context();
+        let mut shaper = Egui::new(&ctx);
+        let mut view = View::default();
+        let mut document = document(&[]);
+        document.body = vec![Block::Paragraph(Paragraph {
+            content: pieces
+                .iter()
+                .map(|text| Inline::Run(Run::of(text)))
+                .collect(),
+            ..Paragraph::new()
+        })];
+        view.refresh(&document, &wp_layout::FieldValues::new(), 1, &mut shaper);
+        (view, pieces.concat())
+    }
+
+    /// Every offset of a paragraph, clicked where its caret is drawn.
+    fn round_trips(view: &View, text: &str) {
+        for offset in 0..=text.len() {
+            if !text.is_char_boundary(offset) {
+                continue;
+            }
+            let caret = Caret {
+                paragraph: 0,
+                offset,
+            };
+            let (page, rect) = caret_rect(view, caret).expect("a rectangle");
+            let back = caret_at(
+                view,
+                Spot {
+                    page,
+                    x: rect.min.x as f64 + 0.1,
+                    y: rect.center().y as f64,
+                },
+            );
+            assert_eq!(back, Some(caret), "offset {offset} did not survive");
+        }
+    }
+
+    #[test]
+    fn an_offset_in_the_second_run_is_counted_from_the_paragraph() {
+        // `Source` named the byte range within the *piece*, and the caret's
+        // offset counts from the start of the paragraph. One run cannot tell
+        // the two apart — which is why this went unnoticed — and every run
+        // after the first put the caret back at whatever byte of the first run
+        // shared its number, so a click near the end of a sentence jumped to
+        // the beginning of it.
+        let (view, text) = of_runs(&["Hello ", "brave ", "new ", "world"]);
+        round_trips(&view, &text);
+    }
+
+    #[test]
+    fn a_click_past_the_end_of_a_paragraph_lands_after_its_last_space() {
+        // The space at the end of a *wrapped* line is one the wrap ate, and the
+        // caret there belongs before it. The space at the end of a paragraph is
+        // text like any other, and Word puts a click out past the margin after
+        // it. Stripping both made the last character of a paragraph ending in a
+        // space unreachable by clicking.
+        let text = "ends in a space ";
+        let (view, _) = laid(&[text]);
+        let line = view.pages()[0]
+            .content
+            .iter()
+            .find(|p| matches!(p.kind, Placed::Line { .. }))
+            .expect("a line");
+        let caret = caret_at(
+            &view,
+            Spot {
+                page: 0,
+                x: line.x + line.width + 500.0,
+                y: line.y + 1.0,
+            },
+        )
+        .expect("a caret");
+        assert_eq!(caret.offset, text.len());
+    }
+
+    #[test]
+    fn a_tab_is_a_byte_the_caret_can_stand_on_either_side_of() {
+        use wp_model::doc::{Inline, Piece, Run};
+        let ctx = context();
+        let mut shaper = Egui::new(&ctx);
+        let mut view = View::default();
+        let mut document = document(&[]);
+        document.body = vec![Block::Paragraph(Paragraph {
+            content: vec![Inline::Run(Run {
+                content: vec![
+                    Piece::Text("before".into()),
+                    Piece::Tab,
+                    Piece::Text("after".into()),
+                ],
+                ..Run::default()
+            })],
+            ..Paragraph::new()
+        })];
+        view.refresh(&document, &wp_layout::FieldValues::new(), 1, &mut shaper);
+        // The tab is one byte of the text, and the caret has to be able to sit
+        // on both sides of it: a tab fragment used to carry no source at all,
+        // so the walk skipped straight over it.
+        round_trips(&view, "before\tafter");
+        let (_, before) = caret_rect(
+            &view,
+            Caret {
+                paragraph: 0,
+                offset: 6,
+            },
+        )
+        .expect("before the tab");
+        let (_, after) = caret_rect(
+            &view,
+            Caret {
+                paragraph: 0,
+                offset: 7,
+            },
+        )
+        .expect("after the tab");
+        assert!(
+            after.min.x > before.min.x + 1.0,
+            "the tab has width between them: {} then {}",
+            before.min.x,
+            after.min.x
+        );
+    }
+
+    #[test]
+    fn a_selection_paints_the_letters_it_covers_and_not_the_word_around_them() {
+        // A line is one fragment per *word*, and the selection filled whichever
+        // fragments it touched — so selecting two letters turned the whole word
+        // blue. The find bar had this right all along, in the same function,
+        // three lines above.
+        let (view, _) = laid(&["selectable words here"]);
+        let placement = view.pages()[0]
+            .content
+            .iter()
+            .find(|p| matches!(p.kind, Placed::Line { .. }))
+            .expect("a line");
+        let Placed::Line { line, .. } = &placement.kind else {
+            unreachable!()
+        };
+        let fragment = line
+            .fragments
+            .iter()
+            .find(|f| matches!(&f.content, Content::Text { text, .. } if text.starts_with("selectable")))
+            .expect("the first word");
+        let source = fragment.source.expect("it came from the text");
+        let part = span_rect(
+            placement,
+            fragment,
+            source.start,
+            source.start,
+            source.start + 3,
+            egui::Pos2::ZERO,
+            1.0,
+        )
+        .expect("three letters of it");
+        assert!(
+            part.width() < fragment.width as f32 * 0.6,
+            "three letters of a ten-letter word, not the word: {} of {}",
+            part.width(),
+            fragment.width
+        );
     }
 }
