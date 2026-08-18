@@ -20,6 +20,6 @@ mod model;
 pub mod read;
 
 pub use model::{
-    Anchor, AnchorPoint, Chart, ChartKind, Grouping, LegendPosition, Paint, Plot, Series,
-    EMU_PER_POINT,
+    Anchor, AnchorPoint, Axis, Chart, ChartKind, Grouping, LegendPosition, Paint, Plot, Series,
+    TickMark, EMU_PER_POINT,
 };

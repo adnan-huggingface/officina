@@ -184,6 +184,62 @@ pub enum Paint {
     Rgb([u8; 3]),
 }
 
+/// Where an axis puts the stubs that mark its major units.
+///
+/// `<c:majorTickMark val>`. The schema's own default is `cross`, but every
+/// producer writes the element out on every axis, so silence here means a part
+/// nobody stated ticks for — and, like the plot area's border, it draws
+/// nothing rather than ink of our invention.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TickMark {
+    #[default]
+    None,
+    /// Outside the plot area, which is what Word writes for both of the
+    /// sample's axes and what makes the small stubs beyond its frame.
+    Out,
+    In,
+    /// Both ways from the axis line.
+    Cross,
+}
+
+impl TickMark {
+    pub fn from_val(text: &str) -> TickMark {
+        match text {
+            "out" => TickMark::Out,
+            "in" => TickMark::In,
+            "cross" => TickMark::Cross,
+            _ => TickMark::None,
+        }
+    }
+
+    /// How far a stub of this kind reaches into the plot area, and how far out
+    /// of it.
+    pub fn reach(self, length: f64) -> (f64, f64) {
+        match self {
+            TickMark::None => (0.0, 0.0),
+            TickMark::In => (length, 0.0),
+            TickMark::Out => (0.0, length),
+            TickMark::Cross => (length, length),
+        }
+    }
+}
+
+/// One axis's own look.
+///
+/// Not its scale: what to plot over is worked out from the data, because a
+/// chart in a document carries no cells to recompute a stated maximum against
+/// and a stated one that disagrees with the cache draws bars off the top.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Axis {
+    /// `<c:spPr><a:ln>`: the axis line, and the ink its ticks are drawn in.
+    pub line: Paint,
+    pub major_tick: TickMark,
+    /// `<c:delete val="1"/>`: an axis the author took away. Its ticks are not
+    /// drawn. Its labels still are — a separate gap, and a wider one, since
+    /// the gutter they stand in is what the plot is measured against.
+    pub deleted: bool,
+}
+
 /// What a chart part plots, which is everything a painter needs.
 ///
 /// Separate from where it sits, because where it sits is the one thing the two
@@ -210,6 +266,12 @@ pub struct Plot {
     /// when the part states one. Office's modern default is none, so `Auto`
     /// draws nothing here, unlike the chart area's.
     pub plot_line: Paint,
+    /// The category axis: the one along the bottom of a column chart, whose
+    /// ticks stand at the boundaries between categories rather than under
+    /// them.
+    pub cat_axis: Axis,
+    /// The value axis, up the side, whose ticks stand at the gridlines.
+    pub val_axis: Axis,
     /// `<c:gapWidth>`: the space between category groups, as a percentage of
     /// one bar's width. Office's default is 150 — the gap is one and a half
     /// bars wide — and it is what sets how fat the bars are.
@@ -230,6 +292,8 @@ impl Default for Plot {
             area_line: Paint::Auto,
             plot_fill: Paint::Auto,
             plot_line: Paint::Auto,
+            cat_axis: Axis::default(),
+            val_axis: Axis::default(),
             gap: 150.0,
             series: Vec::new(),
         }

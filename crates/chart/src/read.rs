@@ -23,7 +23,7 @@
 use quick_xml::events::{BytesEnd, BytesStart, Event};
 use quick_xml::{Reader, XmlVersion};
 
-use crate::{ChartKind, Grouping, LegendPosition, Paint, Plot, Series};
+use crate::{ChartKind, Grouping, LegendPosition, Paint, Plot, Series, TickMark};
 
 /// Which reference of a series is being read. `<c:f>` and `<c:pt>` are the same
 /// elements under `<c:tx>`, `<c:cat>`, and `<c:val>`.
@@ -33,6 +33,47 @@ enum Slot {
     Name,
     Categories,
     Values,
+}
+
+/// Which of the two axes the reader is inside. A category axis may be written
+/// as `catAx`, `dateAx` or `serAx` depending on what the categories are; all
+/// three run along the bottom of a column chart and are labelled the same way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Which {
+    Category,
+    Value,
+}
+
+/// Whose `<c:spPr>` the reader is inside.
+///
+/// Nearly everything in a chart part may carry shape properties — a series, a
+/// legend, gridlines, a title, a block of data labels — and the elements
+/// inside them are indistinguishable from the ones that matter. So the state
+/// says *whose*, and everything not named here is nobody's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Props {
+    Nobody,
+    Area,
+    PlotArea,
+    Axis,
+}
+
+/// Records one paint decision against whatever element's properties it was
+/// found in.
+fn record(out: &mut Plot, props: Props, axis: Option<Which>, line: bool, paint: Paint) {
+    match (props, line) {
+        (Props::Area, false) => out.area_fill = paint,
+        (Props::Area, true) => out.area_line = paint,
+        (Props::PlotArea, false) => out.plot_fill = paint,
+        (Props::PlotArea, true) => out.plot_line = paint,
+        // An axis's fill paints nothing anyone sees; its line is the axis.
+        (Props::Axis, true) => match axis {
+            Some(Which::Category) => out.cat_axis.line = paint,
+            Some(Which::Value) => out.val_axis.line = paint,
+            None => {}
+        },
+        (Props::Axis, false) | (Props::Nobody, _) => {}
+    }
 }
 
 /// Reads one `<c:chartSpace>`.
@@ -71,15 +112,17 @@ pub fn plot(data: &[u8]) -> Option<Plot> {
     // The chartSpace's own `<c:spPr>` is the one *outside* `<c:chart>` — the
     // chart area's fill and border. `in_ln` tells fill from line within it.
     let mut in_chart = false;
-    let mut in_area_props = false;
     let mut in_ln = false;
-    // The plotArea's own `<c:spPr>` is a *direct* child among the axes: an
-    // axis, its gridlines, a title or a label block each carry one of their
-    // own, and depth alone cannot tell them apart — the exclusions can.
+    // The plotArea's own `<c:spPr>`, and each axis's, are *direct* children
+    // among a crowd carrying the same element: gridlines, a title, a label
+    // block, the axis text. Depth alone cannot tell them apart — the
+    // exclusions can, and `props` is what they decide.
     let mut in_plot_area = false;
-    let mut in_axis = false;
+    let mut in_axis: Option<Which> = None;
+    let mut in_gridlines = false;
+    let mut in_text_props = false;
     let mut in_dlbls = false;
-    let mut in_plot_props = false;
+    let mut props = Props::Nobody;
 
     while let Ok(ev) = reader.read_event_into(&mut buf) {
         let empty = matches!(ev, Event::Empty(_));
@@ -88,8 +131,31 @@ pub fn plot(data: &[u8]) -> Option<Plot> {
             Event::Start(ref e) | Event::Empty(ref e) => match local_name(e) {
                 b"chart" => in_chart = in_chart || !empty,
                 b"plotArea" => in_plot_area = in_plot_area || !empty,
-                b"catAx" | b"valAx" | b"dateAx" | b"serAx" => in_axis = in_axis || !empty,
+                b"catAx" | b"dateAx" | b"serAx" if !empty => in_axis = Some(Which::Category),
+                b"valAx" if !empty => in_axis = Some(Which::Value),
+                b"majorGridlines" | b"minorGridlines" => in_gridlines = in_gridlines || !empty,
+                b"txPr" => in_text_props = in_text_props || !empty,
                 b"dLbls" => in_dlbls = in_dlbls || !empty,
+                b"majorTickMark" => {
+                    let mark = attr_text(e, b"val")
+                        .map_or(TickMark::Cross, |v| TickMark::from_val(v.trim()));
+                    match in_axis {
+                        Some(Which::Category) => out.cat_axis.major_tick = mark,
+                        Some(Which::Value) => out.val_axis.major_tick = mark,
+                        None => {}
+                    }
+                }
+                b"delete" => {
+                    // `val` defaults to true: the element is there to say the
+                    // axis is gone, and Office writes `val="0"` to say it is
+                    // not.
+                    let gone = matches!(attr_text(e, b"val").as_deref(), None | Some("1" | "true"));
+                    match in_axis {
+                        Some(Which::Category) => out.cat_axis.deleted = gone,
+                        Some(Which::Value) => out.val_axis.deleted = gone,
+                        None => {}
+                    }
+                }
                 b"ser" => {
                     series = Series::default();
                     in_series = true;
@@ -133,29 +199,20 @@ pub fn plot(data: &[u8]) -> Option<Plot> {
                     }
                 }
                 b"spPr" if in_series => depth_in_series_props += 1,
-                b"spPr" if !in_chart => in_area_props = true,
-                b"spPr" if in_plot_area && !in_axis && !in_title && !in_dlbls => {
-                    in_plot_props = true
+                b"spPr" if !in_chart => props = Props::Area,
+                b"spPr" if in_axis.is_some() && !in_gridlines && !in_text_props && !in_title => {
+                    props = Props::Axis
                 }
-                b"ln" if in_area_props || in_plot_props => in_ln = true,
-                b"noFill" if in_area_props || in_plot_props => {
-                    let paint = Paint::None;
-                    match (in_area_props, in_ln) {
-                        (true, true) => out.area_line = paint,
-                        (true, false) => out.area_fill = paint,
-                        (false, true) => out.plot_line = paint,
-                        (false, false) => out.plot_fill = paint,
-                    }
+                b"spPr" if in_plot_area && in_axis.is_none() && !in_title && !in_dlbls => {
+                    props = Props::PlotArea
                 }
-                b"srgbClr" if in_area_props || in_plot_props => {
+                b"ln" if props != Props::Nobody => in_ln = true,
+                b"noFill" if props != Props::Nobody => {
+                    record(&mut out, props, in_axis, in_ln, Paint::None);
+                }
+                b"srgbClr" if props != Props::Nobody => {
                     if let Some(rgb) = attr_text(e, b"val").as_deref().and_then(rgb) {
-                        let paint = Paint::Rgb(rgb);
-                        match (in_area_props, in_ln) {
-                            (true, true) => out.area_line = paint,
-                            (true, false) => out.area_fill = paint,
-                            (false, true) => out.plot_line = paint,
-                            (false, false) => out.plot_fill = paint,
-                        }
+                        record(&mut out, props, in_axis, in_ln, Paint::Rgb(rgb));
                     }
                 }
                 b"srgbClr" if depth_in_series_props > 0 && series.color.is_none() => {
@@ -179,7 +236,9 @@ pub fn plot(data: &[u8]) -> Option<Plot> {
             Event::End(ref e) => match end_local_name(e) {
                 b"chart" => in_chart = false,
                 b"plotArea" => in_plot_area = false,
-                b"catAx" | b"valAx" | b"dateAx" | b"serAx" => in_axis = false,
+                b"catAx" | b"valAx" | b"dateAx" | b"serAx" => in_axis = None,
+                b"majorGridlines" | b"minorGridlines" => in_gridlines = false,
+                b"txPr" => in_text_props = false,
                 b"dLbls" => in_dlbls = false,
                 b"f" | b"v" | b"t" => {
                     let value = std::mem::take(&mut text);
@@ -231,8 +290,7 @@ pub fn plot(data: &[u8]) -> Option<Plot> {
                 }
                 b"spPr" => {
                     depth_in_series_props = depth_in_series_props.saturating_sub(1);
-                    in_area_props = false;
-                    in_plot_props = false;
+                    props = Props::Nobody;
                     in_ln = false;
                 }
                 b"ln" => in_ln = false,
@@ -515,6 +573,54 @@ mod tests {
         let silent = chart();
         assert_eq!(silent.plot_fill, Paint::Auto);
         assert_eq!(silent.plot_line, Paint::Auto);
+    }
+
+    #[test]
+    fn each_axis_keeps_its_own_ticks_and_its_own_line() {
+        // The sample states `majorTickMark="out"` and a b3b3b3 line on both
+        // axes. The value axis's gridlines carry a line of their own, and the
+        // axis text carries a colour — neither is the axis.
+        let part = br#"<c:chartSpace xmlns:c="x" xmlns:a="y"><c:chart><c:plotArea><c:barChart>
+            <c:barDir val="col"/>
+            <c:ser><c:idx val="0"/>
+              <c:val><c:numRef><c:numCache><c:pt idx="0"><c:v>1</c:v></c:pt></c:numCache></c:numRef></c:val>
+            </c:ser></c:barChart>
+            <c:catAx><c:delete val="0"/><c:majorTickMark val="out"/><c:minorTickMark val="none"/>
+              <c:spPr><a:ln><a:solidFill><a:srgbClr val="B3B3B3"/></a:solidFill></a:ln></c:spPr></c:catAx>
+            <c:valAx><c:delete val="0"/>
+              <c:majorGridlines><c:spPr><a:ln><a:solidFill><a:srgbClr val="222222"/></a:solidFill></a:ln></c:spPr></c:majorGridlines>
+              <c:majorTickMark val="cross"/>
+              <c:txPr><a:p><a:pPr><a:defRPr><a:solidFill><a:srgbClr val="444444"/></a:solidFill></a:defRPr></a:pPr></a:p></c:txPr>
+              <c:spPr><a:ln><a:solidFill><a:srgbClr val="999999"/></a:solidFill></a:ln></c:spPr></c:valAx>
+            </c:plotArea></c:chart></c:chartSpace>"#;
+        let both = plot(part).expect("parses");
+        assert_eq!(both.cat_axis.major_tick, TickMark::Out);
+        assert_eq!(both.cat_axis.line, Paint::Rgb([0xB3, 0xB3, 0xB3]));
+        assert_eq!(both.val_axis.major_tick, TickMark::Cross);
+        assert_eq!(
+            both.val_axis.line,
+            Paint::Rgb([0x99, 0x99, 0x99]),
+            "not the gridlines' colour and not the text's"
+        );
+        assert!(!both.cat_axis.deleted && !both.val_axis.deleted);
+        // Neither axis is the plot area, whose own spPr this part omits.
+        assert_eq!(both.plot_line, Paint::Auto);
+
+        // And an axis the author removed says so.
+        let gone = br#"<c:chartSpace xmlns:c="x" xmlns:a="y"><c:chart><c:plotArea><c:barChart>
+            <c:barDir val="col"/><c:ser><c:idx val="0"/>
+              <c:val><c:numRef><c:numCache><c:pt idx="0"><c:v>1</c:v></c:pt></c:numCache></c:numRef></c:val>
+            </c:ser></c:barChart>
+            <c:catAx><c:delete val="1"/><c:majorTickMark val="out"/></c:catAx>
+            </c:plotArea></c:chart></c:chartSpace>"#;
+        let removed = plot(gone).expect("parses");
+        assert!(removed.cat_axis.deleted);
+
+        // A part that names no ticks draws none, rather than the schema's
+        // nominal default.
+        let silent = chart();
+        assert_eq!(silent.cat_axis.major_tick, TickMark::None);
+        assert_eq!(silent.val_axis.major_tick, TickMark::None);
     }
 
     #[test]

@@ -15,7 +15,7 @@
 //! That approximation costs nothing, because both applications put back the
 //! bytes their file came with.
 
-use crate::{ChartKind, LegendPosition, Paint, Plot};
+use crate::{Axis, ChartKind, LegendPosition, Paint, Plot};
 
 /// The default palette Office assigns to series, accent 1 through 6.
 pub const SERIES_COLORS: [[u8; 3]; 6] = [
@@ -223,6 +223,28 @@ fn blend(rgb: [u8; 3], over: [u8; 3], alpha: f64) -> [u8; 3] {
         mix(rgb[1], over[1]),
         mix(rgb[2], over[2]),
     ]
+}
+
+/// The ink a stated paint comes to, or `None` for one the part silenced.
+fn ink(paint: Paint, default: [u8; 3]) -> Option<[u8; 3]> {
+    match paint {
+        Paint::None => None,
+        Paint::Auto => Some(default),
+        Paint::Rgb(rgb) => Some(rgb),
+    }
+}
+
+/// The stub an axis marks a major unit with: how far it reaches into the plot
+/// area, how far out of it, and in what ink. `None` when it draws none.
+fn tick_marks(axis: &Axis, length: f64, default: [u8; 3]) -> Option<(f64, f64, [u8; 3])> {
+    if axis.deleted {
+        return None;
+    }
+    let (inside, outside) = axis.major_tick.reach(length);
+    if inside == 0.0 && outside == 0.0 {
+        return None;
+    }
+    Some((inside, outside, ink(axis.line, default)?))
 }
 
 /// Everything a chart draws inside `rect`, in the order it is drawn.
@@ -454,6 +476,13 @@ fn axes_chart(
         });
     }
 
+    // Tick marks, in each axis's own ink. A third of the label's size is the
+    // length Word's render measures to — a hair under three points against
+    // the sample's nine-point labels.
+    let stub = size / 3.0;
+    let val_tick = tick_marks(&plot.val_axis, stub, style.grid);
+    let cat_tick = tick_marks(&plot.cat_axis, stub, style.grid);
+
     // A gridline and its label at every major unit, which is what makes the
     // heights readable.
     for (value, text) in labels {
@@ -463,6 +492,13 @@ fn axes_chart(
             thickness: 1.0,
             rgb: blend(style.grid, style.background, 0.5),
         });
+        if let Some((inside, outside, rgb)) = val_tick {
+            out.push(Prim::Line {
+                points: vec![(area.left() - outside, y), (area.left() + inside, y)],
+                thickness: 1.0,
+                rgb,
+            });
+        }
         let (width, height) = measure.size(&text, size);
         out.push(Prim::Text {
             at: (area.left() - 3.0 - width, y - height / 2.0),
@@ -471,12 +507,16 @@ fn axes_chart(
             rgb: style.text,
         });
     }
+    // The category axis itself, at the value it crosses. Its own colour when
+    // the part names one; an axis whose line the part silences draws none.
     let base = y_of(0.0f64.clamp(low, high));
-    out.push(Prim::Line {
-        points: vec![(area.left(), base), (area.right(), base)],
-        thickness: 1.0,
-        rgb: style.grid,
-    });
+    if let Some(rgb) = ink(plot.cat_axis.line, style.grid) {
+        out.push(Prim::Line {
+            points: vec![(area.left(), base), (area.right(), base)],
+            thickness: 1.0,
+            rgb,
+        });
+    }
     // The box around the plot area, when the part states one — the frame Word
     // draws around the sample's bars, right edge and ceiling included. Under
     // the bars, like the baseline: a column standing on the axis is not cut
@@ -491,6 +531,20 @@ fn axes_chart(
     }
 
     let slot = area.width / points as f64;
+    // The category axis's stubs stand at the *boundaries* between categories,
+    // not under them: one at each end of every slot, both ends of the axis
+    // included. The labels are what go in the middle.
+    if let Some((inside, outside, rgb)) = cat_tick {
+        for step in 0..=points {
+            let x = area.left() + slot * step as f64;
+            out.push(Prim::Line {
+                points: vec![(x, base - inside), (x, base + outside)],
+                thickness: 1.0,
+                rgb,
+            });
+        }
+    }
+
     match plot.kind {
         ChartKind::Line | ChartKind::Scatter => {
             for entry in series {
@@ -702,6 +756,9 @@ fn pie(out: &mut Vec<Prim>, area: Rect, series: &[Plotted], doughnut: bool) {
 mod tests {
     use super::*;
     use crate::{Grouping, Series};
+
+    /// A polyline, as [`Prim::Line`] carries one.
+    type Path = Vec<(f64, f64)>;
 
     /// Half the size in width per character, which is what the layout
     /// engine's own test shaper says and is enough to place a label.
@@ -917,6 +974,105 @@ mod tests {
                 .any(|p| matches!(p, Prim::Frame { rect, .. } if rect.width < 350.0)),
             "no box of our own invention inside the chart"
         );
+    }
+
+    #[test]
+    fn ticks_stand_outside_the_plot_at_the_units_and_at_the_category_boundaries() {
+        // Word writes `majorTickMark="out"` on both of the sample's axes and
+        // draws a stub beyond the plot at every gridline and at every seam
+        // between categories — the ends of the axis included, which is why
+        // four categories get five.
+        let mut ticked = plot(ChartKind::Bar);
+        ticked.cat_axis = Axis {
+            line: Paint::Rgb([0xB3, 0xB3, 0xB3]),
+            major_tick: crate::TickMark::Out,
+            deleted: false,
+        };
+        ticked.val_axis = ticked.cat_axis;
+        ticked.series[0].values = vec![Some(1.0), Some(2.0), Some(3.0), Some(4.0)];
+        let series = cached_series(&ticked);
+        let rect = Rect::new(0.0, 0.0, 400.0, 300.0);
+        let prims = primitives(rect, &ticked, &series, &style(), &mut Half);
+
+        let stubs: Vec<Path> = prims
+            .iter()
+            .filter_map(|p| match p {
+                Prim::Line { points, rgb, .. } if *rgb == [0xB3, 0xB3, 0xB3] => {
+                    Some(points.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        let upright: Vec<&Path> = stubs.iter().filter(|p| p[0].0 == p[1].0).collect();
+        assert_eq!(upright.len(), 5, "a seam at each end of four slots");
+        // Evenly spaced, and every one of them hangs *below* the axis rather
+        // than cutting up through the bars.
+        let xs: Vec<f64> = upright.iter().map(|p| p[0].0).collect();
+        let step = xs[1] - xs[0];
+        assert!(xs.windows(2).all(|w| (w[1] - w[0] - step).abs() < 1e-9));
+        assert!(upright.iter().all(|p| p[1].1 > p[0].1));
+
+        let flat: Vec<&Path> = stubs
+            .iter()
+            .filter(|p| p[0].1 == p[1].1 && p[0].0 != p[1].0)
+            .collect();
+        // The flat ones are the stubs at each major unit of an axis running 0
+        // to 5 by ones, plus the category axis itself, which is as wide as the
+        // plot and is what tells the two apart.
+        let (axis_line, value_stubs): (Vec<&Path>, Vec<&Path>) = flat
+            .into_iter()
+            .partition(|p| (p[1].0 - p[0].0).abs() > 20.0);
+        assert_eq!(axis_line.len(), 1, "the category axis itself");
+        assert_eq!(value_stubs.len(), 6, "one per major unit of 0..=5");
+        // Three points long — a third of the nine-point label — and reaching
+        // out of the plot, not into it.
+        for stub in &value_stubs {
+            assert!((stub[1].0 - stub[0].0 - 3.0).abs() < 1e-9, "{stub:?}");
+            assert!(stub[0].0 < axis_line[0][0].0, "outside the plot");
+        }
+    }
+
+    #[test]
+    fn an_axis_that_states_no_ticks_or_no_line_draws_none() {
+        let rect = Rect::new(0.0, 0.0, 400.0, 300.0);
+        let mut silent = plot(ChartKind::Bar);
+        silent.series[0].values = vec![Some(1.0), Some(2.0)];
+        let series = cached_series(&silent);
+        let prims = primitives(rect, &silent, &series, &style(), &mut Half);
+        assert!(
+            !prims
+                .iter()
+                .any(|p| matches!(p, Prim::Line { points, .. } if points[0].0 == points[1].0)),
+            "no upright stub anybody asked for"
+        );
+
+        // Ticks stated but the axis line silenced: there is no ink to draw
+        // them in, and Word draws neither.
+        let mut hidden = silent.clone();
+        hidden.cat_axis = Axis {
+            line: Paint::None,
+            major_tick: crate::TickMark::Out,
+            deleted: false,
+        };
+        let prims = primitives(rect, &hidden, &series, &style(), &mut Half);
+        assert!(
+            !prims
+                .iter()
+                .any(|p| matches!(p, Prim::Line { points, .. } if points[0].0 == points[1].0)),
+            "a silenced axis draws no stubs"
+        );
+
+        // And an axis the author deleted keeps its ticks to itself.
+        let mut gone = silent.clone();
+        gone.val_axis = Axis {
+            line: Paint::Rgb([1, 2, 3]),
+            major_tick: crate::TickMark::Out,
+            deleted: true,
+        };
+        let prims = primitives(rect, &gone, &series, &style(), &mut Half);
+        assert!(!prims
+            .iter()
+            .any(|p| matches!(p, Prim::Line { rgb, .. } if *rgb == [1, 2, 3])));
     }
 
     #[test]
