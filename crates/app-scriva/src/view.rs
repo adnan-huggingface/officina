@@ -31,9 +31,21 @@ const MATCH: egui::Color32 = egui::Color32::from_rgba_premultiplied(0x92, 0x84, 
 /// The outline and grips of a selected drawing.
 const HANDLE: egui::Color32 = egui::Color32::from_rgb(0x2A, 0x5C, 0xAA);
 
+/// What one point of the page takes on the glass at 100% — Word's hundred
+/// per cent, which is not a point per point.
+///
+/// Word draws a document inch as 96 device-independent pixels: the logical
+/// inch Windows scales up per monitor, so the page grows on a monitor set to
+/// 150% exactly as Word's does. egui's points *are* those device-independent
+/// pixels — the DPI guard keeps them honest when the window changes monitor —
+/// so multiplying the document's 72-to-the-inch points by this makes 100%
+/// the size Word shows, on whichever monitor the window is on.
+pub const SCALE: f64 = 96.0 / 72.0;
+
 /// The laid-out document, and how it is being looked at.
 pub struct View {
-    /// 1.0 is a point per point. Word's zoom, as a fraction.
+    /// 1.0 is 100%: a document inch on 96 logical pixels, as Word's zoom
+    /// means it. The screen mapping is this times [`SCALE`].
     pub zoom: f64,
     pub show_marks: bool,
     pub show_revisions: bool,
@@ -1104,6 +1116,14 @@ pub fn desk() -> egui::Color32 {
 mod tests {
     use super::*;
     use wp_model::doc::{Block, Paragraph};
+
+    #[test]
+    fn a_hundred_per_cent_is_words_logical_inch() {
+        // Word's own answer: `Application.PointsToPixels(72)` is 96 — the
+        // device-independent pixels Windows scales per monitor. 100% must
+        // put a document inch on exactly that many of egui's points.
+        assert_eq!(72.0 * SCALE, 96.0);
+    }
 
     fn context() -> egui::Context {
         let ctx = egui::Context::default();

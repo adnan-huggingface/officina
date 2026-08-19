@@ -2267,7 +2267,7 @@ impl Scriva {
 
     /// One screenful up or down — Page Up and Page Down.
     fn page_step(&self, caret: Caret, down: bool) -> Caret {
-        let screen = (self.viewport.y.max(60.0) as f64) / self.view.zoom.max(0.01);
+        let screen = (self.viewport.y.max(60.0) as f64) / (self.view.zoom * view::SCALE).max(0.01);
         let step = screen * if down { 1.0 } else { -1.0 };
         view::step_from(&self.view, caret, step).unwrap_or(caret)
     }
@@ -3079,11 +3079,13 @@ impl Scriva {
     /// first page — leaving a little air for the scrollbar and the edges.
     fn fit_percent(&self, width_only: bool) -> Option<i32> {
         let geometry = &self.view.pages().first()?.geometry;
-        let fit_w = (self.viewport.x as f64 - 32.0).max(60.0) / geometry.width;
+        // The paper's size on the glass is its points times [`view::SCALE`],
+        // so the percent that fits is measured against that.
+        let fit_w = (self.viewport.x as f64 - 32.0).max(60.0) / (geometry.width * view::SCALE);
         let percent = if width_only {
             fit_w
         } else {
-            fit_w.min((self.viewport.y as f64 - 24.0).max(60.0) / geometry.height)
+            fit_w.min((self.viewport.y as f64 - 24.0).max(60.0) / (geometry.height * view::SCALE))
         };
         Some(((percent * 100.0).floor() as i32).clamp(10, 500))
     }
@@ -3288,7 +3290,9 @@ impl Scriva {
 
     /// The page surface: a scrolling desk with the pages on it.
     fn surface(&mut self, ui: &mut egui::Ui) {
-        let zoom = self.view.zoom as f32;
+        // The percent, taken to the glass: 100% is Word's — a document inch
+        // on 96 logical pixels — not a point per point.
+        let zoom = (self.view.zoom * view::SCALE) as f32;
         let (extent_w, extent_h) = self.view.extent();
         let outer = ui.available_rect_before_wrap();
         self.viewport = outer.size();
