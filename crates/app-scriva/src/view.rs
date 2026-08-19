@@ -1537,6 +1537,68 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_picture_is_a_character_the_caret_can_stand_on_either_side_of() {
+        use wp_model::doc::{Inline, Piece, Run};
+        let ctx = context();
+        let mut shaper = Egui::new(&ctx);
+        let mut view = View::default();
+        let mut document = document(&[]);
+        let drawing = wp_model::Drawing {
+            source: Vec::new().into(),
+            anchored: false,
+            extent: (
+                wp_model::Emu::from_points(60.0),
+                wp_model::Emu::from_points(30.0),
+            ),
+            rel: Some("rId9".into()),
+            chart: None,
+            name: None,
+            description: None,
+            wrap: wp_model::Wrap::None,
+            distance: Default::default(),
+            position: None,
+            behind_text: false,
+        };
+        document.body = vec![Block::Paragraph(Paragraph {
+            content: vec![Inline::Run(Run {
+                content: vec![
+                    Piece::Text("before".into()),
+                    Piece::Drawing(Box::new(drawing)),
+                    Piece::Text("after".into()),
+                ],
+                ..Run::default()
+            })],
+            ..Paragraph::new()
+        })];
+        view.refresh(&document, &wp_layout::FieldValues::new(), 1, &mut shaper);
+        // Every offset, including the two the picture stands between, has a
+        // place on the page and comes back from a click there.
+        round_trips(&view, &format!("before{}after", wp_model::doc::OBJECT));
+        let (_, before) = caret_rect(
+            &view,
+            Caret {
+                paragraph: 0,
+                offset: 6,
+            },
+        )
+        .expect("in front of it");
+        let (_, after) = caret_rect(
+            &view,
+            Caret {
+                paragraph: 0,
+                offset: 7,
+            },
+        )
+        .expect("behind it");
+        assert!(
+            (after.min.x - before.min.x - 60.0).abs() < 1.0,
+            "one step crosses the whole picture: {} then {}",
+            before.min.x,
+            after.min.x
+        );
+    }
+
     /// A justified paragraph, narrow enough that its first line is a full one.
     ///
     /// Justification is what pulls the words of a line apart: it is done by

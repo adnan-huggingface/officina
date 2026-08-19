@@ -164,7 +164,7 @@ pub fn write(document: &Document) -> String {
 fn markers(paragraph: &Paragraph) -> String {
     let mut out = String::new();
     for run in paragraph.runs() {
-        let text = run.text();
+        let text = readable(&run.text());
         if text.is_empty() {
             continue;
         }
@@ -405,9 +405,22 @@ pub fn write_plain(document: &Document, ending: crate::encoding::LineEnding) -> 
     document
         .paragraphs()
         .iter()
-        .map(|paragraph| paragraph.text())
+        .map(|paragraph| readable(&paragraph.text()))
         .collect::<Vec<_>>()
         .join(ending.as_str())
+}
+
+/// A paragraph's text with the pictures taken out of it.
+///
+/// An inline picture is a character of the document's text — see
+/// [`wp_model::doc::OBJECT`] — and writing that character into a text file
+/// would put a control code in the middle of a sentence. A picture in plain
+/// text is nothing, which is what plain text means.
+fn readable(text: &str) -> String {
+    match text.contains(wp_model::doc::OBJECT) {
+        true => text.replace(wp_model::doc::OBJECT, ""),
+        false => text.to_owned(),
+    }
 }
 
 #[cfg(test)]

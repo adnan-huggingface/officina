@@ -83,7 +83,10 @@ pub fn headings(document: &Document) -> Vec<Heading> {
         .enumerate()
         .filter_map(|(index, paragraph)| {
             let level = heading_level(paragraph, &document.styles)?;
-            let text = paragraph.text();
+            // Without the pictures: a heading with a logo in it would otherwise
+            // carry a control character into every table of contents that names
+            // it. See [`crate::doc::OBJECT`].
+            let text = paragraph.text().replace(crate::doc::OBJECT, "");
             // A heading with no text is a spacer, and a table of contents full
             // of blank rows is worse than one that is a line short.
             (!text.trim().is_empty()).then(|| Heading {

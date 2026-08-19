@@ -186,12 +186,28 @@ pub fn remove(paragraph: &mut Paragraph, range: std::ops::Range<usize>) {
         return;
     }
     // Back to front, so an earlier removal does not move a later one.
+    let total = len(paragraph);
     let mut cuts: Vec<(usize, usize, std::ops::Range<usize>)> = Vec::new();
     let mut seen = 0usize;
     for (run_index, run) in paragraph.runs().iter().enumerate() {
         for (piece_index, piece) in run.content.iter().enumerate() {
             let width = piece_len(piece);
             if width == 0 {
+                // Something that draws but holds no text — a floating picture's
+                // anchor, an embedded object, a page break — is *somewhere*
+                // even though no offset names it, and a cut that spans that
+                // place takes it. Skipping it instead is what leaves a picture
+                // in both halves of a split paragraph, a split being a cut of
+                // the front and a cut of the back: neither range overlaps
+                // something of no width, so neither range removes it.
+                //
+                // A cut that runs to the very end of the text takes what sits
+                // at the very end too, or the piece at `total` would survive
+                // both halves the same way.
+                let covered = seen >= range.start && (seen < range.end || range.end == total);
+                if covered && drawn(piece) {
+                    cuts.push((run_index, piece_index, 0..0));
+                }
                 continue;
             }
             let piece_range = seen..seen + width;
@@ -226,6 +242,18 @@ pub fn remove(paragraph: &mut Paragraph, range: std::ops::Range<usize>) {
         }
     }
     prune(paragraph);
+}
+
+/// Whether a piece puts something on the page while holding none of the
+/// paragraph's text.
+///
+/// An *inline* picture is not one of these: it is one character wide — see
+/// [`wp_model::doc::OBJECT`] — and a range reaches it the ordinary way.
+fn drawn(piece: &Piece) -> bool {
+    matches!(
+        piece,
+        Piece::Drawing(_) | Piece::Embedded { .. } | Piece::Break(_)
+    )
 }
 
 /// Drops runs and pieces that hold nothing.
@@ -592,6 +620,92 @@ mod tests {
         let joined = merge(&Paragraph::of("first "), &second);
         assert_eq!(joined.text(), "first second");
         assert!(joined.section.is_some());
+    }
+
+    fn picture(anchored: bool) -> Piece {
+        Piece::Drawing(Box::new(wp_model::doc::Drawing {
+            source: Vec::new().into(),
+            anchored,
+            extent: (wp_model::Emu(914_400), wp_model::Emu(457_200)),
+            rel: Some("rId9".into()),
+            chart: None,
+            name: None,
+            description: None,
+            wrap: wp_model::doc::Wrap::None,
+            distance: Default::default(),
+            position: None,
+            behind_text: false,
+        }))
+    }
+
+    /// The same picture at the front, in the middle and at the end.
+    fn each_placing(anchored: bool) -> Vec<Paragraph> {
+        [
+            vec![picture(anchored), Piece::Text("abcd".into())],
+            vec![
+                Piece::Text("ab".into()),
+                picture(anchored),
+                Piece::Text("cd".into()),
+            ],
+            vec![Piece::Text("abcd".into()), picture(anchored)],
+        ]
+        .into_iter()
+        .map(|content| Paragraph {
+            content: vec![Inline::Run(Run {
+                content,
+                ..Run::new()
+            })],
+            ..Paragraph::new()
+        })
+        .collect()
+    }
+
+    #[test]
+    fn an_inline_picture_is_one_character_of_the_paragraph() {
+        // Word's own model, and what lets the caret step over a picture at all:
+        // an offset that names it is an offset the arrows can reach.
+        let paragraph = each_placing(false).swap_remove(1);
+        assert_eq!(paragraph.text(), "ab\u{1}cd");
+        assert_eq!(len(&paragraph), 5);
+        // Two offsets, one either side of it, and typing at each goes to the
+        // side it names.
+        let mut before = paragraph.clone();
+        insert(&mut before, 2, "X");
+        assert_eq!(before.text(), "abX\u{1}cd");
+        let mut after = paragraph.clone();
+        insert(&mut after, 3, "X");
+        assert_eq!(after.text(), "ab\u{1}Xcd");
+    }
+
+    #[test]
+    fn deleting_the_character_a_picture_is_takes_the_whole_picture() {
+        let mut paragraph = each_placing(false).swap_remove(1);
+        remove(&mut paragraph, 2..3);
+        assert_eq!(paragraph.text(), "abcd");
+        assert!(paragraph.drawings().is_empty(), "and it is gone");
+    }
+
+    #[test]
+    fn splitting_a_paragraph_never_leaves_a_picture_in_both_halves() {
+        // Enter used to copy the picture: a drawing held none of the
+        // paragraph's text, so neither half's removal ever reached it. Every
+        // placing and every split point, because the ends are where a rule
+        // about spans goes wrong.
+        for anchored in [false, true] {
+            for paragraph in each_placing(anchored) {
+                for at in 0..=len(&paragraph) {
+                    let (head, tail) = split(&paragraph, at);
+                    assert_eq!(
+                        head.drawings().len() + tail.drawings().len(),
+                        1,
+                        "one picture between them, anchored={anchored}, split at {at}, \
+                         head {:?} tail {:?}",
+                        head.text(),
+                        tail.text()
+                    );
+                }
+            }
+        }
     }
 
     #[test]

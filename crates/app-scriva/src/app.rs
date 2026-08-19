@@ -1287,12 +1287,21 @@ impl Scriva {
         Some(parts.join("\n"))
     }
 
+    /// The same, as text for the clipboard: a picture is a character of the
+    /// document — see [`wp_model::doc::OBJECT`] — but pasting a control code
+    /// into Notepad is not what copying a picture means. What carries the
+    /// picture is the internal clipboard, not this.
+    fn selected_plain_text(&self) -> Option<String> {
+        self.selected_text()
+            .map(|text| text.replace(wp_model::doc::OBJECT, ""))
+    }
+
     /// Copies the selection: its text to the OS clipboard, its formatting here.
     ///
     /// Answers whether there was anything to copy, which is what tells Cut
     /// whether to go on and delete it.
     fn copy_selection(&mut self) -> bool {
-        let Some(text) = self.selected_text() else {
+        let Some(text) = self.selected_plain_text() else {
             return false;
         };
         let paragraphs = edit::copy_range(&self.document, self.selection);
@@ -3680,10 +3689,12 @@ mod tests {
             wp_model::Emu(457_200),
             "half an inch tall"
         );
+        // The picture is one character of the paragraph, where the caret was —
+        // which is what lets the caret step over it and Backspace take it.
         assert_eq!(
             paragraphs[0].text(),
-            "before after",
-            "the text is untouched"
+            format!("before{} after", wp_model::doc::OBJECT),
+            "a picture is a character, and the words either side are untouched"
         );
 
         // The relationship the drawing names resolves to a part holding the
@@ -3700,6 +3711,61 @@ mod tests {
             app.document.paragraphs()[0].drawings().is_empty(),
             "undo takes the picture out"
         );
+    }
+
+    #[test]
+    fn pressing_enter_beside_a_pasted_picture_does_not_make_a_second_one() {
+        // The bug: Enter split the paragraph, and a picture that held none of
+        // its text ended up in both halves.
+        let mut app = app_with(&["before after"]);
+        app.selection = Selection::at(Caret {
+            paragraph: 0,
+            offset: 6,
+        });
+        assert!(app.insert_picture(PIXEL, "image/png", 96, 48), "it pastes");
+
+        // What the Enter key does, at the caret the paste left behind.
+        let caret = edit::split_paragraph(&mut app.document, &mut app.history, app.selection);
+        app.selection = Selection::at(caret);
+
+        let pictures: usize = app
+            .document
+            .paragraphs()
+            .iter()
+            .map(|paragraph| paragraph.drawings().len())
+            .sum();
+        assert_eq!(pictures, 1, "still the one picture");
+        assert_eq!(app.paragraph_count(), 2, "and the paragraph did split");
+    }
+
+    #[test]
+    fn the_caret_steps_over_a_picture_and_backspace_takes_it() {
+        let mut app = app_with(&["ab"]);
+        app.selection = Selection::at(Caret {
+            paragraph: 0,
+            offset: 1,
+        });
+        assert!(app.insert_picture(PIXEL, "image/png", 96, 48), "it pastes");
+        assert_eq!(
+            app.paragraph_text(0),
+            format!("a{}b", wp_model::doc::OBJECT)
+        );
+
+        // One press of Right from in front of it lands behind it: a picture is
+        // one character, not none.
+        let text = app.paragraph_text(0);
+        assert_eq!(text::next_char(&text, 1), 2);
+        assert_eq!(text::previous_char(&text, 2), 1);
+
+        // And Backspace from behind it takes the whole picture.
+        app.selection = Selection::at(Caret {
+            paragraph: 0,
+            offset: 2,
+        });
+        let caret = edit::backspace(&mut app.document, &mut app.history, app.selection);
+        assert_eq!(caret.offset, 1);
+        assert_eq!(app.paragraph_text(0), "ab");
+        assert!(app.document.paragraphs()[0].drawings().is_empty());
     }
 
     #[test]

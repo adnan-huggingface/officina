@@ -417,6 +417,7 @@ impl Run {
                 }
                 Piece::Tab => out.push('\t'),
                 Piece::Break(Break::Line) => out.push('\n'),
+                Piece::Drawing(drawing) if !drawing.anchored => out.push(OBJECT),
                 Piece::Symbol { ch, .. } => out.push(*ch),
                 Piece::Hyphen { breaking: false } => out.push('\u{2011}'),
                 Piece::Hyphen { breaking: true } => out.push('\u{00AD}'),
@@ -512,6 +513,20 @@ pub enum Piece {
     },
 }
 
+/// The character an inline picture occupies in a paragraph's text.
+///
+/// Word's own: a `.doc` stores exactly this byte where a picture or an OLE
+/// object sits, and `Range.Text` still hands it back. A picture *is* a
+/// character — one the caret steps over, a selection can take and Backspace
+/// can delete — and a model where it is nothing instead is a model where
+/// splitting a paragraph leaves the picture in both halves, because no offset
+/// ever names it.
+///
+/// It is not text, so everything that shows the text to a human — plain-text
+/// export, Markdown, a heading in a table of contents, the clipboard — takes
+/// it back out again.
+pub const OBJECT: char = '\u{1}';
+
 impl Piece {
     /// How many bytes of the paragraph's text this piece contributes.
     ///
@@ -529,6 +544,10 @@ impl Piece {
             Piece::Deleted(_) => 0,
             Piece::Tab => 1,
             Piece::Break(Break::Line) => 1,
+            // An inline picture is one character: see [`OBJECT`]. An anchored
+            // one is not in the line at all — it is a thing on the page that a
+            // paragraph happens to own — and Word gives it no character either.
+            Piece::Drawing(drawing) if !drawing.anchored => OBJECT.len_utf8(),
             // The character, not one byte: `<w:sym>` is very often a private-use
             // code point that takes three.
             Piece::Symbol { ch, .. } => ch.len_utf8(),

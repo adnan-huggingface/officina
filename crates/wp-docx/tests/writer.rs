@@ -368,7 +368,14 @@ fn a_pasted_picture_becomes_a_part_a_relationship_and_a_drawing() {
         panic!("one picture, not {}", drawings.len());
     };
     assert_eq!(drawing.extent, (Emu(914_400), Emu(457_200)), "its size");
-    assert_eq!(read.text().trim(), "before", "and the text beside it");
+    // The picture is a character of the text — `wp_model::doc::OBJECT`, which
+    // is what Word puts where a picture is — so the words beside it are what
+    // is left when it is taken out.
+    assert_eq!(
+        read.text().replace(wp_model::doc::OBJECT, "").trim(),
+        "before",
+        "and the text beside it"
+    );
 
     // The relationship resolves to a part, and the part is the image.
     let parts = wp_docx::DocumentParts::locate_in(&reopened).expect("the parts");
