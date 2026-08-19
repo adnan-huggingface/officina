@@ -15,13 +15,13 @@
 //! back is to unplace what was placed.
 //!
 //! **Stated limits**, rather than hidden ones. Text does not wrap *beside* an
-//! anchored drawing: a text-anchored float that displaces text — `topAndBottom`,
-//! or a square wrap with no usable measure left beside it — reserves its full
-//! height in the flow and the text resumes below, which is what Word does with
-//! the commonest float in the wild, the column-wide picture. A narrower square
-//! wrap should share its lines with the text and does not yet; a page- or
-//! margin-anchored float does not travel with the text and stays an overlay the
-//! text runs under. Multi-column sections lay out column by column rather than
+//! anchored drawing: every text-anchored float that wraps — `topAndBottom`,
+//! square, tight — reserves its full height in the flow and the text resumes
+//! below, which is what Word does with the commonest float in the wild, the
+//! column-wide or centred picture. A narrow square wrap should share its
+//! lines with the text and does not yet — below is the honest stand-in,
+//! never text sitting on the picture. A page- or margin-anchored float does
+//! not travel with the text and stays an overlay the text runs under. Multi-column sections lay out column by column rather than
 //! balancing the last page. A table row splits across pages between the lines
 //! of its cells, but only at a height that is a line boundary in *every* cell
 //! at once — where two columns of text line up on nothing, the row moves whole,
@@ -649,7 +649,7 @@ pub fn flow_paragraph(
         width,
         shaper,
     );
-    push_paragraph(paragraph, &layers, laid, width, left, into);
+    push_paragraph(paragraph, &layers, laid, left, into);
 }
 
 /// A bullet stated in a symbol font's private-use range, translated to the
@@ -711,7 +711,6 @@ fn push_paragraph(
     paragraph: &Paragraph,
     layers: &Layers,
     laid: LaidParagraph,
-    width: f64,
     left: f64,
     into: &mut Flow,
 ) {
@@ -733,7 +732,7 @@ fn push_paragraph(
     let mut displaced: Vec<Item> = Vec::new();
     if anchored(paragraph)
         .iter()
-        .any(|(_, drawing)| displaces(drawing, width))
+        .any(|(_, drawing)| displaces(drawing))
     {
         while into.items.last().is_some_and(is_empty_line) {
             displaced.push(into.items.pop().expect("just checked"));
@@ -742,7 +741,7 @@ fn push_paragraph(
     }
     let mut dead: f64 = displaced.iter().map(|item| item.height).sum();
     for (nth, drawing) in anchored(paragraph) {
-        if !displaces(drawing, width) {
+        if !displaces(drawing) {
             continue;
         }
         let (dist_top, _, dist_bottom, _) = drawing.distance;
@@ -798,7 +797,7 @@ fn push_paragraph(
     // so it rides with the paragraph's first item and is positioned from there.
     let floats: Vec<Placement> = anchored(paragraph)
         .into_iter()
-        .filter(|(_, drawing)| !displaces(drawing, width))
+        .filter(|(_, drawing)| !displaces(drawing))
         .map(|(nth, drawing)| Placement {
             x: 0.0,
             y: 0.0,
@@ -1558,14 +1557,18 @@ pub fn anchor_base(drawing: &wp_model::Drawing, page: &PageBox, line_top: f64) -
 
 /// Whether an anchored drawing takes its height out of the text flow.
 ///
-/// Word wraps text *beside* a square-wrapped float when a usable measure
-/// remains; that is still a stated limit. But the commonest square float in
-/// the wild is as wide as the column it sits in — a picture between
-/// paragraphs — and for those "no room beside" and `topAndBottom` are the
-/// same thing: the text resumes below. A float positioned relative to the
-/// page or a margin does not travel with the text, so its space cannot be
-/// reserved mid-flow and it stays an overlay.
-fn displaces(drawing: &wp_model::Drawing, width: f64) -> bool {
+/// Word wraps text *beside* a square-wrapped float when half an inch of
+/// usable measure remains on a side; setting text beside a float is still a
+/// stated limit here, so every text-anchored square float displaces instead
+/// and the text resumes below it. That is Word's own behaviour for the
+/// commonest float in the wild — the column-wide or centred picture, which
+/// leaves no side worth setting into — and for the rest it is the honest
+/// reading of the limit: a float that stopped reserving its height would sit
+/// *under* the text, which is how shrinking a picture once put the words on
+/// top of it. A float positioned relative to the page or a margin does not
+/// travel with the text, so its space cannot be reserved mid-flow and it
+/// stays an overlay.
+fn displaces(drawing: &wp_model::Drawing) -> bool {
     use wp_model::doc::{RelativeTo, Wrap};
     let with_text = match &drawing.position {
         None => true,
@@ -1578,14 +1581,7 @@ fn displaces(drawing: &wp_model::Drawing, width: f64) -> bool {
         return false;
     }
     match drawing.wrap {
-        Wrap::TopAndBottom => true,
-        Wrap::Square | Wrap::Tight => {
-            let (_, right, _, left) = drawing.distance;
-            let beside = width - drawing.extent.0.points() - left.points() - right.points();
-            // Half an inch is the narrowest measure Word will still set text
-            // into beside a float.
-            beside < 36.0
-        }
+        Wrap::TopAndBottom | Wrap::Square | Wrap::Tight => true,
         Wrap::None => false,
     }
 }
@@ -2970,6 +2966,61 @@ mod tests {
         // The paragraph's own line starts below the reserved height, not
         // beside or under the picture.
         assert_eq!(drawn.height, 50.0);
+        assert!(
+            line.y >= drawn.y + drawn.height,
+            "line at {} should sit below the float ending at {}",
+            line.y,
+            drawn.y + drawn.height
+        );
+    }
+
+    #[test]
+    fn a_square_float_resized_narrow_still_holds_the_text_below() {
+        // The float from file-sample_500kB.docx after the user drags it
+        // smaller. Text cannot be set beside a float yet, so the honest
+        // rendering keeps the text below — the moment the float stopped
+        // reserving its height, the words sat on top of the picture.
+        let mut section = SectionProps::new();
+        section.page.height = Twips::from_points(2000.0);
+        let drawing = wp_model::Drawing {
+            source: Vec::new().into(),
+            anchored: true,
+            extent: (
+                wp_model::Emu::from_points(120.0),
+                wp_model::Emu::from_points(80.0),
+            ),
+            rel: Some("rId7".into()),
+            chart: None,
+            name: None,
+            description: None,
+            wrap: wp_model::Wrap::Square,
+            distance: Default::default(),
+            position: None,
+            behind_text: false,
+        };
+        let paragraph = Paragraph {
+            content: vec![Inline::Run(Run {
+                content: vec![
+                    Piece::Drawing(Box::new(drawing)),
+                    Piece::Text("below".into()),
+                ],
+                ..Run::new()
+            })],
+            ..Paragraph::new()
+        };
+        let mut document = document(vec![Block::Paragraph(paragraph)]);
+        document.section = section;
+        let page = &pages(&document)[0];
+        let drawn = page
+            .content
+            .iter()
+            .find(|p| matches!(p.kind, Placed::Drawing { .. }))
+            .expect("the drawing was placed");
+        let line = page
+            .content
+            .iter()
+            .find(|p| matches!(p.kind, Placed::Line { .. }))
+            .expect("a line");
         assert!(
             line.y >= drawn.y + drawn.height,
             "line at {} should sit below the float ending at {}",

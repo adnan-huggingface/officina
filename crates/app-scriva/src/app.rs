@@ -229,6 +229,8 @@ pub struct Scriva {
     zoom_fresh: bool,
     /// What was last copied, with its formatting.
     clipboard: Option<Clip>,
+    /// The picture or chart last copied as an object.
+    copied_drawing: Option<CopiedDrawing>,
 }
 
 /// A copy of the document's own paragraphs, and the plain text that went to the
@@ -243,6 +245,26 @@ pub struct Scriva {
 struct Clip {
     text: String,
     paragraphs: Vec<wp_model::doc::Paragraph>,
+}
+
+/// A picture or chart copied as an object, whole.
+///
+/// The same receipt trick as [`Clip`], for a copy that is not text: the
+/// picture itself goes to the OS board so other applications get it, and the
+/// PNG the board will hand back is kept as the receipt. While the board still
+/// answers with those bytes, a paste means *this* drawing — the model clone,
+/// anchoring, wrap and all — and not a re-encoded flattening of it.
+#[derive(Clone)]
+struct CopiedDrawing {
+    /// The drawing as the model holds it. Its relationship still names the
+    /// part in the document it came from.
+    drawing: wp_model::doc::Drawing,
+    /// A picture's file bytes, for pasting into a *different* document, where
+    /// the relationship names nothing. A chart has no such bytes: it is a
+    /// family of parts, and it travels only within its own document.
+    bytes: Option<(Vec<u8>, &'static str, u32, u32)>,
+    /// What the OS board will answer when asked for its image — the receipt.
+    png: Option<Vec<u8>>,
 }
 
 /// The Size box, while it is open.
@@ -296,6 +318,7 @@ impl Scriva {
             drafting: None,
             margins_draft: None,
             size_draft: None,
+            copied_drawing: None,
             parts: None,
             picked: None,
             dragging: None,
@@ -918,10 +941,20 @@ impl Scriva {
                 };
             }
             Command::Copy => {
-                self.copy_selection();
+                // A picked picture is what "copy" means while it is picked;
+                // the text selection is what it means the rest of the time.
+                if self.picked.is_some() {
+                    self.copy_drawing();
+                } else {
+                    self.copy_selection();
+                }
             }
             Command::Cut => {
-                if self.copy_selection() {
+                if self.picked.is_some() {
+                    if self.copy_drawing() {
+                        self.delete_drawing();
+                    }
+                } else if self.copy_selection() {
                     self.replace_selection("");
                     self.reveal = Some(self.caret());
                 }
@@ -1353,6 +1386,9 @@ impl Scriva {
     /// caret is. That is Word's rule for pasting from an application that offers
     /// nothing richer, and it is the only rule available for text.
     fn paste_from_board(&mut self) {
+        // The paste lands at the caret; a picked picture only stands in the
+        // way of seeing that happen.
+        self.picked = None;
         match clipboard_get().filter(|text| !text.is_empty()) {
             Some(text) => self.paste_matching(&text),
             // Nothing to read as text. A screen snippet is a bitmap and nothing
@@ -1404,11 +1440,125 @@ impl Scriva {
 
     /// Pastes the picture on the board, if there is one. Answers whether there
     /// was.
+    ///
+    /// Ours first: while the board still answers with the very bytes
+    /// [`copy_drawing`](Self::copy_drawing) put there — or with nothing at
+    /// all, which is what a copied chart leaves — the paste means the drawing
+    /// itself, not a flattened picture of it. Anything else on the board was
+    /// put there by someone else and arrives as a fresh picture.
     fn paste_picture_from_board(&mut self) -> bool {
-        let Some((png, width, height)) = clipboard_image() else {
+        match clipboard_image() {
+            Some((png, width, height)) => {
+                let ours = self
+                    .copied_drawing
+                    .as_ref()
+                    .is_some_and(|copied| copied.png.as_deref() == Some(png.as_slice()));
+                match ours {
+                    true => self.paste_copied_drawing(),
+                    false => self.insert_picture(&png, "image/png", width, height),
+                }
+            }
+            None => self.paste_copied_drawing(),
+        }
+    }
+
+    /// Copies the picked drawing: the model clone here, the picture itself to
+    /// the OS board. Answers whether there was one, which is what tells Cut
+    /// whether to go on and delete it.
+    fn copy_drawing(&mut self) -> bool {
+        let Some(drawing) = self.picked_drawing().cloned() else {
             return false;
         };
-        self.insert_picture(&png, "image/png", width, height)
+        // A picture's file bytes, for pasting into a different document. A
+        // chart is a family of parts, not a file, and has none.
+        let bytes = drawing
+            .rel
+            .as_deref()
+            .filter(|_| drawing.chart.is_none())
+            .and_then(|rel| self.media_bytes(rel))
+            .and_then(picture_bytes);
+        // The OS board must stop saying whatever it said before this copy, or
+        // the next paste would honour a stale copy over this one: a picture
+        // goes onto it whole, and a chart — which has no pixels to give —
+        // empties it. Tests leave the machine's board alone.
+        #[cfg(test)]
+        let png = None;
+        #[cfg(not(test))]
+        let png = match &bytes {
+            Some((data, ..)) => clipboard_set_image(data),
+            None => {
+                clipboard_clear();
+                None
+            }
+        };
+        self.copied_drawing = Some(CopiedDrawing {
+            drawing,
+            bytes,
+            png,
+        });
+        true
+    }
+
+    /// Pastes the copied drawing at the caret.
+    ///
+    /// In the document it was copied from, the paste is the model clone: the
+    /// same part, shown once more, which is exactly what a duplicated picture
+    /// or chart is. In a different document the relationship names nothing,
+    /// so a picture is re-embedded from its bytes — and a chart, whose parts
+    /// do not travel yet, says so rather than pasting nothing.
+    fn paste_copied_drawing(&mut self) -> bool {
+        let Some(copied) = self.copied_drawing.clone() else {
+            return false;
+        };
+        // A picture names its part through `rel`; a chart through `chart`.
+        let resolves = copied
+            .drawing
+            .rel
+            .as_deref()
+            .or(copied.drawing.chart.as_deref())
+            .is_some_and(|rel| self.rel_resolves(rel));
+        if resolves {
+            let clip = vec![drawing_paragraph(copied.drawing)];
+            let caret = edit::paste_paragraphs(
+                &mut self.document,
+                &mut self.history,
+                self.selection,
+                &clip,
+            );
+            self.selection = Selection::at(clamp(&self.document, caret));
+            self.changed();
+            self.reveal = Some(self.caret());
+            return true;
+        }
+        match copied.bytes {
+            Some((data, content_type, width, height)) => {
+                self.insert_picture(&data, content_type, width, height)
+            }
+            None => {
+                self.message = Some((
+                    "Cannot paste".to_owned(),
+                    "This chart lives in the document it was copied from, and \
+                     this is a different one.\n\nCopying a chart between \
+                     documents is not supported yet."
+                        .to_owned(),
+                ));
+                false
+            }
+        }
+    }
+
+    /// A picture part's bytes, found the way the painter finds them.
+    fn media_bytes(&self, rel: &str) -> Option<Vec<u8>> {
+        let name = self.parts.as_ref()?.target(rel)?;
+        Some(self.package.as_ref()?.part(name)?.data().to_vec())
+    }
+
+    /// Whether a relationship still names a part of *this* document.
+    fn rel_resolves(&self, rel: &str) -> bool {
+        self.parts
+            .as_ref()
+            .and_then(|parts| parts.target(rel))
+            .is_some()
     }
 
     /// Puts a picture in the document at the caret.
@@ -1707,10 +1857,17 @@ impl Scriva {
                     self.reveal = Some(self.caret());
                 }
                 // Ctrl+C, Ctrl+X and Ctrl+V arrive as their own events, with
-                // the pasted text already read from the OS.
+                // the pasted text already read from the OS. Copy and Cut act
+                // on the picked picture when there is one — the command sorts
+                // that out. A paste while a picture is picked lets it go
+                // first: the paste lands at the caret, and a picture is not a
+                // place a paste can land.
                 egui::Event::Copy => self.run(Command::Copy),
-                egui::Event::Cut if self.picked.is_none() => self.run(Command::Cut),
-                egui::Event::Paste(text) if self.picked.is_none() => self.paste_matching(&text),
+                egui::Event::Cut => self.run(Command::Cut),
+                egui::Event::Paste(text) => {
+                    self.picked = None;
+                    self.paste_matching(&text);
+                }
                 // Ctrl+V reaches an application as `Event::Paste`, and egui
                 // builds that event by reading the board's *text*. A screen
                 // snippet is a bitmap and nothing else, so egui reads nothing,
@@ -1725,10 +1882,8 @@ impl Scriva {
                     pressed: false,
                     modifiers,
                     ..
-                } if modifiers.command
-                    && self.picked.is_none()
-                    && clipboard_get().is_none_or(|text| text.is_empty()) =>
-                {
+                } if modifiers.command && clipboard_get().is_none_or(|text| text.is_empty()) => {
+                    self.picked = None;
                     self.paste_picture_from_board();
                 }
                 egui::Event::Key {
@@ -2229,6 +2384,44 @@ fn clipboard_get() -> Option<String> {
     arboard::Clipboard::new().ok()?.get_text().ok()
 }
 
+/// Puts a picture on the OS clipboard, and answers the PNG the board will
+/// hand back when asked — the receipt a paste compares against to know the
+/// board is still ours.
+///
+/// The board holds pixels, not files, so the picture is decoded to go on and
+/// the receipt is those pixels re-encoded the same way [`clipboard_image`]
+/// re-encodes them coming off. Same pixels, same encoder: the same bytes.
+#[cfg_attr(test, allow(dead_code))]
+fn clipboard_set_image(data: &[u8]) -> Option<Vec<u8>> {
+    let rgba = image::load_from_memory(data).ok()?.to_rgba8();
+    let (width, height) = (rgba.width() as usize, rgba.height() as usize);
+    let mut board = arboard::Clipboard::new().ok()?;
+    board
+        .set_image(arboard::ImageData {
+            width,
+            height,
+            bytes: std::borrow::Cow::Borrowed(rgba.as_raw()),
+        })
+        .ok()?;
+    let mut png = Vec::new();
+    image::DynamicImage::ImageRgba8(rgba)
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .ok()?;
+    Some(png)
+}
+
+/// Takes whatever is on the OS clipboard off it.
+///
+/// For copying a chart, which has no pixels to put there: the board must stop
+/// saying whatever it said before the copy, or a paste would honour it over
+/// the chart.
+#[cfg_attr(test, allow(dead_code))]
+fn clipboard_clear() {
+    if let Ok(mut board) = arboard::Clipboard::new() {
+        let _ = board.clear();
+    }
+}
+
 /// The picture on the OS clipboard, as PNG bytes and its size in pixels.
 ///
 /// A snip arrives as raw pixels — `CF_DIBV5`, or PNG where the program that
@@ -2323,6 +2516,18 @@ fn picture_paragraph(
         position: None,
         behind_text: false,
     };
+    Paragraph {
+        content: vec![wp_model::doc::Inline::Run(wp_model::doc::Run {
+            content: vec![wp_model::doc::Piece::Drawing(Box::new(drawing))],
+            ..wp_model::doc::Run::new()
+        })],
+        ..Paragraph::new()
+    }
+}
+
+/// A paragraph holding nothing but a drawing already fully formed, for a
+/// paste to splice in.
+fn drawing_paragraph(drawing: wp_model::doc::Drawing) -> Paragraph {
     Paragraph {
         content: vec![wp_model::doc::Inline::Run(wp_model::doc::Run {
             content: vec![wp_model::doc::Piece::Drawing(Box::new(drawing))],
@@ -3262,6 +3467,15 @@ impl Scriva {
                     // A picked picture has its own menu: Cut and Copy are the
                     // text's, and a picture is not a stretch of text.
                     if picture {
+                        if ui.button("Cut").clicked() {
+                            chosen = Some(Command::Cut);
+                            ui.close();
+                        }
+                        if ui.button("Copy").clicked() {
+                            chosen = Some(Command::Copy);
+                            ui.close();
+                        }
+                        ui.separator();
                         if ui.button("Size…").clicked() {
                             chosen = Some(Command::PictureSize);
                             ui.close();
@@ -4121,6 +4335,100 @@ mod tests {
         assert_eq!(caret.offset, 1);
         assert_eq!(app.paragraph_text(0), "ab");
         assert!(app.document.paragraphs()[0].drawings().is_empty());
+    }
+
+    #[test]
+    fn a_copied_picture_pastes_as_the_same_part_shown_twice() {
+        let mut app = app_with(&["ab"]);
+        app.selection = Selection::at(Caret {
+            paragraph: 0,
+            offset: 1,
+        });
+        assert!(app.insert_picture(PIXEL, "image/png", 96, 48), "it pastes");
+        app.picked = Some(crate::drawings::Picked {
+            paragraph: 0,
+            nth: 0,
+        });
+        assert!(app.copy_drawing(), "there is a picture to copy");
+        let copied = app.copied_drawing.as_ref().expect("and it was kept");
+        assert!(
+            copied.bytes.is_some(),
+            "with its file bytes, for a document that has no such part"
+        );
+
+        app.picked = None;
+        let text = app.paragraph_text(0);
+        app.selection = Selection::at(Caret {
+            paragraph: 0,
+            offset: text.len(),
+        });
+        assert!(app.paste_copied_drawing(), "and it pastes back");
+        let paragraphs = app.document.paragraphs();
+        let drawings = paragraphs[0].drawings();
+        assert_eq!(drawings.len(), 2, "the picture is now shown twice");
+        // The same relationship: one part, no second copy of the bytes —
+        // which is exactly what a duplicated picture is.
+        assert_eq!(drawings[0].rel, drawings[1].rel);
+    }
+
+    #[test]
+    fn a_cut_picture_leaves_and_a_paste_puts_it_back() {
+        let mut app = app_with(&["ab"]);
+        app.selection = Selection::at(Caret {
+            paragraph: 0,
+            offset: 1,
+        });
+        assert!(app.insert_picture(PIXEL, "image/png", 96, 48), "it pastes");
+        app.picked = Some(crate::drawings::Picked {
+            paragraph: 0,
+            nth: 0,
+        });
+
+        app.run(Command::Cut);
+        assert!(
+            app.document.paragraphs()[0].drawings().is_empty(),
+            "cut took the picture"
+        );
+        assert!(app.picked.is_none(), "and nothing is picked any more");
+
+        app.selection = Selection::at(Caret {
+            paragraph: 0,
+            offset: 0,
+        });
+        assert!(app.paste_copied_drawing(), "the cut copy pastes back");
+        assert_eq!(app.document.paragraphs()[0].drawings().len(), 1);
+    }
+
+    #[test]
+    fn a_chart_says_it_cannot_cross_into_another_document() {
+        // A chart is a family of parts, and only its drawing was copied. In a
+        // document where its relationship names nothing, the paste says so
+        // rather than doing nothing.
+        let mut app = app_with(&["ab"]);
+        app.copied_drawing = Some(CopiedDrawing {
+            drawing: wp_model::doc::Drawing {
+                source: Vec::new().into(),
+                anchored: false,
+                extent: (wp_model::Emu(914_400), wp_model::Emu(457_200)),
+                rel: None,
+                chart: Some("rId99".into()),
+                name: None,
+                description: None,
+                wrap: wp_model::doc::Wrap::None,
+                distance: Default::default(),
+                position: None,
+                behind_text: false,
+            },
+            bytes: None,
+            png: None,
+        });
+        assert!(!app.paste_copied_drawing(), "nothing was pasted");
+        let (title, _) = app.message.as_ref().expect("and it says why");
+        assert_eq!(title, "Cannot paste");
+        assert!(
+            app.document.paragraphs()[0].drawings().is_empty(),
+            "no half-pasted chart in the text"
+        );
     }
 
     #[test]
