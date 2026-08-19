@@ -305,3 +305,77 @@ fn a_resized_picture_survives_being_saved_and_read_back() {
     assert_eq!(drawing.extent.1 .0, before.1 .0 * 2, "and twice as tall");
     assert!(drawing.rel.is_some(), "and still names its bytes");
 }
+
+#[test]
+fn a_pasted_picture_becomes_a_part_a_relationship_and_a_drawing() {
+    // A picture the application put in has no bytes Word authored, so there is
+    // nothing to splice and the element has to be written out. All three pieces
+    // have to arrive: an `r:embed` naming a relationship that names a part that
+    // is not there is not a missing picture to Word, it is a file it offers to
+    // repair.
+    use wp_model::doc::{Block, Drawing, Inline, Paragraph, Piece, Run, Wrap};
+    use wp_model::Emu;
+
+    // The smallest possible PNG: one pixel, and a real one, because the
+    // application decodes what it embeds to draw it.
+    let png: &[u8] = &[
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F,
+        0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x63, 0x00,
+        0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00, 0x00, 0x00, 0x00, 0x49,
+        0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+    ];
+
+    let mut document = wp_model::Document::blank();
+    let mut package = wp_docx::write::blank::package_for(&document).expect("a package");
+    let rel = wp_docx::media::embed(&mut package, png, "image/png").expect("the image goes in");
+
+    let drawing = Drawing {
+        source: Vec::new().into(),
+        anchored: false,
+        extent: (Emu(914_400), Emu(457_200)),
+        rel: Some(rel.as_str().into()),
+        chart: None,
+        name: Some("Picture".into()),
+        description: None,
+        wrap: Wrap::None,
+        distance: (Emu(0), Emu(0), Emu(0), Emu(0)),
+        position: None,
+        behind_text: false,
+    };
+    document.body = vec![Block::Paragraph(Paragraph {
+        content: vec![Inline::Run(Run {
+            content: vec![
+                Piece::Text("before ".into()),
+                Piece::Drawing(Box::new(drawing)),
+            ],
+            ..Run::new()
+        })],
+        ..Paragraph::new()
+    })];
+
+    let temporary = std::env::temp_dir().join("scriva-pasted-picture.docx");
+    wp_docx::write::save(&document, &mut package, &temporary).expect("it writes");
+    let (read, reopened) = wp_docx::open(&temporary).expect("it reads back");
+    let _ = std::fs::remove_file(&temporary);
+
+    let drawings: Vec<_> = read
+        .paragraphs()
+        .iter()
+        .flat_map(|paragraph| paragraph.drawings().into_iter().cloned())
+        .collect();
+    let [drawing] = &drawings[..] else {
+        panic!("one picture, not {}", drawings.len());
+    };
+    assert_eq!(drawing.extent, (Emu(914_400), Emu(457_200)), "its size");
+    assert_eq!(read.text().trim(), "before", "and the text beside it");
+
+    // The relationship resolves to a part, and the part is the image.
+    let parts = wp_docx::DocumentParts::locate_in(&reopened).expect("the parts");
+    let rel = drawing.rel.as_deref().expect("it names its bytes");
+    let name = parts.target(rel).expect("which resolves");
+    assert_eq!(
+        reopened.part(name).expect("to a part that is there").data(),
+        png
+    );
+}

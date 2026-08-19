@@ -27,7 +27,7 @@ use super::splice::Splicer;
 pub fn patch(drawing: &Drawing) -> Vec<u8> {
     let source: &[u8] = &drawing.source;
     if source.is_empty() {
-        return Vec::new();
+        return author(drawing);
     }
     let mut out = Vec::with_capacity(source.len());
     let mut splicer = Splicer::new(source);
@@ -79,6 +79,65 @@ pub fn patch(drawing: &Drawing) -> Vec<u8> {
     }
     out
 }
+
+/// A `<w:drawing>` for a picture this application put in the document.
+///
+/// Written out rather than spliced, because there is nothing to splice into: a
+/// pasted picture has no bytes Word authored and, by construction, nothing in it
+/// that the model does not hold. It is the smallest inline picture Word accepts
+/// — anything more would be inventing formatting the user did not ask for.
+///
+/// Every namespace is declared on the element that uses it rather than assumed
+/// of the root. `document.xml` in a file Word wrote declares all of them at the
+/// top; one written by something else may declare only `w`, and a `<w:drawing>`
+/// naming an undeclared prefix is not a picture Word cannot draw, it is a file
+/// Word offers to repair.
+fn author(drawing: &Drawing) -> Vec<u8> {
+    // A drawing with no relationship has no bytes to draw: writing the frame
+    // without the picture would produce exactly the dangling `r:embed` that
+    // makes Word call a document broken.
+    let Some(rel) = &drawing.rel else {
+        return Vec::new();
+    };
+    let (cx, cy) = (drawing.extent.0 .0.max(1), drawing.extent.1 .0.max(1));
+    let name = drawing.name.as_deref().unwrap_or("Picture");
+    let name = crate::write::escape_attr(name);
+    format!(
+        "<w:drawing><wp:inline distT=\"0\" distB=\"0\" distL=\"0\" distR=\"0\" \
+           xmlns:wp=\"{WP}\">\
+           <wp:extent cx=\"{cx}\" cy=\"{cy}\"/>\
+           <wp:effectExtent l=\"0\" t=\"0\" r=\"0\" b=\"0\"/>\
+           <wp:docPr id=\"1\" name=\"{name}\"/>\
+           <wp:cNvGraphicFramePr>\
+             <a:graphicFrameLocks xmlns:a=\"{A}\" noChangeAspect=\"1\"/>\
+           </wp:cNvGraphicFramePr>\
+           <a:graphic xmlns:a=\"{A}\">\
+             <a:graphicData uri=\"{PIC}\">\
+               <pic:pic xmlns:pic=\"{PIC}\">\
+                 <pic:nvPicPr>\
+                   <pic:cNvPr id=\"0\" name=\"{name}\"/>\
+                   <pic:cNvPicPr/>\
+                 </pic:nvPicPr>\
+                 <pic:blipFill>\
+                   <a:blip r:embed=\"{rel}\" xmlns:r=\"{R}\"/>\
+                   <a:stretch><a:fillRect/></a:stretch>\
+                 </pic:blipFill>\
+                 <pic:spPr>\
+                   <a:xfrm><a:off x=\"0\" y=\"0\"/><a:ext cx=\"{cx}\" cy=\"{cy}\"/></a:xfrm>\
+                   <a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom>\
+                 </pic:spPr>\
+               </pic:pic>\
+             </a:graphicData>\
+           </a:graphic>\
+         </wp:inline></w:drawing>"
+    )
+    .into_bytes()
+}
+
+const WP: &str = "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing";
+const A: &str = "http://schemas.openxmlformats.org/drawingml/2006/main";
+const PIC: &str = "http://schemas.openxmlformats.org/drawingml/2006/picture";
+const R: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
 
 /// The local name of an element, without its prefix.
 fn local(name: &[u8]) -> &[u8] {

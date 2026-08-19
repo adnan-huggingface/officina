@@ -1309,10 +1309,65 @@ impl Scriva {
     /// caret is. That is Word's rule for pasting from an application that offers
     /// nothing richer, and it is the only rule available for text.
     fn paste_from_board(&mut self) {
-        let Some(text) = clipboard_get() else {
-            return;
+        match clipboard_get().filter(|text| !text.is_empty()) {
+            Some(text) => self.paste_matching(&text),
+            // Nothing to read as text. A screen snippet is a bitmap and nothing
+            // else — no text at all — which is exactly the case that used to
+            // fall out here having done nothing.
+            None => {
+                self.paste_picture_from_board();
+            }
+        }
+    }
+
+    /// Pastes the picture on the board, if there is one. Answers whether there
+    /// was.
+    fn paste_picture_from_board(&mut self) -> bool {
+        let Some((png, width, height)) = clipboard_image() else {
+            return false;
         };
-        self.paste_matching(&text);
+        self.insert_picture(&png, "image/png", width, height)
+    }
+
+    /// Puts a picture in the document at the caret.
+    ///
+    /// Three things, because a picture in a `.docx` is three things: the bytes
+    /// go into the package as a part, a relationship names that part, and a
+    /// drawing in the text names the relationship. The editor holds the third;
+    /// the first two are the package's and are done here so that the picture is
+    /// drawable — and savable — the moment it is pasted rather than at the next
+    /// save.
+    fn insert_picture(&mut self, data: &[u8], content_type: &str, width: u32, height: u32) -> bool {
+        if self.package.is_none() {
+            // A document that has never been in a file has no package to put a
+            // part into. Authoring one now is what the next save would do.
+            match wp_docx::write::blank::package_for(&self.document) {
+                Ok(package) => self.package = Some(package),
+                Err(_) => return false,
+            }
+        }
+        let Some(package) = &mut self.package else {
+            return false;
+        };
+        let Ok(rel) = wp_docx::media::embed(package, data, content_type) else {
+            return false;
+        };
+        // The painter finds a picture's bytes by relationship, through an index
+        // built when the document was opened. A part added since is not in it.
+        self.parts = wp_docx::DocumentParts::locate_in(package).ok();
+
+        let clip = vec![picture_paragraph(
+            &rel,
+            &self.document.section,
+            width,
+            height,
+        )];
+        let caret =
+            edit::paste_paragraphs(&mut self.document, &mut self.history, self.selection, &clip);
+        self.selection = Selection::at(clamp(&self.document, caret));
+        self.changed();
+        self.reveal = Some(self.caret());
+        true
     }
 
     /// The body of a paste, once the board has been read.
@@ -1574,6 +1629,26 @@ impl Scriva {
                 egui::Event::Copy => self.run(Command::Copy),
                 egui::Event::Cut if self.picked.is_none() => self.run(Command::Cut),
                 egui::Event::Paste(text) if self.picked.is_none() => self.paste_matching(&text),
+                // Ctrl+V reaches an application as `Event::Paste`, and egui
+                // builds that event by reading the board's *text*. A screen
+                // snippet is a bitmap and nothing else, so egui reads nothing,
+                // sends nothing, and swallows the key press on the way past —
+                // which is why pasting a snip did nothing at all. The key's
+                // release is not swallowed, and it is the only place the press
+                // can be heard from. Guarded on there being no text, which is
+                // the same condition under which the press went missing: where
+                // there is text, `Event::Paste` has already done the work.
+                egui::Event::Key {
+                    key: egui::Key::V,
+                    pressed: false,
+                    modifiers,
+                    ..
+                } if modifiers.command
+                    && self.picked.is_none()
+                    && clipboard_get().is_none_or(|text| text.is_empty()) =>
+                {
+                    self.paste_picture_from_board();
+                }
                 egui::Event::Key {
                     key,
                     pressed: true,
@@ -2068,6 +2143,73 @@ fn cf_html(fragment: &str) -> String {
 /// What the OS clipboard holds, as text.
 fn clipboard_get() -> Option<String> {
     arboard::Clipboard::new().ok()?.get_text().ok()
+}
+
+/// The picture on the OS clipboard, as PNG bytes and its size in pixels.
+///
+/// A snip arrives as raw pixels — `CF_DIBV5`, or PNG where the program that
+/// copied it offered one — and a `.docx` holds an encoded image, so it is
+/// re-encoded here. PNG rather than JPEG because a screenshot is a picture of
+/// text and lines, which is precisely what JPEG is worst at.
+fn clipboard_image() -> Option<(Vec<u8>, u32, u32)> {
+    let image = arboard::Clipboard::new().ok()?.get_image().ok()?;
+    let (width, height) = (image.width as u32, image.height as u32);
+    let pixels = image::RgbaImage::from_raw(width, height, image.bytes.into_owned())?;
+    let mut png = Vec::new();
+    image::DynamicImage::ImageRgba8(pixels)
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .ok()?;
+    Some((png, width, height))
+}
+
+/// A paragraph holding nothing but the picture, for a paste to splice in.
+fn picture_paragraph(
+    rel: &str,
+    section: &wp_model::section::SectionProps,
+    width: u32,
+    height: u32,
+) -> Paragraph {
+    // 96 pixels to the inch: what a screen snippet is measured in, and what
+    // Word assumes of an image that does not say otherwise.
+    const EMU_PER_PIXEL: i64 = 914_400 / 96;
+    const EMU_PER_POINT: f64 = 12_700.0;
+    let mut cx = width as i64 * EMU_PER_PIXEL;
+    let mut cy = height as i64 * EMU_PER_PIXEL;
+    // A snip of a whole screen is far wider than a page. Word shrinks a picture
+    // too wide for the column rather than letting it run off the paper, and
+    // keeps its proportions doing it.
+    let column = (wp_model::PageBox::of(section).text_width() * EMU_PER_POINT) as i64;
+    if cx > column && cx > 0 {
+        cy = cy * column / cx;
+        cx = column;
+    }
+    let drawing = wp_model::doc::Drawing {
+        // Ours, and there is nothing in it the model does not hold — the writer
+        // authors the element from these fields. See `wp_docx::write::drawing`.
+        source: Vec::new().into(),
+        anchored: false,
+        extent: (wp_model::Emu(cx), wp_model::Emu(cy)),
+        rel: Some(rel.into()),
+        chart: None,
+        name: Some("Picture".into()),
+        description: None,
+        wrap: wp_model::doc::Wrap::None,
+        distance: (
+            wp_model::Emu(0),
+            wp_model::Emu(0),
+            wp_model::Emu(0),
+            wp_model::Emu(0),
+        ),
+        position: None,
+        behind_text: false,
+    };
+    Paragraph {
+        content: vec![wp_model::doc::Inline::Run(wp_model::doc::Run {
+            content: vec![wp_model::doc::Piece::Drawing(Box::new(drawing))],
+            ..wp_model::doc::Run::new()
+        })],
+        ..Paragraph::new()
+    }
 }
 
 fn with_extension(path: PathBuf) -> PathBuf {
@@ -3435,6 +3577,77 @@ mod tests {
             text,
             paragraphs: edit::copy_range(&app.document, app.selection),
         });
+    }
+
+    /// One transparent pixel, as a real PNG.
+    const PIXEL: &[u8] = &[
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F,
+        0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x63, 0x00,
+        0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00, 0x00, 0x00, 0x00, 0x49,
+        0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+    ];
+
+    #[test]
+    fn a_pasted_picture_lands_in_the_document_and_in_the_package() {
+        // The three pieces a picture is. The board itself is the machine's, so
+        // this hands the bytes over the way a paste would have.
+        let mut app = app_with(&["before after"]);
+        app.selection = Selection::at(Caret {
+            paragraph: 0,
+            offset: 6,
+        });
+        assert!(app.insert_picture(PIXEL, "image/png", 96, 48), "it pastes");
+
+        let paragraphs = app.document.paragraphs();
+        let drawings = paragraphs[0].drawings();
+        let [drawing] = &drawings[..] else {
+            panic!("one picture, not {}", drawings.len());
+        };
+        // 96 pixels at 96 to the inch is an inch, which is 914400 EMU.
+        assert_eq!(drawing.extent.0, wp_model::Emu(914_400), "an inch wide");
+        assert_eq!(
+            drawing.extent.1,
+            wp_model::Emu(457_200),
+            "half an inch tall"
+        );
+        assert_eq!(
+            paragraphs[0].text(),
+            "before after",
+            "the text is untouched"
+        );
+
+        // The relationship the drawing names resolves to a part holding the
+        // bytes — the half of it that lives outside the document.
+        let package = app.package.as_ref().expect("a package was authored");
+        let parts = app.parts.as_ref().expect("and located");
+        let rel = drawing.rel.as_deref().expect("the drawing names one");
+        let name = parts.target(rel).expect("which resolves");
+        assert_eq!(package.part(name).expect("to a part").data(), PIXEL);
+
+        // And it is one edit, so one undo takes it away again.
+        app.run(Command::Undo);
+        assert!(
+            app.document.paragraphs()[0].drawings().is_empty(),
+            "undo takes the picture out"
+        );
+    }
+
+    #[test]
+    fn a_picture_too_wide_for_the_page_is_brought_down_to_the_column() {
+        // A snip of a whole screen is 1920 pixels, which is twenty inches.
+        let app = app_with(&[""]);
+        let paragraph = picture_paragraph("rId9", &app.document.section, 1920, 1080);
+        let drawings = paragraph.drawings();
+        let drawing = drawings.first().expect("a picture");
+        let column = wp_model::PageBox::of(&app.document.section).text_width();
+        let width = drawing.extent.0 .0 as f64 / 12_700.0;
+        let height = drawing.extent.1 .0 as f64 / 12_700.0;
+        assert!((width - column).abs() < 0.5, "{width} fills the column");
+        assert!(
+            (height / width - 1080.0 / 1920.0).abs() < 0.01,
+            "and keeps its proportions"
+        );
     }
 
     #[test]
