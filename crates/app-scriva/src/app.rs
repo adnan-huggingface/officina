@@ -1518,7 +1518,31 @@ impl Scriva {
             .or(copied.drawing.chart.as_deref())
             .is_some_and(|rel| self.rel_resolves(rel));
         if resolves {
-            let clip = vec![drawing_paragraph(copied.drawing)];
+            let mut drawing = copied.drawing;
+            // A picture part can be shown twice; a chart part cannot — Word
+            // refuses to open the file — so the paste clones the chart part
+            // and names the clone.
+            if let Some(chart) = drawing.chart.clone() {
+                let cloned = self
+                    .package
+                    .as_mut()
+                    .and_then(|package| wp_docx::media::clone_chart(package, &chart).ok());
+                let Some(rel) = cloned else {
+                    self.message = Some((
+                        "Cannot paste".to_owned(),
+                        "The chart could not be copied within this document.".to_owned(),
+                    ));
+                    return false;
+                };
+                drawing.chart = Some(rel.into());
+                // The painter resolves parts through an index built on open;
+                // the clone is not in it until it is rebuilt.
+                self.parts = self
+                    .package
+                    .as_ref()
+                    .and_then(|package| wp_docx::DocumentParts::locate_in(package).ok());
+            }
+            let clip = vec![drawing_paragraph(drawing)];
             let caret = edit::paste_paragraphs(
                 &mut self.document,
                 &mut self.history,

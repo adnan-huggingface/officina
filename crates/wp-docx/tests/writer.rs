@@ -386,3 +386,32 @@ fn a_pasted_picture_becomes_a_part_a_relationship_and_a_drawing() {
         png
     );
 }
+
+#[test]
+fn a_duplicated_chart_is_a_cloned_part_with_its_own_relationship() {
+    // Word refuses to open a document where two drawings name one chart part,
+    // so a same-document chart paste clones the part — verified against Word
+    // itself on this file: the shared part is refused, the clone opens as two
+    // charts.
+    let path = corpus().join("file-sample_500kB.docx");
+    let (document, mut package) = wp_docx::open(&path).expect("the sample opens");
+    let chart_rel = document
+        .paragraphs()
+        .iter()
+        .flat_map(|paragraph| paragraph.drawings())
+        .find_map(|drawing| drawing.chart.clone())
+        .expect("the sample has a chart");
+
+    let cloned = wp_docx::media::clone_chart(&mut package, &chart_rel).expect("it clones");
+    assert_ne!(cloned, chart_rel.as_ref(), "a fresh relationship");
+
+    let parts = wp_docx::DocumentParts::locate_in(&package).expect("the parts");
+    let original = parts.target(&chart_rel).expect("the original resolves");
+    let clone = parts.target(&cloned).expect("and so does the clone");
+    assert_ne!(original, clone, "to a part of its own");
+    assert_eq!(
+        package.part(original).expect("the original part").data(),
+        package.part(clone).expect("the cloned part").data(),
+        "holding the same chart"
+    );
+}

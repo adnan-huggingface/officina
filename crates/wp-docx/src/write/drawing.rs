@@ -55,6 +55,14 @@ pub fn patch(drawing: &Drawing) -> Vec<u8> {
                 b"extent" | b"ext" => {
                     out.extend_from_slice(&resized(bytes, drawing.extent));
                 }
+                // `<c:chart>` names the chart part by relationship. The model
+                // disagrees with the source for exactly one reason: a pasted
+                // chart, whose part was cloned under a fresh relationship —
+                // see `media::clone_chart` — and must be named by the clone.
+                b"chart" => match drawing.chart.as_deref() {
+                    Some(rel) => out.extend_from_slice(&attribute_text(bytes, b"r:id", rel)),
+                    None => out.extend_from_slice(bytes),
+                },
                 b"posOffset" => {
                     let offset = drawing
                         .position
@@ -158,6 +166,10 @@ fn resized(bytes: &[u8], extent: (Emu, Emu)) -> Vec<u8> {
 }
 
 fn attribute(bytes: &[u8], name: &[u8], value: i64) -> Vec<u8> {
+    attribute_text(bytes, name, &value.to_string())
+}
+
+fn attribute_text(bytes: &[u8], name: &[u8], value: &str) -> Vec<u8> {
     let mut needle = Vec::with_capacity(name.len() + 2);
     needle.push(b' ');
     needle.extend_from_slice(name);
@@ -174,7 +186,7 @@ fn attribute(bytes: &[u8], name: &[u8], value: i64) -> Vec<u8> {
     };
     let mut out = Vec::with_capacity(bytes.len() + 8);
     out.extend_from_slice(&bytes[..open + 1]);
-    out.extend_from_slice(value.to_string().as_bytes());
+    out.extend_from_slice(value.as_bytes());
     out.extend_from_slice(&bytes[open + 1 + close..]);
     out
 }
@@ -257,6 +269,26 @@ mod tests {
             out.contains(r#"<wp:extent xmlns:wp="u" cx="30" cy="40" custom="keep"/>"#),
             "{out}"
         );
+    }
+
+    #[test]
+    fn a_pasted_chart_names_the_cloned_part_and_an_untouched_one_names_its_own() {
+        // Word refuses a document where two drawings share one chart part, so
+        // a pasted chart's part is cloned and the model holds the clone's
+        // relationship. The source still says the original's; the model wins.
+        let source = r#"<w:drawing><wp:inline><wp:extent cx="914400" cy="457200"/><a:graphic><a:graphicData><c:chart xmlns:c="c" xmlns:r="r" r:id="rId3"/></a:graphicData></a:graphic></wp:inline></w:drawing>"#;
+        let mut model = drawing(source);
+        model.chart = Some("rId8".into());
+        let out = String::from_utf8(patch(&model)).expect("utf-8");
+        assert!(out.contains(r#"r:id="rId8""#), "{out}");
+        assert!(!out.contains("rId3"));
+
+        // A chart nobody pasted agrees with its source and comes back
+        // byte-for-byte.
+        let mut model = drawing(source);
+        model.chart = Some("rId3".into());
+        let out = String::from_utf8(patch(&model)).expect("utf-8");
+        assert_eq!(out, source);
     }
 
     #[test]

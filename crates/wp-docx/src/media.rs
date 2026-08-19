@@ -41,6 +41,72 @@ pub fn embed(package: &mut Package, data: &[u8], content_type: &str) -> Result<S
     Ok(id)
 }
 
+/// Clones a chart part and answers a fresh relationship naming the clone.
+///
+/// A picture part can be shown by two drawings at once; a chart part cannot.
+/// Word refuses to *open* a document where two `<c:chart r:id>` name one part
+/// — probed on `file-sample_500kB.docx`: the shared part gets "Word
+/// experienced an error trying to open the file", and the same bytes under a
+/// second part name open as two charts. So a duplicated chart is a duplicated
+/// part. The clone keeps the original's own relationships — colours, style,
+/// an embedded workbook — pointing at the same targets; only the chart part
+/// itself must not be shared.
+pub fn clone_chart(package: &mut Package, rel: &str) -> Result<String> {
+    let located = parts::locate(package)?;
+    let dangling = || {
+        Error::Package(ooxml::Error::BadPartName {
+            raw: rel.to_owned(),
+            reason: "this relationship names no chart part",
+        })
+    };
+    let source = located.target(rel).cloned().ok_or_else(dangling)?;
+    let bytes = package.part(&source).ok_or_else(dangling)?.data().to_vec();
+    let content_type = package
+        .content_types()
+        .get(&source)
+        .unwrap_or("application/vnd.openxmlformats-officedocument.drawingml.chart+xml")
+        .to_owned();
+    let name = free_beside(package, &source)?;
+    package.put_part(name.clone(), &content_type, bytes);
+    // Relative targets stay valid because the clone lives beside the original.
+    if let Some(chart_rels) = package
+        .part(&source.rels_part())
+        .map(|part| part.data().to_vec())
+    {
+        package.put_part(name.rels_part(), RELS_TYPE, chart_rels);
+    }
+
+    let mut rels = package.relationships(&located.document)?;
+    let rel_type = rels
+        .get(rel)
+        .map(|original| original.rel_type.clone())
+        .unwrap_or_else(|| format!("{REL_BASE}/chart"));
+    let id = rels.next_id();
+    rels.insert(Relationship {
+        id: id.clone(),
+        rel_type,
+        target: relative_to(&located.document, &name),
+        mode: TargetMode::Internal,
+    });
+    package.put_part(located.document.rels_part(), RELS_TYPE, rels.to_xml());
+    Ok(id)
+}
+
+/// The first `chartN.xml` beside the original that nothing else has taken.
+fn free_beside(package: &Package, beside: &PartName) -> Result<PartName> {
+    let dir = beside.parent();
+    for n in 1..10_000 {
+        let candidate = PartName::new(&format!("{dir}/chart{n}.xml")).map_err(Error::Package)?;
+        if package.part(&candidate).is_none() {
+            return Ok(candidate);
+        }
+    }
+    Err(Error::Package(ooxml::Error::BadPartName {
+        raw: format!("{dir}/chartN.xml"),
+        reason: "the package already holds ten thousand of them",
+    }))
+}
+
 /// The first `word/media/imageN` nothing else has taken.
 ///
 /// By name and not by count: a document that has had a picture deleted has a
