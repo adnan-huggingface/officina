@@ -31,3 +31,11 @@ arboard = { version = "3", default-features = false }
 # Only the formats a .docx actually embeds. The default feature set pulls in a
 # dozen decoders for formats no document has ever contained.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp"] }
+
+# A copy has to put three formats on the board at once — text, CF_HTML and RTF
+# — inside one open, or the last one written is the only one there. arboard
+# offers two of the three and no way to add a third, so the Windows copy path
+# goes through the crate arboard itself uses. Not a new dependency: it is
+# already in the tree underneath arboard.
+[target.'cfg(windows)'.dependencies]
+clipboard-win = "5"

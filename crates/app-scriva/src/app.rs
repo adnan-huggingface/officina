@@ -12,6 +12,7 @@ use wp_model::doc::{Block, Document, Paragraph};
 use wp_model::prop::{Justify, LineSpacing, Toggle};
 use wp_model::units::{HalfPoint, Line240, Twips};
 
+use crate::clip;
 use crate::edit::{self, Caret, History, Selection};
 use crate::find::{self, Finder};
 use crate::shaper::Egui;
@@ -1291,11 +1292,13 @@ impl Scriva {
         let Some(text) = self.selected_text() else {
             return false;
         };
-        clipboard_set(&text);
-        self.clipboard = Some(Clip {
-            text,
-            paragraphs: edit::copy_range(&self.document, self.selection),
-        });
+        let paragraphs = edit::copy_range(&self.document, self.selection);
+        clipboard_set(
+            &text,
+            &clip::html(&self.document, &paragraphs),
+            &clip::rtf(&self.document, &paragraphs),
+        );
+        self.clipboard = Some(Clip { text, paragraphs });
         true
     }
 
@@ -2002,11 +2005,64 @@ fn zoom_slider(ui: &mut egui::Ui, percent: &mut f64) {
     response.on_hover_text("Zoom");
 }
 
-/// Puts text on the OS clipboard, with the line endings Windows programs read.
-fn clipboard_set(text: &str) {
-    if let Ok(mut board) = arboard::Clipboard::new() {
-        let _ = board.set_text(text.replace('\n', "\r\n"));
+/// Puts a copy on the OS clipboard in every format it can be read back out of.
+///
+/// Three at once and in one open of the board: the plain text, which is all a
+/// text editor wants; `HTML Format` — CF_HTML, what a browser writes; and
+/// `Rich Text Format`. The last two are where Word looks for formatting, and it
+/// prefers them in that order over the text. They have to be written together
+/// because opening the clipboard to add one clears whatever was there.
+#[cfg(windows)]
+fn clipboard_set(text: &str, html: &str, rtf: &str) {
+    let Ok(_board) = clipboard_win::Clipboard::new_attempts(10) else {
+        return;
+    };
+    // This one empties the board first, so it goes first: the other two are
+    // added to what it leaves.
+    if clipboard_win::raw::set_string(&text.replace('\n', "\r\n")).is_err() {
+        return;
     }
+    for (name, data) in [
+        ("HTML Format", cf_html(html)),
+        ("Rich Text Format", rtf.to_owned()),
+    ] {
+        if let Some(format) = clipboard_win::register_format(name) {
+            let _ = clipboard_win::raw::set_without_clear(format.get(), data.as_bytes());
+        }
+    }
+}
+
+/// The same, where there is no Win32 clipboard: text and HTML, which is what
+/// `arboard` can put on a board and is the pair every other desktop reads.
+#[cfg(not(windows))]
+fn clipboard_set(text: &str, html: &str, _rtf: &str) {
+    if let Ok(mut board) = arboard::Clipboard::new() {
+        let text = text.replace('\n', "\r\n");
+        let _ = board.set_html(html, Some(text.as_str()));
+    }
+}
+
+/// Wraps an HTML fragment in the header CF_HTML is.
+///
+/// The format is a plain-text header of byte offsets *into itself*, which cannot
+/// be written before the numbers are known and whose numbers move the moment
+/// they are written. The way out is the format's own: every offset is padded to
+/// ten digits, so stating one does not change where anything is.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn cf_html(fragment: &str) -> String {
+    const PROLOGUE: &str = "<html><body>\r\n<!--StartFragment-->";
+    const EPILOGUE: &str = "<!--EndFragment-->\r\n</body></html>";
+    const HEADER: usize = "Version:0.9\r\nStartHTML:0000000000\r\nEndHTML:0000000000\r\n\
+         StartFragment:0000000000\r\nEndFragment:0000000000\r\n"
+        .len();
+    let start_fragment = HEADER + PROLOGUE.len();
+    let end_fragment = start_fragment + fragment.len();
+    let end_html = end_fragment + EPILOGUE.len();
+    format!(
+        "Version:0.9\r\nStartHTML:{HEADER:010}\r\nEndHTML:{end_html:010}\r\n\
+         StartFragment:{start_fragment:010}\r\nEndFragment:{end_fragment:010}\r\n\
+         {PROLOGUE}{fragment}{EPILOGUE}"
+    )
 }
 
 /// What the OS clipboard holds, as text.
@@ -3379,6 +3435,51 @@ mod tests {
             text,
             paragraphs: edit::copy_range(&app.document, app.selection),
         });
+    }
+
+    #[test]
+    fn the_cf_html_header_says_where_the_fragment_is() {
+        // Every number in that header is a byte offset into the string it is
+        // part of. One digit out and Word pastes the header, or half the
+        // fragment, or nothing.
+        fn offset(wrapped: &str, field: &str) -> usize {
+            let at = wrapped.find(field).expect("the field") + field.len();
+            wrapped[at..at + 10].parse().expect("ten digits")
+        }
+        let fragment = "<span style=\"font-weight:bold\">hello</span>";
+        let wrapped = cf_html(fragment);
+        assert_eq!(
+            &wrapped[offset(&wrapped, "StartFragment:")..offset(&wrapped, "EndFragment:")],
+            fragment
+        );
+        assert!(wrapped[offset(&wrapped, "StartHTML:")..].starts_with("<html>"));
+        assert_eq!(offset(&wrapped, "EndHTML:"), wrapped.len());
+    }
+
+    #[test]
+    fn a_copy_offers_word_the_formatting_the_text_cannot_carry() {
+        // What goes on the board beside the text. The board itself is the
+        // machine's and a test must not touch it, so this asks the two writers
+        // for what a copy would have handed it.
+        let mut app = app_with(&["make this bold please"]);
+        app.selection = Selection {
+            anchor: Caret {
+                paragraph: 0,
+                offset: 5,
+            },
+            head: Caret {
+                paragraph: 0,
+                offset: 14,
+            },
+        };
+        app.run(Command::Bold);
+        let paragraphs = edit::copy_range(&app.document, app.selection);
+        let html = clip::html(&app.document, &paragraphs);
+        assert!(html.contains("font-weight:bold"), "{html}");
+        assert!(html.contains("this bold"), "{html}");
+        let rtf = clip::rtf(&app.document, &paragraphs);
+        assert!(rtf.contains("\\b"), "{rtf}");
+        assert!(rtf.contains("this bold"), "{rtf}");
     }
 
     #[test]

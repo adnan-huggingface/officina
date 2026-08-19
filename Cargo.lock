@@ -2633,6 +2633,7 @@ version = "0.1.0"
 dependencies = [
  "arboard",
  "chart",
+ "clipboard-win",
  "image",
  "ooxml",
  "rfd",
