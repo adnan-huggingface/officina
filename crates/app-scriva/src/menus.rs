@@ -306,6 +306,9 @@ impl Scriva {
             });
 
             menu::top(ui, "&Insert", |ui| {
+                if menu::item(ui, "&Picture…", "").clicked() {
+                    chosen = Some(Command::InsertPicture);
+                }
                 if menu::item(ui, "&Update Table of Contents", "F9").clicked() {
                     chosen = Some(Command::UpdateToc);
                 }

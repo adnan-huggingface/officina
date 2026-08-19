@@ -53,6 +53,8 @@ pub enum Command {
     ClearFormatting,
     /// Ctrl+Enter: a page break at the caret.
     PageBreak,
+    /// Insert ▸ Picture… — a picture from a file, at the caret.
+    InsertPicture,
     /// One of the margin presets, whole. Header, footer and gutter distances
     /// ride along unchanged.
     Margins(wp_model::PageMargins),
@@ -1055,6 +1057,7 @@ impl Scriva {
                 self.reveal = Some(caret);
             }
             Command::UpdateToc => self.update_toc(),
+            Command::InsertPicture => self.insert_picture_from_file(),
         }
     }
 
@@ -1316,6 +1319,44 @@ impl Scriva {
             // fall out here having done nothing.
             None => {
                 self.paste_picture_from_board();
+            }
+        }
+    }
+
+    /// Insert ▸ Picture… — the same three pieces a pasted picture is, from a
+    /// file the user chooses.
+    fn insert_picture_from_file(&mut self) {
+        let mut chooser = rfd::FileDialog::new()
+            .add_filter("Pictures", &["png", "jpg", "jpeg", "gif", "bmp"])
+            .add_filter("All files", &["*"]);
+        if let Some(directory) = self.recent.directory() {
+            chooser = chooser.set_directory(directory);
+        }
+        let Some(path) = chooser.pick_file() else {
+            return;
+        };
+        let read = std::fs::read(&path)
+            .map_err(|error| error.to_string())
+            .and_then(|data| {
+                picture_bytes(data).ok_or_else(|| {
+                    "This is not a picture Scriva can read.\n\nPNG, JPEG, GIF and BMP are."
+                        .to_owned()
+                })
+            });
+        match read {
+            Ok((data, content_type, width, height)) => {
+                if !self.insert_picture(&data, content_type, width, height) {
+                    self.message = Some((
+                        "Cannot insert".to_owned(),
+                        "This document has nowhere to keep a picture.".to_owned(),
+                    ));
+                }
+            }
+            Err(why) => {
+                self.message = Some((
+                    "Cannot insert".to_owned(),
+                    format!("{}\n\n{why}", path.display()),
+                ));
             }
         }
     }
@@ -2160,6 +2201,34 @@ fn clipboard_image() -> Option<(Vec<u8>, u32, u32)> {
         .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
         .ok()?;
     Some((png, width, height))
+}
+
+/// A file's bytes as something a document can hold: the data, its content type,
+/// and its size in pixels.
+///
+/// The bytes are handed on **unchanged** where the format is one Word embeds —
+/// re-encoding a photograph would throw quality away for nothing, and a JPEG
+/// re-encoded as PNG is several times the size. Anything else is decoded and
+/// written out as PNG, which is the answer for a BMP above all: Word would take
+/// it, and nobody wants a twelve-megabyte bitmap inside a document.
+fn picture_bytes(data: Vec<u8>) -> Option<(Vec<u8>, &'static str, u32, u32)> {
+    use image::ImageFormat;
+    let format = image::guess_format(&data).ok()?;
+    let decoded = image::load_from_memory_with_format(&data, format).ok()?;
+    let (width, height) = (decoded.width(), decoded.height());
+    let content_type = match format {
+        ImageFormat::Png => "image/png",
+        ImageFormat::Jpeg => "image/jpeg",
+        ImageFormat::Gif => "image/gif",
+        _ => {
+            let mut png = Vec::new();
+            decoded
+                .write_to(&mut std::io::Cursor::new(&mut png), ImageFormat::Png)
+                .ok()?;
+            return Some((png, "image/png", width, height));
+        }
+    };
+    Some((data, content_type, width, height))
 }
 
 /// A paragraph holding nothing but the picture, for a paste to splice in.
@@ -3631,6 +3700,35 @@ mod tests {
             app.document.paragraphs()[0].drawings().is_empty(),
             "undo takes the picture out"
         );
+    }
+
+    #[test]
+    fn a_file_word_can_embed_goes_in_as_it_is_and_anything_else_becomes_a_png() {
+        // A JPEG re-encoded as a PNG is several times the size and no better;
+        // a BMP kept as it is, is a photograph's worth of bytes for a picture
+        // of a button.
+        let (data, kind, width, height) = picture_bytes(PIXEL.to_vec()).expect("a png");
+        assert_eq!(kind, "image/png");
+        assert_eq!((width, height), (1, 1));
+        assert_eq!(data, PIXEL, "the bytes were not touched");
+
+        let mut bmp = Vec::new();
+        image::DynamicImage::ImageRgba8(image::RgbaImage::new(4, 2))
+            .write_to(&mut std::io::Cursor::new(&mut bmp), image::ImageFormat::Bmp)
+            .expect("a bitmap");
+        let (data, kind, width, height) = picture_bytes(bmp).expect("which is a picture");
+        assert_eq!(
+            kind, "image/png",
+            "and arrives as one Word will not baulk at"
+        );
+        assert_eq!((width, height), (4, 2), "at the size it was");
+        assert_eq!(
+            image::guess_format(&data).expect("a format"),
+            image::ImageFormat::Png
+        );
+
+        // A file that is not a picture at all is not offered to the document.
+        assert!(picture_bytes(b"I am a text file, not a picture".to_vec()).is_none());
     }
 
     #[test]
