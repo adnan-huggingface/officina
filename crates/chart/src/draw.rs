@@ -35,7 +35,7 @@ pub const TEXT: f64 = 10.0;
 /// guessed from the page. They hold whatever the chart's width, the labels'
 /// width, the legend's text, or the number of series — Office's automatic
 /// layout is constants, not fractions of the box. In points, at Word's own
-/// ten: 15.7 clear, 10.8 of margin, 22.0 below, and 9.0 between a value
+/// ten: 15.7 clear, 10.8 of margin, 24.8 below, and 9.0 between a value
 /// label and the axis it belongs to.
 const CLEAR: f64 = 1.566;
 
@@ -43,8 +43,10 @@ const CLEAR: f64 = 1.566;
 const MARGIN: f64 = 1.08;
 
 /// What is kept below the plot: the category labels, and the margin under
-/// them.
-const FOOTER: f64 = 2.202;
+/// them. Re-measured 2026-08-19 against the magenta-border probes: 24.79pt
+/// on every one of the eight variants — the 22.0 first written here was a
+/// misreading, and it showed as a plot ~3pt too tall on the sample.
+const FOOTER: f64 = 2.479;
 
 /// How far a value label stands clear of the axis. Whatever [`CLEAR`] has
 /// left over after it is the margin at the chart's left edge.
@@ -698,7 +700,11 @@ fn axes_chart(
         out.push(Prim::Text {
             at: (
                 area.left() + slot * (i as f64 + 0.5) - width / 2.0,
-                area.bottom() + 0.5 * size,
+                // The label's em box centred in the footer band, which is
+                // where Word sets them — measured ink margins of 9.3 and 9.1
+                // in the 24.8pt band. The em rather than the shaper's line,
+                // whose leading would over-centre by half of itself.
+                area.bottom() + (FOOTER - 1.0) * size / 2.0,
             ),
             size,
             text: label.clone(),
