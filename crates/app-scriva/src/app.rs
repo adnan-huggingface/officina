@@ -3103,12 +3103,16 @@ impl Scriva {
                 // selected picture's handles it says which way that handle
                 // pulls — the only way a user finds out a picture can be
                 // resized at all is the pointer changing shape over it.
+                // A handle is a fixed-size target on the glass however far
+                // the page is zoomed out; reach is that target measured on
+                // the page.
+                let reach = crate::drawings::GRIP / zoom.max(0.05) as f64;
                 if response.hovered() || self.dragging.is_some() {
                     let over = ui
                         .ctx()
                         .pointer_hover_pos()
                         .and_then(|pointer| self.spot_at(pointer, origin, zoom));
-                    ui.ctx().set_cursor_icon(self.pointer_icon(over));
+                    ui.ctx().set_cursor_icon(self.pointer_icon(over, reach));
                 }
 
                 // A click on the desk gives keyboard focus to the surface itself
@@ -3152,12 +3156,17 @@ impl Scriva {
                 // A press decides what the drag is: a picture under the pointer
                 // is dragged as an object, and anything else sweeps a selection.
                 if response.drag_started() || response.clicked() {
-                    let spot = response
-                        .interact_pointer_pos()
+                    // The grip is chosen by where the press landed, not where
+                    // the pointer is now: a drag is only reported once it has
+                    // moved a few pixels, and a quick pull would already be
+                    // off the handle it took hold of.
+                    let spot = ui
+                        .input(|i| i.pointer.press_origin())
+                        .or_else(|| response.interact_pointer_pos())
                         .and_then(|pointer| self.spot_at(pointer, origin, zoom));
                     self.dragging = None;
                     match spot.and_then(|spot| {
-                        view::drawing_at(&self.view, spot).map(|found| (spot, found))
+                        view::drawing_at(&self.view, spot, reach).map(|found| (spot, found))
                     }) {
                         Some((spot, (picked, rect))) => {
                             let already = self.picked == Some(picked);
@@ -3167,7 +3176,7 @@ impl Scriva {
                             // selects it and drags it about, and the press
                             // after that can take hold of a corner.
                             self.dragging = match already {
-                                true => crate::drawings::grip_at(rect, spot.x, spot.y),
+                                true => crate::drawings::grip_at(rect, spot.x, spot.y, reach),
                                 false => Some(crate::drawings::Grip::Body),
                             };
                             self.drag_from = Some((spot.x, spot.y));
@@ -3240,7 +3249,7 @@ impl Scriva {
                     if let Some(found) = response
                         .interact_pointer_pos()
                         .and_then(|pointer| self.spot_at(pointer, origin, zoom))
-                        .and_then(|spot| view::drawing_at(&self.view, spot))
+                        .and_then(|spot| view::drawing_at(&self.view, spot, reach))
                     {
                         self.picked = Some(found.0);
                     }
@@ -3305,7 +3314,10 @@ impl Scriva {
                         response.interact_pointer_pos(),
                     ) {
                         if let Some(spot) = self.spot_at(pointer, origin, zoom) {
-                            self.drag_drawing(grip, spot.x - from.0, spot.y - from.1);
+                            // Shift breaks a corner's hold on the aspect
+                            // ratio, for the user who means to stretch.
+                            let keep = !ui.input(|i| i.modifiers.shift);
+                            self.drag_drawing(grip, spot.x - from.0, spot.y - from.1, keep);
                             self.drag_from = Some((spot.x, spot.y));
                         }
                     }
@@ -3348,7 +3360,7 @@ impl Scriva {
     ///
     /// The whole drag is one undo entry: the first step records the paragraph as
     /// it was, and the rest change it further without recording again.
-    fn drag_drawing(&mut self, grip: crate::drawings::Grip, dx: f64, dy: f64) {
+    fn drag_drawing(&mut self, grip: crate::drawings::Grip, dx: f64, dy: f64, keep: bool) {
         use crate::drawings::{moved, resized, Grip};
 
         let Some(picked) = self.picked else {
@@ -3379,7 +3391,7 @@ impl Scriva {
         };
         let changed = match grip {
             Grip::Body => moved(drawing, &geometry, line_top, dx, dy),
-            grip => resized(drawing, grip, dx, dy),
+            grip => resized(drawing, grip, dx, dy, keep),
         };
         drop(paragraphs);
         if !changed {
@@ -3401,7 +3413,7 @@ impl Scriva {
     /// place to type — and over the handles of the *selected* picture, the
     /// arrow that says which way that handle pulls. A picture nobody has
     /// clicked yet shows no handles, so it must not claim any either.
-    fn pointer_icon(&self, over: Option<view::Spot>) -> egui::CursorIcon {
+    fn pointer_icon(&self, over: Option<view::Spot>, reach: f64) -> egui::CursorIcon {
         use crate::drawings::Grip;
         let icon = |grip: Grip| match grip {
             Grip::Corner { right, bottom } => match right == bottom {
@@ -3427,11 +3439,11 @@ impl Scriva {
         let Some(spot) = over else {
             return egui::CursorIcon::Text;
         };
-        let Some((found, rect)) = view::drawing_at(&self.view, spot) else {
+        let Some((found, rect)) = view::drawing_at(&self.view, spot, reach) else {
             return egui::CursorIcon::Text;
         };
         match self.picked == Some(found) {
-            true => crate::drawings::grip_at(rect, spot.x, spot.y)
+            true => crate::drawings::grip_at(rect, spot.x, spot.y, reach)
                 .map(icon)
                 .unwrap_or(egui::CursorIcon::Default),
             false => egui::CursorIcon::Default,

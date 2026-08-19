@@ -15,7 +15,7 @@ use wp_layout::inline::Content;
 use wp_layout::shape::Shaper;
 use wp_model::Document;
 
-use crate::drawings::{Picked, GRIP};
+use crate::drawings::Picked;
 use crate::edit::{Caret, Selection};
 use crate::shaper::Egui;
 
@@ -619,15 +619,18 @@ pub fn drawing_rects(view: &View, page: usize) -> Vec<(Picked, (f64, f64, f64, f
 }
 
 /// The drawing a point is on, and the rectangle it occupies.
-pub fn drawing_at(view: &View, spot: Spot) -> Option<(Picked, (f64, f64, f64, f64))> {
+///
+/// `reach` widens the rectangle by the handles' grab zone, so the outer half
+/// of a handle is still the drawing and not the paper behind it.
+pub fn drawing_at(view: &View, spot: Spot, reach: f64) -> Option<(Picked, (f64, f64, f64, f64))> {
     drawing_rects(view, spot.page)
         .into_iter()
         .rev()
         .find(|(_, (x, y, w, h))| {
-            spot.x >= *x - GRIP
-                && spot.x <= x + w + GRIP
-                && spot.y >= *y - GRIP
-                && spot.y <= y + h + GRIP
+            spot.x >= *x - reach
+                && spot.x <= x + w + reach
+                && spot.y >= *y - reach
+                && spot.y <= y + h + reach
         })
 }
 
@@ -1582,6 +1585,7 @@ mod tests {
                 x: x + w / 2.0,
                 y: y + h / 2.0,
             },
+            crate::drawings::GRIP,
         )
         .expect("a click on a picture picks it");
         assert_eq!(hit, picked);
@@ -1589,7 +1593,7 @@ mod tests {
 
         // And its corner is a grip, which is what a drag pulls.
         assert_eq!(
-            crate::drawings::grip_at(rect, x + w, y + h),
+            crate::drawings::grip_at(rect, x + w, y + h, crate::drawings::GRIP),
             Some(crate::drawings::Grip::Corner {
                 right: true,
                 bottom: true

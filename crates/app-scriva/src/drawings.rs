@@ -31,20 +31,24 @@ pub enum Grip {
     Edge { horizontal: bool, far: bool },
 }
 
-/// How near a handle the pointer has to be, in points.
-pub const GRIP: f64 = 4.0;
+/// How near a handle the pointer has to be, in screen points.
+///
+/// A handle is a fixed-size target on the glass, however far out the page is
+/// zoomed — so callers divide this by the zoom to get `reach`, the same
+/// distance measured on the page.
+pub const GRIP: f64 = 5.0;
 
 /// Which part of a selected drawing the pointer is over.
 ///
 /// Corners before edges, because the corner grips overlap the edge grips and a
 /// user who aims at a corner means the corner.
-pub fn grip_at(rect: (f64, f64, f64, f64), x: f64, y: f64) -> Option<Grip> {
+pub fn grip_at(rect: (f64, f64, f64, f64), x: f64, y: f64, reach: f64) -> Option<Grip> {
     let (left, top, width, height) = rect;
     let (right, bottom) = (left + width, top + height);
-    if x < left - GRIP || x > right + GRIP || y < top - GRIP || y > bottom + GRIP {
+    if x < left - reach || x > right + reach || y < top - reach || y > bottom + reach {
         return None;
     }
-    let near = |a: f64, b: f64| (a - b).abs() <= GRIP;
+    let near = |a: f64, b: f64| (a - b).abs() <= reach;
     let (near_left, near_right) = (near(x, left), near(x, right));
     let (near_top, near_bottom) = (near(y, top), near(y, bottom));
     if (near_left || near_right) && (near_top || near_bottom) {
@@ -108,8 +112,10 @@ const FLOOR: f64 = 6.0;
 /// Resizes a drawing by dragging one grip.
 ///
 /// A corner keeps the aspect ratio, as Word's corners do — a picture stretched
-/// by a corner is almost always an accident. An edge does not.
-pub fn resized(drawing: &mut Drawing, grip: Grip, dx: f64, dy: f64) -> bool {
+/// by a corner is almost always an accident. `keep` false says it is not one:
+/// the user is holding Shift, and the corner stretches freely. An edge only
+/// ever pulls its own axis.
+pub fn resized(drawing: &mut Drawing, grip: Grip, dx: f64, dy: f64, keep: bool) -> bool {
     let width = drawing.extent.0.points();
     let height = drawing.extent.1.points();
     let (new_width, new_height) = match grip {
@@ -119,7 +125,9 @@ pub fn resized(drawing: &mut Drawing, grip: Grip, dx: f64, dy: f64) -> bool {
             let by_height = height + if bottom { dy } else { -dy };
             // Whichever axis the user pulled further decides, so the picture
             // follows the pointer rather than fighting it.
-            if (by_width - width).abs() >= (by_height - height).abs() {
+            if !keep {
+                (by_width, by_height)
+            } else if (by_width - width).abs() >= (by_height - height).abs() {
                 let scale = (by_width / width).max(0.01);
                 (by_width, height * scale)
             } else {
@@ -213,9 +221,28 @@ mod tests {
             },
             50.0,
             0.0,
+            true,
         ));
         assert_eq!(model.extent.0.points(), 150.0);
         assert_eq!(model.extent.1.points(), 75.0, "the height followed");
+    }
+
+    #[test]
+    fn shift_lets_a_corner_stretch_freely() {
+        // The one user in ten who means to stretch holds Shift.
+        let mut model = drawing(true);
+        assert!(resized(
+            &mut model,
+            Grip::Corner {
+                right: true,
+                bottom: true,
+            },
+            50.0,
+            10.0,
+            false,
+        ));
+        assert_eq!(model.extent.0.points(), 150.0);
+        assert_eq!(model.extent.1.points(), 60.0, "the height went its own way");
     }
 
     #[test]
@@ -229,6 +256,7 @@ mod tests {
             },
             0.0,
             25.0,
+            true,
         ));
         assert_eq!(model.extent.0.points(), 100.0);
         assert_eq!(model.extent.1.points(), 75.0);
@@ -246,6 +274,7 @@ mod tests {
             },
             -99.0,
             0.0,
+            true,
         ));
         assert_eq!(model.extent.0.points(), 100.0, "and nothing changed");
     }
@@ -286,20 +315,35 @@ mod tests {
     fn a_corner_is_preferred_to_the_edge_it_sits_on() {
         let rect = (100.0, 100.0, 80.0, 40.0);
         assert_eq!(
-            grip_at(rect, 180.0, 140.0),
+            grip_at(rect, 180.0, 140.0, GRIP),
             Some(Grip::Corner {
                 right: true,
                 bottom: true,
             })
         );
         assert_eq!(
-            grip_at(rect, 180.0, 120.0),
+            grip_at(rect, 180.0, 120.0, GRIP),
             Some(Grip::Edge {
                 horizontal: true,
                 far: true,
             })
         );
-        assert_eq!(grip_at(rect, 140.0, 120.0), Some(Grip::Body));
-        assert_eq!(grip_at(rect, 300.0, 120.0), None);
+        assert_eq!(grip_at(rect, 140.0, 120.0, GRIP), Some(Grip::Body));
+        assert_eq!(grip_at(rect, 300.0, 120.0, GRIP), None);
+    }
+
+    #[test]
+    fn the_reach_of_a_handle_is_whatever_the_zoom_needs() {
+        // Zoomed out to a half, the same on-screen target is twice as far
+        // in page points — the reach grows so the handle stays hittable.
+        let rect = (100.0, 100.0, 80.0, 40.0);
+        assert_eq!(grip_at(rect, 188.0, 148.0, GRIP), None);
+        assert_eq!(
+            grip_at(rect, 188.0, 148.0, GRIP * 2.0),
+            Some(Grip::Corner {
+                right: true,
+                bottom: true,
+            })
+        );
     }
 }
