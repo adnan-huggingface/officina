@@ -182,6 +182,12 @@ impl Scriva {
                 if menu::item(ui, "&Clear Formatting", "Ctrl+Space").clicked() {
                     chosen = Some(Command::ClearFormatting);
                 }
+                menu::sep(ui);
+                // For the selected picture or chart. Dragging a handle is the
+                // fast way; this is the one with numbers in it.
+                if menu::item(ui, "P&icture Size…", "").clicked() {
+                    chosen = Some(Command::PictureSize);
+                }
             });
 
             menu::top(ui, "&Paragraph", |ui| {

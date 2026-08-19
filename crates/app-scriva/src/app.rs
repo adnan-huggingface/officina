@@ -55,6 +55,10 @@ pub enum Command {
     PageBreak,
     /// Insert ▸ Picture… — a picture from a file, at the caret.
     InsertPicture,
+    /// The Size box for the selected picture or chart.
+    PictureSize,
+    /// Takes the selected picture or chart out of the document.
+    DeletePicture,
     /// One of the margin presets, whole. Header, footer and gutter distances
     /// ride along unchanged.
     Margins(wp_model::PageMargins),
@@ -195,6 +199,9 @@ pub struct Scriva {
     drafting: Option<String>,
     /// The custom-margins dialog: top, bottom, left, right, in inches.
     margins_draft: Option<[String; 4]>,
+    /// The picture-size dialog: width and height in inches, and whether the
+    /// two are tied together.
+    size_draft: Option<SizeDraft>,
     /// How the open document was written, so a save puts it back the same way.
     encoding: wp_text::Encoding,
     ending: wp_text::LineEnding,
@@ -238,6 +245,26 @@ struct Clip {
     paragraphs: Vec<wp_model::doc::Paragraph>,
 }
 
+/// The Size box, while it is open.
+///
+/// Inches, because that is what Word's box shows and what a user asking for
+/// "three inches wide" means. The picture it belongs to is remembered with it:
+/// the box is about *that* drawing, and a click elsewhere while it is open must
+/// not silently resize a different one.
+struct SizeDraft {
+    picked: crate::drawings::Picked,
+    width: String,
+    height: String,
+    /// Word's "Lock aspect ratio", and on by default there as here: a picture
+    /// stretched on one axis is almost always an accident.
+    locked: bool,
+    /// Width over height as the box opened, for the lock to hold to.
+    ratio: f64,
+    /// The size the picture's own pixels ask for, when it has pixels. A chart
+    /// has none, and its Reset button is not offered.
+    natural: Option<(f64, f64)>,
+}
+
 impl Default for Scriva {
     fn default() -> Self {
         Scriva::new()
@@ -268,6 +295,7 @@ impl Scriva {
             author: crate::revise::Author::new("Scriva user"),
             drafting: None,
             margins_draft: None,
+            size_draft: None,
             parts: None,
             picked: None,
             dragging: None,
@@ -1058,6 +1086,10 @@ impl Scriva {
             }
             Command::UpdateToc => self.update_toc(),
             Command::InsertPicture => self.insert_picture_from_file(),
+            Command::PictureSize => self.open_size_dialog(),
+            Command::DeletePicture => {
+                self.delete_drawing();
+            }
         }
     }
 
@@ -1720,6 +1752,8 @@ impl Scriva {
                     self.delete_drawing();
                 }
                 Key::Escape => self.picked = None,
+                // Word's key for the properties of what is selected.
+                Key::Enter => self.open_size_dialog(),
                 _ => {}
             }
             return;
@@ -2212,6 +2246,14 @@ fn clipboard_image() -> Option<(Vec<u8>, u32, u32)> {
     Some((png, width, height))
 }
 
+/// A length in points, as the inches a size box shows.
+///
+/// Two decimals, which is what Word's boxes show and is about a hundredth of an
+/// inch — finer than anyone can drag, and finer than a printer resolves.
+fn inches(points: f64) -> String {
+    format!("{:.2}", points / 72.0)
+}
+
 /// A file's bytes as something a document can hold: the data, its content type,
 /// and its size in pixels.
 ///
@@ -2420,6 +2462,10 @@ impl DocumentApp for Scriva {
             self.zoom_dialog(ctx);
             return;
         }
+        if self.size_draft.is_some() {
+            self.size_dialog(ctx);
+            return;
+        }
         if let Some(Pending::Lossy(path, format)) = self.pending.clone() {
             let what = match format {
                 Format::Markdown => {
@@ -2609,6 +2655,103 @@ impl Scriva {
             }
             Some(false) => self.margins_draft = None,
             None => {}
+        }
+    }
+
+    /// Word's Size box, for a picture or a chart: two numbers, in inches.
+    ///
+    /// Dragging a handle is the fast way and this is the exact one. Typing a
+    /// width with the ratio locked moves the height with it, which is what the
+    /// lock means — Word recomputes the other field as you leave the one you
+    /// typed in, and so does this.
+    fn size_dialog(&mut self, ctx: &egui::Context) {
+        let Some(mut draft) = self.size_draft.take() else {
+            return;
+        };
+        let mut done: Option<bool> = None;
+        egui::Modal::new(egui::Id::new("scriva-size"))
+            .frame(dialog::frame(ctx))
+            .show(ctx, |ui| {
+                ui.set_width(260.0);
+                ui.add_space(16.0);
+                ui.label(egui::RichText::new("Size").font(dialog::heading_font(16.0)));
+                ui.add_space(8.0);
+                let mut typed: Option<bool> = None;
+                for (label, horizontal) in [("Width:", true), ("Height:", false)] {
+                    ui.horizontal(|ui| {
+                        ui.add_sized([56.0, 20.0], egui::Label::new(label));
+                        let field = match horizontal {
+                            true => &mut draft.width,
+                            false => &mut draft.height,
+                        };
+                        if ui
+                            .add(egui::TextEdit::singleline(field).desired_width(64.0))
+                            .changed()
+                        {
+                            typed = Some(horizontal);
+                        }
+                        ui.label("in");
+                    });
+                }
+                // The locked field follows the typed one, so the box always
+                // shows the size it would set.
+                if let Some(horizontal) = typed.filter(|_| draft.locked) {
+                    let (from, to) = match horizontal {
+                        true => (&draft.width, draft.ratio.recip()),
+                        false => (&draft.height, draft.ratio),
+                    };
+                    if let Some(value) = from.trim().parse::<f64>().ok().filter(|v| *v > 0.0) {
+                        let other = inches(value * to * 72.0);
+                        match horizontal {
+                            true => draft.height = other,
+                            false => draft.width = other,
+                        }
+                    }
+                }
+                ui.add_space(4.0);
+                ui.checkbox(&mut draft.locked, "Lock aspect ratio");
+                if let Some((width, height)) = draft.natural {
+                    ui.add_space(4.0);
+                    if ui.button("Original size").clicked() {
+                        draft.width = inches(width);
+                        draft.height = inches(height);
+                    }
+                }
+                ui.add_space(12.0);
+                if let Some(answer) = dialog::confirm(ui, "OK") {
+                    done = Some(answer);
+                }
+                if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    done = Some(true);
+                }
+                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    done = Some(false);
+                }
+            });
+        match done {
+            Some(true) => {
+                // A field that does not parse keeps the size it had: the box is
+                // not the place to argue about a typo.
+                let read = |text: &str, was: f64| {
+                    text.trim()
+                        .parse::<f64>()
+                        .ok()
+                        .filter(|inches| (0.01..=22.0).contains(inches))
+                        .map(|inches| inches * 72.0)
+                        .unwrap_or(was)
+                };
+                let (was_w, was_h) = self
+                    .picked_drawing()
+                    .map(|drawing| (drawing.extent.0.points(), drawing.extent.1.points()))
+                    .unwrap_or((0.0, 0.0));
+                let width = read(&draft.width, was_w);
+                let height = read(&draft.height, was_h);
+                if (width, height) != (was_w, was_h) {
+                    self.resize_drawing(draft.picked, width, height);
+                }
+            }
+            Some(false) => {}
+            None => self.size_draft = Some(draft),
         }
     }
 
@@ -2956,8 +3099,16 @@ impl Scriva {
                 let painter = ui.painter_at(rect);
                 // Over the paper the pointer is a text cursor, which is how a
                 // window says "this is a place where clicking means something".
-                if response.hovered() && self.dragging.is_none() {
-                    ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
+                // Over a picture it says a different thing, and over one of a
+                // selected picture's handles it says which way that handle
+                // pulls — the only way a user finds out a picture can be
+                // resized at all is the pointer changing shape over it.
+                if response.hovered() || self.dragging.is_some() {
+                    let over = ui
+                        .ctx()
+                        .pointer_hover_pos()
+                        .and_then(|pointer| self.spot_at(pointer, origin, zoom));
+                    ui.ctx().set_cursor_icon(self.pointer_icon(over));
                 }
 
                 // A click on the desk gives keyboard focus to the surface itself
@@ -3009,8 +3160,16 @@ impl Scriva {
                         view::drawing_at(&self.view, spot).map(|found| (spot, found))
                     }) {
                         Some((spot, (picked, rect))) => {
+                            let already = self.picked == Some(picked);
                             self.picked = Some(picked);
-                            self.dragging = crate::drawings::grip_at(rect, spot.x, spot.y);
+                            // A handle can only be pulled once it is on the
+                            // screen to aim at: the first press on a picture
+                            // selects it and drags it about, and the press
+                            // after that can take hold of a corner.
+                            self.dragging = match already {
+                                true => crate::drawings::grip_at(rect, spot.x, spot.y),
+                                false => Some(crate::drawings::Grip::Body),
+                            };
                             self.drag_from = Some((spot.x, spot.y));
                             ui.ctx().memory_mut(|m| m.request_focus(response.id));
                         }
@@ -3075,10 +3234,36 @@ impl Scriva {
                         ui.ctx().memory_mut(|m| m.request_focus(response.id));
                     }
                 }
+                // A right-click on a picture selects it, the same as a left one:
+                // the menu that comes up is about what was clicked.
+                if response.secondary_clicked() {
+                    if let Some(found) = response
+                        .interact_pointer_pos()
+                        .and_then(|pointer| self.spot_at(pointer, origin, zoom))
+                        .and_then(|spot| view::drawing_at(&self.view, spot))
+                    {
+                        self.picked = Some(found.0);
+                    }
+                }
                 let has_selection = !self.selection.is_empty();
+                let picture = self.picked.is_some();
                 let mut chosen: Option<Command> = None;
                 response.context_menu(|ui| {
                     ui.set_min_width(160.0);
+                    // A picked picture has its own menu: Cut and Copy are the
+                    // text's, and a picture is not a stretch of text.
+                    if picture {
+                        if ui.button("Size…").clicked() {
+                            chosen = Some(Command::PictureSize);
+                            ui.close();
+                        }
+                        ui.separator();
+                        if ui.button("Delete").clicked() {
+                            chosen = Some(Command::DeletePicture);
+                            ui.close();
+                        }
+                        return;
+                    }
                     if ui
                         .add_enabled(has_selection, egui::Button::new("Cut"))
                         .clicked()
@@ -3207,6 +3392,118 @@ impl Scriva {
             });
             self.dragged = true;
         }
+        self.changed();
+    }
+
+    /// What the pointer should look like where it is.
+    ///
+    /// The text cursor over text, an arrow over a picture — an object is not a
+    /// place to type — and over the handles of the *selected* picture, the
+    /// arrow that says which way that handle pulls. A picture nobody has
+    /// clicked yet shows no handles, so it must not claim any either.
+    fn pointer_icon(&self, over: Option<view::Spot>) -> egui::CursorIcon {
+        use crate::drawings::Grip;
+        let icon = |grip: Grip| match grip {
+            Grip::Corner { right, bottom } => match right == bottom {
+                true => egui::CursorIcon::ResizeNwSe,
+                false => egui::CursorIcon::ResizeNeSw,
+            },
+            Grip::Edge {
+                horizontal: true, ..
+            } => egui::CursorIcon::ResizeHorizontal,
+            Grip::Edge { .. } => egui::CursorIcon::ResizeVertical,
+            // Only an anchored drawing can be dragged about; an inline one is
+            // held in place by the words around it.
+            Grip::Body => match self.picked_drawing().is_some_and(|d| d.anchored) {
+                true => egui::CursorIcon::Move,
+                false => egui::CursorIcon::Default,
+            },
+        };
+        // Mid-drag the pointer keeps the shape it started with, wherever it has
+        // wandered to — including off the picture, which every drag does.
+        if let Some(grip) = self.dragging {
+            return icon(grip);
+        }
+        let Some(spot) = over else {
+            return egui::CursorIcon::Text;
+        };
+        let Some((found, rect)) = view::drawing_at(&self.view, spot) else {
+            return egui::CursorIcon::Text;
+        };
+        match self.picked == Some(found) {
+            true => crate::drawings::grip_at(rect, spot.x, spot.y)
+                .map(icon)
+                .unwrap_or(egui::CursorIcon::Default),
+            false => egui::CursorIcon::Default,
+        }
+    }
+
+    /// The drawing the selection names, if it still exists.
+    fn picked_drawing(&self) -> Option<&wp_model::doc::Drawing> {
+        let picked = self.picked?;
+        let paragraph = *self.document.paragraphs().get(picked.paragraph)?;
+        paragraph.drawings().get(picked.nth).copied()
+    }
+
+    /// Opens the Size box for the selected picture.
+    fn open_size_dialog(&mut self) {
+        let (Some(picked), Some(drawing)) = (self.picked, self.picked_drawing()) else {
+            // The box is about a picture, so say which one is missing rather
+            // than doing nothing and leaving the user to guess.
+            self.message = Some((
+                "Nothing selected".to_owned(),
+                "Click the picture or chart to size, then try again.\n\n\
+                 A selected picture shows eight handles, and dragging one \
+                 resizes it."
+                    .to_owned(),
+            ));
+            return;
+        };
+        let (width, height) = (drawing.extent.0.points(), drawing.extent.1.points());
+        // A picture's own pixels, at the 96 to the inch a screen shot is
+        // measured in — the size Reset puts it back to. A chart has no pixels.
+        let natural = drawing
+            .rel
+            .as_deref()
+            .filter(|_| drawing.chart.is_none())
+            .and_then(|rel| self.pictures.texture(rel))
+            .map(|texture| {
+                let [w, h] = texture.size();
+                (w as f64 * 0.75, h as f64 * 0.75)
+            });
+        self.size_draft = Some(SizeDraft {
+            picked,
+            width: inches(width),
+            height: inches(height),
+            locked: true,
+            ratio: match height > 0.0 {
+                true => width / height,
+                false => 1.0,
+            },
+            natural,
+        });
+    }
+
+    /// Sets the selected picture's size, in points. One undo entry.
+    fn resize_drawing(&mut self, picked: crate::drawings::Picked, width: f64, height: f64) {
+        let before = match self.document.paragraphs().get(picked.paragraph) {
+            Some(paragraph) => (*paragraph).clone(),
+            None => return,
+        };
+        let changed = {
+            let mut paragraphs = self.document.paragraphs_mut();
+            paragraphs
+                .get_mut(picked.paragraph)
+                .and_then(|paragraph| paragraph.drawing_mut(picked.nth))
+                .is_some_and(|drawing| crate::drawings::set_size(drawing, width, height))
+        };
+        if !changed {
+            return;
+        }
+        self.history.push(crate::edit::Change::Paragraph {
+            index: picked.paragraph,
+            before: Box::new(before),
+        });
         self.changed();
     }
 
@@ -3736,6 +4033,52 @@ mod tests {
             .sum();
         assert_eq!(pictures, 1, "still the one picture");
         assert_eq!(app.paragraph_count(), 2, "and the paragraph did split");
+    }
+
+    #[test]
+    fn a_picture_can_be_sized_by_the_numbers_and_one_undo_puts_it_back() {
+        let mut app = app_with(&["ab"]);
+        app.selection = Selection::at(Caret {
+            paragraph: 0,
+            offset: 1,
+        });
+        assert!(app.insert_picture(PIXEL, "image/png", 96, 48), "it pastes");
+        let picked = crate::drawings::Picked {
+            paragraph: 0,
+            nth: 0,
+        };
+        app.picked = Some(picked);
+
+        // The box opens on the size the picture is: 96 by 48 pixels at 96 to
+        // the inch is one inch by half of one.
+        app.open_size_dialog();
+        let draft = app.size_draft.as_ref().expect("the box opened");
+        assert_eq!(
+            (draft.width.as_str(), draft.height.as_str()),
+            ("1.00", "0.50")
+        );
+        assert!(draft.locked, "the ratio is locked, as Word's box opens");
+        assert!((draft.ratio - 2.0).abs() < 1e-9);
+
+        // Two inches by one, which is what typing 2.00 with the lock on means.
+        app.resize_drawing(picked, 144.0, 72.0);
+        let drawing = app.picked_drawing().expect("still there");
+        assert_eq!(drawing.extent.0, wp_model::Emu(1_828_800), "two inches");
+        assert_eq!(drawing.extent.1, wp_model::Emu(914_400), "by one");
+
+        app.run(Command::Undo);
+        let drawing = app.picked_drawing().expect("and still there after");
+        assert_eq!(drawing.extent.0, wp_model::Emu(914_400), "back an inch");
+        assert_eq!(drawing.extent.1, wp_model::Emu(457_200));
+    }
+
+    #[test]
+    fn asking_to_size_nothing_says_so_rather_than_doing_nothing() {
+        let mut app = app_with(&["ab"]);
+        app.run(Command::PictureSize);
+        assert!(app.size_draft.is_none(), "no box, because no picture");
+        let (title, _) = app.message.as_ref().expect("it says why");
+        assert_eq!(title, "Nothing selected");
     }
 
     #[test]

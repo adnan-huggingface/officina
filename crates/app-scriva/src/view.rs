@@ -1538,6 +1538,66 @@ mod tests {
     }
 
     #[test]
+    fn an_inline_picture_is_an_object_a_click_can_pick_and_a_grip_can_pull() {
+        use wp_model::doc::{Inline, Piece, Run};
+        let ctx = context();
+        let mut shaper = Egui::new(&ctx);
+        let mut view = View::default();
+        let mut document = document(&[]);
+        let drawing = wp_model::Drawing {
+            source: Vec::new().into(),
+            anchored: false,
+            extent: (
+                wp_model::Emu::from_points(60.0),
+                wp_model::Emu::from_points(30.0),
+            ),
+            rel: Some("rId9".into()),
+            chart: None,
+            name: None,
+            description: None,
+            wrap: wp_model::Wrap::None,
+            distance: Default::default(),
+            position: None,
+            behind_text: false,
+        };
+        document.body = vec![Block::Paragraph(Paragraph {
+            content: vec![Inline::Run(Run {
+                content: vec![Piece::Text("ab".into()), Piece::Drawing(Box::new(drawing))],
+                ..Run::default()
+            })],
+            ..Paragraph::new()
+        })];
+        view.refresh(&document, &wp_layout::FieldValues::new(), 1, &mut shaper);
+        let rects = drawing_rects(&view, 0);
+        let (picked, rect) = *rects.first().expect("the picture is on the page");
+        let (x, y, w, h) = rect;
+        assert_eq!((w, h), (60.0, 30.0), "drawn at the size it says");
+
+        // A click in the middle finds it, and the model can be reached from
+        // what the click answered: paragraph, and which drawing of it.
+        let (hit, _) = drawing_at(
+            &view,
+            Spot {
+                page: 0,
+                x: x + w / 2.0,
+                y: y + h / 2.0,
+            },
+        )
+        .expect("a click on a picture picks it");
+        assert_eq!(hit, picked);
+        assert_eq!(rect_of(&view, picked).map(|(page, _)| page), Some(0));
+
+        // And its corner is a grip, which is what a drag pulls.
+        assert_eq!(
+            crate::drawings::grip_at(rect, x + w, y + h),
+            Some(crate::drawings::Grip::Corner {
+                right: true,
+                bottom: true
+            })
+        );
+    }
+
+    #[test]
     fn a_picture_is_a_character_the_caret_can_stand_on_either_side_of() {
         use wp_model::doc::{Inline, Piece, Run};
         let ctx = context();
