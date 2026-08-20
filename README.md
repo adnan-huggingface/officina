@@ -101,6 +101,15 @@ of it.
   next format does not repeat it.
 - [PROGRESS.md](PROGRESS.md) — the work log, chunk by chunk.
 
+## Trademarks
+
+Microsoft, Word, and Excel are trademarks of the Microsoft group of companies.
+Officina is an independent project built from the published file-format
+specifications (ECMA-376/ISO 29500 and Microsoft's Open Specifications); it is
+not affiliated with, endorsed by, or sponsored by Microsoft. Product names
+appear in this repository only to describe the file formats these applications
+read and write.
+
 ## Licence
 
 Officina is dual-licensed under either of

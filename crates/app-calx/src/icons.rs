@@ -473,7 +473,7 @@ fn draw(painter: &egui::Painter, icon: Icon, rect: egui::Rect, color: egui::Colo
                 band,
                 0.0,
                 if adding {
-                    egui::Color32::from_rgb(0x21, 0x73, 0x46).gamma_multiply(0.45)
+                    egui::Color32::from_rgb(0x1E, 0x6F, 0x5C).gamma_multiply(0.45)
                 } else {
                     egui::Color32::from_rgb(0xC0, 0x39, 0x2B).gamma_multiply(0.45)
                 },

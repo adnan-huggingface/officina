@@ -4093,7 +4093,7 @@ impl Calx {
                     ui.painter().vline(
                         x,
                         sample.y_range(),
-                        egui::Stroke::new(2.0, egui::Color32::from_rgb(0x21, 0x73, 0x46)),
+                        egui::Stroke::new(2.0, egui::Color32::from_rgb(0x1E, 0x6F, 0x5C)),
                     );
                 }
             }
@@ -5949,7 +5949,8 @@ enum TabCommand {
     SelectAll,
 }
 
-/// Excel's standard tab colours, which is the palette people recognise.
+/// The standard sheet-tab palette, kept so a recoloured tab looks the same
+/// when the workbook is opened in another spreadsheet application.
 const TAB_COLORS: &[(&str, [u8; 3])] = &[
     ("Red", [0xC0, 0x00, 0x00]),
     ("Orange", [0xE3, 0x6C, 0x0A]),
@@ -6907,7 +6908,7 @@ fn swatch(ui: &mut egui::Ui, rgb: [u8; 3]) -> egui::Response {
             ui.painter().rect_stroke(
                 rect,
                 3.0,
-                egui::Stroke::new(1.5, egui::Color32::from_rgb(0x21, 0x73, 0x46)),
+                egui::Stroke::new(1.5, egui::Color32::from_rgb(0x1E, 0x6F, 0x5C)),
                 egui::StrokeKind::Inside,
             );
         }
@@ -6976,7 +6977,7 @@ fn tab(ui: &mut egui::Ui, name: &str, selected: bool, stripe: Option<[u8; 3]>) -
             }
         }
         let color = if selected {
-            egui::Color32::from_rgb(0x21, 0x73, 0x46)
+            egui::Color32::from_rgb(0x1E, 0x6F, 0x5C)
         } else {
             egui::Color32::from_gray(0x33)
         };

@@ -90,7 +90,7 @@ struct Palette {
 
 impl Palette {
     fn of(_ui: &egui::Ui) -> Self {
-        let accent = egui::Color32::from_rgb(0x21, 0x73, 0x46);
+        let accent = egui::Color32::from_rgb(0x1E, 0x6F, 0x5C);
         Palette {
             grid: egui::Color32::from_rgb(0xD4, 0xD4, 0xD4),
             text: egui::Color32::BLACK,
@@ -1050,7 +1050,7 @@ impl GridView {
             let hovered = hover.is_some_and(|p| arrow.rect.contains(p));
             let (fill, ink) = if arrow.filtering {
                 (
-                    egui::Color32::from_rgb(0x21, 0x73, 0x46),
+                    egui::Color32::from_rgb(0x1E, 0x6F, 0x5C),
                     egui::Color32::WHITE,
                 )
             } else if hovered {

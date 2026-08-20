@@ -43,7 +43,7 @@ crates/
                 table layout, float placement
   wp-docx/      docx reader + writer over ooxml + wp-model
   cfb/          Compound File Binary reader (phase 2, feeds ms-doc / ms-xls)
-  ui-kit/       Shared egui widgets: ribbon, dialogs, theming, command palette,
+  ui-kit/       Shared egui widgets: menu bar, dialogs, theming, command palette,
                 keybinding engine, undo stack
   app-calx/     -> calx binary
   app-scriva/   -> scriva binary
@@ -122,7 +122,7 @@ are undocumented and subtly version-dependent. We will match Word on line and pa
 *breaks* for mainstream documents; we will not always match sub-pixel glyph positions
 within a justified line. Documents will look right and paginate right; a pixel diff
 against Word will not be empty. This is stated up front because it is the one place the
-"professional clone" goal has an irreducible gap.
+goal of professional-grade Word compatibility has an irreducible gap.
 
 **Model.** Paragraph/run tree with style inheritance resolved lazily
 (document defaults → style → numbering → direct formatting), sections, headers/footers,
@@ -131,9 +131,9 @@ editable.
 
 ## 6. Shared UI
 
-egui in "retained-ish" mode over wgpu: immediate-mode for the ribbon, dialogs, and
-panels; a custom retained widget for the document/grid surface where we control layout
-and paint directly.
+egui in "retained-ish" mode over wgpu: immediate-mode for the menus, toolbars, dialogs,
+and panels; a custom retained widget for the document/grid surface where we control
+layout and paint directly.
 
 Word/Excel keybinding compatibility is a first-class feature with its own table-driven
 engine, including the multi-key sequences (`Ctrl+K, Ctrl+C`) and the Excel navigation

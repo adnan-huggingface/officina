@@ -36,8 +36,8 @@ const MIN_WIDTH: f32 = 208.0;
 /// colour of the background, in every row that has no mark to make.
 const TICK: &str = "✔";
 
-/// Excel's green, which is what a ticked item is marked in.
-const ACCENT: egui::Color32 = egui::Color32::from_rgb(0x21, 0x73, 0x46);
+/// The suite's accent green, which is what a ticked item is marked in.
+const ACCENT: egui::Color32 = egui::Color32::from_rgb(0x1E, 0x6F, 0x5C);
 
 /// The line between groups of commands.
 const RULE: egui::Color32 = egui::Color32::from_rgb(0xDF, 0xDF, 0xDF);

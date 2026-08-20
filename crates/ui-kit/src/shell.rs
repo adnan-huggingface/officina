@@ -261,8 +261,8 @@ fn paint_style(style: &mut egui::Style) {
     v.window_fill = egui::Color32::from_rgb(0xFB, 0xFB, 0xFB);
     v.extreme_bg_color = egui::Color32::WHITE;
     v.faint_bg_color = egui::Color32::from_rgb(0xE9, 0xE9, 0xE9);
-    // Excel's green, which is what the selection and the active tab are.
-    let accent = egui::Color32::from_rgb(0x21, 0x73, 0x46);
+    // The suite's accent green, which is what the selection and the active tab are.
+    let accent = egui::Color32::from_rgb(0x1E, 0x6F, 0x5C);
     v.selection.bg_fill = accent.gamma_multiply(0.25);
     v.selection.stroke = egui::Stroke::new(1.0, accent);
     v.hyperlink_color = egui::Color32::from_rgb(0x05, 0x63, 0xC1);

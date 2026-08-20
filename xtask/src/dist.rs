@@ -61,6 +61,9 @@ pub fn package() -> Result<PathBuf, String> {
         "FORMATS.md",
         "LICENSE-MIT",
         "LICENSE-APACHE",
+        // Every statically linked dependency's licence text. MIT requires the
+        // notice to travel with the binaries, so the zip carries it.
+        "THIRD-PARTY-NOTICES.yml",
     ] {
         let from = root.join(doc);
         if from.exists() {

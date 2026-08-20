@@ -18,10 +18,10 @@ use eframe::egui;
 
 use crate::fonts::{face, Family};
 
-/// Excel's green, which is this workspace's accent everywhere else too.
-const ACCENT: egui::Color32 = egui::Color32::from_rgb(0x21, 0x73, 0x46);
-const ACCENT_HOVER: egui::Color32 = egui::Color32::from_rgb(0x2B, 0x8B, 0x56);
-const ACCENT_DOWN: egui::Color32 = egui::Color32::from_rgb(0x19, 0x5A, 0x36);
+/// The suite's accent green, the same accent the rest of this workspace uses.
+const ACCENT: egui::Color32 = egui::Color32::from_rgb(0x1E, 0x6F, 0x5C);
+const ACCENT_HOVER: egui::Color32 = egui::Color32::from_rgb(0x2A, 0x8B, 0x74);
+const ACCENT_DOWN: egui::Color32 = egui::Color32::from_rgb(0x17, 0x56, 0x4A);
 
 /// A message box's width, and the least a form dialog may be.
 ///

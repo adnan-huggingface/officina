@@ -1,16 +1,21 @@
+> This file is the original project brief, kept as history. Officina is an
+> independent implementation of the published file-format specifications; it is
+> not affiliated with, endorsed by, or sponsored by Microsoft.
+
 # Goal
 
-Create a clone of MS Word and MS Excel.
-These should be excellent clones for professional use.
+Create a native word processor and spreadsheet fully compatible with the
+Microsoft Word and Excel file formats. These should be excellent
+professional-grade alternatives.
 
 # Requirements
 
-1. MSWord clone must be able to edit .doc, .docx, and any regular text file (ascii/utf8).  If not too difficult then I'd also like to edit .pdf.
-2. MSExcel clone must be able to edit .xls, xslx, .csv.
+1. The word processor must be able to edit .doc, .docx, and any regular text file (ascii/utf8).  If not too difficult then I'd also like to edit .pdf.
+2. The spreadsheet must be able to edit .xls, xslx, .csv.
 3. Must be able to compile/run easily on Windows 11 or modern Ubuntu Linux.
 4. Prefer single exe if possible.
 5. Startup should be relatively fast but feature parity is more important.
-6. MSWord clone must be able to open and edit any .doc/.docx created by true MSWord.  Likewise for the MSExcel clone.  These should be professional clones.
+6. The word processor must be able to open and edit any .doc/.docx created by real Microsoft Word.  Likewise for the spreadsheet with Excel's files.  Both should be professional-grade.
 7. Prefer manual installation into users ~/.local/bin and configuration+state in ~/.config\[app_name_goes_here]/.
 8. Think of a short name for these that doesn't conflict.
 
@@ -67,7 +72,7 @@ harness in the plan.
 → **Pure Rust native.** Two static binaries, egui + wgpu, custom layout engine.
 True single exe, ~100ms startup, zero runtime deps on Windows 11 and modern Ubuntu.
 Rejected: Tauri/webview (drags in WebView2 + webkit2gtk), LibreOfficeKit shell (400MB
-dependency, and it would be a skin rather than a clone).
+dependency, and it would be a skin rather than an independent implementation).
 
 **Q2. Legacy binary formats (.doc/.xls)?**
 → **Read-only, phase 2.** Phase 1 ships .docx/.xlsx/.csv/plain text read+write.
@@ -75,7 +80,7 @@ Legacy files open and edit, then save as the modern format. We never write .doc/
 (~1700 pages of combined spec for a format Microsoft deprecated in 2007).
 
 **Q3. PDF?**
-→ **Dropped from the initial roadmap.** Revisit once both clones are solid.
+→ **Dropped from the initial roadmap.** Revisit once both applications are solid.
 
 **Q4. What do we optimize for when trading off?**
 → **Import fidelity** first (never corrupt a user's file), and **Excel before Word**
