@@ -1,7 +1,7 @@
-# Calx and Scriva
+# Officina
 
-Two native desktop applications, written in Rust, for the two file formats an
-engineer cannot avoid.
+Officina is a native office suite, written in Rust, for the two file formats
+an engineer cannot avoid. It is two desktop applications:
 
 - **Calx** — spreadsheets. Opens and saves `.xlsx`, reads `.xls`, reads and
   writes `.csv` and `.tsv`.
@@ -55,7 +55,7 @@ To build an archive to copy to another machine:
 cargo xtask package
 ```
 
-That produces `target/dist/calx-scriva-<version>-<arch>-<os>.zip`, holding both
+That produces `target/dist/officina-<version>-<arch>-<os>.zip`, holding both
 executables and this documentation. It is a convenience rather than a layout:
 each binary is self-contained, so unzipping it anywhere and running it from
 there works.

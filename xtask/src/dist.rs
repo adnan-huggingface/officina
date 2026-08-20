@@ -37,7 +37,7 @@ pub fn target() -> String {
 /// Assembles a directory holding everything a user needs, and archives it.
 pub fn package() -> Result<PathBuf, String> {
     let root = workspace_root();
-    let name = format!("calx-scriva-{}-{}", version(), target());
+    let name = format!("officina-{}-{}", version(), target());
     let staging = root.join("target").join("dist").join(&name);
     let _ = std::fs::remove_dir_all(&staging);
     std::fs::create_dir_all(&staging).map_err(|e| format!("create {}: {e}", staging.display()))?;
@@ -198,7 +198,7 @@ mod tests {
 
     #[test]
     fn the_archive_name_says_what_it_will_and_will_not_run_on() {
-        let name = format!("calx-scriva-{}-{}", version(), target());
+        let name = format!("officina-{}-{}", version(), target());
         assert!(name.contains(std::env::consts::OS), "{name}");
         assert!(name.contains(std::env::consts::ARCH), "{name}");
     }

@@ -27,7 +27,7 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.95"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/adnan/calx-scriva"
+repository = "https://github.com/adnan-huggingface/officina"
 
 [workspace.dependencies]
 chart = { path = "crates/chart" }
