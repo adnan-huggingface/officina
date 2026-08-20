@@ -103,7 +103,13 @@ of it.
 
 ## Licence
 
-The workspace manifest declares `MIT OR Apache-2.0`, the usual dual licence for
-Rust projects. The licence *texts* are not in the repository yet, and the
-copyright line needs a name rather than a guess — add `LICENSE-MIT` and
-`LICENSE-APACHE` when you are ready and `cargo xtask package` will include them.
+Officina is dual-licensed under either of
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
+- MIT License ([LICENSE-MIT](LICENSE-MIT))
+
+at your option — the usual arrangement for Rust projects. Use it, modify it,
+redistribute it, sell things built on it; both licences allow all of that.
+Unless you explicitly state otherwise, any contribution intentionally submitted
+for inclusion in the work by you, as defined in the Apache-2.0 licence, shall
+be dual-licensed as above, without any additional terms or conditions.
