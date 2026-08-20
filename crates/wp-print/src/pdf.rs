@@ -14,6 +14,9 @@
 //! text a recruiter selects and copies out of a resume is the text, not glyph
 //! soup. A face the machine cannot supply falls back to Helvetica — the page
 //! still says what it said, in the wrong clothes, which beats saying nothing.
+//! A face whose `fsType` licence forbids embedding gets the same treatment:
+//! the alternative is shipping a copy of a font its licence says must not
+//! travel.
 
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -180,7 +183,12 @@ impl Fonts {
         if let Some(index) = self.by_request.get(&key) {
             return *index;
         }
-        let bytes = faces.face(&font.family, font.bold, font.italic);
+        // A face whose licence forbids embedding is dropped here, at the one
+        // point both the text operators and the font dictionary read from, so
+        // the two always agree on the Helvetica fallback.
+        let bytes = faces
+            .face(&font.family, font.bold, font.italic)
+            .filter(|bytes| Face::parse(bytes).is_none_or(|face| face.embeddable()));
         // Two document names can resolve to one file — Arial and an unknown
         // name both come back as Arial — and embedding it twice would double
         // the file for nothing.
@@ -884,6 +892,46 @@ mod tests {
         let text = String::from_utf8_lossy(&pdf);
         assert!(text.contains("/Helvetica"), "the fallback stood in");
         assert!(text.contains("/MediaBox [0 0 612 792]"));
+        assert_xref_is_honest(&pdf);
+    }
+
+    /// The fixture face from `ttf`, wearing whichever licence the test needs.
+    struct LicensedFaces(u16);
+    impl Faces for LicensedFaces {
+        fn face(&mut self, _: &str, _: bool, _: bool) -> Option<Arc<[u8]>> {
+            Some(Arc::from(
+                crate::ttf::fixture::face(self.0).into_boxed_slice(),
+            ))
+        }
+    }
+
+    #[test]
+    fn a_face_whose_licence_forbids_embedding_is_not_embedded() {
+        let restricted = 0x0002;
+        let pdf = export(
+            &[page()],
+            &mut LicensedFaces(restricted),
+            &HashMap::new(),
+            None,
+            None,
+        );
+        let text = String::from_utf8_lossy(&pdf);
+        assert_eq!(text.matches("/FontFile2").count(), 0, "no copy travels");
+        assert!(text.contains("/Helvetica"), "the fallback dresses the text");
+        assert_xref_is_honest(&pdf);
+
+        // The same fixture embeds when its licence allows, so the refusal
+        // above is the licence's doing and not a parse failure.
+        let installable = 0x0000;
+        let pdf = export(
+            &[page()],
+            &mut LicensedFaces(installable),
+            &HashMap::new(),
+            None,
+            None,
+        );
+        let text = String::from_utf8_lossy(&pdf);
+        assert_eq!(text.matches("/FontFile2").count(), 1);
         assert_xref_is_honest(&pdf);
     }
 

@@ -30,6 +30,8 @@ pub struct Face<'a> {
     pub italic_angle: f64,
     /// From `head`: the glyph bounding box, in font units.
     pub bbox: [i16; 4],
+    /// From `OS/2`: the licence bits, kept raw.
+    fs_type: u16,
 }
 
 /// The character-to-glyph table, restricted to the two formats every Windows
@@ -100,6 +102,9 @@ impl<'a> Face<'a> {
             .and_then(|os2| i16_at(os2, 88))
             .filter(|height| *height > 0)
             .unwrap_or(ascent);
+        // A face with no `OS/2` table predates the licence bits; zero is the
+        // spec's own reading of that — installable, nothing withheld.
+        let fs_type = table(b"OS/2").and_then(|os2| u16_at(os2, 8)).unwrap_or(0);
         let italic_angle = table(b"post")
             .and_then(|post| u32_at(post, 4))
             .map(|fixed| fixed as i32 as f64 / 65536.0)
@@ -119,7 +124,21 @@ impl<'a> Face<'a> {
             cap_height,
             italic_angle,
             bbox,
+            fs_type,
         })
+    }
+
+    /// Whether the face's licence lets it travel inside a document.
+    ///
+    /// `fsType` is a licence statement, not a capability: 0x0002 alone means
+    /// the font must not leave the machine it is installed on. When a font
+    /// says several things at once the spec resolves to the least restrictive,
+    /// so preview-and-print (0x0004) or editable (0x0008) embedding overrides
+    /// restricted — which is also how Word reads it when it embeds fonts. The
+    /// no-subsetting bit needs no answer here: the file is embedded whole,
+    /// never subset.
+    pub fn embeddable(&self) -> bool {
+        self.fs_type & 0x000C != 0 || self.fs_type & 0x0002 == 0
     }
 
     pub fn units_per_em(&self) -> f64 {
@@ -244,6 +263,53 @@ fn glyph_format12(sub: &[u8], point: u32) -> Option<u16> {
     None
 }
 
+/// The least TrueType `parse` accepts, with the licence field under the
+/// caller's control — what the embedding-permission tests are made of.
+#[cfg(test)]
+pub(crate) mod fixture {
+    pub fn face(fs_type: u16) -> Vec<u8> {
+        let mut os2 = vec![0u8; 78];
+        os2[8..10].copy_from_slice(&fs_type.to_be_bytes());
+
+        let mut head = vec![0u8; 54];
+        head[12..16].copy_from_slice(&0x5F0F_3CF5u32.to_be_bytes());
+        head[18..20].copy_from_slice(&1000u16.to_be_bytes());
+        head[38..40].copy_from_slice(&(-200i16).to_be_bytes());
+        head[40..42].copy_from_slice(&500i16.to_be_bytes());
+        head[42..44].copy_from_slice(&800i16.to_be_bytes());
+
+        let mut hhea = vec![0u8; 36];
+        hhea[4..6].copy_from_slice(&800i16.to_be_bytes());
+        hhea[6..8].copy_from_slice(&(-200i16).to_be_bytes());
+        hhea[34..36].copy_from_slice(&1u16.to_be_bytes());
+
+        let hmtx = vec![0x01, 0xF4, 0, 0];
+
+        let tables: [(&[u8; 4], &[u8]); 4] = [
+            (b"OS/2", &os2),
+            (b"head", &head),
+            (b"hhea", &hhea),
+            (b"hmtx", &hmtx),
+        ];
+        let mut data = Vec::new();
+        data.extend_from_slice(&0x0001_0000u32.to_be_bytes());
+        data.extend_from_slice(&(tables.len() as u16).to_be_bytes());
+        data.extend_from_slice(&[0, 64, 0, 2, 0, 0]);
+        let mut offset = 12 + tables.len() * 16;
+        for (tag, table) in &tables {
+            data.extend_from_slice(*tag);
+            data.extend_from_slice(&[0; 4]);
+            data.extend_from_slice(&(offset as u32).to_be_bytes());
+            data.extend_from_slice(&(table.len() as u32).to_be_bytes());
+            offset += table.len();
+        }
+        for (_, table) in &tables {
+            data.extend_from_slice(table);
+        }
+        data
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -274,6 +340,22 @@ mod tests {
         let Some(bytes) = arial() else { return };
         let face = Face::parse(&bytes).expect("Arial parses");
         assert_eq!(face.glyph('\u{E837}'), 0, "private use area is empty");
+    }
+
+    #[test]
+    fn the_licence_bits_decide_embedding() {
+        let says = |fs_type: u16| {
+            let bytes = fixture::face(fs_type);
+            Face::parse(&bytes).expect("the fixture parses").embeddable()
+        };
+        assert!(says(0x0000), "installable");
+        assert!(!says(0x0002), "restricted");
+        assert!(says(0x0004), "preview and print");
+        assert!(says(0x0008), "editable");
+        // Conflicting bits resolve to the least restrictive, per the spec.
+        assert!(says(0x0006), "restricted, but preview granted");
+        // No-subsetting binds subsetters; this embedder never subsets.
+        assert!(says(0x0100), "whole-file only");
     }
 
     #[test]
