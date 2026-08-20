@@ -53,6 +53,11 @@ pub fn package() -> Result<PathBuf, String> {
         }
         copy(&from, &staging.join(&exe))?;
     }
+    // The notices are regenerated rather than trusted: the archive must carry
+    // the licences of the dependencies the binaries were actually built from,
+    // not whatever the last person to run the tool left behind.
+    bundle_licenses(&root)?;
+
     // The documents a user needs beside the binaries, and nothing else. A
     // release is not a copy of the repository.
     for doc in [
@@ -73,6 +78,29 @@ pub fn package() -> Result<PathBuf, String> {
 
     let archive = archive(&staging, &name)?;
     Ok(archive)
+}
+
+/// Rewrites THIRD-PARTY-NOTICES.yml from the lockfile.
+fn bundle_licenses(root: &Path) -> Result<(), String> {
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    let status = std::process::Command::new(&cargo)
+        .args([
+            "bundle-licenses",
+            "--format",
+            "yaml",
+            "--output",
+            "THIRD-PARTY-NOTICES.yml",
+        ])
+        .current_dir(root)
+        .status()
+        .map_err(|e| format!("failed to run `cargo bundle-licenses`: {e}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err("`cargo bundle-licenses` failed — install it with \
+             `cargo install cargo-bundle-licenses`"
+            .into())
+    }
 }
 
 /// Zips the staging directory. Zip on both platforms: `tar` is the Linux
