@@ -3990,6 +3990,11 @@ impl Calx {
                         if response.clicked() && !selected {
                             switch = Some(index);
                         }
+                        // Double-click renames, which is where Excel-trained
+                        // fingers go before they find the context menu.
+                        if response.double_clicked() {
+                            context = Some((index, TabCommand::Rename));
+                        }
                         // Dragging a tab sideways picks it up; the drop is
                         // resolved below, once every tab's place is known.
                         if response.drag_started() {

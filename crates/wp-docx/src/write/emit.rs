@@ -14,12 +14,16 @@
 use std::fmt::Write as _;
 
 use wp_model::color::Color;
-use wp_model::doc::{Break, Inline, Paragraph, Piece, Run};
+use wp_model::doc::{Block, Break, Inline, Paragraph, Piece, Run};
 use wp_model::prop::{
     Border, Justify, LineSpacing, ParaProps, RunProps, Shading, ShadingPattern, TabKind, TabLeader,
     Toggle, UnderlineKind, VertAlign,
 };
 use wp_model::style::StyleTable;
+use wp_model::table::{
+    Cell, CellMargins, CellProps, CellVAlign, FloatAnchor, Row, RowHeight, RowProps, Table,
+    TableBorders, TableLayout, TableLook, TableProps, TextDirection, VMerge, Width,
+};
 
 use super::splice::{escape_attr, escape_text, needs_space_preserve};
 
@@ -247,18 +251,7 @@ fn para_prop(out: &mut String, name: &str, props: &ParaProps, styles: &StyleTabl
             out.push_str("/>");
         }
         "contextualSpacing" => on_off(out, "contextualSpacing", props.contextual_spacing),
-        "jc" => {
-            if let Some(justify) = props.justify {
-                let value = match justify {
-                    Justify::Start => "left",
-                    Justify::Center => "center",
-                    Justify::End => "right",
-                    Justify::Both => "both",
-                    Justify::Distribute => "distribute",
-                };
-                let _ = write!(out, r#"<w:jc w:val="{value}"/>"#);
-            }
-        }
+        "jc" => jc(out, props.justify),
         "textAlignment" => {
             if let Some(align) = props.text_align {
                 let value = match align {
@@ -383,8 +376,10 @@ fn run_prop(out: &mut String, name: &str, props: &RunProps, styles: &StyleTable)
             if let Some(underline) = props.underline {
                 let value = underline_name(underline.kind);
                 let _ = write!(out, r#"<w:u w:val="{value}""#);
+                // `w:val` is the underline's kind; its colour lives in
+                // `w:color`, which is where the reader looks for it.
                 if let Some(color) = underline.color {
-                    color_attrs(out, color);
+                    color_attr(out, color);
                 }
                 out.push_str("/>");
             }
@@ -514,10 +509,33 @@ fn border(out: &mut String, element: &str, border: &Border) {
     if let Some(space) = border.space {
         let _ = write!(out, r#" w:space="{space}""#);
     }
+    // A border spells its colour in `w:color`, not `w:val` — that attribute
+    // already holds the line style here.
     if let Some(color) = border.color {
-        color_attrs(out, color);
+        color_attr(out, color);
     }
     out.push_str("/>");
+}
+
+/// The `w:color` attribute — for the elements whose `w:val` already means
+/// something else, such as a border's line style or an underline's kind.
+fn color_attr(out: &mut String, color: Color) {
+    match color {
+        Color::Theme { slot, tint, shade } => {
+            // As in `color_attrs`: the cached value beside the reference, and
+            // `auto` because a writer without the theme would have to guess.
+            let _ = write!(out, r#" w:color="auto" w:themeColor="{}""#, slot.name());
+            if let Some(tint) = tint {
+                let _ = write!(out, r#" w:themeTint="{tint:02X}""#);
+            }
+            if let Some(shade) = shade {
+                let _ = write!(out, r#" w:themeShade="{shade:02X}""#);
+            }
+        }
+        other => {
+            let _ = write!(out, r#" w:color="{}""#, other.to_val());
+        }
+    }
 }
 
 fn shading(out: &mut String, shading: &Shading) {
@@ -535,6 +553,383 @@ fn shading(out: &mut String, shading: &Shading) {
         let _ = write!(out, r#" w:fill="{}""#, fill.to_val());
     }
     out.push_str("/>");
+}
+
+/// `<w:jc>`, or nothing when no justification is stated.
+fn jc(out: &mut String, justify: Option<Justify>) {
+    if let Some(justify) = justify {
+        let value = match justify {
+            Justify::Start => "left",
+            Justify::Center => "center",
+            Justify::End => "right",
+            Justify::Both => "both",
+            Justify::Distribute => "distribute",
+        };
+        let _ = write!(out, r#"<w:jc w:val="{value}"/>"#);
+    }
+}
+
+// ---------------------------------------------------------------- tables
+
+/// Writes a `<w:tbl>` element.
+///
+/// Only for tables a save actually changed — an untouched one is copied byte
+/// for byte by the splicer. The contract is the one `paragraph` keeps: reading
+/// the emitted XML back must produce an equal [`Table`], because that re-read
+/// is exactly how `write::same_table` decides whether the file's bytes can
+/// stand. Anything the reader treats as absent-by-default is therefore not
+/// written at all, and every properties element follows the schema's child
+/// order — a `<w:tblPr>` out of sequence is a file Word calls damaged.
+pub(crate) fn table(out: &mut String, table: &Table, styles: &StyleTable) {
+    out.push_str("<w:tbl>");
+    table_props(out, &table.props, styles);
+    // `<w:tblGrid>` is required even when there is nothing to say about the
+    // columns; the reader treats the empty spelling and an absent one alike.
+    if table.grid.is_empty() {
+        out.push_str("<w:tblGrid/>");
+    } else {
+        out.push_str("<w:tblGrid>");
+        for column in &table.grid {
+            let _ = write!(out, r#"<w:gridCol w:w="{}"/>"#, column.0);
+        }
+        out.push_str("</w:tblGrid>");
+    }
+    for row in &table.rows {
+        table_row(out, row, styles);
+    }
+    out.push_str("</w:tbl>");
+}
+
+/// A width element — `<w:tblW>`, `<w:tcW>`, `<w:tblInd>` and the rest all share
+/// the `w:w`/`w:type` shape.
+fn width_element(out: &mut String, name: &str, width: Width) {
+    let (kind, value) = match width {
+        Width::Auto => ("auto", 0),
+        Width::Fixed(twips) => ("dxa", twips.0),
+        Width::Percent(pct) => ("pct", pct.0),
+        Width::Nil => ("nil", 0),
+    };
+    let _ = write!(out, r#"<w:{name} w:w="{value}" w:type="{kind}"/>"#);
+}
+
+/// The edges of a `<w:tblBorders>` or `<w:tcBorders>`, in the schema's order.
+/// The diagonals exist only on a cell and come last.
+fn borders_element(
+    out: &mut String,
+    name: &str,
+    borders: &TableBorders,
+    diagonals: (Option<Border>, Option<Border>),
+) {
+    let _ = write!(out, "<w:{name}>");
+    for (element, edge) in [
+        ("top", borders.top),
+        ("left", borders.start),
+        ("bottom", borders.bottom),
+        ("right", borders.end),
+        ("insideH", borders.inside_h),
+        ("insideV", borders.inside_v),
+        ("tl2br", diagonals.0),
+        ("tr2bl", diagonals.1),
+    ] {
+        if let Some(edge) = edge {
+            border(out, element, &edge);
+        }
+    }
+    let _ = write!(out, "</w:{name}>");
+}
+
+/// `<w:tblCellMar>` or `<w:tcMar>` — the same four width children.
+fn margins_element(out: &mut String, name: &str, margins: &CellMargins) {
+    let _ = write!(out, "<w:{name}>");
+    for (element, value) in [
+        ("top", margins.top),
+        ("left", margins.start),
+        ("bottom", margins.bottom),
+        ("right", margins.end),
+    ] {
+        if let Some(value) = value {
+            width_element(out, element, value);
+        }
+    }
+    let _ = write!(out, "</w:{name}>");
+}
+
+fn float_anchor(anchor: FloatAnchor) -> &'static str {
+    match anchor {
+        FloatAnchor::Text => "text",
+        FloatAnchor::Margin => "margin",
+        FloatAnchor::Page => "page",
+    }
+}
+
+fn table_props(out: &mut String, props: &TableProps, styles: &StyleTable) {
+    let mut inner = String::new();
+    if let Some(style) = props.style.and_then(|id| styles.get(id)) {
+        let _ = write!(inner, r#"<w:tblStyle w:val="{}"/>"#, escape_attr(&style.id));
+    }
+    if let Some(float) = &props.float {
+        inner.push_str("<w:tblpPr");
+        for (attribute, value) in [
+            ("w:leftFromText", float.left_from_text),
+            ("w:rightFromText", float.right_from_text),
+            ("w:topFromText", float.top_from_text),
+            ("w:bottomFromText", float.bottom_from_text),
+        ] {
+            if let Some(twips) = value {
+                let _ = write!(inner, r#" {attribute}="{}""#, twips.0);
+            }
+        }
+        let _ = write!(
+            inner,
+            r#" w:vertAnchor="{}" w:horzAnchor="{}""#,
+            float_anchor(float.vertical_anchor),
+            float_anchor(float.horizontal_anchor)
+        );
+        if let Some(x) = float.x {
+            let _ = write!(inner, r#" w:tblpX="{}""#, x.0);
+        }
+        if let Some(y) = float.y {
+            let _ = write!(inner, r#" w:tblpY="{}""#, y.0);
+        }
+        inner.push_str("/>");
+    }
+    if props.bidi_visual {
+        inner.push_str("<w:bidiVisual/>");
+    }
+    if props.width != Width::Auto {
+        width_element(&mut inner, "tblW", props.width);
+    }
+    jc(&mut inner, props.justify);
+    if let Some(spacing) = props.cell_spacing {
+        width_element(&mut inner, "tblCellSpacing", spacing);
+    }
+    if let Some(indent) = props.indent {
+        width_element(&mut inner, "tblInd", indent);
+    }
+    if !props.borders.is_empty() {
+        borders_element(&mut inner, "tblBorders", &props.borders, (None, None));
+    }
+    if let Some(value) = props.shading {
+        shading(&mut inner, &value);
+    }
+    if props.layout == TableLayout::Fixed {
+        inner.push_str(r#"<w:tblLayout w:type="fixed"/>"#);
+    }
+    if props.cell_margins != CellMargins::default() {
+        margins_element(&mut inner, "tblCellMar", &props.cell_margins);
+    }
+    if props.look != TableLook::default() {
+        // Both spellings, the way Word writes them: the legacy mask for old
+        // consumers, and the six attributes the reader prefers.
+        let look = props.look;
+        let bit = |on: bool| if on { "1" } else { "0" };
+        let _ = write!(
+            inner,
+            r#"<w:tblLook w:val="{:04X}" w:firstRow="{}" w:lastRow="{}" w:firstColumn="{}" w:lastColumn="{}" w:noHBand="{}" w:noVBand="{}"/>"#,
+            look.to_mask(),
+            bit(look.first_row),
+            bit(look.last_row),
+            bit(look.first_column),
+            bit(look.last_column),
+            bit(look.no_h_band),
+            bit(look.no_v_band)
+        );
+    }
+    if let Some(caption) = &props.caption {
+        let _ = write!(inner, r#"<w:tblCaption w:val="{}"/>"#, escape_attr(caption));
+    }
+    if let Some(description) = &props.description {
+        let _ = write!(
+            inner,
+            r#"<w:tblDescription w:val="{}"/>"#,
+            escape_attr(description)
+        );
+    }
+    // `<w:tblPr>` is written even with nothing to say, because Word always
+    // writes one and a reader meeting the empty spelling reads it as default.
+    if inner.is_empty() {
+        out.push_str("<w:tblPr/>");
+    } else {
+        out.push_str("<w:tblPr>");
+        out.push_str(&inner);
+        out.push_str("</w:tblPr>");
+    }
+}
+
+fn table_row(out: &mut String, row: &Row, styles: &StyleTable) {
+    out.push_str("<w:tr>");
+    row_props(out, &row.props);
+    for cell in &row.cells {
+        table_cell(out, cell, styles);
+    }
+    out.push_str("</w:tr>");
+}
+
+fn row_props(out: &mut String, props: &RowProps) {
+    if *props == RowProps::default() {
+        return;
+    }
+    out.push_str("<w:trPr>");
+    if props.grid_before != 0 {
+        let _ = write!(out, r#"<w:gridBefore w:val="{}"/>"#, props.grid_before);
+    }
+    if props.grid_after != 0 {
+        let _ = write!(out, r#"<w:gridAfter w:val="{}"/>"#, props.grid_after);
+    }
+    if let Some(width) = props.width_before {
+        width_element(out, "wBefore", width);
+    }
+    if let Some(width) = props.width_after {
+        width_element(out, "wAfter", width);
+    }
+    if props.cant_split {
+        out.push_str("<w:cantSplit/>");
+    }
+    if let Some(height) = props.height {
+        match height {
+            // The value beside `auto` is ignored by every consumer, so none is
+            // written; an absent rule already means `atLeast`.
+            RowHeight::Auto => out.push_str(r#"<w:trHeight w:hRule="auto"/>"#),
+            RowHeight::AtLeast(twips) => {
+                let _ = write!(out, r#"<w:trHeight w:val="{}"/>"#, twips.0);
+            }
+            RowHeight::Exact(twips) => {
+                let _ = write!(out, r#"<w:trHeight w:val="{}" w:hRule="exact"/>"#, twips.0);
+            }
+        }
+    }
+    if props.header {
+        out.push_str("<w:tblHeader/>");
+    }
+    if let Some(spacing) = props.cell_spacing {
+        width_element(out, "tblCellSpacing", spacing);
+    }
+    jc(out, props.justify);
+    if let Some(revision) = &props.revision {
+        // Only an insertion or a deletion can be said on a row — `<w:trPr>` has
+        // no move elements, and the reader never produces one here.
+        let (element, mark) = match revision {
+            wp_model::Revision::Inserted(mark) => (Some("ins"), mark),
+            wp_model::Revision::Deleted(mark) => (Some("del"), mark),
+            wp_model::Revision::MovedFrom { mark, .. }
+            | wp_model::Revision::MovedTo { mark, .. } => (None, mark),
+        };
+        if let Some(element) = element {
+            let _ = write!(
+                out,
+                r#"<w:{element} w:id="{}" w:author="{}""#,
+                mark.id,
+                escape_attr(&mark.author)
+            );
+            if let Some(date) = &mark.date {
+                let _ = write!(out, r#" w:date="{}""#, escape_attr(date));
+            }
+            out.push_str("/>");
+        }
+    }
+    out.push_str("</w:trPr>");
+}
+
+fn table_cell(out: &mut String, cell: &Cell, styles: &StyleTable) {
+    out.push_str("<w:tc>");
+    cell_props(out, &cell.props);
+    // A `<w:tc>` with no `<w:p>` in it is a document Word calls damaged.
+    // `Cell::new` guarantees the paragraph, but a cell built by hand may not.
+    if cell.content.is_empty() {
+        out.push_str("<w:p/>");
+    }
+    for item in &cell.content {
+        block(out, item, styles);
+    }
+    out.push_str("</w:tc>");
+}
+
+fn cell_props(out: &mut String, props: &CellProps) {
+    if *props == CellProps::new() {
+        return;
+    }
+    out.push_str("<w:tcPr>");
+    if props.width != Width::Auto {
+        width_element(out, "tcW", props.width);
+    }
+    if props.grid_span != 1 {
+        let _ = write!(out, r#"<w:gridSpan w:val="{}"/>"#, props.grid_span);
+    }
+    match props.v_merge {
+        Some(VMerge::Restart) => out.push_str(r#"<w:vMerge w:val="restart"/>"#),
+        // The bare element means *continue* — the format's own inversion, and
+        // the spelling Word writes for the covered cells of a merge.
+        Some(VMerge::Continue) => out.push_str("<w:vMerge/>"),
+        None => {}
+    }
+    if !props.borders.is_empty() || props.diagonal_down.is_some() || props.diagonal_up.is_some() {
+        borders_element(
+            out,
+            "tcBorders",
+            &props.borders,
+            (props.diagonal_down, props.diagonal_up),
+        );
+    }
+    if let Some(value) = props.shading {
+        shading(out, &value);
+    }
+    if props.no_wrap {
+        out.push_str("<w:noWrap/>");
+    }
+    if props.margins != CellMargins::default() {
+        margins_element(out, "tcMar", &props.margins);
+    }
+    match props.text_direction {
+        TextDirection::Horizontal => {}
+        TextDirection::RotatedDown => out.push_str(r#"<w:textDirection w:val="tbRl"/>"#),
+        TextDirection::RotatedUp => out.push_str(r#"<w:textDirection w:val="btLr"/>"#),
+    }
+    if props.fit_text {
+        out.push_str("<w:tcFitText/>");
+    }
+    match props.v_align {
+        CellVAlign::Top => {}
+        CellVAlign::Center => out.push_str(r#"<w:vAlign w:val="center"/>"#),
+        CellVAlign::Bottom => out.push_str(r#"<w:vAlign w:val="bottom"/>"#),
+    }
+    if props.hide_mark {
+        out.push_str("<w:hideMark/>");
+    }
+    out.push_str("</w:tcPr>");
+}
+
+/// One block of a cell's content. Paragraphs and nested tables are the ordinary
+/// cases; the rest are carried so that rewriting a table does not drop what a
+/// cell legally holds.
+fn block(out: &mut String, block: &Block, styles: &StyleTable) {
+    match block {
+        Block::Paragraph(paragraph) => self::paragraph(out, paragraph, styles),
+        Block::Table(table) => self::table(out, table, styles),
+        // The same trade as the inline control in `inline`: the wrapper is
+        // written with the properties this crate models, and the rest is the
+        // stated cost of rewriting a table that holds one.
+        Block::Structured(sdt) => {
+            out.push_str("<w:sdt><w:sdtPr>");
+            if let Some(alias) = &sdt.alias {
+                let _ = write!(out, r#"<w:alias w:val="{}"/>"#, escape_attr(alias));
+            }
+            if let Some(tag) = &sdt.tag {
+                let _ = write!(out, r#"<w:tag w:val="{}"/>"#, escape_attr(tag));
+            }
+            if let Some(id) = sdt.id {
+                let _ = write!(out, r#"<w:id w:val="{id}"/>"#);
+            }
+            out.push_str("</w:sdtPr><w:sdtContent>");
+            for inner in &sdt.content {
+                self::block(out, inner, styles);
+            }
+            out.push_str("</w:sdtContent></w:sdt>");
+        }
+        Block::Anchor(anchor) => self::anchor(out, anchor),
+        Block::AltChunk { rel } => {
+            let _ = write!(out, r#"<w:altChunk r:id="{}"/>"#, escape_attr(rel));
+        }
+    }
 }
 
 fn inline(out: &mut String, inline: &Inline, styles: &StyleTable) {

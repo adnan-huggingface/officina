@@ -55,6 +55,8 @@ pub enum Command {
     PageBreak,
     /// Insert ▸ Picture… — a picture from a file, at the caret.
     InsertPicture,
+    /// Insert ▸ Table… — the rows-and-columns dialog.
+    InsertTable,
     /// The Size box for the selected picture or chart.
     PictureSize,
     /// Takes the selected picture or chart out of the document.
@@ -199,6 +201,8 @@ pub struct Scriva {
     drafting: Option<String>,
     /// The custom-margins dialog: top, bottom, left, right, in inches.
     margins_draft: Option<[String; 4]>,
+    /// The insert-table dialog: columns, then rows.
+    table_draft: Option<[String; 2]>,
     /// The picture-size dialog: width and height in inches, and whether the
     /// two are tied together.
     size_draft: Option<SizeDraft>,
@@ -317,6 +321,7 @@ impl Scriva {
             author: crate::revise::Author::new("Scriva user"),
             drafting: None,
             margins_draft: None,
+            table_draft: None,
             size_draft: None,
             copied_drawing: None,
             parts: None,
@@ -968,9 +973,7 @@ impl Scriva {
             Command::Italic => self.toggle(Toggle::Italic),
             Command::Strike => self.toggle(Toggle::Strike),
             Command::Underline => {
-                let on = edit::all_runs(&self.document, self.selection, |props| {
-                    props.underline.is_some_and(|u| u.kind.draws())
-                });
+                let on = self.probe_runs(|props| props.underline.is_some_and(|u| u.kind.draws()));
                 self.format_runs(move |props| {
                     props.underline = if on {
                         None
@@ -1119,6 +1122,9 @@ impl Scriva {
             }
             Command::UpdateToc => self.update_toc(),
             Command::InsertPicture => self.insert_picture_from_file(),
+            Command::InsertTable => {
+                self.table_draft = Some(["2".to_owned(), "2".to_owned()]);
+            }
             Command::PictureSize => self.open_size_dialog(),
             Command::DeletePicture => {
                 self.delete_drawing();
@@ -1250,17 +1256,33 @@ impl Scriva {
         }
     }
 
+    /// Whether every run the command would touch already says `f`.
+    ///
+    /// A collapsed caret has no runs to ask, so the answer comes from what a
+    /// caret there would type in — [`text::props_at`], the run before it or
+    /// the paragraph mark. Asking the empty selection instead made every
+    /// toggle read "off", so Ctrl+U on a blank line could only ever turn
+    /// underline on, never off again.
+    fn probe_runs(&self, f: impl Fn(&wp_model::RunProps) -> bool) -> bool {
+        if self.selection.is_empty() {
+            let caret = self.caret();
+            let paragraphs = self.document.paragraphs();
+            let Some(paragraph) = paragraphs.get(caret.paragraph) else {
+                return false;
+            };
+            f(&text::props_at(paragraph, caret.offset))
+        } else {
+            edit::all_runs(&self.document, self.selection, f)
+        }
+    }
+
     fn toggle(&mut self, toggle: Toggle) {
-        let on = edit::all_runs(&self.document, self.selection, |props| {
-            props.toggles.is_on(toggle)
-        });
+        let on = self.probe_runs(|props| props.toggles.is_on(toggle));
         self.format_runs(move |props| props.toggles.set(toggle, !on));
     }
 
     fn vertical(&mut self, align: wp_model::prop::VertAlign) {
-        let on = edit::all_runs(&self.document, self.selection, |props| {
-            props.vert_align == Some(align)
-        });
+        let on = self.probe_runs(|props| props.vert_align == Some(align));
         self.format_runs(move |props| {
             props.vert_align = if on { None } else { Some(align) };
         });
@@ -1295,6 +1317,25 @@ impl Scriva {
             let content = self.paragraph_text(caret.paragraph);
             let word = text::word_at(&content, caret.offset);
             if word.is_empty() {
+                // No word to take it: the paragraph mark does, which is where
+                // Word keeps an empty paragraph's formatting and what a caret
+                // typing here inherits (`text::props_at`). Ctrl+B on a blank
+                // line followed by typing must produce bold text.
+                let index = caret.paragraph;
+                let Some(before) = edit::paragraph_at(&self.document, index) else {
+                    return;
+                };
+                self.history.push(edit::Change::Paragraph {
+                    index,
+                    before: Box::new(before),
+                });
+                let mut paragraphs = self.document.paragraphs_mut();
+                if let Some(target) = paragraphs.get_mut(index) {
+                    let mut mark = target.props.mark.as_deref().cloned().unwrap_or_default();
+                    change(&mut mark);
+                    target.props.mark = Some(Box::new(mark));
+                }
+                self.changed();
                 return;
             }
             let selection = Selection {
@@ -2570,6 +2611,11 @@ fn with_extension(path: PathBuf) -> PathBuf {
 }
 
 /// A document with one empty paragraph and Word's own defaults.
+///
+/// Seeded with the quick styles a fresh document is expected to offer: a
+/// heading has to exist before the Styles menu can apply it, and a document
+/// born here has nowhere else to get one. Ids and names are spelled the way
+/// Word spells them, which is also what the outline recognises as headings.
 fn blank() -> Document {
     let mut document = Document {
         body: vec![Block::Paragraph(Paragraph::new())],
@@ -2580,7 +2626,28 @@ fn blank() -> Document {
     normal.name = Some("Normal".into());
     normal.run.size = Some(HalfPoint::DEFAULT);
     normal.run.fonts.ascii = Some("Calibri".into());
-    document.styles.insert(normal);
+    normal.quick = true;
+    normal.priority = Some(1);
+    let normal = document.styles.insert(normal);
+
+    let ladder: [(&str, &str, i32, Option<u8>, i32); 4] = [
+        ("Heading1", "heading 1", 32, Some(0), 2),
+        ("Heading2", "heading 2", 26, Some(1), 3),
+        ("Heading3", "heading 3", 24, Some(2), 4),
+        ("Title", "Title", 56, None, 5),
+    ];
+    for (id, name, size, outline, priority) in ladder {
+        let mut style = wp_model::Style::new(id, wp_model::StyleKind::Paragraph);
+        style.name = Some(name.into());
+        style.based_on = Some(normal);
+        style.next = Some(normal);
+        style.quick = true;
+        style.priority = Some(priority);
+        style.run.size = Some(HalfPoint(size));
+        style.run.toggles.set(wp_model::prop::Toggle::Bold, true);
+        style.para.outline_level = outline;
+        document.styles.insert(style);
+    }
     document
 }
 
@@ -2612,7 +2679,14 @@ impl DocumentApp for Scriva {
         rule(ui);
         let bar = self.format_bar(ui);
         if let Some(command) = command.or(bar) {
-            self.run(command);
+            // The same guard the keyboard route takes: File ▸ New discarding
+            // an unsaved document would be a menu doing what Ctrl+N will not.
+            match command {
+                Command::New | Command::Open | Command::Close | Command::Exit => {
+                    self.guarded(command)
+                }
+                other => self.run(other),
+            }
         }
     }
 
@@ -2685,6 +2759,10 @@ impl DocumentApp for Scriva {
         }
         if self.margins_draft.is_some() {
             self.margins_dialog(ctx);
+            return;
+        }
+        if self.table_draft.is_some() {
+            self.table_dialog(ctx);
             return;
         }
         if self.zoom_draft.is_some() {
@@ -2800,6 +2878,8 @@ impl DocumentApp for Scriva {
             || self.message.is_some()
             || self.drafting.is_some()
             || self.margins_draft.is_some()
+            || self.table_draft.is_some()
+            || self.size_draft.is_some()
             || self.zoom_draft.is_some()
             || self.finder_focused
             || egui::Popup::is_any_open(ui.ctx());
@@ -2885,6 +2965,101 @@ impl Scriva {
             Some(false) => self.margins_draft = None,
             None => {}
         }
+    }
+
+    /// The insert-table box: how many columns and rows, the way Word asks.
+    fn table_dialog(&mut self, ctx: &egui::Context) {
+        let Some(mut draft) = self.table_draft.clone() else {
+            return;
+        };
+        let mut done: Option<bool> = None;
+        egui::Modal::new(egui::Id::new("scriva-table"))
+            .frame(dialog::frame(ctx))
+            .show(ctx, |ui| {
+                ui.set_width(260.0);
+                ui.add_space(16.0);
+                ui.label(egui::RichText::new("Insert Table").font(dialog::heading_font(16.0)));
+                ui.add_space(8.0);
+                for (label, field) in ["Columns:", "Rows:"].into_iter().zip(draft.iter_mut()) {
+                    ui.horizontal(|ui| {
+                        ui.add_sized([72.0, 20.0], egui::Label::new(label));
+                        ui.add(egui::TextEdit::singleline(field).desired_width(64.0));
+                    });
+                }
+                ui.add_space(12.0);
+                if let Some(answer) = dialog::confirm(ui, "Insert") {
+                    done = Some(answer);
+                }
+                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    done = Some(false);
+                }
+            });
+        self.table_draft = Some(draft.clone());
+        match done {
+            Some(true) => {
+                self.table_draft = None;
+                // Word's own ceiling on columns; a number that does not parse
+                // inserts nothing rather than guessing.
+                let parse = |text: &str, most: usize| {
+                    text.trim()
+                        .parse::<usize>()
+                        .ok()
+                        .filter(|v| (1..=most).contains(v))
+                };
+                if let (Some(columns), Some(rows)) = (parse(&draft[0], 63), parse(&draft[1], 32767))
+                {
+                    self.insert_table(rows, columns);
+                }
+            }
+            Some(false) => self.table_draft = None,
+            None => {}
+        }
+    }
+
+    /// Builds an evenly divided, fully ruled table and puts it above the
+    /// caret's paragraph.
+    fn insert_table(&mut self, rows: usize, columns: usize) {
+        use wp_model::table::{Cell, Row, Table, TableBorders, TableProps};
+        let margins = &self.document.section.margins;
+        let text_width = self.document.section.page.width.0 - margins.start.0 - margins.end.0;
+        let each = Twips((text_width / columns as i32).max(144));
+        // Word's default grid: half-point single lines on every edge.
+        let edge = || wp_model::prop::Border {
+            style: wp_model::prop::BorderStyle::Single,
+            size: Some(wp_model::units::Eighth(4)),
+            space: Some(0),
+            color: None,
+            shadow: false,
+        };
+        let table = Table {
+            props: TableProps {
+                borders: TableBorders {
+                    top: Some(edge()),
+                    start: Some(edge()),
+                    bottom: Some(edge()),
+                    end: Some(edge()),
+                    inside_h: Some(edge()),
+                    inside_v: Some(edge()),
+                },
+                ..TableProps::default()
+            },
+            grid: vec![each; columns],
+            rows: (0..rows)
+                .map(|_| Row {
+                    props: Default::default(),
+                    cells: (0..columns).map(|_| Cell::new()).collect(),
+                })
+                .collect(),
+        };
+        let caret = edit::insert_block(
+            &mut self.document,
+            &mut self.history,
+            self.selection,
+            Block::Table(table),
+        );
+        self.selection = Selection::at(clamp(&self.document, caret));
+        self.changed();
+        self.reveal = Some(self.caret());
     }
 
     /// Word's Size box, for a picture or a chart: two numbers, in inches.

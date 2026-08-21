@@ -201,12 +201,42 @@ def chart_part():
     )
 
 
+def _style(sid, name, based=None, sz=None, bold=False, italic=False, default=False):
+    head = f'<w:style w:type="paragraph"{" w:default=\"1\"" if default else ""} w:styleId="{sid}">'
+    chain = f'<w:name w:val="{name}"/>'
+    if based:
+        chain += f'<w:basedOn w:val="{based}"/>'
+    rpr = ""
+    if sz or bold or italic:
+        rpr = "<w:rPr>" + ("<w:b/>" if bold else "") + ("<w:i/>" if italic else "")
+        if sz:
+            rpr += f'<w:sz w:val="{sz}"/><w:szCs w:val="{sz}"/>'
+        rpr += "</w:rPr>"
+    return head + chain + rpr + "</w:style>"
+
+
+# The stylesheet a second producer actually ships: LibreOffice-flavoured names,
+# a Normal default, and the ladder a reader is entitled to find in any file
+# that came from a real word processor.
 STYLES = (
     '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\r\n'
     f'<w:styles xmlns:w="{NS_W}"><w:docDefaults><w:rPrDefault><w:rPr>'
     '<w:rFonts w:ascii="Liberation Serif" w:hAnsi="Liberation Serif"/>'
     '<w:sz w:val="24"/><w:szCs w:val="24"/></w:rPr></w:rPrDefault>'
-    "<w:pPrDefault/></w:docDefaults></w:styles>"
+    "<w:pPrDefault/></w:docDefaults>"
+    + _style("Normal", "Normal", default=True)
+    + _style("Heading", "Heading", based="Normal", sz="28")
+    + _style("Heading1", "Heading 1", based="Heading", sz="36", bold=True)
+    + _style("Heading2", "Heading 2", based="Heading", sz="32", bold=True)
+    + _style("Heading3", "Heading 3", based="Heading", sz="28", bold=True)
+    + _style("Title", "Title", based="Heading", sz="56", bold=True)
+    + _style("Subtitle", "Subtitle", based="Heading", sz="36")
+    + _style("TextBody", "Text Body", based="Normal")
+    + _style("List", "List", based="TextBody")
+    + _style("Caption", "Caption", based="Normal", sz="24", italic=True)
+    + _style("Index", "Index", based="Normal")
+    + _style("TableContents", "Table Contents", based="Normal")
+    + "</w:styles>"
 )
 
 

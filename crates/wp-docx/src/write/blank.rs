@@ -70,7 +70,12 @@ pub fn package_for(document: &Document) -> Result<Package> {
         "",
         rels.to_xml(),
     )?;
-    put(&mut package, "/word/styles.xml", STYLES_TYPE, styles())?;
+    put(
+        &mut package,
+        "/word/styles.xml",
+        STYLES_TYPE,
+        styles(document),
+    )?;
     put(
         &mut package,
         "/word/settings.xml",
@@ -108,11 +113,18 @@ fn document_part(document: &Document) -> Vec<u8> {
     out.into_bytes()
 }
 
-/// The smallest stylesheet Word will open: the document defaults, and nothing.
+/// The document defaults, and the styles the model brought with it.
 ///
-/// A document with no `styles.xml` at all opens, but Word rebuilds one on the
-/// first save and the result is a file this project did not write.
-fn styles() -> Vec<u8> {
+/// A document authored here holds only the styles its app seeded — or the ones
+/// a legacy `.doc` gave up — and this is their one road into the file: without
+/// it, the first save would forget every heading was a heading. Only the slice
+/// of a style this project itself puts into a model is written — the chain,
+/// the gallery flags, and the handful of paragraph and run properties a seeded
+/// style states — which is also the slice the reader reads back.
+fn styles(document: &Document) -> Vec<u8> {
+    use super::splice::escape_attr;
+    use std::fmt::Write as _;
+
     let mut out = String::from(DECL);
     out.push_str(&format!("<w:styles xmlns:w=\"{WML}\">"));
     out.push_str(
@@ -124,6 +136,67 @@ fn styles() -> Vec<u8> {
          <w:spacing w:after=\"160\" w:line=\"259\" w:lineRule=\"auto\"/>\
          </w:pPr></w:pPrDefault></w:docDefaults>",
     );
+    let id_of = |target: Option<wp_model::StyleId>| {
+        target
+            .and_then(|id| document.styles.get(id))
+            .map(|style| style.id.to_string())
+    };
+    for (_, style) in document.styles.iter() {
+        let kind = match style.kind {
+            wp_model::StyleKind::Paragraph => "paragraph",
+            wp_model::StyleKind::Character => "character",
+            // A table or numbering style speaks a vocabulary this writer does
+            // not; half of one would be worse than none.
+            _ => continue,
+        };
+        let _ = write!(out, r#"<w:style w:type="{kind}""#);
+        if style.default {
+            out.push_str(r#" w:default="1""#);
+        }
+        let _ = write!(out, r#" w:styleId="{}">"#, escape_attr(&style.id));
+        if let Some(name) = &style.name {
+            let _ = write!(out, r#"<w:name w:val="{}"/>"#, escape_attr(name));
+        }
+        if let Some(based) = id_of(style.based_on) {
+            let _ = write!(out, r#"<w:basedOn w:val="{}"/>"#, escape_attr(&based));
+        }
+        if let Some(next) = id_of(style.next) {
+            let _ = write!(out, r#"<w:next w:val="{}"/>"#, escape_attr(&next));
+        }
+        if let Some(priority) = style.priority {
+            let _ = write!(out, r#"<w:uiPriority w:val="{priority}"/>"#);
+        }
+        if style.quick {
+            out.push_str("<w:qFormat/>");
+        }
+        if let Some(level) = style.para.outline_level {
+            let _ = write!(out, r#"<w:pPr><w:outlineLvl w:val="{level}"/></w:pPr>"#);
+        }
+        let bold = style.run.bold();
+        let has_fonts = style.run.fonts.ascii.is_some();
+        if bold || has_fonts || style.run.size.is_some() {
+            out.push_str("<w:rPr>");
+            if let Some(font) = &style.run.fonts.ascii {
+                let _ = write!(
+                    out,
+                    r#"<w:rFonts w:ascii="{0}" w:hAnsi="{0}"/>"#,
+                    escape_attr(font)
+                );
+            }
+            if bold {
+                out.push_str("<w:b/>");
+            }
+            if let Some(size) = style.run.size {
+                let _ = write!(
+                    out,
+                    r#"<w:sz w:val="{0}"/><w:szCs w:val="{0}"/>"#,
+                    size.0
+                );
+            }
+            out.push_str("</w:rPr>");
+        }
+        out.push_str("</w:style>");
+    }
     out.push_str("</w:styles>");
     out.into_bytes()
 }

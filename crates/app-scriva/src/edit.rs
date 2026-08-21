@@ -94,6 +94,16 @@ pub enum Change {
         before: Box<wp_model::SectionProps>,
         caret: Caret,
     },
+    /// Whole blocks of the body — a table inserted or removed. Paragraph
+    /// indices name positions in the flattened walk, which cannot say "this
+    /// table, as one thing", so this variant speaks in body positions instead.
+    Blocks {
+        index: usize,
+        before: Vec<wp_model::doc::Block>,
+        /// How many blocks stand in the range after the change, for the same
+        /// reason [`Change::Range`] counts its paragraphs.
+        now: usize,
+    },
 }
 
 /// The undo and redo stacks.
@@ -257,6 +267,96 @@ fn apply(document: &mut Document, change: Change) -> (Change, Caret) {
                 caret,
             )
         }
+        Change::Blocks { index, before, now } => {
+            let index = index.min(document.body.len());
+            let end = (index + now).min(document.body.len());
+            let restored = before.len();
+            let was: Vec<wp_model::doc::Block> =
+                document.body.splice(index..end, before).collect();
+            let caret = Caret {
+                paragraph: paragraphs_before_block(document, index),
+                offset: 0,
+            };
+            (
+                Change::Blocks {
+                    index,
+                    before: was,
+                    now: restored,
+                },
+                caret,
+            )
+        }
+    }
+}
+
+/// How many paragraphs of the flattened walk come before `block` of the body —
+/// the bridge from a body position back to a caret.
+fn paragraphs_before_block(document: &Document, block: usize) -> usize {
+    document.body[..block.min(document.body.len())]
+        .iter()
+        .map(paragraphs_in_block)
+        .sum()
+}
+
+/// How many paragraphs of the flattened walk a block contributes, mirroring
+/// [`Document::paragraphs`] exactly — the two disagreeing would put the caret
+/// in a different paragraph than the one the block position names.
+fn paragraphs_in_block(block: &wp_model::doc::Block) -> usize {
+    use wp_model::doc::Block;
+    match block {
+        Block::Paragraph(_) => 1,
+        Block::Table(table) => table
+            .rows
+            .iter()
+            .flat_map(|row| &row.cells)
+            .flat_map(|cell| &cell.content)
+            .map(paragraphs_in_block)
+            .sum(),
+        Block::Structured(sdt) => sdt.content.iter().map(paragraphs_in_block).sum(),
+        Block::Anchor(_) | Block::AltChunk { .. } => 0,
+    }
+}
+
+/// Inserts a block above the paragraph the caret is in, undoably.
+///
+/// Above rather than at the caret's offset: a table is not a character, and
+/// Word's own insert puts it before the current paragraph too. The caret lands
+/// on the block's first paragraph — inside the new table's first cell — or
+/// stays where it was for a block with no paragraph to land on.
+pub fn insert_block(
+    document: &mut Document,
+    history: &mut History,
+    selection: Selection,
+    block: wp_model::doc::Block,
+) -> Caret {
+    let (caret, _) = selection.ordered();
+    // The top-level block whose flattened paragraphs contain the caret; past
+    // the end means the body's end.
+    let mut counted = 0;
+    let mut index = document.body.len();
+    for (at, candidate) in document.body.iter().enumerate() {
+        let within = paragraphs_in_block(candidate);
+        if caret.paragraph < counted + within {
+            index = at;
+            break;
+        }
+        counted += within;
+    }
+    let landing = paragraphs_before_block(document, index);
+    let has_paragraph = paragraphs_in_block(&block) > 0;
+    history.push(Change::Blocks {
+        index,
+        before: Vec::new(),
+        now: 1,
+    });
+    document.body.insert(index, block);
+    if has_paragraph {
+        Caret {
+            paragraph: landing,
+            offset: 0,
+        }
+    } else {
+        caret
     }
 }
 

@@ -118,6 +118,22 @@ pub(crate) fn rewrite(part: &str, data: &[u8], ctx: &mut Context<'_>) -> Result<
     let mut wrote_filter = false;
     let mut skip_filter = 0usize;
 
+    // Merged cells, on the filter's pattern: a file whose merges nobody
+    // touched keeps its own bytes, and only an actual merge or unmerge
+    // rewrites the element from the model. The comparison ignores order,
+    // because the file lists its ranges in whatever order Excel left them
+    // and the model appends each new merge at the end — the same set in a
+    // different sequence is not an edit.
+    let merges_untouched = {
+        let mut theirs = file_merges(part, bare)?;
+        let mut ours = ctx.sheet.merges.clone();
+        theirs.sort();
+        ours.sort();
+        theirs == ours
+    };
+    let mut wrote_merges = false;
+    let mut skip_merges = 0usize;
+
     // Conditional formatting and data validations, on the filter's pattern:
     // if the model still says what the file says, the file's own bytes go
     // back — which is what keeps x14 extensions, icon-set detail, and rule
@@ -466,6 +482,50 @@ pub(crate) fn rewrite(part: &str, data: &[u8], ctx: &mut Context<'_>) -> Result<
             Event::End(e) if !wrote_filter && end_local_name(e) == b"worksheet" => {
                 write_filter(&mut out, &prefix, ctx.sheet);
                 wrote_filter = true;
+            }
+            _ => {}
+        }
+
+        if skip_merges > 0 {
+            match &event {
+                Event::Start(e) if local_name(e) == b"mergeCells" => skip_merges += 1,
+                Event::End(e) if end_local_name(e) == b"mergeCells" => skip_merges -= 1,
+                _ => {}
+            }
+            if merges_untouched {
+                out.extend_from_slice(splicer.bytes(span));
+            }
+            continue;
+        }
+
+        match &event {
+            Event::Start(e) | Event::Empty(e) if local_name(e) == b"mergeCells" => {
+                if merges_untouched {
+                    out.extend_from_slice(splicer.bytes(span.clone()));
+                } else {
+                    write_merges(&mut out, &prefix_of(e), ctx.sheet);
+                }
+                wrote_merges = true;
+                if matches!(event, Event::Start(_)) {
+                    skip_merges = 1;
+                }
+                continue;
+            }
+            // A merge made in a sheet that never had one goes in at its schema
+            // position: immediately before the first element that must follow
+            // `<mergeCells>` — not simply after `</sheetData>`, which would put
+            // it ahead of `<sheetProtection>` and the autofilter.
+            Event::Start(e) | Event::Empty(e)
+                if !merges_untouched && !wrote_merges && after_merges(local_name(e)) =>
+            {
+                write_merges(&mut out, &prefix_of(e), ctx.sheet);
+                wrote_merges = true;
+            }
+            Event::End(e)
+                if !merges_untouched && !wrote_merges && end_local_name(e) == b"worksheet" =>
+            {
+                write_merges(&mut out, &prefix, ctx.sheet);
+                wrote_merges = true;
             }
             _ => {}
         }
@@ -1102,6 +1162,49 @@ fn write_filter(out: &mut Vec<u8>, prefix: &[u8], sheet: &Sheet) {
 /// A range as `ref` spells it.
 fn range_ref(range: CellRange) -> String {
     format!("{}:{}", range.start.to_a1(), range.end.to_a1())
+}
+
+/// The merged ranges the file already states, read back the way the model
+/// reads them, which is what a merge or an unmerge is detected against.
+fn file_merges(part: &str, data: &[u8]) -> Result<Vec<CellRange>> {
+    let mut scratch = Sheet::new("scratch");
+    let mut strings = StringTable::default();
+    crate::sheet::parse(part, data, &mut scratch, &[], &mut strings)?;
+    Ok(scratch.merges)
+}
+
+/// The worksheet children the schema puts *after* `<mergeCells>`.
+fn after_merges(name: &[u8]) -> bool {
+    matches!(name, b"phoneticPr" | b"conditionalFormatting") || after_conditional(name)
+}
+
+/// Writes the sheet's merged ranges, or nothing at all when it has none.
+///
+/// Nothing at all is once more the important half: unmerging the last range
+/// has to *remove* the element, because Excel reports a `<mergeCells>` with
+/// no children — or a `count` of zero — as a damaged file rather than as a
+/// sheet with nothing merged.
+fn write_merges(out: &mut Vec<u8>, prefix: &[u8], sheet: &Sheet) {
+    if sheet.merges.is_empty() {
+        return;
+    }
+    open(
+        out,
+        prefix,
+        b"mergeCells",
+        &[Set::to(b"count", sheet.merges.len().to_string())],
+        false,
+    );
+    for range in &sheet.merges {
+        open(
+            out,
+            prefix,
+            b"mergeCell",
+            &[Set::to(b"ref", range_ref(*range))],
+            true,
+        );
+    }
+    close(out, prefix, b"mergeCells");
 }
 
 /// The conditional formats and validations as the file's own bytes read
@@ -2837,7 +2940,13 @@ mod tests {
 
     #[test]
     fn unprotecting_a_sheet_takes_the_element_out() {
-        let sheet = Sheet::new("Data");
+        // The merge is in the model because it is in the file: a fixture that
+        // left it out would be describing a sheet somebody had just unmerged.
+        let mut sheet = Sheet::new("Data");
+        sheet.merges.push(CellRange::new(
+            CellRef::from_a1("D1").expect("valid"),
+            CellRef::from_a1("E1").expect("valid"),
+        ));
         let out = written_from(
             r#"<worksheet><sheetData/><sheetProtection sheet="1" objects="1"/><mergeCells count="1"><mergeCell ref="D1:E1"/></mergeCells></worksheet>"#,
             &sheet,
@@ -2978,6 +3087,12 @@ mod tests {
             CellRef::from_a1("B4").expect("valid"),
         )));
         sheet.protection = Some(ss_model::Protection::default());
+        // The merge is in the model because it is in the file, standing in for
+        // a sheet whose merges nobody touched.
+        sheet.merges.push(CellRange::new(
+            CellRef::from_a1("D1").expect("valid"),
+            CellRef::from_a1("E1").expect("valid"),
+        ));
         let out = written_from(
             r#"<worksheet><sheetData/><sheetProtection sheet="1"/><mergeCells count="1"><mergeCell ref="D1:E1"/></mergeCells></worksheet>"#,
             &sheet,
@@ -2986,6 +3101,89 @@ mod tests {
             out,
             r#"<worksheet><sheetData/><sheetProtection sheet="1"/><autoFilter ref="A1:B4"/><mergeCells count="1"><mergeCell ref="D1:E1"/></mergeCells></worksheet>"#
         );
+    }
+
+    /// A range as a test spells it.
+    fn range(a1: &str) -> CellRange {
+        let (start, end) = a1.split_once(':').expect("two corners");
+        CellRange::new(
+            CellRef::from_a1(start).expect("valid"),
+            CellRef::from_a1(end).expect("valid"),
+        )
+    }
+
+    #[test]
+    fn a_merge_added_to_a_sheet_that_had_none_lands_in_schema_order() {
+        // The bug this exists for: Format > Merge Cells updated the model and
+        // the writer never asked it about merges, so a new merge survived the
+        // session and silently vanished the moment the file was saved. Its
+        // slot is after the autofilter and before `<phoneticPr>`; anywhere
+        // else and Excel reports the file as damaged.
+        let mut sheet = Sheet::new("Data");
+        sheet.merges.push(range("A1:B1"));
+        sheet.protection = Some(ss_model::Protection::default());
+        let out = written_from(
+            r#"<worksheet><sheetData/><sheetProtection sheet="1"/><phoneticPr fontId="1"/></worksheet>"#,
+            &sheet,
+        );
+        assert_eq!(
+            out,
+            r#"<worksheet><sheetData/><sheetProtection sheet="1"/><mergeCells count="1"><mergeCell ref="A1:B1"/></mergeCells><phoneticPr fontId="1"/></worksheet>"#
+        );
+
+        // And a file with nothing after `</sheetData>` at all still gets one,
+        // before the worksheet closes.
+        let mut bare = Sheet::new("Data");
+        bare.merges.push(range("A1:B1"));
+        assert_eq!(
+            written_from(r#"<worksheet><sheetData/></worksheet>"#, &bare),
+            r#"<worksheet><sheetData/><mergeCells count="1"><mergeCell ref="A1:B1"/></mergeCells></worksheet>"#
+        );
+    }
+
+    #[test]
+    fn merges_nobody_touched_keep_their_own_bytes() {
+        // The file's spelling — its whitespace, its `count`, and the order it
+        // happens to list the ranges in — goes back untouched. The model holds
+        // the same ranges the other way round, which is not an edit: nothing
+        // in the UI promises to keep the file's ordering.
+        let mut sheet = Sheet::new("Data");
+        sheet.merges.push(range("B5:B9"));
+        sheet.merges.push(range("D1:E1"));
+        let original = concat!(
+            r#"<worksheet><sheetData/><mergeCells count="2">"#,
+            r#"<mergeCell ref="D1:E1"/> <mergeCell ref="B5:B9"/>"#,
+            r#"</mergeCells></worksheet>"#,
+        );
+        assert_eq!(written_from(original, &sheet), original);
+    }
+
+    #[test]
+    fn unmerging_takes_the_element_out_rather_than_emptying_it() {
+        // An empty `<mergeCells/>` is not a sheet with nothing merged, it is a
+        // file Excel refuses to open: the schema demands at least one child.
+        let sheet = Sheet::new("Data");
+        let out = written_from(
+            r#"<worksheet><sheetData/><mergeCells count="1"><mergeCell ref="D1:E1"/></mergeCells><pageMargins left="0.7"/></worksheet>"#,
+            &sheet,
+        );
+        assert_eq!(
+            out,
+            r#"<worksheet><sheetData/><pageMargins left="0.7"/></worksheet>"#
+        );
+    }
+
+    #[test]
+    fn a_written_merge_reads_back_as_itself() {
+        let mut sheet = Sheet::new("Data");
+        sheet.merges.push(range("A1:D1"));
+        sheet.merges.push(range("B5:B9"));
+        let out = written_from(r#"<worksheet><sheetData/></worksheet>"#, &sheet);
+        let mut back = Sheet::new("Back");
+        let mut strings = StringTable::new();
+        crate::sheet::parse("s.xml", out.as_bytes(), &mut back, &[], &mut strings)
+            .expect("parses");
+        assert_eq!(back.merges, sheet.merges);
     }
 
     #[test]

@@ -329,11 +329,17 @@ pub fn merge(head: &Paragraph, tail: &Paragraph) -> Paragraph {
 /// Trailing spaces belong to the word before them, which is why Ctrl+Backspace
 /// after "hello " deletes the space with the word.
 pub fn word_at(text: &str, offset: usize) -> std::ops::Range<usize> {
-    let bytes = text.as_bytes();
-    if bytes.is_empty() {
+    if text.is_empty() {
         return 0..0;
     }
-    let at = offset.min(bytes.len());
+    // The offset arrives in bytes and is snapped to a character boundary
+    // before anything slices with it. `len - 1` is not a boundary when the
+    // last character is multi-byte — the probe that ran every frame took
+    // exactly that index, and typing an en dash brought the application down.
+    let mut at = offset.min(text.len());
+    while at > 0 && !text.is_char_boundary(at) {
+        at -= 1;
+    }
     let class = |i: usize| -> u8 {
         let c = text[i..].chars().next().unwrap_or(' ');
         if c.is_alphanumeric() {
@@ -344,6 +350,13 @@ pub fn word_at(text: &str, offset: usize) -> std::ops::Range<usize> {
             3
         }
     };
+    // The class the word takes: the character under the caret, or the last
+    // character when the caret sits at the very end.
+    let probe = if at == text.len() {
+        text.char_indices().next_back().map(|(i, _)| i).unwrap_or(0)
+    } else {
+        at
+    };
     let mut start = at;
     while start > 0 {
         let previous = text[..start]
@@ -351,20 +364,17 @@ pub fn word_at(text: &str, offset: usize) -> std::ops::Range<usize> {
             .next_back()
             .map(|(i, _)| i)
             .unwrap_or(0);
-        if at < bytes.len() && class(previous) != class(at.min(bytes.len() - 1)) {
-            break;
-        }
-        if at == bytes.len() && class(previous) != class(bytes.len() - 1) {
+        if class(previous) != class(probe) {
             break;
         }
         start = previous;
     }
     let mut end = at;
-    while end < bytes.len() && class(end) == class(at.min(bytes.len() - 1)) {
+    while end < text.len() && class(end) == class(probe) {
         end += text[end..].chars().next().map(char::len_utf8).unwrap_or(1);
     }
     // A word takes the spaces after it.
-    while end < bytes.len() && class(end) == 2 {
+    while end < text.len() && class(end) == 2 {
         end += text[end..].chars().next().map(char::len_utf8).unwrap_or(1);
     }
     start..end
@@ -471,6 +481,20 @@ pub fn nth_run_mut(paragraph: &mut Paragraph, index: usize) -> Option<&mut Run> 
 mod tests {
     use super::*;
     use wp_model::Toggle;
+
+    #[test]
+    fn a_word_probe_beside_a_multibyte_character_stays_on_boundaries() {
+        // "Dec 2016 –" freshly typed put the caret after the dash, and the
+        // probe of the last character took `len - 1` — the dash's middle byte.
+        let range = word_at("Dec 2016 –", "Dec 2016 –".len());
+        assert!(range.end <= "Dec 2016 –".len());
+        // An offset landing inside a character snaps to its start.
+        let mid = word_at("a–b", 2);
+        assert!(mid.start <= 1);
+        let _ = word_at("–", 1);
+        let _ = word_at("–", 3);
+        let _ = word_at("née – aussi", 5);
+    }
 
     fn bold(text: &str) -> Run {
         let mut run = Run::of(text);

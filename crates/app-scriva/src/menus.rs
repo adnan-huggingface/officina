@@ -17,8 +17,9 @@ use wp_model::units::{HalfPoint, Line240, Twips};
 
 use crate::app::{Command, Scriva};
 
-/// Font sizes the size box offers — Word's own list.
-const SIZES: [i32; 16] = [8, 9, 10, 11, 12, 14, 16, 18, 20, 22, 24, 28, 32, 36, 48, 72];
+/// Font sizes the size box offers — Word's own list, in half-points because
+/// the list has 10.5 in it and a whole-point list cannot say so.
+const SIZES: [i32; 17] = [16, 18, 20, 21, 22, 24, 28, 32, 36, 40, 44, 48, 56, 64, 72, 96, 144];
 
 impl Scriva {
     pub(crate) fn menus(&mut self, ui: &mut egui::Ui) -> Option<Command> {
@@ -166,9 +167,14 @@ impl Scriva {
                 }
                 menu::sep(ui);
                 menu::sub(ui, "&Size", |ui| {
-                    for size in SIZES {
-                        if menu::item(ui, &format!("{size}"), "").clicked() {
-                            chosen = Some(Command::Size(HalfPoint(size * 2)));
+                    for half in SIZES {
+                        let label = if half % 2 == 0 {
+                            format!("{}", half / 2)
+                        } else {
+                            format!("{}.5", half / 2)
+                        };
+                        if menu::item(ui, &label, "").clicked() {
+                            chosen = Some(Command::Size(HalfPoint(half)));
                         }
                     }
                 });
@@ -314,6 +320,9 @@ impl Scriva {
             menu::top(ui, "&Insert", |ui| {
                 if menu::item(ui, "&Picture…", "").clicked() {
                     chosen = Some(Command::InsertPicture);
+                }
+                if menu::item(ui, "&Table…", "").clicked() {
+                    chosen = Some(Command::InsertTable);
                 }
                 if menu::item(ui, "&Update Table of Contents", "F9").clicked() {
                     chosen = Some(Command::UpdateToc);
