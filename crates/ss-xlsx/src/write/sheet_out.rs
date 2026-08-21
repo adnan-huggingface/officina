@@ -2836,6 +2836,92 @@ mod tests {
         assert!(out.contains(r#"customFormat="1""#), "{out}");
     }
 
+    /// A worksheet with one height the user chose and one the producer
+    /// measured, as the two spellings a `<row>` can carry a `ht` in.
+    const WITH_HEIGHTS: &str = concat!(
+        r#"<?xml version="1.0"?><worksheet xmlns="http://x"><sheetData>"#,
+        r#"<row r="1" ht="24" customHeight="1"><c r="A1"><v>1</v></c></row>"#,
+        r#"<row r="2" ht="27.5"><c r="A2"><v>2</v></c></row>"#,
+        r#"</sheetData></worksheet>"#,
+    );
+
+    /// The model as the reader leaves it for `WITH_HEIGHTS`: only the custom
+    /// height is stored, because the other is a measurement and not a choice.
+    fn with_heights() -> Sheet {
+        let mut sheet = Sheet::new("Data");
+        set(&mut sheet, "A1", CellValue::Number(1.0), 0);
+        set(&mut sheet, "A2", CellValue::Number(2.0), 0);
+        sheet.row_heights.insert(0, 24.0);
+        sheet
+    }
+
+    #[test]
+    fn a_row_nobody_resized_comes_back_byte_for_byte() {
+        // Including the `ht` with no `customHeight` beside it: that is the
+        // producer's own auto-fit measurement, which the model does not carry
+        // and must not delete.
+        let sheet = with_heights();
+        assert_eq!(written_from(WITH_HEIGHTS, &sheet), WITH_HEIGHTS);
+    }
+
+    #[test]
+    fn a_dragged_row_edge_reaches_the_file() {
+        // The row the user resized gains `ht` with the flag that marks it as
+        // chosen; the row they did not touch keeps its own bytes.
+        let mut sheet = with_heights();
+        sheet.row_heights.insert(1, 33.0);
+
+        let out = written_from(WITH_HEIGHTS, &sheet);
+        assert!(out.contains(r#"ht="33""#), "{out}");
+        assert_eq!(out.matches(r#"customHeight="1""#).count(), 2, "{out}");
+        assert!(
+            out.contains(r#"<row r="1" ht="24" customHeight="1"><c r="A1"><v>1</v></c></row>"#),
+            "the neighbour is untouched: {out}"
+        );
+    }
+
+    #[test]
+    fn autofitting_a_row_takes_the_chosen_height_out() {
+        // Fit-to-contents forgets the stored height, so the writer has to take
+        // `ht` and `customHeight` off rather than leave the old choice standing.
+        let mut sheet = with_heights();
+        sheet.row_heights.remove(&0);
+
+        let out = written_from(WITH_HEIGHTS, &sheet);
+        assert!(!out.contains(r#"ht="24""#), "{out}");
+        assert!(!out.contains("customHeight"), "{out}");
+        assert!(
+            out.contains(r#"ht="27.5""#),
+            "the producer's measurement on the other row survives: {out}"
+        );
+    }
+
+    #[test]
+    fn a_written_row_height_reads_back_as_itself() {
+        let mut sheet = Sheet::new("Data");
+        set(&mut sheet, "A5", CellValue::Number(5.0), 0);
+        sheet.row_heights.insert(4, 45.0);
+
+        let out = written_from(r#"<worksheet><sheetData/></worksheet>"#, &sheet);
+        let mut back = Sheet::new("Back");
+        let mut strings = StringTable::new();
+        crate::sheet::parse("s.xml", out.as_bytes(), &mut back, &[], &mut strings).expect("parses");
+        assert_eq!(back.row_heights.get(&4), Some(&45.0));
+    }
+
+    #[test]
+    fn a_written_column_width_reads_back_as_itself() {
+        let mut sheet = Sheet::new("Data");
+        set(&mut sheet, "A1", CellValue::Number(1.0), 0);
+        sheet.column_widths.insert(2, 30.0);
+
+        let out = written_from(r#"<worksheet><sheetData/></worksheet>"#, &sheet);
+        let mut back = Sheet::new("Back");
+        let mut strings = StringTable::new();
+        crate::sheet::parse("s.xml", out.as_bytes(), &mut back, &[], &mut strings).expect("parses");
+        assert_eq!(back.column_widths.get(&2), Some(&30.0));
+    }
+
     #[test]
     fn a_sheet_nobody_edited_comes_back_byte_for_byte() {
         let mut f = fixture();
@@ -3181,8 +3267,7 @@ mod tests {
         let out = written_from(r#"<worksheet><sheetData/></worksheet>"#, &sheet);
         let mut back = Sheet::new("Back");
         let mut strings = StringTable::new();
-        crate::sheet::parse("s.xml", out.as_bytes(), &mut back, &[], &mut strings)
-            .expect("parses");
+        crate::sheet::parse("s.xml", out.as_bytes(), &mut back, &[], &mut strings).expect("parses");
         assert_eq!(back.merges, sheet.merges);
     }
 

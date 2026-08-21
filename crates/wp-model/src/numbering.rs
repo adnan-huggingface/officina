@@ -527,6 +527,21 @@ impl Numbering {
         self.instances.values()
     }
 
+    pub fn abstracts(&self) -> impl Iterator<Item = &AbstractNum> {
+        self.abstracts.values()
+    }
+
+    /// The lowest ids not yet taken, for an author making a new definition:
+    /// abstract first, instance second. Word numbers both from 1 upward and
+    /// never reuses a freed id within a document's life; neither does this.
+    pub fn free_ids(&self) -> (u32, u32) {
+        let next = |taken: &mut dyn Iterator<Item = u32>| taken.max().unwrap_or(0) + 1;
+        (
+            next(&mut self.abstracts.keys().copied()),
+            next(&mut self.instances.keys().copied()),
+        )
+    }
+
     /// The level a `<w:numPr>` resolves to, with the instance's override applied.
     ///
     /// An override may replace the level outright or only its start, and the two

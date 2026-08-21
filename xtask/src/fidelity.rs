@@ -183,7 +183,7 @@ fn document_edit_round_trip(path: &Path) -> Result<Vec<String>, String> {
         .map(|paragraph| paragraph.text())
         .collect();
 
-    wp_docx::flush(&document, &mut package).map_err(|e| format!("write: {e}"))?;
+    wp_docx::flush(&mut document, &mut package).map_err(|e| format!("write: {e}"))?;
     let mut buf = Vec::new();
     package
         .write(std::io::Cursor::new(&mut buf))

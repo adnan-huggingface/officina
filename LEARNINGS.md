@@ -453,3 +453,13 @@ counted three times. Ask the thing that stacked them how tall the stack is.
 is laid out in bands so a page can break inside it, its side borders arrive one
 band at a time. Abutting anti-aliased segments leave a hairline of paper between
 them, and a ruled column comes out dotted. Overlap by half the stroke.
+
+**A namespace-blind parser will bless a file Word refuses to open.** The
+section writer put `r:id` on a `headerReference` and the root, authored from
+blank, declared only `xmlns:w` — an unbound prefix, and Word rejected the
+entire package with a permissions-shaped error that says nothing about XML.
+Every test passed, because quick_xml reads prefixes as spelling rather than
+as bindings; only opening the file in the real application caught it. When a
+writer emits a prefixed attribute, it must own the declaration — putting
+`xmlns:r` on the element itself is legal, harmless when the root declares it
+too, and correct when nothing else does.

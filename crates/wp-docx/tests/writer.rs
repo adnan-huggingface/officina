@@ -291,7 +291,7 @@ fn a_resized_picture_survives_being_saved_and_read_back() {
     };
 
     let temporary = std::env::temp_dir().join("scriva-resize-round-trip.docx");
-    wp_docx::write::save(&document, &mut package, &temporary).expect("it writes");
+    wp_docx::write::save(&mut document, &mut package, &temporary).expect("it writes");
     let (read, _) = wp_docx::open(&temporary).expect("it reads back");
     let _ = std::fs::remove_file(&temporary);
 
@@ -355,7 +355,7 @@ fn a_pasted_picture_becomes_a_part_a_relationship_and_a_drawing() {
     })];
 
     let temporary = std::env::temp_dir().join("scriva-pasted-picture.docx");
-    wp_docx::write::save(&document, &mut package, &temporary).expect("it writes");
+    wp_docx::write::save(&mut document, &mut package, &temporary).expect("it writes");
     let (read, reopened) = wp_docx::open(&temporary).expect("it reads back");
     let _ = std::fs::remove_file(&temporary);
 

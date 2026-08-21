@@ -187,11 +187,7 @@ fn styles(document: &Document) -> Vec<u8> {
                 out.push_str("<w:b/>");
             }
             if let Some(size) = style.run.size {
-                let _ = write!(
-                    out,
-                    r#"<w:sz w:val="{0}"/><w:szCs w:val="{0}"/>"#,
-                    size.0
-                );
+                let _ = write!(out, r#"<w:sz w:val="{0}"/><w:szCs w:val="{0}"/>"#, size.0);
             }
             out.push_str("</w:rPr>");
         }
@@ -224,7 +220,7 @@ mod tests {
         document.body = vec![Block::Paragraph(paragraph)];
 
         let mut package = package_for(&document).expect("a package");
-        crate::write::flush(&document, &mut package).expect("it writes");
+        crate::write::flush(&mut document, &mut package).expect("it writes");
         let path = std::env::temp_dir().join("wp-docx-authored.docx");
         package.save(&path).expect("saved");
         let (read, _) = crate::open(&path).expect("it opens");

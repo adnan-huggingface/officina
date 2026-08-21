@@ -72,6 +72,30 @@ pub enum Command {
     Grow,
     Shrink,
     Size(HalfPoint),
+    /// Format ▸ Font — one of the faces the menu offers. Word's font box
+    /// speaks for the Latin slots only; East Asian and complex runs keep
+    /// their own faces.
+    Font(&'static str),
+    /// Format ▸ Text Colour — a palette entry, or `Auto` for Automatic.
+    Color(wp_model::Color),
+    /// The dialog for a colour the palette does not offer.
+    CustomColor,
+    Highlight(wp_model::Highlight),
+    /// Insert ▸ Header… — the dialog for the text on top of every page.
+    EditHeader,
+    /// Insert ▸ Footer… — the same, underneath.
+    EditFooter,
+    /// Paragraph ▸ Bullets — the selection's paragraphs into a bulleted
+    /// list, or out of the one they are in.
+    Bullets,
+    /// Paragraph ▸ Numbering — the same, counting.
+    Numbers,
+    /// Table ▸ Borders — every edge ruled, or none at all.
+    TableBorders(bool),
+    /// Table ▸ Shading — a fill behind the caret's cell, or `None` to clear.
+    TableShading(Option<[u8; 3]>),
+    /// The dialog for the width of the caret's column.
+    ColumnWidth,
     Align(Justify),
     LineSpacing(Line240),
     Indent(i32),
@@ -203,6 +227,13 @@ pub struct Scriva {
     margins_draft: Option<[String; 4]>,
     /// The insert-table dialog: columns, then rows.
     table_draft: Option<[String; 2]>,
+    /// The text-colour dialog: six hex digits, as Word's Custom tab takes them.
+    color_draft: Option<String>,
+    /// The column-width dialog: inches, like the margins box.
+    column_draft: Option<String>,
+    /// The header or footer dialog: which of the two, and its text, one
+    /// paragraph per line. Blank text takes the header away.
+    chrome_draft: Option<(bool, String)>,
     /// The picture-size dialog: width and height in inches, and whether the
     /// two are tied together.
     size_draft: Option<SizeDraft>,
@@ -322,6 +353,9 @@ impl Scriva {
             drafting: None,
             margins_draft: None,
             table_draft: None,
+            color_draft: None,
+            column_draft: None,
+            chrome_draft: None,
             size_draft: None,
             copied_drawing: None,
             parts: None,
@@ -679,7 +713,7 @@ impl Scriva {
         let Some(package) = &mut self.package else {
             return self.save_as();
         };
-        match wp_docx::save(&self.document, package, &path) {
+        match wp_docx::save(&mut self.document, package, &path) {
             Ok(()) => {
                 self.dirty = false;
                 self.recent.remember(SCRIVA, &path);
@@ -997,6 +1031,62 @@ impl Scriva {
             Command::Grow => self.resize(2),
             Command::Shrink => self.resize(-2),
             Command::Size(size) => self.format_runs(move |props| props.size = Some(size)),
+            Command::Font(name) => self.format_runs(move |props| {
+                // A theme reference outranks the cached name beside it, so
+                // leaving one behind would silently undo this choice.
+                props.fonts.ascii = Some(name.into());
+                props.fonts.high_ansi = Some(name.into());
+                props.fonts.ascii_theme = None;
+                props.fonts.high_ansi_theme = None;
+            }),
+            Command::Color(color) => self.format_runs(move |props| props.color = Some(color)),
+            Command::CustomColor => self.color_draft = Some(String::new()),
+            Command::Highlight(highlight) => self.format_runs(move |props| {
+                // Word removes the element rather than writing `none`: an
+                // explicit none is an override that would also blank a
+                // style's highlight, which is not what the eraser means.
+                props.highlight = match highlight {
+                    wp_model::Highlight::None => None,
+                    chosen => Some(chosen),
+                };
+            }),
+            Command::EditHeader => self.open_chrome_dialog(false),
+            Command::EditFooter => self.open_chrome_dialog(true),
+            Command::Bullets => self.toggle_list(true),
+            Command::Numbers => self.toggle_list(false),
+            Command::TableBorders(on) => self.edit_table(move |table, _, _| {
+                use wp_model::table::TableBorders;
+                // An explicit choice at the table level must not be vetoed by
+                // what an insert or an opened file left on the cells, so the
+                // cell overrides go too.
+                let edge = if on { ruled_edge() } else { bare_edge() };
+                table.props.borders = TableBorders {
+                    top: Some(edge),
+                    start: Some(edge),
+                    bottom: Some(edge),
+                    end: Some(edge),
+                    inside_h: Some(edge),
+                    inside_v: Some(edge),
+                };
+                for row in &mut table.rows {
+                    for cell in &mut row.cells {
+                        cell.props.borders = TableBorders::default();
+                    }
+                }
+            }),
+            Command::TableShading(fill) => self.edit_table(move |table, row, cell| {
+                if let Some(cell) = table.rows.get_mut(row).and_then(|r| r.cells.get_mut(cell)) {
+                    // Word writes `clear` with a fill, not `solid`: solid
+                    // swaps the roles of its two colours and is the trap the
+                    // model documents.
+                    cell.props.shading = fill.map(|rgb| wp_model::prop::Shading {
+                        pattern: wp_model::prop::ShadingPattern::Clear,
+                        fill: Some(wp_model::Color::Rgb(rgb)),
+                        color: None,
+                    });
+                }
+            }),
+            Command::ColumnWidth => self.open_column_dialog(),
             Command::Align(justify) => {
                 self.format_paragraphs(move |props| props.justify = Some(justify))
             }
@@ -1368,6 +1458,57 @@ impl Scriva {
             change,
         );
         self.changed();
+    }
+
+    /// The bullet and numbering buttons: on when every covered paragraph is
+    /// already in a list of that kind, and the press then takes them out.
+    fn toggle_list(&mut self, bullets: bool) {
+        let (start, end) = self.selection.ordered();
+        let paragraphs = self.document.paragraphs();
+        let last = end.paragraph.min(paragraphs.len().saturating_sub(1));
+        let kind = |reference: wp_model::prop::NumRef| {
+            let level = self
+                .document
+                .numbering
+                .level(reference.num_id, reference.level);
+            level.is_some_and(|l| matches!(l.format, wp_model::NumFormat::Bullet) == bullets)
+        };
+        let on = (start.paragraph..=last)
+            .all(|index| paragraphs[index].props.numbering.is_some_and(kind));
+        drop(paragraphs);
+        if on {
+            self.format_paragraphs(move |props| props.numbering = None);
+        } else {
+            // A fresh instance of the kind's one definition, as Word's button
+            // makes: instances count separately, definitions are shared.
+            let (abstract_id, num_id) = self.document.numbering.free_ids();
+            let existing = self
+                .document
+                .numbering
+                .abstracts()
+                .find(|definition| {
+                    definition.levels.first().is_some_and(|level| {
+                        level.as_ref().is_some_and(|l| {
+                            matches!(l.format, wp_model::NumFormat::Bullet) == bullets
+                        })
+                    })
+                })
+                .map(|definition| definition.id);
+            let abstract_id = match existing {
+                Some(id) => id,
+                None => {
+                    let definition = list_definition(abstract_id, bullets);
+                    self.document.numbering.insert_abstract(definition);
+                    abstract_id
+                }
+            };
+            self.document
+                .numbering
+                .insert_num(wp_model::numbering::Num::new(num_id, abstract_id));
+            self.format_paragraphs(move |props| {
+                props.numbering = Some(wp_model::prop::NumRef { num_id, level: 0 })
+            });
+        }
     }
 
     // ------------------------------------------------------------ clipboard
@@ -2314,6 +2455,81 @@ impl Scriva {
     }
 }
 
+/// Word's default table rule: a half-point single line.
+fn ruled_edge() -> wp_model::prop::Border {
+    wp_model::prop::Border {
+        style: wp_model::prop::BorderStyle::Single,
+        size: Some(wp_model::units::Eighth(4)),
+        space: Some(0),
+        color: None,
+        shadow: false,
+    }
+}
+
+/// An explicit "no border" — not an absent one, which would let a table
+/// style's own rules show through as if nothing had been chosen.
+fn bare_edge() -> wp_model::prop::Border {
+    wp_model::prop::Border {
+        style: wp_model::prop::BorderStyle::None,
+        size: None,
+        space: None,
+        color: None,
+        shadow: false,
+    }
+}
+
+/// Word's own gallery entry for the bullet and numbered lists, all nine
+/// levels: the glyph cycle Symbol dot, Courier o, Wingdings square for
+/// bullets; decimal, letter, roman for numbers. Each level steps in half an
+/// inch and hangs its label the way Word's buttons do.
+fn list_definition(id: u32, bullets: bool) -> wp_model::numbering::AbstractNum {
+    use wp_model::numbering::{AbstractNum, Level, MultiLevel, NumFormat};
+    let mut definition = AbstractNum::new(id);
+    // What Word writes for a list built by clicking buttons.
+    definition.multi_level = MultiLevel::Hybrid;
+    definition.levels = (0..wp_model::numbering::LEVELS as u8)
+        .map(|index| {
+            let mut level = Level::new(index);
+            level.para.indent.start = Some(Twips(720 * (i32::from(index) + 1)));
+            level.para.indent.hanging = Some(Twips(360));
+            if bullets {
+                level.format = NumFormat::Bullet;
+                // Symbol-encoded faces: the glyphs sit in the U+F0xx private
+                // range, and the character means nothing in any other font.
+                let (glyph, face) = match index % 3 {
+                    0 => ("\u{F0B7}", "Symbol"),
+                    1 => ("o", "Courier New"),
+                    _ => ("\u{F0A7}", "Wingdings"),
+                };
+                level.text = glyph.into();
+                level.run.fonts.ascii = Some(face.into());
+                level.run.fonts.high_ansi = Some(face.into());
+            } else {
+                level.format = match index % 3 {
+                    0 => NumFormat::Decimal,
+                    1 => NumFormat::LowerLetter,
+                    _ => NumFormat::LowerRoman,
+                };
+            }
+            Some(level)
+        })
+        .collect();
+    definition
+}
+
+/// The grid column a cell begins at: everything before it in its row, spans
+/// and all, because every span is measured against the grid.
+fn starting_column(table: &wp_model::table::Table, row: usize, cell: usize) -> usize {
+    let Some(row) = table.rows.get(row) else {
+        return 0;
+    };
+    row.props.grid_before as usize
+        + row.cells[..cell.min(row.cells.len())]
+            .iter()
+            .map(|c| c.props.grid_span.max(1) as usize)
+            .sum::<usize>()
+}
+
 /// A caret that is inside the document it names.
 fn clamp(document: &Document, caret: Caret) -> Caret {
     let paragraphs = document.paragraphs();
@@ -2765,6 +2981,18 @@ impl DocumentApp for Scriva {
             self.table_dialog(ctx);
             return;
         }
+        if self.color_draft.is_some() {
+            self.color_dialog(ctx);
+            return;
+        }
+        if self.column_draft.is_some() {
+            self.column_dialog(ctx);
+            return;
+        }
+        if self.chrome_draft.is_some() {
+            self.chrome_dialog(ctx);
+            return;
+        }
         if self.zoom_draft.is_some() {
             self.zoom_dialog(ctx);
             return;
@@ -2879,6 +3107,9 @@ impl DocumentApp for Scriva {
             || self.drafting.is_some()
             || self.margins_draft.is_some()
             || self.table_draft.is_some()
+            || self.color_draft.is_some()
+            || self.column_draft.is_some()
+            || self.chrome_draft.is_some()
             || self.size_draft.is_some()
             || self.zoom_draft.is_some()
             || self.finder_focused
@@ -3016,6 +3247,279 @@ impl Scriva {
         }
     }
 
+    fn color_dialog(&mut self, ctx: &egui::Context) {
+        let Some(mut draft) = self.color_draft.clone() else {
+            return;
+        };
+        let mut done: Option<bool> = None;
+        egui::Modal::new(egui::Id::new("scriva-color"))
+            .frame(dialog::frame(ctx))
+            .show(ctx, |ui| {
+                ui.set_width(260.0);
+                ui.add_space(16.0);
+                ui.label(egui::RichText::new("Text Colour").font(dialog::heading_font(16.0)));
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.add_sized([72.0, 20.0], egui::Label::new("Hex:"));
+                    ui.add(egui::TextEdit::singleline(&mut draft).desired_width(64.0));
+                });
+                ui.add_space(12.0);
+                if let Some(answer) = dialog::confirm(ui, "Apply") {
+                    done = Some(answer);
+                }
+                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    done = Some(false);
+                }
+            });
+        self.color_draft = Some(draft.clone());
+        match done {
+            Some(true) => {
+                self.color_draft = None;
+                // The same spellings a file's `w:val` may use — six hex
+                // digits, with or without the `#`, or the word `auto`.
+                // Anything else applies nothing rather than guessing at a
+                // colour nobody named.
+                if let Some(color) = wp_model::Color::from_val(&draft) {
+                    self.format_runs(move |props| props.color = Some(color));
+                }
+            }
+            Some(false) => self.color_draft = None,
+            None => {}
+        }
+    }
+
+    fn column_dialog(&mut self, ctx: &egui::Context) {
+        let Some(mut draft) = self.column_draft.clone() else {
+            return;
+        };
+        let mut done: Option<bool> = None;
+        egui::Modal::new(egui::Id::new("scriva-column"))
+            .frame(dialog::frame(ctx))
+            .show(ctx, |ui| {
+                ui.set_width(260.0);
+                ui.add_space(16.0);
+                ui.label(egui::RichText::new("Column Width").font(dialog::heading_font(16.0)));
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.add_sized([72.0, 20.0], egui::Label::new("Inches:"));
+                    ui.add(egui::TextEdit::singleline(&mut draft).desired_width(64.0));
+                });
+                ui.add_space(12.0);
+                if let Some(answer) = dialog::confirm(ui, "Apply") {
+                    done = Some(answer);
+                }
+                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    done = Some(false);
+                }
+            });
+        self.column_draft = Some(draft.clone());
+        match done {
+            Some(true) => {
+                self.column_draft = None;
+                // Word's own bounds: nothing narrower than it could hold a
+                // character, nothing wider than its widest paper.
+                if let Ok(inches) = draft.trim().parse::<f64>() {
+                    if (0.05..=22.0).contains(&inches) {
+                        self.apply_column_width(Twips((inches * 1440.0).round() as i32));
+                    }
+                }
+            }
+            Some(false) => self.column_draft = None,
+            None => {}
+        }
+    }
+
+    /// Opens the header or footer box, prefilled with what is there now —
+    /// its text, one paragraph per line, formatting not included.
+    fn open_chrome_dialog(&mut self, footer: bool) {
+        let refs = match footer {
+            true => &self.document.section.footers,
+            false => &self.document.section.headers,
+        };
+        let text = refs
+            .iter()
+            .find(|r| r.kind == wp_model::HeaderKind::Default)
+            .and_then(|r| {
+                self.document
+                    .headers
+                    .iter()
+                    .find(|h| h.id == r.body && h.footer == footer)
+            })
+            .map(|h| wp_model::doc::text_of(&h.content))
+            .unwrap_or_default();
+        self.chrome_draft = Some((footer, text));
+    }
+
+    fn chrome_dialog(&mut self, ctx: &egui::Context) {
+        let Some((footer, mut draft)) = self.chrome_draft.clone() else {
+            return;
+        };
+        let mut done: Option<bool> = None;
+        egui::Modal::new(egui::Id::new("scriva-chrome"))
+            .frame(dialog::frame(ctx))
+            .show(ctx, |ui| {
+                ui.set_width(320.0);
+                ui.add_space(16.0);
+                let title = if footer { "Footer" } else { "Header" };
+                ui.label(egui::RichText::new(title).font(dialog::heading_font(16.0)));
+                ui.add_space(8.0);
+                ui.add(
+                    egui::TextEdit::multiline(&mut draft)
+                        .desired_width(288.0)
+                        .desired_rows(3),
+                );
+                ui.label("One paragraph per line. Blank takes it away.");
+                ui.add_space(12.0);
+                if let Some(answer) = dialog::confirm(ui, "Apply") {
+                    done = Some(answer);
+                }
+                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    done = Some(false);
+                }
+            });
+        self.chrome_draft = Some((footer, draft.clone()));
+        match done {
+            Some(true) => {
+                self.chrome_draft = None;
+                self.apply_chrome(footer, &draft);
+            }
+            Some(false) => self.chrome_draft = None,
+            None => {}
+        }
+    }
+
+    /// Puts `text` into the default header or footer, making one when there
+    /// is none and taking it away when the text is blank — one undo step,
+    /// bodies and references together.
+    fn apply_chrome(&mut self, footer: bool, text: &str) {
+        use wp_model::doc::HeaderFooter;
+        use wp_model::section::{HeaderId, HeaderKind, HeaderRef};
+        self.history.push(edit::Change::Chrome {
+            headers: self.document.headers.clone(),
+            section: Box::new(self.document.section.clone()),
+            caret: self.caret(),
+        });
+        let document = &mut self.document;
+        let refs = match footer {
+            true => &mut document.section.footers,
+            false => &mut document.section.headers,
+        };
+        let existing = refs
+            .iter()
+            .find(|r| r.kind == HeaderKind::Default)
+            .map(|r| r.body);
+        if text.trim().is_empty() {
+            if let Some(id) = existing {
+                refs.retain(|r| !(r.kind == HeaderKind::Default && r.body == id));
+                document
+                    .headers
+                    .retain(|h| !(h.id == id && h.footer == footer));
+            }
+        } else {
+            let content: Vec<Block> = text
+                .lines()
+                .map(|line| Block::Paragraph(Paragraph::of(line)))
+                .collect();
+            match existing {
+                Some(id) => {
+                    if let Some(header) = document
+                        .headers
+                        .iter_mut()
+                        .find(|h| h.id == id && h.footer == footer)
+                    {
+                        header.content = content;
+                    }
+                }
+                None => {
+                    // A fresh body with no part and no relationship: the
+                    // writer assigns both when it first writes the package.
+                    let id =
+                        HeaderId(document.headers.iter().map(|h| h.id.0).max().unwrap_or(0) + 1);
+                    document.headers.push(HeaderFooter {
+                        id,
+                        part: None,
+                        rel: None,
+                        footer,
+                        content,
+                    });
+                    refs.push(HeaderRef {
+                        kind: HeaderKind::Default,
+                        body: id,
+                        rel: None,
+                    });
+                }
+            }
+        }
+        self.changed();
+    }
+
+    /// Runs one edit against the table the caret is in, as one undo step, or
+    /// says why nothing happened.
+    fn edit_table(&mut self, change: impl FnOnce(&mut wp_model::table::Table, usize, usize)) {
+        let caret = self.caret();
+        let Some((index, row, cell)) = edit::table_cell_at(&self.document, caret) else {
+            self.message = Some((
+                "Not in a table".to_owned(),
+                "Put the caret in a table cell first, then try again.".to_owned(),
+            ));
+            return;
+        };
+        self.history.push(edit::Change::Blocks {
+            index,
+            before: vec![self.document.body[index].clone()],
+            now: 1,
+        });
+        if let Block::Table(table) = &mut self.document.body[index] {
+            change(table, row, cell);
+        }
+        self.changed();
+    }
+
+    /// Opens the width box on the caret's column, prefilled in inches.
+    fn open_column_dialog(&mut self) {
+        let caret = self.caret();
+        let Some((index, row, cell)) = edit::table_cell_at(&self.document, caret) else {
+            self.message = Some((
+                "Not in a table".to_owned(),
+                "Put the caret in a table cell first, then try again.".to_owned(),
+            ));
+            return;
+        };
+        let Block::Table(table) = &self.document.body[index] else {
+            return;
+        };
+        let column = starting_column(table, row, cell);
+        let width = table.grid.get(column).copied().unwrap_or(Twips(0));
+        self.column_draft = Some(format!("{:.2}", width.0 as f64 / 1440.0));
+    }
+
+    /// Sets the caret's column to `width`, and restates the width of every
+    /// cell the column passes through — the grid and the cells disagreeing is
+    /// what makes Word redraw a table differently than it was saved.
+    fn apply_column_width(&mut self, width: Twips) {
+        self.edit_table(move |table, at_row, at_cell| {
+            let column = starting_column(table, at_row, at_cell);
+            let Some(entry) = table.grid.get_mut(column) else {
+                return;
+            };
+            *entry = width;
+            for row in &mut table.rows {
+                let mut at = row.props.grid_before as usize;
+                for cell in &mut row.cells {
+                    let span = cell.props.grid_span.max(1) as usize;
+                    if (at..at + span).contains(&column) {
+                        let total: i32 = table.grid[at..(at + span).min(table.grid.len())]
+                            .iter()
+                            .map(|t| t.0)
+                            .sum();
+                        cell.props.width = wp_model::table::Width::Fixed(Twips(total));
+                    }
+                    at += span;
+                }
+            }
+        });
+    }
+
     /// Builds an evenly divided, fully ruled table and puts it above the
     /// caret's paragraph.
     fn insert_table(&mut self, rows: usize, columns: usize) {
@@ -3024,22 +3528,16 @@ impl Scriva {
         let text_width = self.document.section.page.width.0 - margins.start.0 - margins.end.0;
         let each = Twips((text_width / columns as i32).max(144));
         // Word's default grid: half-point single lines on every edge.
-        let edge = || wp_model::prop::Border {
-            style: wp_model::prop::BorderStyle::Single,
-            size: Some(wp_model::units::Eighth(4)),
-            space: Some(0),
-            color: None,
-            shadow: false,
-        };
+        let edge = ruled_edge();
         let table = Table {
             props: TableProps {
                 borders: TableBorders {
-                    top: Some(edge()),
-                    start: Some(edge()),
-                    bottom: Some(edge()),
-                    end: Some(edge()),
-                    inside_h: Some(edge()),
-                    inside_v: Some(edge()),
+                    top: Some(edge),
+                    start: Some(edge),
+                    bottom: Some(edge),
+                    end: Some(edge),
+                    inside_h: Some(edge),
+                    inside_v: Some(edge),
                 },
                 ..TableProps::default()
             },
@@ -4008,6 +4506,224 @@ mod tests {
             .collect();
         app.stamp += 1;
         app
+    }
+
+    #[test]
+    fn naming_a_font_speaks_for_the_latin_slots_and_silences_the_theme() {
+        let mut app = app_with(&["hello"]);
+        app.run(Command::SelectAll);
+        // The theme reference modern Word puts on nearly every run. It
+        // outranks a cached name, so the command must take it away too or
+        // the choice would silently lose to the theme.
+        app.format_runs(|props| {
+            props.fonts.ascii_theme = Some(wp_model::prop::ThemeFont::MinorHighAnsi)
+        });
+        app.run(Command::Font("Verdana"));
+        assert!(app.probe_runs(|props| {
+            props.fonts.ascii.as_deref() == Some("Verdana")
+                && props.fonts.high_ansi.as_deref() == Some("Verdana")
+                && props.fonts.ascii_theme.is_none()
+        }));
+    }
+
+    #[test]
+    fn the_palette_and_the_hex_box_agree_on_what_a_colour_is() {
+        let mut app = app_with(&["hello"]);
+        app.run(Command::SelectAll);
+        app.run(Command::Color(wp_model::Color::Rgb([0x33, 0x33, 0x99])));
+        assert!(
+            app.probe_runs(|props| props.color == Some(wp_model::Color::Rgb([0x33, 0x33, 0x99])))
+        );
+        // The dialog parses with the same reader a file's `w:val` gets, so
+        // `#333399` and `333399` and `auto` all mean what they mean there.
+        assert_eq!(
+            wp_model::Color::from_val("#333399"),
+            Some(wp_model::Color::Rgb([0x33, 0x33, 0x99]))
+        );
+    }
+
+    #[test]
+    fn the_highlighter_erases_by_removing_rather_than_writing_none() {
+        let mut app = app_with(&["hello"]);
+        app.run(Command::SelectAll);
+        app.run(Command::Highlight(wp_model::Highlight::Yellow));
+        assert!(app.probe_runs(|props| props.highlight == Some(wp_model::Highlight::Yellow)));
+        app.run(Command::Highlight(wp_model::Highlight::None));
+        assert!(app.probe_runs(|props| props.highlight.is_none()));
+    }
+
+    #[test]
+    fn turning_borders_off_writes_none_rather_than_nothing() {
+        let mut app = app_with(&["text"]);
+        app.insert_table(2, 2);
+        // The caret landed in the first cell; the command must find the table
+        // from there.
+        app.run(Command::TableBorders(false));
+        let Block::Table(table) = &app.document.body[0] else {
+            panic!("the table is the first block");
+        };
+        // Explicit `none`, because an absent border is an inherited one: a
+        // table style could rule the edges right back.
+        let edge = table.props.borders.top.expect("the edge is stated");
+        assert_eq!(edge.style, wp_model::prop::BorderStyle::None);
+        assert!(table
+            .rows
+            .iter()
+            .flat_map(|row| &row.cells)
+            .all(|cell| cell.props.borders == wp_model::table::TableBorders::default()));
+
+        app.run(Command::Undo);
+        let Block::Table(table) = &app.document.body[0] else {
+            panic!("still the first block");
+        };
+        let edge = table.props.borders.top.expect("the rule is back");
+        assert_eq!(edge.style, wp_model::prop::BorderStyle::Single, "one undo");
+    }
+
+    #[test]
+    fn shading_lands_on_the_cell_the_caret_is_in() {
+        let mut app = app_with(&["text"]);
+        app.insert_table(2, 2);
+        app.run(Command::TableShading(Some([0x92, 0xD0, 0x50])));
+        let Block::Table(table) = &app.document.body[0] else {
+            panic!("the table is the first block");
+        };
+        let shading = table.rows[0].cells[0]
+            .props
+            .shading
+            .as_ref()
+            .expect("the caret's cell is filled");
+        assert_eq!(
+            shading.background(),
+            Some(wp_model::Color::Rgb([0x92, 0xD0, 0x50]))
+        );
+        assert!(
+            table.rows[0].cells[1].props.shading.is_none(),
+            "and its neighbour is not"
+        );
+    }
+
+    #[test]
+    fn a_column_width_moves_the_grid_and_the_cells_together() {
+        let mut app = app_with(&["text"]);
+        app.insert_table(2, 2);
+        app.apply_column_width(Twips(1440));
+        let Block::Table(table) = &app.document.body[0] else {
+            panic!("the table is the first block");
+        };
+        assert_eq!(table.grid[0], Twips(1440), "the caret's column");
+        for row in &table.rows {
+            assert_eq!(
+                row.cells[0].props.width,
+                wp_model::table::Width::Fixed(Twips(1440)),
+                "every cell in it restates the width"
+            );
+        }
+    }
+
+    #[test]
+    fn the_bullet_press_makes_a_list_and_the_second_press_unmakes_it() {
+        let mut app = app_with(&["one", "two"]);
+        app.run(Command::SelectAll);
+        app.run(Command::Bullets);
+        {
+            let paragraphs = app.document.paragraphs();
+            for paragraph in &paragraphs {
+                let reference = paragraph.props.numbering.expect("in a list");
+                let level = app
+                    .document
+                    .numbering
+                    .level(reference.num_id, 0)
+                    .expect("that resolves");
+                assert!(matches!(level.format, wp_model::NumFormat::Bullet));
+                // The glyph is Symbol's dot, meaningless in any other face —
+                // the level must carry the face with it.
+                assert_eq!(level.run.fonts.ascii.as_deref(), Some("Symbol"));
+            }
+        }
+        app.run(Command::Bullets);
+        let paragraphs = app.document.paragraphs();
+        assert!(
+            paragraphs.iter().all(|p| p.props.numbering.is_none()),
+            "the second press takes them out"
+        );
+    }
+
+    #[test]
+    fn two_presses_are_two_lists_of_one_definition() {
+        let mut app = app_with(&["one", "two"]);
+        app.selection = Selection::at(Caret {
+            paragraph: 0,
+            offset: 0,
+        });
+        app.run(Command::Numbers);
+        app.selection = Selection::at(Caret {
+            paragraph: 1,
+            offset: 0,
+        });
+        app.run(Command::Numbers);
+        let paragraphs = app.document.paragraphs();
+        let first = paragraphs[0].props.numbering.expect("the first is listed");
+        let second = paragraphs[1].props.numbering.expect("and the second");
+        assert_ne!(first.num_id, second.num_id, "instances count separately");
+        let of = |id| {
+            app.document
+                .numbering
+                .num(id)
+                .expect("resolves")
+                .abstract_id
+        };
+        assert_eq!(
+            of(first.num_id),
+            of(second.num_id),
+            "but the definition is shared, as Word's button shares its gallery entry"
+        );
+    }
+
+    #[test]
+    fn the_header_box_makes_a_header_and_blank_takes_it_away() {
+        let mut app = app_with(&["text"]);
+        app.apply_chrome(false, "RESUME / CV");
+        assert_eq!(app.document.headers.len(), 1);
+        let header = &app.document.headers[0];
+        assert!(!header.footer);
+        assert_eq!(wp_model::doc::text_of(&header.content), "RESUME / CV");
+        let reference = &app.document.section.headers[0];
+        assert_eq!(reference.kind, wp_model::HeaderKind::Default);
+        assert_eq!(reference.body, header.id);
+        assert!(
+            reference.rel.is_none(),
+            "no relationship until a save assigns one"
+        );
+
+        // Editing keeps the body's identity, because the writer finds the
+        // part to rewrite by it.
+        app.apply_chrome(false, "CURRICULUM VITAE");
+        assert_eq!(app.document.headers.len(), 1, "still the one header");
+        assert_eq!(
+            wp_model::doc::text_of(&app.document.headers[0].content),
+            "CURRICULUM VITAE"
+        );
+
+        app.apply_chrome(false, "");
+        assert!(app.document.headers.is_empty(), "blank takes it away");
+        assert!(app.document.section.headers.is_empty(), "reference and all");
+
+        app.run(Command::Undo);
+        assert_eq!(
+            wp_model::doc::text_of(&app.document.headers[0].content),
+            "CURRICULUM VITAE",
+            "one undo brings back bodies and references together"
+        );
+    }
+
+    #[test]
+    fn the_table_menu_says_so_when_the_caret_is_not_in_a_table() {
+        let mut app = app_with(&["just a paragraph"]);
+        app.run(Command::TableBorders(false));
+        let (title, _) = app.message.as_ref().expect("it says why");
+        assert_eq!(title, "Not in a table");
+        assert!(!app.history.can_undo(), "and nothing was recorded to undo");
     }
 
     #[test]

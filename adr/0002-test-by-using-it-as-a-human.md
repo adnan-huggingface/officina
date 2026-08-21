@@ -49,10 +49,16 @@ test practice, on equal footing with the suite.** The exercise, repeatable:
    menus, the exercise cannot either, and that inability *is the finding*.
 3. **Go start to finish** — New through Save As. Half a recreation proves the
    entrypoint; the save is where the silent losses live.
-4. **Diff the saved file against the original with an independent reader**,
-   then open it in real Word or Excel over COM. The recreation does not have
-   to be byte-faithful; it has to contain everything, and the diff has to
-   explain every difference it does contain.
+4. **Diff the saved file against the original with an independent reader,
+   then render both through real Word or Excel and look at the pages side by
+   side.** A text diff is structurally blind to everything that is not a
+   character: the first visual pass over "validated" recreations found body
+   text uniformly bold-italic where the original had three bold runs, a
+   missing chart, bullet lists flattened to plain paragraphs, and a missing
+   title that lived in a header part no `document.xml` diff would ever
+   count. The recreation does not have to be byte-faithful; it has to
+   contain everything — and "everything" is judged by eyes on rendered
+   pages, not by word counts.
 5. **Fix what it finds before finishing** — the recreation is not done while
    a wall it hit still stands. Each wall becomes either a fix in the same
    sitting or a named, recorded limitation.
@@ -93,6 +99,11 @@ producer there is — this suite's own UI.
 - Pixel-driven steps flake, and each flake costs a diagnosis before it can
   be trusted as a finding rather than driver noise — the one lost sentence
   that looked like an editor bug was a timing artifact.
+- The exercise is only as honest as its validation. The first run declared
+  three recreations "text-identical" and shipped; a later visual pass showed
+  one looked nothing like its original and another held 62 of the original's
+  46,437 cells. A scope cut the report does not state loudly is a claim the
+  report makes falsely.
 - Validation-by-Office needs a machine with a licensed Word and Excel, the
   same constraint the corpus generator already carries.
 

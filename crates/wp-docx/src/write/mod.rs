@@ -21,6 +21,8 @@
 pub mod blank;
 mod drawing;
 mod emit;
+mod headers_out;
+mod numbering_out;
 mod splice;
 
 use std::fmt::Write as _;
@@ -42,15 +44,22 @@ use splice::{escape_attr, Splicer};
 /// Beside the target first, then renamed over it — `ooxml::Package::save` does
 /// that, and it is what stops a refusal or a crash halfway through from leaving
 /// the user with neither the old document nor the new one.
-pub fn save(document: &Document, package: &mut Package, path: impl AsRef<Path>) -> Result<()> {
+/// Takes the document by `&mut` because saving is when authored headers get
+/// their durable identities — a part name and a relationship id — which the
+/// model then carries so the next save finds them in place.
+pub fn save(document: &mut Document, package: &mut Package, path: impl AsRef<Path>) -> Result<()> {
     flush(document, package)?;
     package.save(path)?;
     Ok(())
 }
 
 /// Puts the rewritten document part back into the package without saving.
-pub fn flush(document: &Document, package: &mut Package) -> Result<()> {
+pub fn flush(document: &mut Document, package: &mut Package) -> Result<()> {
     let located = parts::locate(package)?;
+    // The auxiliary parts first: a fresh header's relationship id must exist
+    // before the document part writes the sectPr that names it.
+    numbering_out::flush(document, package, &located)?;
+    headers_out::flush(document, package, &located)?;
     let part = package
         .part(&located.document)
         .ok_or_else(|| Error::MissingPart {
@@ -390,9 +399,12 @@ pub(crate) fn section(out: &mut String, section: &SectionProps) {
             let Some(rel) = &reference.rel else {
                 continue;
             };
+            // `xmlns:r` on the element itself, because the root may not
+            // declare it: a package authored from blank names only `w`, and
+            // an `r:id` with no binding made Word refuse the whole file.
             let _ = write!(
                 out,
-                r#"<w:{element} w:type="{}" r:id="{}"/>"#,
+                r#"<w:{element} xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" w:type="{}" r:id="{}"/>"#,
                 reference.kind.name(),
                 escape_attr(rel)
             );

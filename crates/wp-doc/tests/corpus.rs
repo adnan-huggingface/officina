@@ -165,7 +165,7 @@ fn a_legacy_document_can_be_saved_as_a_modern_one() {
     // The escape hatch, end to end: read a format that cannot be written, and
     // write the words out in one that can. A reader with no way out of the old
     // format is a museum piece.
-    let document = open("plain-paragraphs.doc");
+    let mut document = open("plain-paragraphs.doc");
     let before: Vec<String> = document
         .paragraphs()
         .iter()
@@ -175,7 +175,7 @@ fn a_legacy_document_can_be_saved_as_a_modern_one() {
 
     let mut package = wp_docx::write::blank::package_for(&document).expect("a package");
     let path = std::env::temp_dir().join("wp-doc-escape-hatch.docx");
-    wp_docx::write::save(&document, &mut package, &path).expect("it writes");
+    wp_docx::write::save(&mut document, &mut package, &path).expect("it writes");
     let (read, _) = wp_docx::open(&path).expect("and opens again");
     let _ = std::fs::remove_file(&path);
 

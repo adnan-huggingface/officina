@@ -1541,6 +1541,58 @@ faces the chart part names; no gradients, no 3-D, no trendlines, no
 per-point formatting — and none of that matters to the file, because both
 applications put back the bytes they opened.
 
+## What the visual pass demanded (2026-08-20, after the recreations)
+
+Rendering the by-hand recreations and their originals through real Word side
+by side (adr/0002's step 4, now stated properly) showed the text diffs had
+been grading the wrong thing: identical words in the wrong face, the wrong
+colour, no bullets, and a title living in a header part no `document.xml`
+comparison would ever count. This round closed the gaps that caused it:
+
+- **Scriva Format menu**: a Font submenu of the faces `ui-kit` can actually
+  draw (scrolled, because twenty-seven entries lost their tail below a
+  laptop's screen edge until they did), Word's standard text-colour palette
+  with an any-hex dialog behind Other…, and the marker-pen highlight
+  gallery.
+- **Scriva Table menu**: borders all-or-none (an explicit `none`, because an
+  absent border is an inherited one), cell shading from the same palette,
+  and a column-width box that keeps the grid and the cells agreeing.
+- **Lists**: Bullets and Numbering on the Paragraph menu, backed by Word's
+  own gallery definitions, with `numbering.xml` authored whole for a fresh
+  document and *appended to* — never regenerated — for a file that already
+  has one, so the vocabulary the model does not keep survives.
+- **Headers and footers**: an Insert dialog editing the default header's
+  text, undo restoring bodies and references together, and the writer
+  assigning part names and relationship ids at save — which is why
+  `wp_docx::save` now takes the document by `&mut`.
+- **Calx**: Format ▸ Fill Colour on the menu bar (the toolbar palette,
+  column widths, row heights and drag-resize already existed), and writer
+  tests pinning fills, widths and heights through the untouched-stays-
+  byte-identical bargain.
+
+The smoke test that gates it: drive the rebuilt binary through every new
+menu by mouse and keyboard, save, and open the result in real Word. Word
+refusing the first attempt is what found the unbound `r:id` (see
+LEARNINGS.md) — the suite, reading with a namespace-blind parser, had
+passed it without comment. Still open, and stated rather than implied:
+inserting charts, and editing a header in place rather than through a box.
+
+## The recreations, recreated (2026-08-20, the same evening)
+
+Both Word documents were then redone through the running app with the new
+features — this time in about forty minutes rather than an afternoon,
+because the bulk text went in through Ctrl+V (paste walks the same
+`text::insert` path typing does, so pending formatting carries) while every
+menu, dialog and toggle stayed by hand. The resume came out word-for-word
+(1,057 of 1,057) with its grids to the twip, its header and footer in real
+parts, and its eighteen bullets as real numbering; the sample matched at
+881 words on exact A4 with its styles, list and photo. The run also closed
+the morning's one unexplained defect: the "bold-italic spray" was the
+recreation harness reading `<w:b w:val="0"/>` — an explicit *off* — as on.
+The application was never at fault, which is its own lesson about
+validating the validator. What a keyboard still cannot reach, stated
+plainly: charts, cell merges, and page-number fields in a footer.
+
 ## Deferred
 
 - [x] **PDF** — was dropped per Q3; built after ship as `wp-print`. See above.

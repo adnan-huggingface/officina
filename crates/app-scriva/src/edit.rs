@@ -104,6 +104,14 @@ pub enum Change {
         /// reason [`Change::Range`] counts its paragraphs.
         now: usize,
     },
+    /// The header and footer bodies, with the section that references them —
+    /// one change, because a header exists only through its reference and
+    /// restoring one without the other leaves a reference pointing at nothing.
+    Chrome {
+        headers: Vec<wp_model::doc::HeaderFooter>,
+        section: Box<wp_model::SectionProps>,
+        caret: Caret,
+    },
 }
 
 /// The undo and redo stacks.
@@ -271,8 +279,7 @@ fn apply(document: &mut Document, change: Change) -> (Change, Caret) {
             let index = index.min(document.body.len());
             let end = (index + now).min(document.body.len());
             let restored = before.len();
-            let was: Vec<wp_model::doc::Block> =
-                document.body.splice(index..end, before).collect();
+            let was: Vec<wp_model::doc::Block> = document.body.splice(index..end, before).collect();
             let caret = Caret {
                 paragraph: paragraphs_before_block(document, index),
                 offset: 0,
@@ -282,6 +289,22 @@ fn apply(document: &mut Document, change: Change) -> (Change, Caret) {
                     index,
                     before: was,
                     now: restored,
+                },
+                caret,
+            )
+        }
+        Change::Chrome {
+            headers,
+            section,
+            caret,
+        } => {
+            let was_headers = std::mem::replace(&mut document.headers, headers);
+            let was_section = std::mem::replace(&mut document.section, *section);
+            (
+                Change::Chrome {
+                    headers: was_headers,
+                    section: Box::new(was_section),
+                    caret,
                 },
                 caret,
             )
@@ -315,6 +338,38 @@ fn paragraphs_in_block(block: &wp_model::doc::Block) -> usize {
         Block::Structured(sdt) => sdt.content.iter().map(paragraphs_in_block).sum(),
         Block::Anchor(_) | Block::AltChunk { .. } => 0,
     }
+}
+
+/// The table the caret is in: its body position, and the row and cell holding
+/// the caret's paragraph. `None` when the caret is not in one.
+///
+/// A caret inside a *nested* table answers with the outer cell, which is the
+/// cell a table command edits — the outer table is the one whose block the
+/// undo history replaces whole.
+pub fn table_cell_at(document: &Document, caret: Caret) -> Option<(usize, usize, usize)> {
+    use wp_model::doc::Block;
+    let mut counted = 0;
+    for (index, block) in document.body.iter().enumerate() {
+        let within = paragraphs_in_block(block);
+        if caret.paragraph < counted + within {
+            let Block::Table(table) = block else {
+                return None;
+            };
+            let mut inside = caret.paragraph - counted;
+            for (at_row, row) in table.rows.iter().enumerate() {
+                for (at_cell, cell) in row.cells.iter().enumerate() {
+                    let held: usize = cell.content.iter().map(paragraphs_in_block).sum();
+                    if inside < held {
+                        return Some((index, at_row, at_cell));
+                    }
+                    inside -= held;
+                }
+            }
+            return None;
+        }
+        counted += within;
+    }
+    None
 }
 
 /// Inserts a block above the paragraph the caret is in, undoably.

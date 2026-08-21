@@ -3266,6 +3266,15 @@ impl Calx {
                     }
                 });
                 menu::sep(ui);
+                // The same palette the toolbar's split button opens, but on the
+                // menu bar — which is the path a keyboard can walk to it.
+                menu::sub(ui, "F&ill Colour", |ui| {
+                    if let Some(chosen) = palette(ui, "No Fill") {
+                        command = Some(Command::Do(Action::Format(Format::Fill(
+                            chosen.map(|[r, g, b]| Color::rgb(r, g, b)),
+                        ))));
+                    }
+                });
                 if menu::check(ui, "&Merge Cells", "", merged).clicked() {
                     command = Some(Command::Do(Action::Merge(!merged)));
                 }

@@ -899,6 +899,29 @@ mod tests {
     }
 
     #[test]
+    fn a_fill_applied_in_the_app_reads_back_as_itself() {
+        // The whole journey the Fill Colour palette starts: a restyle appends
+        // a fill and an xf, the rewrite lands both in styles.xml, and reading
+        // the result gives back the colour that was picked.
+        let mut styles = table();
+        let green = styles.restyle(StyleId::DEFAULT, |look| {
+            look.fill = Fill::solid(Color::rgb(0xC6, 0xE0, 0xB4));
+        });
+        let out = rewritten(&styles);
+
+        let back = crate::styles::parse(
+            "styles.xml",
+            out.as_bytes(),
+            ss_model::color::Theme::default(),
+        )
+        .expect("parses");
+        assert_eq!(
+            back.look(green).fill,
+            Fill::solid(Color::rgb(0xC6, 0xE0, 0xB4))
+        );
+    }
+
+    #[test]
     fn an_existing_numfmts_element_is_added_to_rather_than_replaced() {
         let file = concat!(
             r#"<styleSheet><numFmts count="1">"#,

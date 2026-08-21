@@ -19,7 +19,81 @@ use crate::app::{Command, Scriva};
 
 /// Font sizes the size box offers — Word's own list, in half-points because
 /// the list has 10.5 in it and a whole-point list cannot say so.
-const SIZES: [i32; 17] = [16, 18, 20, 21, 22, 24, 28, 32, 36, 40, 44, 48, 56, 64, 72, 96, 144];
+const SIZES: [i32; 17] = [
+    16, 18, 20, 21, 22, 24, 28, 32, 36, 40, 44, 48, 56, 64, 72, 96, 144,
+];
+
+/// Faces the font menu offers: the classic trio the generic families always
+/// resolve, and the names in `ui-kit`'s exact-face table — so what the menu
+/// promises is a face the screen can actually draw, or at worst substitute
+/// the way Word would. The symbol-encoded faces stay out; they are for list
+/// bullets, not for prose.
+const FAMILIES: [&str; 27] = [
+    "Arial",
+    "Arial Narrow",
+    "Book Antiqua",
+    "Bookman Old Style",
+    "Calibri",
+    "Candara",
+    "Century Gothic",
+    "Comic Sans MS",
+    "Constantia",
+    "Corbel",
+    "Courier New",
+    "DejaVu Sans",
+    "Franklin Gothic Medium",
+    "Garamond",
+    "Georgia",
+    "Impact",
+    "Liberation Sans",
+    "Liberation Serif",
+    "Lucida Console",
+    "Lucida Sans Unicode",
+    "Open Sans",
+    "Palatino Linotype",
+    "Segoe UI",
+    "Tahoma",
+    "Times New Roman",
+    "Trebuchet MS",
+    "Verdana",
+];
+
+/// Word's standard-colours row, under Word's own names.
+const PALETTE: [(&str, [u8; 3]); 13] = [
+    ("Black", [0x00, 0x00, 0x00]),
+    ("Dark Red", [0xC0, 0x00, 0x00]),
+    ("Red", [0xFF, 0x00, 0x00]),
+    ("Orange", [0xFF, 0xC0, 0x00]),
+    ("Yellow", [0xFF, 0xFF, 0x00]),
+    ("Light Green", [0x92, 0xD0, 0x50]),
+    ("Green", [0x00, 0xB0, 0x50]),
+    ("Light Blue", [0x00, 0xB0, 0xF0]),
+    ("Blue", [0x00, 0x70, 0xC0]),
+    ("Dark Blue", [0x00, 0x20, 0x60]),
+    ("Purple", [0x70, 0x30, 0xA0]),
+    ("Gray", [0x80, 0x80, 0x80]),
+    ("White", [0xFF, 0xFF, 0xFF]),
+];
+
+/// The marker-pen palette in Word's gallery order, under the names Word's
+/// tooltips use — which are not the names the attribute values use.
+const HIGHLIGHTS: [(&str, wp_model::Highlight); 15] = [
+    ("Yellow", wp_model::Highlight::Yellow),
+    ("Bright Green", wp_model::Highlight::Green),
+    ("Turquoise", wp_model::Highlight::Cyan),
+    ("Pink", wp_model::Highlight::Magenta),
+    ("Blue", wp_model::Highlight::Blue),
+    ("Red", wp_model::Highlight::Red),
+    ("Dark Blue", wp_model::Highlight::DarkBlue),
+    ("Teal", wp_model::Highlight::DarkCyan),
+    ("Green", wp_model::Highlight::DarkGreen),
+    ("Violet", wp_model::Highlight::DarkMagenta),
+    ("Dark Red", wp_model::Highlight::DarkRed),
+    ("Dark Yellow", wp_model::Highlight::DarkYellow),
+    ("Gray 50%", wp_model::Highlight::DarkGray),
+    ("Gray 25%", wp_model::Highlight::LightGray),
+    ("Black", wp_model::Highlight::Black),
+];
 
 impl Scriva {
     pub(crate) fn menus(&mut self, ui: &mut egui::Ui) -> Option<Command> {
@@ -166,6 +240,20 @@ impl Scriva {
                     chosen = Some(Command::Subscript);
                 }
                 menu::sep(ui);
+                menu::sub(ui, "&Font", |ui| {
+                    // Twenty-seven faces do not fit a laptop's window, and a
+                    // popup taller than the screen loses its tail — Verdana
+                    // was unreachable until this scrolled.
+                    egui::ScrollArea::vertical()
+                        .max_height(340.0)
+                        .show(ui, |ui| {
+                            for name in FAMILIES {
+                                if menu::item(ui, name, "").clicked() {
+                                    chosen = Some(Command::Font(name));
+                                }
+                            }
+                        });
+                });
                 menu::sub(ui, "&Size", |ui| {
                     for half in SIZES {
                         let label = if half % 2 == 0 {
@@ -185,6 +273,31 @@ impl Scriva {
                     chosen = Some(Command::Shrink);
                 }
                 menu::sep(ui);
+                menu::sub(ui, "Text C&olour", |ui| {
+                    if menu::item(ui, "&Automatic", "").clicked() {
+                        chosen = Some(Command::Color(wp_model::Color::Auto));
+                    }
+                    for (name, rgb) in PALETTE {
+                        if menu::item(ui, name, "").clicked() {
+                            chosen = Some(Command::Color(wp_model::Color::Rgb(rgb)));
+                        }
+                    }
+                    menu::sep(ui);
+                    if menu::item(ui, "&Other…", "").clicked() {
+                        chosen = Some(Command::CustomColor);
+                    }
+                });
+                menu::sub(ui, "Highlig&ht", |ui| {
+                    if menu::item(ui, "&None", "").clicked() {
+                        chosen = Some(Command::Highlight(wp_model::Highlight::None));
+                    }
+                    for (name, value) in HIGHLIGHTS {
+                        if menu::item(ui, name, "").clicked() {
+                            chosen = Some(Command::Highlight(value));
+                        }
+                    }
+                });
+                menu::sep(ui);
                 if menu::item(ui, "&Clear Formatting", "Ctrl+Space").clicked() {
                     chosen = Some(Command::ClearFormatting);
                 }
@@ -197,6 +310,13 @@ impl Scriva {
             });
 
             menu::top(ui, "&Paragraph", |ui| {
+                if menu::item(ui, "&Bullets", "").clicked() {
+                    chosen = Some(Command::Bullets);
+                }
+                if menu::item(ui, "&Numbering", "").clicked() {
+                    chosen = Some(Command::Numbers);
+                }
+                menu::sep(ui);
                 if menu::item(ui, "Align &Left", "Ctrl+L").clicked() {
                     chosen = Some(Command::Align(Justify::Start));
                 }
@@ -326,6 +446,41 @@ impl Scriva {
                 }
                 if menu::item(ui, "&Update Table of Contents", "F9").clicked() {
                     chosen = Some(Command::UpdateToc);
+                }
+                menu::sep(ui);
+                if menu::item(ui, "&Header…", "").clicked() {
+                    chosen = Some(Command::EditHeader);
+                }
+                if menu::item(ui, "&Footer…", "").clicked() {
+                    chosen = Some(Command::EditFooter);
+                }
+            });
+
+            // Everything here acts on the table the caret is in, and says so
+            // when it is not in one.
+            menu::top(ui, "T&able", |ui| {
+                menu::sub(ui, "&Borders", |ui| {
+                    if menu::item(ui, "&All", "").clicked() {
+                        chosen = Some(Command::TableBorders(true));
+                    }
+                    if menu::item(ui, "&None", "").clicked() {
+                        chosen = Some(Command::TableBorders(false));
+                    }
+                });
+                menu::sub(ui, "&Shading", |ui| {
+                    if menu::item(ui, "&No Fill", "").clicked() {
+                        chosen = Some(Command::TableShading(None));
+                    }
+                    menu::sep(ui);
+                    for (name, rgb) in PALETTE {
+                        if menu::item(ui, name, "").clicked() {
+                            chosen = Some(Command::TableShading(Some(rgb)));
+                        }
+                    }
+                });
+                menu::sep(ui);
+                if menu::item(ui, "Column &Width…", "").clicked() {
+                    chosen = Some(Command::ColumnWidth);
                 }
             });
 

@@ -346,7 +346,9 @@ mod tests {
     fn the_licence_bits_decide_embedding() {
         let says = |fs_type: u16| {
             let bytes = fixture::face(fs_type);
-            Face::parse(&bytes).expect("the fixture parses").embeddable()
+            Face::parse(&bytes)
+                .expect("the fixture parses")
+                .embeddable()
         };
         assert!(says(0x0000), "installable");
         assert!(!says(0x0002), "restricted");
