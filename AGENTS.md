@@ -20,6 +20,11 @@ cargo test -p ss-formula name_of_test          # one test
 
 Some tests drive real Word/Excel through COM and skip themselves when Office is absent.
 
+After meaningful UI work, recreate a real document through the running app —
+menus and keystrokes, New through Save As. adr/0002 records why: one afternoon
+of it found a crash and two silent data losses a green suite never touched,
+and the driver rules that keep the exercise safe.
+
 ## The invariant everything serves
 
 **Saving never rewrites what wasn't edited.** On open, every OPC package part is
