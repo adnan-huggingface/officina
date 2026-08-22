@@ -1717,6 +1717,11 @@ fill for its edge; the stacked area's Mar peak, which stood at 13 for 15,
 came right with it
 (`an_area_chart_is_filled_as_its_own_triangles_and_keeps_its_dips`).
 
+"Is this really a doughnut?" It was: two series are two rings in Excel
+too. What it lacked was the hairline of background Excel leaves between
+the rings, without which Feb's orange inside ran into Feb's orange outside
+and the pair read as one ragged shape. The painter draws that seam now.
+
 ## Deferred
 
 - [x] **PDF** — was dropped per Q3; built after ship as `wp-print`. See above.

@@ -592,7 +592,7 @@ pub fn primitives(
 
     match plot.kind {
         ChartKind::Pie | ChartKind::Doughnut => {
-            pie(&mut out, area, plot, series, small, style.zoom);
+            pie(&mut out, area, plot, series, small, style);
         }
         ChartKind::Radar => radar(&mut out, area, plot, series, style, small, measure),
         ChartKind::Scatter => scatter(&mut out, area, plot, series, style, small, measure),
@@ -1660,8 +1660,12 @@ fn scatter(
 /// one around it, the rings sharing the band between the hole and the rim
 /// equally. A pie plots only its first series, as Excel does. Slices start at
 /// twelve o'clock and run clockwise, each point in its own colour when the
-/// chart varies them.
-fn pie(out: &mut Vec<Prim>, area: Rect, plot: &Plot, series: &[Plotted], size: f64, zoom: f64) {
+/// chart varies them. Between one ring and the next Excel leaves a hairline
+/// of the background, without which a category's slice in one ring runs
+/// into the same category's in the next and the two read as one ragged
+/// shape — the first doughnut the user held up.
+fn pie(out: &mut Vec<Prim>, area: Rect, plot: &Plot, series: &[Plotted], size: f64, style: &Style) {
+    let zoom = style.zoom;
     let doughnut = plot.kind == ChartKind::Doughnut;
     let rings = if doughnut {
         series.len()
@@ -1728,6 +1732,21 @@ fn pie(out: &mut Vec<Prim>, area: Rect, plot: &Plot, series: &[Plotted], size: f
             }
             from += sweep;
         }
+    }
+    for ring in 1..rings {
+        let r = hole + band * ring as f64;
+        let mut circle: Vec<(f64, f64)> = (0..=64)
+            .map(|k| {
+                let angle = std::f64::consts::TAU * k as f64 / 64.0;
+                (centre.0 + angle.cos() * r, centre.1 + angle.sin() * r)
+            })
+            .collect();
+        circle.push(circle[0]);
+        out.push(Prim::Line {
+            points: circle,
+            thickness: zoom,
+            rgb: style.background,
+        });
     }
 }
 
@@ -2807,6 +2826,23 @@ mod tests {
         assert!(
             (nearest - rim * 0.5).abs() < 1.0,
             "the hole is half the radius, as stated"
+        );
+        // And a hairline of the background between the rings, at the radius
+        // where the first ends and the second begins.
+        let seams: Vec<f64> = prims
+            .iter()
+            .filter_map(|p| match p {
+                Prim::Line { points, rgb, .. } if *rgb == style().background => {
+                    Some(points.iter().map(distance).fold(0.0f64, f64::max))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(seams.len(), 1, "one seam between two rings");
+        assert!(
+            (seams[0] - inner_rim).abs() < 1.0,
+            "at the inner ring's rim: {} of {inner_rim}",
+            seams[0]
         );
     }
 
