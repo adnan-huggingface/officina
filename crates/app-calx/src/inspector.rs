@@ -97,11 +97,21 @@ const SYMBOLS: &[(&str, Symbol)] = &[
 
 /// The name the Insert menu gives a chart's kind, or none for a kind the
 /// menu does not offer.
+///
+/// A pie, a doughnut or a radar has no grouping element in its part and no
+/// direction, so the reader leaves both at their defaults; they are matched
+/// on the kind alone, or every pie would come up "Unsupported type".
 fn kind_name(plot: &Plot) -> Option<&'static str> {
+    let grouped = matches!(
+        plot.kind,
+        ChartKind::Bar | ChartKind::Line | ChartKind::Area
+    );
     KINDS
         .iter()
         .find(|(_, kind, grouping, horizontal)| {
-            *kind == plot.kind && *grouping == plot.grouping && *horizontal == plot.horizontal
+            *kind == plot.kind
+                && (!grouped || *grouping == plot.grouping)
+                && (plot.kind != ChartKind::Bar || *horizontal == plot.horizontal)
         })
         .map(|(name, ..)| *name)
 }
@@ -694,5 +704,11 @@ mod tests {
         assert_eq!(plot(&app).hole, 75.0, "a doughnut's hole");
         assert!(plot(&app).vary_colors, "and a slice per colour");
         assert_eq!(kind_name(plot(&app)), Some("Doughnut"));
+        // As read from a file, where a pie states no grouping at all.
+        let mut read = plot(&app).clone();
+        read.grouping = Grouping::Clustered;
+        assert_eq!(kind_name(&read), Some("Doughnut"));
+        read.kind = ChartKind::Radar;
+        assert_eq!(kind_name(&read), Some("Radar"));
     }
 }
