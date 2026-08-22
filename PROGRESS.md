@@ -1706,6 +1706,17 @@ stack is a group whose pitch is nought, not a special case — the writer
 states it, and `excel_defaults` sets 100 on a stack
 (`a_stack_whose_part_states_no_overlap_sets_its_series_side_by_side`).
 
+The next one the user held up was the area chart: Excel's Sales dipped to 6
+beneath Costs at Feb, Calx's ran straight across the valley. Not the
+geometry — the screen backend filled every `Prim::Poly` with egui's
+`convex_polygon`, whose fan from the first corner covers every dip of a
+concave shape, and an area chart is concave at each one. The PDF had been
+right all along. The chart crate now takes a polygon apart by ear clipping
+(`triangles`) and the egui backend draws the mesh with a hairline of the
+fill for its edge; the stacked area's Mar peak, which stood at 13 for 15,
+came right with it
+(`an_area_chart_is_filled_as_its_own_triangles_and_keeps_its_dips`).
+
 ## Deferred
 
 - [x] **PDF** — was dropped per Q3; built after ship as `wp-print`. See above.

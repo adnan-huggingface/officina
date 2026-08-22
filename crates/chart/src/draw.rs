@@ -213,7 +213,10 @@ pub enum Prim {
         thickness: f64,
         rgb: [u8; 3],
     },
-    /// A filled convex polygon: an area chart's band, a pie's slice.
+    /// A filled simple polygon: an area chart's band, a pie's slice. Not
+    /// necessarily convex — an area chart is concave at every dip, and a
+    /// backend that can only fill convex shapes takes it apart with
+    /// [`triangles`] first.
     Poly {
         points: Vec<(f64, f64)>,
         rgb: [u8; 3],
@@ -1728,10 +1731,132 @@ fn pie(out: &mut Vec<Prim>, area: Rect, plot: &Plot, series: &[Plotted], size: f
     }
 }
 
+/// A simple polygon taken apart into triangles, as indices into `points`.
+///
+/// A screen backend fills a polygon by fanning triangles out from its first
+/// vertex, which is right only for a convex one: an area chart, concave at
+/// every dip, came out with each dip filled over — the gallery's area chart
+/// had no valley at Feb where Excel's did. Ear clipping handles any simple
+/// polygon, whichever way round it is wound, and is small enough that every
+/// backend can share one copy of it here rather than keep its own.
+pub fn triangles(points: &[(f64, f64)]) -> Vec<[usize; 3]> {
+    let n = points.len();
+    if n < 3 {
+        return Vec::new();
+    }
+    // The winding of the whole, so that an ear is a corner turning the same
+    // way; a corner turning the other way is a reflex one, which is never an
+    // ear.
+    let cross = |a: (f64, f64), b: (f64, f64), c: (f64, f64)| {
+        (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0)
+    };
+    let winding: f64 = (0..n)
+        .map(|i| {
+            let (a, b) = (points[i], points[(i + 1) % n]);
+            a.0 * b.1 - b.0 * a.1
+        })
+        .sum();
+    let sign = if winding < 0.0 { -1.0 } else { 1.0 };
+    let inside = |p: (f64, f64), a: (f64, f64), b: (f64, f64), c: (f64, f64)| {
+        sign * cross(a, b, p) >= 0.0 && sign * cross(b, c, p) >= 0.0 && sign * cross(c, a, p) >= 0.0
+    };
+
+    let mut left: Vec<usize> = (0..n).collect();
+    let mut out = Vec::with_capacity(n - 2);
+    while left.len() > 3 {
+        let m = left.len();
+        let ear = (0..m).find(|&k| {
+            let (i, j, l) = (left[(k + m - 1) % m], left[k], left[(k + 1) % m]);
+            let (a, b, c) = (points[i], points[j], points[l]);
+            let turn = sign * cross(a, b, c);
+            // A straight or folded-back corner spans nothing and may go.
+            if turn.abs() < f64::EPSILON {
+                return true;
+            }
+            turn > 0.0
+                && left
+                    .iter()
+                    .filter(|&&v| v != i && v != j && v != l)
+                    .all(|&v| !inside(points[v], a, b, c))
+        });
+        // A polygon that is not simple after all has no ear to find; the
+        // remainder is fanned rather than dropped, which is the old picture
+        // for the last few corners and no picture for none.
+        let k = ear.unwrap_or(1);
+        let m = left.len();
+        out.push([left[(k + m - 1) % m], left[k], left[(k + 1) % m]]);
+        left.remove(k);
+    }
+    out.push([left[0], left[1], left[2]]);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{Grouping, Series};
+
+    /// Twice the signed area of a triangle, so that a test can add the
+    /// pieces back together.
+    fn doubled_area(points: &[(f64, f64)], t: [usize; 3]) -> f64 {
+        let (a, b, c) = (points[t[0]], points[t[1]], points[t[2]]);
+        ((b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0)).abs()
+    }
+
+    #[test]
+    fn a_concave_polygon_is_taken_apart_into_triangles_that_cover_it_and_nothing_more() {
+        // The area chart's shape: up to 10, down to 6, up to 15, down to 12,
+        // then back along the axis. The dip at the second point is outside
+        // the polygon, and a fan from the first corner would fill it.
+        let area = vec![
+            (0.0, 0.0),
+            (1.0, 4.0),
+            (2.0, 0.0),
+            (3.0, 9.0),
+            (4.0, 6.0),
+            (4.0, -10.0),
+            (0.0, -10.0),
+        ];
+        let tris = triangles(&area);
+        assert_eq!(tris.len(), area.len() - 2);
+        let covered: f64 = tris.iter().map(|&t| doubled_area(&area, t)).sum::<f64>() / 2.0;
+        // The shoelace area of the polygon itself.
+        let exact = 0.5
+            * (0..area.len())
+                .map(|i| {
+                    let (a, b) = (area[i], area[(i + 1) % area.len()]);
+                    a.0 * b.1 - b.0 * a.1
+                })
+                .sum::<f64>()
+                .abs();
+        assert!(
+            (covered - exact).abs() < 1e-9,
+            "pieces {covered} of the whole {exact}"
+        );
+        // Wound the other way, the same answer.
+        let mut reversed = area.clone();
+        reversed.reverse();
+        let covered: f64 = triangles(&reversed)
+            .iter()
+            .map(|&t| doubled_area(&reversed, t))
+            .sum::<f64>()
+            / 2.0;
+        assert!((covered - exact).abs() < 1e-9);
+        // And a dip's point, which lies outside, is in no triangle.
+        let dip = (1.0, 5.0);
+        for t in &tris {
+            let (a, b, c) = (area[t[0]], area[t[1]], area[t[2]]);
+            let s = |p: (f64, f64), q: (f64, f64), r: (f64, f64)| {
+                (q.0 - p.0) * (r.1 - p.1) - (q.1 - p.1) * (r.0 - p.0)
+            };
+            let (u, v, w) = (s(a, b, dip), s(b, c, dip), s(c, a, dip));
+            assert!(
+                !(u > 0.0 && v > 0.0 && w > 0.0) && !(u < 0.0 && v < 0.0 && w < 0.0),
+                "the dip is filled by {t:?}"
+            );
+        }
+        assert!(triangles(&area[..2]).is_empty());
+    }
 
     /// A polyline, as [`Prim::Line`] carries one.
     type Path = Vec<(f64, f64)>;

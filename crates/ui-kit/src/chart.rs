@@ -101,15 +101,26 @@ fn paint(painter: &egui::Painter, prim: &Prim) {
             rgb: fill,
             edge,
         } => {
+            // Not `Shape::convex_polygon`: its fan from the first corner
+            // fills over every dip of a concave shape, and an area chart is
+            // one. A mesh of the polygon's own triangles has no feathering,
+            // so the outline is stroked as well — in the edge's ink where
+            // there is one, else a hairline of the fill, which is what an
+            // anti-aliased edge looks like.
+            let corners: Vec<egui::Pos2> = points.iter().map(|&(x, y)| pos(x, y)).collect();
+            let mut mesh = egui::Mesh::default();
+            for corner in &corners {
+                mesh.colored_vertex(*corner, color(*fill));
+            }
+            for [a, b, c] in chart::draw::triangles(points) {
+                mesh.add_triangle(a as u32, b as u32, c as u32);
+            }
+            painter.add(egui::Shape::mesh(mesh));
             let stroke = match edge {
                 Some((rgb, thickness)) => egui::Stroke::new(*thickness as f32, color(*rgb)),
-                None => egui::Stroke::NONE,
+                None => egui::Stroke::new(1.0, color(*fill)),
             };
-            painter.add(egui::Shape::convex_polygon(
-                points.iter().map(|&(x, y)| pos(x, y)).collect(),
-                color(*fill),
-                stroke,
-            ));
+            painter.add(egui::Shape::closed_line(corners, stroke));
         }
         Prim::Dot { at, radius, rgb } => {
             painter.circle_filled(pos(at.0, at.1), *radius as f32, color(*rgb));
@@ -224,6 +235,47 @@ mod tests {
         // Taller values, taller bars — and all of them stand on one baseline.
         assert!(bars[0].height() < bars[1].height() && bars[1].height() < bars[2].height());
         assert!(bars.windows(2).all(|w| w[0].bottom() == w[1].bottom()));
+    }
+
+    #[test]
+    fn an_area_chart_is_filled_as_its_own_triangles_and_keeps_its_dips() {
+        // Drawn as a convex polygon, the gallery's area chart had its valley
+        // at Feb filled in, where Excel showed the dip.
+        let mut area = plot(ChartKind::Area);
+        area.grouping = Grouping::Standard;
+        area.series[0].values = vec![Some(10.0), Some(6.0), Some(15.0), Some(12.0)];
+        let series = chart::draw::cached_series(&area);
+        let shapes = painted(&area, &series);
+        let mesh = shapes
+            .iter()
+            .find_map(|shape| match shape {
+                egui::Shape::Mesh(mesh) if mesh.vertices[0].color == color(SERIES_COLORS[0]) => {
+                    Some(mesh)
+                }
+                _ => None,
+            })
+            .expect("the area as a mesh in its own colour");
+        assert_eq!(mesh.vertices.len(), 6, "four tops and two feet");
+        assert_eq!(mesh.indices.len(), 4 * 3);
+        // A point just above the dip at Feb — between the first and third
+        // tops, above the second — is inside no triangle.
+        let feb = mesh.vertices[1].pos;
+        let probe = egui::pos2(feb.x, feb.y - 2.0);
+        let side = |a: egui::Pos2, b: egui::Pos2| {
+            (b.x - a.x) * (probe.y - a.y) - (b.y - a.y) * (probe.x - a.x)
+        };
+        for tri in mesh.indices.chunks(3) {
+            let (a, b, c) = (
+                mesh.vertices[tri[0] as usize].pos,
+                mesh.vertices[tri[1] as usize].pos,
+                mesh.vertices[tri[2] as usize].pos,
+            );
+            let (u, v, w) = (side(a, b), side(b, c), side(c, a));
+            assert!(
+                !((u > 0.0 && v > 0.0 && w > 0.0) || (u < 0.0 && v < 0.0 && w < 0.0)),
+                "the dip at Feb is filled over by {tri:?}"
+            );
+        }
     }
 
     #[test]
