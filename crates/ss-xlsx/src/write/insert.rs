@@ -404,12 +404,32 @@ pub(crate) fn chart_part(chart: &Chart) -> Vec<u8> {
             ));
             series.push_str("</c:strRef></c:tx>");
         }
-        // Excel classifies a scatter by each series' *line*, not by the
-        // stated style: a series that says nothing has an automatic line and
-        // reads back as scatter-with-lines however the style protests.
-        // Markers-only is spelled out per series (measured 2026-08-21).
+        // The series' own shape properties: a colour the user chose, as the
+        // fill of a bar or a slice and the ink of a line, and the one thing a
+        // scatter has to say here whatever its colour — Excel classifies a
+        // scatter by each series' *line*, not by the stated style: a series
+        // that says nothing has an automatic line and reads back as
+        // scatter-with-lines however the style protests. Markers-only is
+        // spelled out per series (measured 2026-08-21).
+        let lines = matches!(kind, ss_model::ChartKind::Line | ss_model::ChartKind::Radar)
+            || (scatter && chart.plot.scatter_lines);
+        let mut props = String::new();
+        if let Some(rgb) = s.color {
+            let fill = format!(
+                r#"<a:solidFill><a:srgbClr val="{:02X}{:02X}{:02X}"/></a:solidFill>"#,
+                rgb[0], rgb[1], rgb[2]
+            );
+            if lines {
+                props.push_str(&format!("<a:ln>{fill}</a:ln>"));
+            } else {
+                props.push_str(&fill);
+            }
+        }
         if scatter && !chart.plot.scatter_lines {
-            series.push_str("<c:spPr><a:ln><a:noFill/></a:ln></c:spPr>");
+            props.push_str("<a:ln><a:noFill/></a:ln>");
+        }
+        if !props.is_empty() {
+            series.push_str(&format!("<c:spPr>{props}</c:spPr>"));
         }
         // A series that names no marker gets Excel's automatic one — a
         // diamond, a square — so a series the model marks with none says so,
@@ -889,6 +909,31 @@ mod tests {
         let read = ss_model::chart::read::plot(stack.as_bytes()).expect("parses");
         assert_eq!(read.overlap, 100.0);
         assert!(!doughnut.contains("<c:majorGridlines/>"), "{doughnut}");
+    }
+
+    #[test]
+    fn a_series_colour_the_user_chose_is_written_as_its_fill_and_read_back() {
+        let mut chart = a_chart();
+        chart.plot.series[0].color = Some([0x1E, 0x6F, 0x5C]);
+        let bar = String::from_utf8(chart_part(&chart)).expect("utf-8");
+        assert!(
+            bar.contains(
+                r#"<c:spPr><a:solidFill><a:srgbClr val="1E6F5C"/></a:solidFill></c:spPr>"#
+            ),
+            "{bar}"
+        );
+        let read = ss_model::chart::read::plot(bar.as_bytes()).expect("parses");
+        assert_eq!(read.series[0].color, Some([0x1E, 0x6F, 0x5C]));
+
+        // A line's colour is its ink, not a fill under it.
+        chart.plot.kind = ss_model::ChartKind::Line;
+        let line = String::from_utf8(chart_part(&chart)).expect("utf-8");
+        assert!(
+            line.contains(r#"<c:spPr><a:ln><a:solidFill><a:srgbClr val="1E6F5C"/></a:solidFill></a:ln></c:spPr>"#),
+            "{line}"
+        );
+        let read = ss_model::chart::read::plot(line.as_bytes()).expect("parses");
+        assert_eq!(read.series[0].color, Some([0x1E, 0x6F, 0x5C]));
     }
 
     #[test]

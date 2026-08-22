@@ -128,6 +128,15 @@ pub enum Patch {
         chart: usize,
         title: Option<String>,
     },
+    /// Everything a chart plots, replaced wholesale: its kind, its series'
+    /// colours, its hole, its legend. One patch rather than one per
+    /// property, because the inspector changes them one gesture at a time
+    /// and a gesture's undo is the plot as it was before it.
+    ChartPlot {
+        sheet: usize,
+        chart: usize,
+        plot: Box<ss_model::chart::Plot>,
+    },
     /// Every picture on a sheet, replaced wholesale.
     ///
     /// Wholesale because a sheet holds a handful of them, not a million, and
@@ -330,6 +339,18 @@ fn apply_patch(book: &mut Workbook, patch: Patch) -> Vec<Patch> {
                 sheet,
                 chart,
                 title: before,
+            }]
+        }
+
+        Patch::ChartPlot { sheet, chart, plot } => {
+            let Some(target) = book.sheet_mut(sheet).and_then(|s| s.charts.get_mut(chart)) else {
+                return Vec::new();
+            };
+            let before = std::mem::replace(&mut target.plot, *plot);
+            vec![Patch::ChartPlot {
+                sheet,
+                chart,
+                plot: Box::new(before),
             }]
         }
 
@@ -1154,9 +1175,50 @@ pub fn chart_title(sheet: usize, chart: usize, title: &str) -> Change {
     )
 }
 
+/// Replaces everything a chart plots with `plot`.
+pub fn chart_plot(sheet: usize, chart: usize, plot: ss_model::chart::Plot) -> Change {
+    Change::new(
+        "Format chart",
+        vec![Patch::ChartPlot {
+            sheet,
+            chart,
+            plot: Box::new(plot),
+        }],
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_plot_put_in_place_of_another_comes_back_on_undo() {
+        let mut book = Workbook::blank();
+        let mut chart = ss_model::Chart {
+            part: String::new(),
+            drawing_part: String::new(),
+            anchor_index: 0,
+            anchor: ss_model::chart::Anchor::Absolute {
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+            },
+            plot: ss_model::chart::Plot::default(),
+        };
+        chart.plot.hole = 75.0;
+        book.sheets[0].charts.push(chart);
+        let wanted = ss_model::chart::Plot {
+            hole: 40.0,
+            ..Default::default()
+        };
+        let undo = apply(&mut book, chart_plot(0, 0, wanted));
+        assert_eq!(book.sheets[0].charts[0].plot.hole, 40.0);
+        let redo = apply(&mut book, undo);
+        assert_eq!(book.sheets[0].charts[0].plot.hole, 75.0);
+        apply(&mut book, redo);
+        assert_eq!(book.sheets[0].charts[0].plot.hole, 40.0);
+    }
 
     fn at(a1: &str) -> CellRef {
         CellRef::from_a1(a1).expect("valid address")

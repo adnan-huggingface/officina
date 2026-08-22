@@ -122,6 +122,9 @@ pub fn plot(data: &[u8]) -> Option<Plot> {
     let mut in_gridlines = false;
     let mut in_text_props = false;
     let mut in_dlbls = false;
+    // A single point's own properties (`<c:dPt>`): Excel writes one per
+    // slice of a pie, and the first slice's colour is not the series'.
+    let mut in_dpt = false;
     let mut props = Props::Nobody;
 
     while let Ok(ev) = reader.read_event_into(&mut buf) {
@@ -145,6 +148,7 @@ pub fn plot(data: &[u8]) -> Option<Plot> {
                 }
                 b"txPr" => in_text_props = in_text_props || !empty,
                 b"dLbls" => in_dlbls = in_dlbls || !empty,
+                b"dPt" => in_dpt = in_dpt || !empty,
                 b"majorTickMark" => {
                     let mark = attr_text(e, b"val")
                         .map_or(TickMark::Cross, |v| TickMark::from_val(v.trim()));
@@ -267,7 +271,12 @@ pub fn plot(data: &[u8]) -> Option<Plot> {
                         record(&mut out, props, in_axis, in_ln, Paint::Rgb(rgb));
                     }
                 }
-                b"srgbClr" if depth_in_series_props > 0 && series.color.is_none() => {
+                b"srgbClr"
+                    if depth_in_series_props > 0
+                        && !in_dlbls
+                        && !in_dpt
+                        && series.color.is_none() =>
+                {
                     if let Some(hex) = attr_text(e, b"val") {
                         series.color = rgb(&hex);
                     }
@@ -292,6 +301,7 @@ pub fn plot(data: &[u8]) -> Option<Plot> {
                 b"majorGridlines" | b"minorGridlines" => in_gridlines = false,
                 b"txPr" => in_text_props = false,
                 b"dLbls" => in_dlbls = false,
+                b"dPt" => in_dpt = false,
                 b"f" | b"v" | b"t" => {
                     let value = std::mem::take(&mut text);
                     match (sink, slot) {

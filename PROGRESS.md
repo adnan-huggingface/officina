@@ -1722,6 +1722,47 @@ too. What it lacked was the hairline of background Excel leaves between
 the rings, without which Feb's orange inside ran into Feb's orange outside
 and the pair read as one ragged shape. The painter draws that seam now.
 
+## The chart inspector (2026-08-22)
+
+"How do I change the properties of the charts?" Until now: in Excel. The
+model read every property and the painter drew it, but nothing in Calx
+could set one beyond the title. Now a panel stands at the right of the grid
+for as long as a chart is selected: its kind (any the Insert menu offers),
+title, legend, each series' colour and marker, a bar's gap and overlap, a
+doughnut's hole, a line's markers and smoothing, each axis shown or not and
+ruled or not, colours varied by point, and Delete.
+
+No dialog and no Apply: every control changes the chart the moment it is
+touched, so the chart is the preview, and the undo is one entry per
+*gesture* — the plot as it stood when the slider was pressed is held in the
+inspector and pushed when the slider is released
+(`a_gesture_of_many_frames_is_one_undo_entry_and_undo_puts_the_plot_back`).
+A colour picked, a kind chosen, a box ticked: each one entry.
+
+On the file side the invariant held. A chart from Excel is still its own
+bytes: `chart_out::restyle` splices each property at the one place the
+schema fixes for it — a `val` rewritten where the element exists, the
+element authored where a second producer left it out, the legend or the
+gridlines dropped whole with their formatting when the model has none — and
+everything else, data labels, extension lists, axis text, goes back as it
+was (`formatting_a_chart_survives_a_save_and_changes_nothing_else` over the
+corpus). A chart given a new *kind* is the exception, and an honest one:
+every element moves, so the part is written afresh from the model, as an
+inserted chart's is. A chart Calx made gets its colours from the same writer.
+
+Found on the way: the reader took the first `srgbClr` in any `spPr` inside
+a series as the series' colour, a data label's or a single point's
+included — which is how a pie with a coloured slice read as a pie of one
+colour. A label's ink and a point's fill are now neither.
+
+And found at the keyboard, as adr/0002 says such things are: the first
+title typed into the panel deselected the chart on Enter. The text box
+gives its focus up on Enter *while the panel is drawn*; the grid, drawn
+after it, asked whether anything was focused, found nothing, took the Enter
+as its own and cleared the selection. The grid now asks before the panel
+draws as well as after
+(`enter_in_the_title_box_sets_the_title_and_leaves_the_chart_selected`).
+
 ## Deferred
 
 - [x] **PDF** — was dropped per Q3; built after ship as `wp-print`. See above.

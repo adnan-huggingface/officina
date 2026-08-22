@@ -489,6 +489,15 @@ on its side puts its first category at the *bottom* and its first series
 nearest the axis — a column chart turned anticlockwise, both ends — and a
 radar runs its first category from the top, clockwise.
 
+**A series has three places for a colour, and only one of them is the
+series'.** `<c:ser>` carries its own `<c:spPr>`, and so does every `<c:dPt>`
+(one point's override — Excel writes one per slice of a pie) and every
+`<c:dLbls>` (the labels' ink) inside it. A reader that takes the first
+`srgbClr` it meets anywhere below `<c:ser>` colours a whole series with its
+first slice, or with its labels' text. The series' colour is the `spPr` that
+is a *direct child* of `<c:ser>`, and a writer changing it replaces exactly
+that one — `dPt` overrides stand, as they do in Excel (2026-08-22).
+
 **A chart part's silences are Excel's defaults, and they are not the
 schema's.** Fourteen charts authored by Calx, each stating only its type, its
 series and its axes, opened in Excel as fourteen different charts: the line

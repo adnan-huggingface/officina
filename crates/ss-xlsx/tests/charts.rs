@@ -102,6 +102,84 @@ fn retitling_a_chart_survives_a_save_and_changes_nothing_else() {
 }
 
 #[test]
+fn formatting_a_chart_survives_a_save_and_changes_nothing_else() {
+    use ss_model::chart::LegendPosition;
+    let Some(path) = corpus_file() else { return };
+    let mut doc = XlsxDocument::open(&path).expect("opens");
+    let target = doc.workbook.sheets[0].charts[0].part.clone();
+    {
+        let plot = &mut doc.workbook.sheets[0].charts[0].plot;
+        assert_eq!(plot.kind, ChartKind::Bar);
+        plot.series[0].color = Some([0x1E, 0x6F, 0x5C]);
+        plot.gap = 80.0;
+        plot.legend = Some(LegendPosition::Bottom);
+        plot.val_axis.gridlines = false;
+    }
+
+    let mut bytes = Vec::new();
+    doc.write_to(Cursor::new(&mut bytes)).expect("writes");
+    let reopened = XlsxDocument::read(Cursor::new(bytes)).expect("reads back");
+    let plot = &reopened.workbook.sheets[0].charts[0].plot;
+    assert_eq!(plot.series[0].color, Some([0x1E, 0x6F, 0x5C]));
+    assert_eq!(plot.gap, 80.0);
+    assert_eq!(plot.legend, Some(LegendPosition::Bottom));
+    assert!(!plot.val_axis.gridlines);
+
+    // The part is Excel's still, with four things changed in it: the data
+    // labels it carried, the extension lists, the axis formatting are all
+    // byte for byte.
+    let name = ooxml::PartName::new(&target).expect("valid");
+    let after = String::from_utf8(reopened.package.part(&name).expect("there").data().to_vec())
+        .expect("utf-8");
+    let before =
+        String::from_utf8(doc.package.part(&name).expect("there").data().to_vec()).expect("utf-8");
+    assert!(after.contains("<c:extLst>"), "{after}");
+    assert!(after.contains("<c:txPr>"), "{after}");
+    assert_eq!(
+        after.matches("<c:dLbls>").count(),
+        before.matches("<c:dLbls>").count()
+    );
+
+    // And every other part is untouched, the other charts' included.
+    for part in reopened.package.parts() {
+        if part.name.as_str() == target
+            || part.name.as_str().contains("worksheets")
+            || part.name.as_str().contains("sharedStrings")
+            || part.name.as_str().contains("styles")
+        {
+            continue;
+        }
+        let original = doc.package.part(&part.name).expect("was there before");
+        assert_eq!(
+            original.data(),
+            part.data(),
+            "{} changed",
+            part.name.as_str()
+        );
+    }
+}
+
+#[test]
+fn a_chart_given_a_new_kind_is_written_afresh_and_comes_back_as_that_kind() {
+    let Some(path) = corpus_file() else { return };
+    let mut doc = XlsxDocument::open(&path).expect("opens");
+    {
+        let plot = &mut doc.workbook.sheets[0].charts[0].plot;
+        plot.kind = ChartKind::Doughnut;
+        plot.grouping = ss_model::chart::Grouping::Standard;
+        ss_model::chart::excel_defaults(plot);
+    }
+    let mut bytes = Vec::new();
+    doc.write_to(Cursor::new(&mut bytes)).expect("writes");
+    let reopened = XlsxDocument::read(Cursor::new(bytes)).expect("reads back");
+    let plot = &reopened.workbook.sheets[0].charts[0].plot;
+    assert_eq!(plot.kind, ChartKind::Doughnut);
+    assert_eq!(plot.hole, 75.0);
+    assert!(!plot.series.is_empty(), "the data rode along: {plot:?}");
+    assert!(plot.series[0].values_ref.is_some());
+}
+
+#[test]
 fn a_chart_nobody_retitled_is_not_rewritten() {
     let Some(path) = corpus_file() else { return };
     let mut doc = XlsxDocument::open(&path).expect("opens");

@@ -206,10 +206,12 @@ impl XlsxDocument {
             }
         }
 
-        // Chart titles. A chart is otherwise entirely preserved, so this is the
-        // one thing in it the model can disagree with the file about — and the
-        // comparison is against the *file*, re-read, rather than against a flag
-        // set when the user typed.
+        // Charts the user formatted. A chart is otherwise entirely preserved,
+        // so what the inspector sets is spliced into the part property by
+        // property — and the comparison is against the *file*, re-read,
+        // rather than against a flag set when the user clicked. A chart
+        // whose kind changed is the exception: every element in it moves, so
+        // the part is written afresh from the model, as a new chart's is.
         for sheet in &self.workbook.sheets {
             for chart in &sheet.charts {
                 let Ok(name) = PartName::new(&chart.part) else {
@@ -218,14 +220,25 @@ impl XlsxDocument {
                 let Some(part) = self.package.part(&name) else {
                     continue;
                 };
-                let stored = ss_model::chart::read::plot(part.data());
-                if stored.and_then(|plot| plot.title) == chart.plot.title {
+                let Some(stored) = ss_model::chart::read::plot(part.data()) else {
+                    continue;
+                };
+                let content_type = part.content_type.clone();
+                let retyped = stored.kind != chart.plot.kind
+                    || stored.grouping != chart.plot.grouping
+                    || stored.horizontal != chart.plot.horizontal;
+                if retyped {
+                    written.push((name, content_type, insert::chart_part(chart)));
                     continue;
                 }
-                let content_type = part.content_type.clone();
-                let data =
-                    chart_out::retitle(name.as_str(), part.data(), chart.plot.title.as_deref())?;
-                written.push((name, content_type, data));
+                let mut data =
+                    chart_out::restyle(name.as_str(), part.data(), &stored, &chart.plot)?;
+                if stored.title != chart.plot.title {
+                    data = chart_out::retitle(name.as_str(), &data, chart.plot.title.as_deref())?;
+                }
+                if data != part.data() {
+                    written.push((name, content_type, data));
+                }
             }
         }
 

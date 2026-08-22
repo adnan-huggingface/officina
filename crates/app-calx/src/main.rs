@@ -18,6 +18,8 @@ use ui_kit::{dialog, egui, menu, paths, AppId, DocumentApp, Recent, CALX};
 use calx::grid::{self, Action, BorderPreset, Editor, Format, GridView, Mode};
 use calx::icons::{self, Icon};
 
+mod inspector;
+
 enum Choice {
     Save,
     Discard,
@@ -135,9 +137,9 @@ struct Calx {
     /// Where a cut came from, cleared when the paste lands.
     cut_from: Option<(usize, CellRange)>,
     edited: bool,
-    /// The title box's buffer while a chart is selected. Kept out of the model
-    /// so that typing does not push an undo entry per keystroke.
-    chart_title: Option<String>,
+    /// The chart inspector's own state: the title being typed, the gesture
+    /// in progress.
+    inspector: inspector::State,
     /// What the user asked for that unsaved changes are standing in the way of.
     pending: Option<Pending>,
     /// The name box's buffer. Kept out of the selection because it holds what
@@ -447,7 +449,7 @@ impl Calx {
             clip_text: String::new(),
             cut_from: None,
             edited: false,
-            chart_title: None,
+            inspector: inspector::State::default(),
             pending: None,
             name_box: "A1".to_string(),
             last_body: egui::vec2(800.0, 600.0),
@@ -1719,7 +1721,8 @@ impl Calx {
                 }
                 Patch::Pictures { sheet, .. }
                 | Patch::Charts { sheet, .. }
-                | Patch::ChartTitle { sheet, .. } => self.refuse(*sheet, |p| p.objects, "changed"),
+                | Patch::ChartTitle { sheet, .. }
+                | Patch::ChartPlot { sheet, .. } => self.refuse(*sheet, |p| p.objects, "changed"),
                 Patch::Filter { sheet, .. } => self.refuse(*sheet, |p| p.filter, "filtered"),
                 // Protecting and unprotecting, and everything that belongs to
                 // the workbook rather than to a sheet: a protected sheet can
@@ -3882,51 +3885,10 @@ impl Calx {
         });
 
         self.formula_bar(ui);
-        self.chart_bar(ui);
 
         if let Some(command) = command {
             let ui = &*ui;
             self.run(ui, command);
-        }
-    }
-
-    /// The title box, shown only while a chart is selected.
-    fn chart_bar(&mut self, ui: &mut egui::Ui) {
-        let Some(index) = self.grid.selected_chart else {
-            self.chart_title = None;
-            return;
-        };
-        let sheet = self.grid.sheet_index;
-        let Some(existing) = self
-            .doc
-            .workbook
-            .sheet(sheet)
-            .and_then(|s| s.charts.get(index))
-            .map(|c| c.plot.title.clone().unwrap_or_default())
-        else {
-            return;
-        };
-        let mut change = None;
-        ui.horizontal(|ui| {
-            ui.label("Chart title");
-            if self.chart_title.is_none() {
-                self.chart_title = Some(existing.clone());
-            }
-            let buffer = self.chart_title.get_or_insert_with(String::new);
-            let response = ui.add(
-                egui::TextEdit::singleline(buffer)
-                    .desired_width(260.0)
-                    .hint_text("(none)"),
-            );
-            // On losing focus rather than on every keystroke: one undo entry
-            // per title, not one per letter.
-            if response.lost_focus() && *buffer != existing {
-                change = Some(buffer.clone());
-            }
-        });
-        if let Some(title) = change {
-            let change = edit::chart_title(sheet, index, &title);
-            self.perform(change);
         }
     }
 
@@ -7251,10 +7213,20 @@ impl DocumentApp for Calx {
         // to their own letter, and a grid that also saw that letter would put
         // it in a cell — press Alt+I, then W to delete a row, and "w" lands in
         // the cursor cell as well.
+        // The inspector takes the right-hand side while a chart is selected,
+        // and the grid takes what is left. Whether a text box held the
+        // keyboard is asked *before* the panel draws as well as after: a box
+        // gives its focus up on Enter while it is being drawn, and a grid
+        // that asked only afterwards found nothing focused, took the Enter
+        // as its own, and deselected the chart whose title had just been
+        // typed.
+        let elsewhere_before = keys_belong_elsewhere(ui.ctx());
+        self.chart_panel(ui);
         self.last_body = ui.available_size();
         self.grid.blocked = self.dialog.is_some()
             || self.pending.is_some()
             || egui::Popup::is_any_open(ui.ctx())
+            || elsewhere_before
             || keys_belong_elsewhere(ui.ctx());
         let response = self.grid.show(ui, &mut self.doc.workbook);
         response.context_menu(|ui| self.context_menu(ui));
