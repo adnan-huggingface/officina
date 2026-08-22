@@ -1765,6 +1765,13 @@ two — Type over seven families, and a Stacking row that appears only for
 columns, bars and areas. A stack stays a stack when a column turns into a
 bar; any other family is entered the way Excel's Insert enters it.
 
+"When I scroll to the bottom of the sheet I'm not able to fully see the
+last chart." The scrollbars' travel was measured against the used cell
+range, and a chart that hangs below the data it plots — the usual place for
+one — ended past where the sheet would go. A chart and a picture are
+content: the extent now reaches the row and column after each drawing's
+far corner (`a_chart_below_the_data_can_be_scrolled_into_view`).
+
 And found at the keyboard, as adr/0002 says such things are: the first
 title typed into the panel deselected the chart on Enter. The text box
 gives its focus up on Enter *while the panel is drawn*; the grid, drawn

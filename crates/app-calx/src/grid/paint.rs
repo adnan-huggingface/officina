@@ -3276,6 +3276,10 @@ impl GridView {
 /// because a sheet is 1,048,576 rows tall and a thumb sized to that is a
 /// two-pixel sliver representing a document that ends on row 354. Excel does
 /// the same thing: its scrollbar covers what you have, and grows as you add.
+///
+/// A chart or a picture is content too, and it commonly hangs below the last
+/// row of the data it plots: the sheet must scroll far enough to show all of
+/// it, with a row's room beneath so it does not sit hard on the edge.
 fn bars(
     full: egui::Rect,
     layout: &Layout,
@@ -3296,10 +3300,33 @@ fn bars(
         .row
         .max(sheet.row_styles.keys().copied().max().unwrap_or(0));
 
-    let content = egui::vec2(
+    let mut content = egui::vec2(
         layout.cols.offset(last_col.saturating_add(1)) as f32,
         layout.rows.offset(last_row.saturating_add(1)) as f32,
     );
+    let drawings = sheet
+        .charts
+        .iter()
+        .map(|chart| &chart.anchor)
+        .chain(sheet.pictures.iter().map(|picture| &picture.anchor));
+    for anchor in drawings {
+        let rect = super::picture::sheet_rect(layout, anchor);
+        let past = egui::vec2(
+            layout.cols.offset(
+                layout
+                    .cols
+                    .index_at(f64::from(rect.max.x))
+                    .saturating_add(2),
+            ) as f32,
+            layout.rows.offset(
+                layout
+                    .rows
+                    .index_at(f64::from(rect.max.y))
+                    .saturating_add(2),
+            ) as f32,
+        );
+        content = content.max(past);
+    }
     // `max` against the current scroll so that a cursor driven past the used
     // range with Ctrl+Down does not leave the scrollbar unable to follow it.
     let extent = egui::vec2(
@@ -4661,6 +4688,46 @@ mod tests {
             content_type: "image/png".into(),
         });
         book
+    }
+
+    #[test]
+    fn a_chart_below_the_data_can_be_scrolled_into_view() {
+        use ss_model::chart::{Anchor, AnchorPoint};
+        let mut book = with_chart();
+        let sheet = book.sheet_mut(0).expect("a sheet");
+        sheet.set(
+            CellRef::new(0, 0),
+            ss_model::Cell {
+                value: ss_model::CellValue::Number(1.0),
+                ..Default::default()
+            },
+        );
+        // The chart hangs from row 30 to row 60; the data ends on row 1.
+        sheet.charts[0].anchor = Anchor::TwoCell {
+            from: AnchorPoint {
+                col: 1,
+                col_offset: 0,
+                row: 30,
+                row_offset: 0,
+            },
+            to: AnchorPoint {
+                col: 4,
+                col_offset: 0,
+                row: 60,
+                row_offset: 0,
+            },
+        };
+        let sheet = book.sheet(0).expect("a sheet").clone();
+        let layout = Layout::for_sheet(&book, &sheet, 1.0);
+        let viewport = egui::vec2(400.0, 300.0);
+        let full = egui::Rect::from_min_size(egui::Pos2::ZERO, viewport);
+        let bars = bars(full, &layout, &sheet, viewport, Scroll::default());
+        let bottom = layout.rows.offset(61) as f32;
+        assert!(
+            bars.extent.y + viewport.y >= bottom,
+            "the sheet scrolls to {} but the chart ends at {bottom}",
+            bars.extent.y + viewport.y
+        );
     }
 
     /// A workbook with one bar chart anchored over B2:E6, near enough.
