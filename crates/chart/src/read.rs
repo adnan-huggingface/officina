@@ -193,6 +193,12 @@ pub fn plot(data: &[u8]) -> Option<Plot> {
                 b"barDir" => {
                     out.horizontal = attr_text(e, b"val").as_deref() == Some("bar");
                 }
+                b"scatterStyle" => {
+                    // Every joined style names its line: `lineMarker`, `line`,
+                    // `smooth`, `smoothMarker`. Only `marker` and `none` do not.
+                    out.scatter_lines = attr_text(e, b"val")
+                        .is_some_and(|v| v.contains("ine") || v.contains("mooth"));
+                }
                 b"gapWidth" => {
                     if let Some(v) = attr_text(e, b"val").and_then(|v| v.trim().parse().ok()) {
                         out.gap = v;
@@ -479,6 +485,42 @@ mod tests {
         assert_eq!(series.name.as_deref(), Some("Widgets"));
         assert_eq!(series.values_ref.as_deref(), Some("Sheet1!$B$2:$B$5"));
         assert_eq!(series.categories, ["Q1", "Q2", "Q3", "Q4"]);
+    }
+
+    #[test]
+    fn a_scatter_reads_its_xs_into_the_category_slot_and_its_style_into_lines() {
+        let scatter = plot(
+            br#"<?xml version="1.0"?>
+<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart">
+ <c:chart><c:plotArea>
+  <c:scatterChart>
+   <c:scatterStyle val="lineMarker"/>
+   <c:ser>
+    <c:idx val="0"/><c:order val="0"/>
+    <c:xVal><c:numRef><c:f>Sheet1!$A$2:$A$4</c:f><c:numCache><c:ptCount val="3"/>
+      <c:pt idx="0"><c:v>1.5</c:v></c:pt><c:pt idx="1"><c:v>2</c:v></c:pt>
+      <c:pt idx="2"><c:v>4</c:v></c:pt></c:numCache></c:numRef></c:xVal>
+    <c:yVal><c:numRef><c:f>Sheet1!$B$2:$B$4</c:f><c:numCache><c:ptCount val="3"/>
+      <c:pt idx="0"><c:v>10</c:v></c:pt><c:pt idx="1"><c:v>20</c:v></c:pt>
+      <c:pt idx="2"><c:v>40</c:v></c:pt></c:numCache></c:numRef></c:yVal>
+   </c:ser>
+  </c:scatterChart>
+ </c:plotArea></c:chart>
+</c:chartSpace>"#,
+        )
+        .expect("parses");
+        assert_eq!(scatter.kind, ChartKind::Scatter);
+        assert!(scatter.scatter_lines, "lineMarker joins the points");
+        assert_eq!(scatter.series[0].categories, ["1.5", "2", "4"]);
+        assert_eq!(
+            scatter.series[0].values,
+            [Some(10.0), Some(20.0), Some(40.0)]
+        );
+        assert_eq!(
+            scatter.series[0].categories_ref.as_deref(),
+            Some("Sheet1!$A$2:$A$4"),
+            "the X reference rides in the category slot"
+        );
     }
 
     #[test]

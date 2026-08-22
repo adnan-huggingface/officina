@@ -1619,6 +1619,48 @@ own `Event::Copy` arrived, handing the copy to the cells underneath. A held
 command modifier now leaves the selection alone, and a regression test reads
 the two events in the order the platform sends them.
 
+## The gallery grows up (2026-08-21, after the crossing)
+
+Advanced charts, scoped to what lives in the classic `<c:chartSpace>` (the
+exceljet.net catalogue was the checklist): the painter now honours what it
+already read but silently mis-drew, and Calx's Insert ▸ Chart menu grew from
+four entries to the families. Four painter debts paid for files that already
+exist: `barDir val="bar"` drew columns (now a transposed layout, first
+category at the bottom, first series nearest the axis — both confirmed
+against Excel's render of our own parts); `percentStacked` drew raw sizes
+(now shares, axis pinned 0–100% by tens); stacked line and area drew every
+series from the baseline (now each rides the running total, areas as opaque
+bands); radar fell through to the bar renderer and scatter threw its X values
+away (each has its own renderer now — the scatter one plots real pairs, with
+Excel's own KB 211119 rule for when an axis may leave zero out). A scatter's
+`<c:xVal>` rides the reader's existing category slot as text and is parsed at
+the edges: `Plotted.xs` for painting — Calx resolves it live, so editing an X
+cell moves its point — and a `numCache` when writing.
+
+The writer authors `scatterChart` (xVal/yVal pairs, two value axes — the
+bottom axis being a *value* axis is what makes it a scatter) and `radarChart`,
+and the whole gallery was pushed through the real applications: every variant
+inserted through the menus of the running Calx, saved, and read back by
+Excel's own object model — six for six on the exact `ChartType` asked for,
+after one measured correction (see LEARNINGS: a scatter series must state
+`noFill` on its line or Excel reads scatter-with-lines). A scatter copied
+from Calx pasted into Scriva, saved, opened clean in Word and rendered
+markers-only at the right pairs. The hands-on pass also caught what no test
+asked: a doughnut legended its one series' name instead of its slices — a
+pie's legend now names its categories, and pie/doughnut inserts get the
+legend Excel always gives them. Out of scope, stated: waterfall, histogram,
+treemap, sunburst and funnel are *chartex*, a different part format —
+preserved verbatim, drawn as placeholders; pie-of-pie draws as plain pie,
+bubble as scatter, a combo as its first plot.
+
+Building the demo gallery afterwards (`C:\Adnan\test\chart_gallery.xlsx`, every
+variant inserted through the menus, read back by Excel fourteen for fourteen)
+found one more: typing a chart title kept only its first letter. The grid
+reads keys raw, so the keystroke that went into the title box also reached
+the grid, which took it as "deselect the chart" — and the rest of the title
+went into a cell. A text box that is not the cell's own editor now owns the
+keyboard (`keys_belong_elsewhere`), which fixes the name box the same way.
+
 ## Deferred
 
 - [x] **PDF** — was dropped per Q3; built after ship as `wp-print`. See above.

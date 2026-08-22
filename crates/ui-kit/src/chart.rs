@@ -202,6 +202,7 @@ mod tests {
             name: "Sales".to_string(),
             values: vec![Some(1.0), Some(2.0), Some(3.0)],
             rgb: [255, 0, 0],
+            ..Default::default()
         }];
         let bars: Vec<egui::Rect> = painted(&plot(ChartKind::Bar), &series)
             .iter()

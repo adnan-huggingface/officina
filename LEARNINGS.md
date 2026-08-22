@@ -476,3 +476,15 @@ two applications cheap: the `<c:chartSpace>` alone is the whole payload, since
 cosmetic note from the same probe: a series that states no fill is coloured by
 the reader's own defaults, and Word's default varies the colour per point where
 Calx paints one blue — stating the fill is what pins the look across readers.
+
+**Excel classifies a scatter by its series' lines, not by its stated style.**
+A `scatterChart` authored with `<c:scatterStyle val="marker"/>` and nothing on
+the series read back through Excel's object model as `xlXYScatterLines`, and
+its export drew the joining lines: silence on a scatter series means an
+*automatic* line, however the style protests. Real Excel spells markers-only
+per series, `<c:spPr><a:ln><a:noFill/></a:ln></c:spPr>`, and once the writer
+did the same the type read back as asked. The same probe confirmed two
+guessed conventions against Excel's own render of our parts: a bar chart laid
+on its side puts its first category at the *bottom* and its first series
+nearest the axis — a column chart turned anticlockwise, both ends — and a
+radar runs its first category from the top, clockwise.

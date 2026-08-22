@@ -91,12 +91,35 @@ pub fn resolve(book: &Workbook, chart: &Chart) -> Vec<Plotted> {
                         .collect::<Vec<_>>()
                 })
                 .filter(|values: &Vec<Option<f64>>| !values.is_empty());
+            // A scatter's X lives in the category slot; resolved the same way
+            // as the values, so editing an X cell moves its point.
+            let live_x = series
+                .categories_ref
+                .as_deref()
+                .and_then(|f| ss_formula::workbook::range_values(book, f))
+                .map(|values| {
+                    values
+                        .iter()
+                        .map(|v| match v {
+                            ss_formula::Value::Number(n) => Some(*n),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .filter(|values: &Vec<Option<f64>>| !values.is_empty());
             Plotted {
                 name: series
                     .name
                     .clone()
                     .unwrap_or_else(|| format!("Series {}", index + 1)),
                 values: live.unwrap_or_else(|| series.values.clone()),
+                xs: live_x.unwrap_or_else(|| {
+                    series
+                        .categories
+                        .iter()
+                        .map(|c| c.trim().parse::<f64>().ok())
+                        .collect()
+                }),
                 rgb: series
                     .color
                     .unwrap_or(SERIES_COLORS[index % SERIES_COLORS.len()]),

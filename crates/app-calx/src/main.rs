@@ -403,7 +403,11 @@ enum Command {
     CondFormat,
     Protect,
     Data(DataTool),
-    Chart(ss_model::ChartKind),
+    Chart {
+        kind: ss_model::ChartKind,
+        grouping: ss_model::chart::Grouping,
+        horizontal: bool,
+    },
     Picture,
     Note,
     /// Paste needs the system clipboard, which the layout has no business
@@ -412,6 +416,20 @@ enum Command {
     PasteSpecial,
     Autosum,
     Zoom(f64),
+}
+
+/// Whether a text box other than the cell's own editor holds the keyboard.
+///
+/// The grid reads key events raw, so a box that egui has focused — the name
+/// box, the chart title — is not protected from it by focus alone: the first
+/// letter of a chart title also reached the grid, which took the keystroke
+/// as "deselect the chart", and the rest of the title went into a cell. The
+/// two fields that *are* the cell edit are not elsewhere; the grid's own
+/// key path is what makes arrows and Enter mean what they mean in them.
+fn keys_belong_elsewhere(ctx: &egui::Context) -> bool {
+    ctx.memory(|m| m.focused()).is_some_and(|id| {
+        id != egui::Id::new("calx-cell-editor") && id != egui::Id::new("calx-formula-bar")
+    })
 }
 
 impl Calx {
@@ -793,7 +811,12 @@ impl Calx {
     /// heading, and every remaining column is a series. Getting this wrong in
     /// either direction is recoverable — the chart is there to be looked at and
     /// undone — and guessing is what makes the button worth pressing.
-    fn insert_chart(&mut self, kind: ss_model::ChartKind) {
+    fn insert_chart(
+        &mut self,
+        kind: ss_model::ChartKind,
+        grouping: ss_model::chart::Grouping,
+        horizontal: bool,
+    ) {
         let Some(range) = self.data_range() else {
             self.status = "Select the cells to plot first".to_string();
             return;
@@ -804,7 +827,10 @@ impl Calx {
         };
         let header = ss_formula::sort::looks_like_headers(sheet, range);
         let name = sheet.name.clone();
-        let labelled = matches!(
+        // A scatter reads its first column as X whatever is in it — numbers
+        // are the point — where every other kind only surrenders the column
+        // to labels when it holds text.
+        let labelled = (matches!(
             sheet
                 .get(CellRef::new(
                     range.start.row + u32::from(header),
@@ -812,7 +838,8 @@ impl Calx {
                 ))
                 .map(|c| c.value),
             Some(ss_model::CellValue::Text(_))
-        ) && range.cols() > 1;
+        ) || kind == ss_model::ChartKind::Scatter)
+            && range.cols() > 1;
 
         let first_row = range.start.row + u32::from(header);
         let categories: Vec<String> = if labelled {
@@ -874,6 +901,14 @@ impl Calx {
             .col
             .saturating_add(2)
             .min(ss_model::cell::MAX_COLS - 8);
+        // More than one series needs telling apart — and a pie's one series
+        // is a ring of categories, which Excel always legends.
+        let legend = (series.len() > 1
+            || matches!(
+                kind,
+                ss_model::ChartKind::Pie | ss_model::ChartKind::Doughnut
+            ))
+        .then_some(ss_model::chart::LegendPosition::Right);
         let chart = ss_model::Chart {
             part: String::new(),
             drawing_part: String::new(),
@@ -884,11 +919,11 @@ impl Calx {
             },
             plot: ss_model::chart::Plot {
                 kind,
-                grouping: ss_model::chart::Grouping::Clustered,
-                horizontal: false,
+                grouping,
+                horizontal,
                 title: None,
                 title_ref: None,
-                legend: (series.len() > 1).then_some(ss_model::chart::LegendPosition::Right),
+                legend,
                 series,
                 ..ss_model::chart::Plot::default()
             },
@@ -1281,7 +1316,11 @@ impl Calx {
         // sheet kind this workbook model keeps a slot for but cannot draw —
         // so only the embedded half of that pair is here.
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::ALT, egui::Key::F1)) {
-            self.insert_chart(ss_model::ChartKind::Bar);
+            self.insert_chart(
+                ss_model::ChartKind::Bar,
+                ss_model::chart::Grouping::Clustered,
+                false,
+            );
         }
         // F9 recalculates. Everything here recalculates after every edit, so
         // the key is for the volatile functions — NOW, TODAY, RAND — whose
@@ -3240,15 +3279,66 @@ impl Calx {
                 }
                 menu::sep(ui);
                 menu::sub(ui, "C&hart", |ui| {
-                    for (label, key, kind) in [
-                        ("C&olumn", "Alt+F1", ss_model::ChartKind::Bar),
-                        ("&Line", "", ss_model::ChartKind::Line),
-                        ("Pi&e", "", ss_model::ChartKind::Pie),
-                        ("&Area", "", ss_model::ChartKind::Area),
-                    ] {
-                        if menu::item(ui, label, key).clicked() {
-                            command = Some(Command::Chart(kind));
+                    use ss_model::chart::Grouping;
+                    use ss_model::ChartKind;
+                    // Excel's gallery, flattened to menus: the bar and area
+                    // families each carry their stacked variants, everything
+                    // else is one row.
+                    let mut chosen: Option<(ChartKind, Grouping, bool)> = None;
+                    menu::sub(ui, "C&olumn", |ui| {
+                        for (label, key, grouping) in [
+                            ("&Clustered", "Alt+F1", Grouping::Clustered),
+                            ("&Stacked", "", Grouping::Stacked),
+                            ("100% Stac&ked", "", Grouping::PercentStacked),
+                        ] {
+                            if menu::item(ui, label, key).clicked() {
+                                chosen = Some((ChartKind::Bar, grouping, false));
+                            }
                         }
+                    });
+                    menu::sub(ui, "&Bar", |ui| {
+                        for (label, grouping) in [
+                            ("&Clustered", Grouping::Clustered),
+                            ("&Stacked", Grouping::Stacked),
+                            ("100% Stac&ked", Grouping::PercentStacked),
+                        ] {
+                            if menu::item(ui, label, "").clicked() {
+                                chosen = Some((ChartKind::Bar, grouping, true));
+                            }
+                        }
+                    });
+                    if menu::item(ui, "&Line", "").clicked() {
+                        chosen = Some((ChartKind::Line, Grouping::Standard, false));
+                    }
+                    menu::sub(ui, "&Area", |ui| {
+                        for (label, grouping) in [
+                            ("Sta&ndard", Grouping::Standard),
+                            ("&Stacked", Grouping::Stacked),
+                            ("100% Stac&ked", Grouping::PercentStacked),
+                        ] {
+                            if menu::item(ui, label, "").clicked() {
+                                chosen = Some((ChartKind::Area, grouping, false));
+                            }
+                        }
+                    });
+                    if menu::item(ui, "Pi&e", "").clicked() {
+                        chosen = Some((ChartKind::Pie, Grouping::Standard, false));
+                    }
+                    if menu::item(ui, "&Doughnut", "").clicked() {
+                        chosen = Some((ChartKind::Doughnut, Grouping::Standard, false));
+                    }
+                    if menu::item(ui, "&Scatter", "").clicked() {
+                        chosen = Some((ChartKind::Scatter, Grouping::Standard, false));
+                    }
+                    if menu::item(ui, "&Radar", "").clicked() {
+                        chosen = Some((ChartKind::Radar, Grouping::Standard, false));
+                    }
+                    if let Some((kind, grouping, horizontal)) = chosen {
+                        command = Some(Command::Chart {
+                            kind,
+                            grouping,
+                            horizontal,
+                        });
                     }
                 });
                 if menu::item(ui, "&Picture…", "").clicked() {
@@ -3424,7 +3514,11 @@ impl Calx {
             Command::Protect => self.toggle_protection(),
             Command::Data(DataTool::TextToColumns) => self.open_text_to_columns(),
             Command::Data(DataTool::RemoveDuplicates) => self.open_remove_duplicates(),
-            Command::Chart(kind) => self.insert_chart(kind),
+            Command::Chart {
+                kind,
+                grouping,
+                horizontal,
+            } => self.insert_chart(kind, grouping, horizontal),
             Command::Picture => self.insert_picture(),
             Command::Note => self.open_note(),
             Command::Paste => {
@@ -7152,8 +7246,10 @@ impl DocumentApp for Calx {
         // it in a cell — press Alt+I, then W to delete a row, and "w" lands in
         // the cursor cell as well.
         self.last_body = ui.available_size();
-        self.grid.blocked =
-            self.dialog.is_some() || self.pending.is_some() || egui::Popup::is_any_open(ui.ctx());
+        self.grid.blocked = self.dialog.is_some()
+            || self.pending.is_some()
+            || egui::Popup::is_any_open(ui.ctx())
+            || keys_belong_elsewhere(ui.ctx());
         let response = self.grid.show(ui, &mut self.doc.workbook);
         response.context_menu(|ui| self.context_menu(ui));
 
@@ -7475,7 +7571,11 @@ mod tests {
             CellRef::from_a1("A3").expect("valid"),
             app.doc.workbook.sheet(0).expect("sheet 0"),
         );
-        app.insert_chart(ss_model::ChartKind::Bar);
+        app.insert_chart(
+            ss_model::ChartKind::Bar,
+            ss_model::chart::Grouping::Clustered,
+            false,
+        );
         assert_eq!(app.grid.selected_chart, Some(0), "the new chart is held");
 
         let payload = app.chart_payload(0, 0).expect("a payload");
@@ -7488,6 +7588,62 @@ mod tests {
             plot.series[0].values,
             vec![Some(3.0), Some(1.0), Some(4.0)],
             "the numbers ride in the caches"
+        );
+    }
+
+    #[test]
+    fn a_focused_text_box_outside_the_grid_owns_the_keys_and_the_cells_editor_does_not() {
+        let ctx = egui::Context::default();
+        let focus = |id: &str| {
+            ctx.memory_mut(|m| m.request_focus(egui::Id::new(id)));
+            keys_belong_elsewhere(&ctx)
+        };
+        assert!(
+            !keys_belong_elsewhere(&ctx),
+            "nothing focused, the grid listens"
+        );
+        assert!(
+            focus("calx-chart-title"),
+            "a title being typed is not a cell"
+        );
+        assert!(
+            !focus("calx-cell-editor"),
+            "the cell's own editor is the grid's"
+        );
+        assert!(!focus("calx-formula-bar"));
+    }
+
+    #[test]
+    fn a_scatter_takes_its_first_column_as_x_even_when_it_holds_numbers() {
+        // Every other kind only surrenders the first column to labels when it
+        // holds text; a scatter's first column being numbers is the point.
+        let mut app = Calx::new();
+        for (at, value) in [
+            ("A1", "1"),
+            ("B1", "10"),
+            ("A2", "2"),
+            ("B2", "20"),
+            ("A3", "4"),
+            ("B3", "40"),
+        ] {
+            type_into(&mut app, at, value);
+        }
+        app.grid.selection = grid::Selection::at(CellRef::from_a1("A1").expect("valid"));
+        app.grid.selection.extend_to(
+            CellRef::from_a1("B3").expect("valid"),
+            app.doc.workbook.sheet(0).expect("sheet 0"),
+        );
+        app.insert_chart(
+            ss_model::ChartKind::Scatter,
+            ss_model::chart::Grouping::Standard,
+            false,
+        );
+        let chart = &app.doc.workbook.sheet(0).expect("sheet 0").charts[0];
+        assert_eq!(chart.plot.series.len(), 1, "one Y series, not two");
+        assert_eq!(chart.plot.series[0].categories, ["1", "2", "4"]);
+        assert_eq!(
+            chart.plot.series[0].values,
+            [Some(10.0), Some(20.0), Some(40.0)]
         );
     }
 

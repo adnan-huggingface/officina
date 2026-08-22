@@ -15,7 +15,7 @@
 //! That approximation costs nothing, because both applications put back the
 //! bytes their file came with.
 
-use crate::{Axis, ChartKind, LegendPosition, Paint, Plot};
+use crate::{Axis, ChartKind, Grouping, LegendPosition, Paint, Plot};
 
 /// The size a chart sets its own text in, before the caller's zoom.
 ///
@@ -133,10 +133,14 @@ impl Rect {
 ///
 /// A workbook resolves them from its cells so that editing B7 redraws the bar
 /// above it; a document has only the cache the file carries.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Plotted {
     pub name: String,
     pub values: Vec<Option<f64>>,
+    /// The X each point was given, which only a scatter plots. For every other
+    /// kind the X is a category, and this holds whatever of the category cache
+    /// happened to be numeric — which the renderers for those kinds never read.
+    pub xs: Vec<Option<f64>>,
     pub rgb: [u8; 3],
 }
 
@@ -235,6 +239,14 @@ pub fn cached_series(plot: &Plot) -> Vec<Plotted> {
                 .clone()
                 .unwrap_or_else(|| format!("Series {}", index + 1)),
             values: series.values.clone(),
+            // A scatter's `<c:xVal>` cache lands in `categories`: the reader
+            // keeps one slot for "the axis a point stands on", whatever its
+            // element name. Parsed here so the painter plots numbers.
+            xs: series
+                .categories
+                .iter()
+                .map(|c| c.trim().parse::<f64>().ok())
+                .collect(),
             rgb: series
                 .color
                 .unwrap_or(SERIES_COLORS[index % SERIES_COLORS.len()]),
@@ -356,9 +368,28 @@ pub fn primitives(
     }
 
     // The legend takes its strip before the plot area is measured, so the plot
-    // never draws underneath it.
+    // never draws underneath it. A pie's legend names its slices, not its one
+    // series — the categories are what the colours mean there.
+    let slices;
+    let named = if matches!(plot.kind, ChartKind::Pie | ChartKind::Doughnut)
+        && !plot.categories().is_empty()
+    {
+        slices = plot
+            .categories()
+            .iter()
+            .enumerate()
+            .map(|(i, name)| Plotted {
+                name: name.clone(),
+                rgb: SERIES_COLORS[i % SERIES_COLORS.len()],
+                ..Plotted::default()
+            })
+            .collect::<Vec<_>>();
+        slices.as_slice()
+    } else {
+        series
+    };
     if let Some(position) = plot.legend {
-        area = legend(&mut out, area, series, style, small, position, measure);
+        area = legend(&mut out, area, named, style, small, position, measure);
     }
     if area.width < 16.0 || area.height < 16.0 {
         return out;
@@ -367,6 +398,11 @@ pub fn primitives(
     match plot.kind {
         ChartKind::Pie | ChartKind::Doughnut => {
             pie(&mut out, area, series, plot.kind == ChartKind::Doughnut);
+        }
+        ChartKind::Radar => radar(&mut out, area, plot, series, style, small, measure),
+        ChartKind::Scatter => scatter(&mut out, area, plot, series, style, small, measure),
+        ChartKind::Bar if plot.horizontal => {
+            sideways(&mut out, area, plot, series, style, small, measure);
         }
         ChartKind::Other(_) => {
             let size = 11.0 * style.zoom;
@@ -490,8 +526,24 @@ fn axes_chart(
         return;
     }
     let stacked = plot.grouping.stacked();
+    let percent = plot.grouping == Grouping::PercentStacked;
+    // A 100% stack plots each point's share, not its size; the shares are
+    // computed here so everything downstream sees a chart of fractions.
+    let shares;
+    let series = if percent {
+        shares = percented(series);
+        shares.as_slice()
+    } else {
+        series
+    };
     let (data_low, data_high) = bounds(series, stacked);
-    let (low, high, major) = axis(data_low, data_high);
+    // Excel pins an all-positive 100% stack at exactly 100%, in steps of ten;
+    // padding it like any other axis would run the scale to 120%.
+    let (low, high, major) = if percent && data_low >= 0.0 {
+        (0.0, 1.0, 0.1)
+    } else {
+        axis(data_low, data_high)
+    };
     if !(high - low).is_finite() || high <= low {
         return;
     }
@@ -502,7 +554,11 @@ fn axes_chart(
     let labels: Vec<(f64, String)> = (0..=ticks)
         .map(|step| {
             let value = low + major * step as f64;
-            (value, (style.label)(value))
+            if percent {
+                (value, format!("{}%", (style.label)(value * 100.0)))
+            } else {
+                (value, (style.label)(value))
+            }
         })
         .collect();
     let widest = labels
@@ -608,14 +664,23 @@ fn axes_chart(
     }
 
     match plot.kind {
-        ChartKind::Line | ChartKind::Scatter => {
+        ChartKind::Line => {
+            // A stacked line plots each series on top of the running total; a
+            // blank contributes nothing to the stack and draws no marker.
+            let mut totals = vec![0.0f64; points];
             for entry in series {
                 let path: Vec<(f64, f64)> = entry
                     .values
                     .iter()
                     .enumerate()
                     .filter_map(|(i, v)| {
-                        v.map(|v| (area.left() + slot * (i as f64 + 0.5), y_of(v)))
+                        let x = area.left() + slot * (i as f64 + 0.5);
+                        if stacked {
+                            totals[i] += v.unwrap_or(0.0);
+                            v.map(|_| (x, y_of(totals[i])))
+                        } else {
+                            v.map(|v| (x, y_of(v)))
+                        }
                     })
                     .collect();
                 if path.len() > 1 {
@@ -635,25 +700,52 @@ fn axes_chart(
             }
         }
         ChartKind::Area => {
-            for entry in series {
-                let mut path: Vec<(f64, f64)> = entry
-                    .values
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(i, v)| {
-                        v.map(|v| (area.left() + slot * (i as f64 + 0.5), y_of(v)))
-                    })
-                    .collect();
-                if path.len() < 2 {
-                    continue;
+            if stacked {
+                // Each series is the band between the running total below it
+                // and the total with it added: forward along its own top, back
+                // along the series beneath. Bands cannot overlap, so they are
+                // drawn opaque in the series' own colour, which is what Office
+                // does.
+                let mut below = vec![0.0f64; points];
+                for entry in series {
+                    let mut above = below.clone();
+                    for (i, v) in entry.values.iter().enumerate() {
+                        above[i] += v.unwrap_or(0.0);
+                    }
+                    let x_at = |i: usize| area.left() + slot * (i as f64 + 0.5);
+                    let mut path: Vec<(f64, f64)> =
+                        (0..points).map(|i| (x_at(i), y_of(above[i]))).collect();
+                    path.extend((0..points).rev().map(|i| (x_at(i), y_of(below[i]))));
+                    if path.len() > 3 {
+                        out.push(Prim::Poly {
+                            points: path,
+                            rgb: entry.rgb,
+                            edge: None,
+                        });
+                    }
+                    below = above;
                 }
-                path.push((path[path.len() - 1].0, base));
-                path.push((path[0].0, base));
-                out.push(Prim::Poly {
-                    points: path,
-                    rgb: blend(entry.rgb, style.background, 0.45),
-                    edge: Some((entry.rgb, 1.2 * style.zoom)),
-                });
+            } else {
+                for entry in series {
+                    let mut path: Vec<(f64, f64)> = entry
+                        .values
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(i, v)| {
+                            v.map(|v| (area.left() + slot * (i as f64 + 0.5), y_of(v)))
+                        })
+                        .collect();
+                    if path.len() < 2 {
+                        continue;
+                    }
+                    path.push((path[path.len() - 1].0, base));
+                    path.push((path[0].0, base));
+                    out.push(Prim::Poly {
+                        points: path,
+                        rgb: blend(entry.rgb, style.background, 0.45),
+                        edge: Some((entry.rgb, 1.2 * style.zoom)),
+                    });
+                }
             }
         }
         _ => {
@@ -780,6 +872,541 @@ pub fn axis(low: f64, high: f64) -> (f64, f64, f64) {
     (min, max, major)
 }
 
+/// Each value as its share of its point's total — what a 100% stack plots.
+///
+/// The shares are of the absolute total, sign kept, which is how Excel fills
+/// a percent stack that has a negative in it. A point whose total is zero has
+/// no shares to plot.
+fn percented(series: &[Plotted]) -> Vec<Plotted> {
+    let points = series.iter().map(|s| s.values.len()).max().unwrap_or(0);
+    let totals: Vec<f64> = (0..points)
+        .map(|i| {
+            series
+                .iter()
+                .filter_map(|s| s.values.get(i).copied().flatten())
+                .map(f64::abs)
+                .sum()
+        })
+        .collect();
+    series
+        .iter()
+        .map(|entry| Plotted {
+            values: entry
+                .values
+                .iter()
+                .enumerate()
+                .map(|(i, v)| match v {
+                    Some(v) if totals[i] > 0.0 => Some(v / totals[i]),
+                    _ => None,
+                })
+                .collect(),
+            ..entry.clone()
+        })
+        .collect()
+}
+
+/// Bars that lie down: `<c:barDir val="bar"/>`.
+///
+/// The same chart as the standing one with its axes traded — categories run
+/// up the left edge, values along the bottom — so the layout is the standing
+/// chart's transposed: the gutter holds category names instead of numbers,
+/// the footer holds numbers instead of names, and the first category sits at
+/// the *bottom*, because Excel lays a column chart on its side by turning it
+/// anticlockwise.
+#[allow(clippy::too_many_arguments)]
+fn sideways(
+    out: &mut Vec<Prim>,
+    area: Rect,
+    plot: &Plot,
+    series: &[Plotted],
+    style: &Style,
+    size: f64,
+    measure: &mut dyn Measure,
+) {
+    let points = series.iter().map(|s| s.values.len()).max().unwrap_or(0);
+    if points == 0 {
+        return;
+    }
+    let stacked = plot.grouping.stacked();
+    let percent = plot.grouping == Grouping::PercentStacked;
+    let shares;
+    let series = if percent {
+        shares = percented(series);
+        shares.as_slice()
+    } else {
+        series
+    };
+    let (data_low, data_high) = bounds(series, stacked);
+    let (low, high, major) = if percent && data_low >= 0.0 {
+        (0.0, 1.0, 0.1)
+    } else {
+        axis(data_low, data_high)
+    };
+    if !(high - low).is_finite() || high <= low {
+        return;
+    }
+
+    let ticks = ((high - low) / major).round() as usize;
+    let labels: Vec<(f64, String)> = (0..=ticks)
+        .map(|step| {
+            let value = low + major * step as f64;
+            if percent {
+                (value, format!("{}%", (style.label)(value * 100.0)))
+            } else {
+                (value, (style.label)(value))
+            }
+        })
+        .collect();
+    // The gutter holds the category names, and is as wide as the widest.
+    let widest = plot
+        .categories()
+        .iter()
+        .map(|text| measure.size(text, size).0)
+        .fold(0.0f64, f64::max);
+    let gutter = widest + CLEAR * size;
+    let footer = (FOOTER - MARGIN) * size;
+    let area = Rect::new(
+        area.left() + gutter,
+        area.top(),
+        area.width - gutter,
+        area.height - footer,
+    );
+    if area.width < 8.0 || area.height < 8.0 {
+        return;
+    }
+
+    let x_of = |value: f64| area.left() + (value - low) / (high - low) * area.width;
+
+    if let Paint::Rgb(rgb) = plot.plot_fill {
+        out.push(Prim::Fill {
+            rect: area,
+            rgb,
+            round: 0.0,
+        });
+    }
+
+    let stub = TICK * size;
+    let val_tick = tick_marks(&plot.val_axis, stub, style.grid);
+    let cat_tick = tick_marks(&plot.cat_axis, stub, style.grid);
+
+    // A gridline stands at every major unit, its label centred underneath.
+    for (value, text) in labels {
+        let x = x_of(value);
+        out.push(Prim::Line {
+            points: vec![(x, area.top()), (x, area.bottom())],
+            thickness: 1.0,
+            rgb: blend(style.grid, style.background, 0.5),
+        });
+        if let Some((inside, outside, rgb)) = val_tick {
+            out.push(Prim::Line {
+                points: vec![(x, area.bottom() - inside), (x, area.bottom() + outside)],
+                thickness: 1.0,
+                rgb,
+            });
+        }
+        let (width, height) = measure.size(&text, size);
+        out.push(Prim::Text {
+            at: (x - width / 2.0, area.bottom() + (footer - height) / 2.0),
+            size,
+            text,
+            rgb: style.text,
+        });
+    }
+    // The category axis is the vertical one here, standing at zero.
+    let base = x_of(0.0f64.clamp(low, high));
+    if let Some(rgb) = ink(plot.cat_axis.line, style.grid) {
+        out.push(Prim::Line {
+            points: vec![(base, area.top()), (base, area.bottom())],
+            thickness: 1.0,
+            rgb,
+        });
+    }
+    if let Paint::Rgb(rgb) = plot.plot_line {
+        out.push(Prim::Frame {
+            rect: area,
+            rgb,
+            thickness: 1.0,
+            round: 0.0,
+        });
+    }
+
+    let slot = area.height / points as f64;
+    if let Some((inside, outside, rgb)) = cat_tick {
+        for step in 0..=points {
+            let y = area.bottom() - slot * step as f64;
+            out.push(Prim::Line {
+                points: vec![(area.left() - outside, y), (area.left() + inside, y)],
+                thickness: 1.0,
+                rgb,
+            });
+        }
+    }
+
+    // The first category at the bottom, and within a group the first series
+    // nearest the axis — both ends of the anticlockwise turn.
+    let lanes = if stacked { 1 } else { series.len().max(1) };
+    let bar = (slot / (lanes as f64 + plot.gap.max(0.0) / 100.0)).max(1.0);
+    let mut totals = vec![0.0f64; points];
+    for (index, entry) in series.iter().enumerate() {
+        for (i, value) in entry.values.iter().enumerate() {
+            let Some(value) = value else { continue };
+            let centre = area.bottom() - slot * (i as f64 + 0.5);
+            let y = if stacked {
+                centre + bar / 2.0
+            } else {
+                centre + bar * lanes as f64 / 2.0 - bar * index as f64
+            };
+            let (from, to) = if stacked {
+                let start = totals[i];
+                totals[i] += value;
+                (start, totals[i])
+            } else {
+                (0.0f64.clamp(low, high), *value)
+            };
+            out.push(Prim::Fill {
+                rect: Rect::from_corners((x_of(from), y), (x_of(to), y - bar)),
+                rgb: entry.rgb,
+                round: 0.0,
+            });
+        }
+    }
+
+    // Category names in the gutter, right-aligned against the axis and
+    // centred on their slot, thinned when the slots are shorter than a line.
+    let step = ((measure.size("M", size).1 / slot).ceil() as usize).max(1);
+    for (i, label) in plot.categories().iter().enumerate().step_by(step) {
+        if label.is_empty() {
+            continue;
+        }
+        let (width, height) = measure.size(label, size);
+        out.push(Prim::Text {
+            at: (
+                area.left() - LABEL_GAP * size - width,
+                area.bottom() - slot * (i as f64 + 0.5) - height / 2.0,
+            ),
+            size,
+            text: label.clone(),
+            rgb: style.text,
+        });
+    }
+}
+
+/// A radar: one spoke per category, each series a closed line over them.
+#[allow(clippy::too_many_arguments)]
+fn radar(
+    out: &mut Vec<Prim>,
+    area: Rect,
+    plot: &Plot,
+    series: &[Plotted],
+    style: &Style,
+    size: f64,
+    measure: &mut dyn Measure,
+) {
+    let points = series.iter().map(|s| s.values.len()).max().unwrap_or(0);
+    if points == 0 {
+        return;
+    }
+    let (data_low, data_high) = bounds(series, false);
+    let (low, high, major) = axis(data_low, data_high);
+    if !(high - low).is_finite() || high <= low {
+        return;
+    }
+
+    let centre = area.center();
+    // Room around the web for one line of category labels.
+    let radius = (area.width.min(area.height) / 2.0 - 1.8 * size).max(4.0);
+    // The first category at the top, the rest clockwise: Excel's order.
+    let spoke = |k: usize, value: f64| {
+        let angle = -std::f64::consts::FRAC_PI_2 + std::f64::consts::TAU * k as f64 / points as f64;
+        let r = (value - low) / (high - low) * radius;
+        (centre.0 + angle.cos() * r, centre.1 + angle.sin() * r)
+    };
+
+    // The web: a ring at every major unit, and a spoke to every category.
+    let faint = blend(style.grid, style.background, 0.5);
+    let rings = ((high - low) / major).round() as usize;
+    for ring in 1..=rings {
+        let value = low + major * ring as f64;
+        let mut path: Vec<(f64, f64)> = (0..points).map(|k| spoke(k, value)).collect();
+        path.push(path[0]);
+        out.push(Prim::Line {
+            points: path,
+            thickness: 1.0,
+            rgb: faint,
+        });
+    }
+    for k in 0..points {
+        out.push(Prim::Line {
+            points: vec![centre, spoke(k, high)],
+            thickness: 1.0,
+            rgb: faint,
+        });
+    }
+
+    // The scale runs up the first spoke, its labels beside it, thinned to
+    // taste like any axis's: only as many as the radius has room for.
+    if !plot.val_axis.deleted {
+        let step = ((measure.size("0", size).1 * rings as f64 / radius).ceil() as usize).max(1);
+        for ring in (0..=rings).step_by(step) {
+            let value = low + major * ring as f64;
+            let text = (style.label)(value);
+            let (width, height) = measure.size(&text, size);
+            let (x, y) = spoke(0, value);
+            out.push(Prim::Text {
+                at: (x - width - 0.3 * size, y - height / 2.0),
+                size,
+                text,
+                rgb: style.text,
+            });
+        }
+    }
+
+    // Category names just past their spokes, pulled toward whichever side of
+    // the web they stand on so they never lie across it.
+    for (k, label) in plot.categories().iter().enumerate().take(points) {
+        if label.is_empty() {
+            continue;
+        }
+        let (width, height) = measure.size(label, size);
+        let angle = -std::f64::consts::FRAC_PI_2 + std::f64::consts::TAU * k as f64 / points as f64;
+        let r = radius + 0.5 * size;
+        let x = centre.0 + angle.cos() * r + (angle.cos() - 1.0) / 2.0 * width;
+        let y = centre.1 + angle.sin() * r + (angle.sin() - 1.0) / 2.0 * height;
+        out.push(Prim::Text {
+            at: (x, y),
+            size,
+            text: label.clone(),
+            rgb: style.text,
+        });
+    }
+
+    for entry in series {
+        let path: Vec<(f64, f64)> = entry
+            .values
+            .iter()
+            .enumerate()
+            .filter_map(|(k, v)| v.map(|v| spoke(k, v)))
+            .collect();
+        if path.len() > 1 {
+            let mut closed = path.clone();
+            closed.push(path[0]);
+            out.push(Prim::Line {
+                points: closed,
+                thickness: 1.6 * style.zoom,
+                rgb: entry.rgb,
+            });
+        }
+        for point in path {
+            out.push(Prim::Dot {
+                at: point,
+                radius: 1.8 * style.zoom,
+                rgb: entry.rgb,
+            });
+        }
+    }
+}
+
+/// The axis Office draws over a scatter's values, which unlike a bar's need
+/// not include zero.
+///
+/// The rule is Excel's own (KB 211119): zero joins the axis only when the
+/// data's spread is more than a sixth of its magnitude — years plot as years,
+/// not as bars from nought — and otherwise the axis starts half a spread
+/// below the data. The ends land on multiples of the major unit.
+fn scatter_axis(low: f64, high: f64) -> (f64, f64, f64) {
+    let (mut low, mut high) = (low.min(high), high.max(low));
+    if low == high {
+        low -= 0.5;
+        high += 0.5;
+    }
+    let spread = high - low;
+    if low > 0.0 {
+        if spread > high / 6.0 {
+            low = 0.0;
+        } else {
+            low -= spread / 2.0;
+        }
+    } else if high < 0.0 {
+        if spread > -low / 6.0 {
+            high = 0.0;
+        } else {
+            high += spread / 2.0;
+        }
+    }
+    let (_, _, major) = axis(low, high);
+    (
+        (low / major).floor() * major,
+        (high / major).ceil() * major,
+        major,
+    )
+}
+
+/// An X-Y scatter: every point plotted where its own two numbers put it.
+#[allow(clippy::too_many_arguments)]
+fn scatter(
+    out: &mut Vec<Prim>,
+    area: Rect,
+    plot: &Plot,
+    series: &[Plotted],
+    style: &Style,
+    size: f64,
+    measure: &mut dyn Measure,
+) {
+    // A point missing its X gets counted instead: Excel plots a series with
+    // no `<c:xVal>` against 1, 2, 3…
+    let x_at =
+        |entry: &Plotted, i: usize| entry.xs.get(i).copied().flatten().unwrap_or((i + 1) as f64);
+    let dots: Vec<Vec<(f64, f64)>> = series
+        .iter()
+        .map(|entry| {
+            entry
+                .values
+                .iter()
+                .enumerate()
+                .filter_map(|(i, v)| v.map(|v| (x_at(entry, i), v)))
+                .collect()
+        })
+        .collect();
+    let flat: Vec<(f64, f64)> = dots.iter().flatten().copied().collect();
+    if flat.is_empty() {
+        return;
+    }
+    let fold = |pick: fn((f64, f64)) -> f64, seed: f64, better: fn(f64, f64) -> f64| {
+        flat.iter().fold(seed, |acc, p| better(acc, pick(*p)))
+    };
+    let (x_low, x_high, x_major) = scatter_axis(
+        fold(|p| p.0, f64::INFINITY, f64::min),
+        fold(|p| p.0, f64::NEG_INFINITY, f64::max),
+    );
+    let (y_low, y_high, y_major) = scatter_axis(
+        fold(|p| p.1, f64::INFINITY, f64::min),
+        fold(|p| p.1, f64::NEG_INFINITY, f64::max),
+    );
+    if !(x_high - x_low).is_finite() || !(y_high - y_low).is_finite() {
+        return;
+    }
+
+    let y_ticks = ((y_high - y_low) / y_major).round() as usize;
+    let y_labels: Vec<(f64, String)> = (0..=y_ticks)
+        .map(|step| {
+            let value = y_low + y_major * step as f64;
+            (value, (style.label)(value))
+        })
+        .collect();
+    let widest = y_labels
+        .iter()
+        .map(|(_, text)| measure.size(text, size).0)
+        .fold(0.0f64, f64::max);
+    let gutter = widest + CLEAR * size;
+    let footer = (FOOTER - MARGIN) * size;
+    let area = Rect::new(
+        area.left() + gutter,
+        area.top(),
+        area.width - gutter,
+        area.height - footer,
+    );
+    if area.width < 8.0 || area.height < 8.0 {
+        return;
+    }
+
+    let x_of = |value: f64| area.left() + (value - x_low) / (x_high - x_low) * area.width;
+    let y_of = |value: f64| area.bottom() - (value - y_low) / (y_high - y_low) * area.height;
+
+    if let Paint::Rgb(rgb) = plot.plot_fill {
+        out.push(Prim::Fill {
+            rect: area,
+            rgb,
+            round: 0.0,
+        });
+    }
+
+    // Horizontal gridlines and their labels, as on any value axis. Both of a
+    // scatter's axes are value axes; the one whose look the model keeps
+    // stands for the pair.
+    let stub = TICK * size;
+    let val_tick = tick_marks(&plot.val_axis, stub, style.grid);
+    for (value, text) in y_labels {
+        let y = y_of(value);
+        out.push(Prim::Line {
+            points: vec![(area.left(), y), (area.right(), y)],
+            thickness: 1.0,
+            rgb: blend(style.grid, style.background, 0.5),
+        });
+        if let Some((inside, outside, rgb)) = val_tick {
+            out.push(Prim::Line {
+                points: vec![(area.left() - outside, y), (area.left() + inside, y)],
+                thickness: 1.0,
+                rgb,
+            });
+        }
+        let (width, height) = measure.size(&text, size);
+        out.push(Prim::Text {
+            at: (area.left() - LABEL_GAP * size - width, y - height / 2.0),
+            size,
+            text,
+            rgb: style.text,
+        });
+    }
+    // The bottom axis at Y's floor, with a label at every X major.
+    let base = y_of(0.0f64.clamp(y_low, y_high));
+    if let Some(rgb) = ink(plot.val_axis.line, style.grid) {
+        out.push(Prim::Line {
+            points: vec![(area.left(), base), (area.right(), base)],
+            thickness: 1.0,
+            rgb,
+        });
+    }
+    if let Paint::Rgb(rgb) = plot.plot_line {
+        out.push(Prim::Frame {
+            rect: area,
+            rgb,
+            thickness: 1.0,
+            round: 0.0,
+        });
+    }
+    let x_ticks = ((x_high - x_low) / x_major).round() as usize;
+    for step in 0..=x_ticks {
+        let value = x_low + x_major * step as f64;
+        let text = (style.label)(value);
+        let (width, height) = measure.size(&text, size);
+        out.push(Prim::Text {
+            at: (
+                x_of(value) - width / 2.0,
+                area.bottom() + (footer - height) / 2.0,
+            ),
+            size,
+            text,
+            rgb: style.text,
+        });
+        if let Some((inside, outside, rgb)) = val_tick {
+            let x = x_of(value);
+            out.push(Prim::Line {
+                points: vec![(x, area.bottom() - inside), (x, area.bottom() + outside)],
+                thickness: 1.0,
+                rgb,
+            });
+        }
+    }
+
+    for (entry, path) in series.iter().zip(&dots) {
+        let path: Vec<(f64, f64)> = path.iter().map(|&(x, y)| (x_of(x), y_of(y))).collect();
+        if plot.scatter_lines && path.len() > 1 {
+            out.push(Prim::Line {
+                points: path.clone(),
+                thickness: 1.6 * style.zoom,
+                rgb: entry.rgb,
+            });
+        }
+        for point in path {
+            out.push(Prim::Dot {
+                at: point,
+                radius: 1.8 * style.zoom,
+                rgb: entry.rgb,
+            });
+        }
+    }
+}
+
 fn pie(out: &mut Vec<Prim>, area: Rect, series: &[Plotted], doughnut: bool) {
     let Some(first) = series.first() else { return };
     let total: f64 = first.values.iter().flatten().map(|v| v.abs()).sum();
@@ -874,6 +1501,7 @@ mod tests {
             name: "Sales".to_string(),
             values: vec![Some(1.0), Some(2.0), Some(3.0)],
             rgb: [255, 0, 0],
+            ..Default::default()
         }];
         let prims = primitives(
             Rect::new(0.0, 0.0, 400.0, 300.0),
@@ -915,6 +1543,7 @@ mod tests {
             name: "s".to_string(),
             values: vec![Some(1.0)],
             rgb: [255, 0, 0],
+            ..Default::default()
         }];
         let rect = Rect::new(0.0, 0.0, 400.0, 300.0);
         let prims = primitives(rect, &with, &series, &style(), &mut Half);
@@ -941,6 +1570,7 @@ mod tests {
             name: "s".into(),
             values: vec![Some(100.0), Some(102.0), Some(101.0)],
             rgb: [255, 0, 0],
+            ..Default::default()
         }];
         let (low, high) = bounds(&series, false);
         assert_eq!(low, 0.0);
@@ -954,11 +1584,13 @@ mod tests {
                 name: "a".into(),
                 values: vec![Some(30.0), Some(40.0)],
                 rgb: [255, 0, 0],
+                ..Default::default()
             },
             Plotted {
                 name: "b".into(),
                 values: vec![Some(30.0), Some(40.0)],
                 rgb: [0, 0, 255],
+                ..Default::default()
             },
         ];
         assert_eq!(bounds(&series, false).1, 40.0);
@@ -1317,5 +1949,235 @@ mod tests {
     fn a_translucent_colour_is_blended_rather_than_carried() {
         assert_eq!(blend([0, 0, 0], [255, 255, 255], 0.5), [128, 128, 128]);
         assert_eq!(blend([10, 20, 30], [10, 20, 30], 0.25), [10, 20, 30]);
+    }
+
+    fn dots(prims: &[Prim], rgb: [u8; 3]) -> Vec<(f64, f64)> {
+        prims
+            .iter()
+            .filter_map(|prim| match prim {
+                Prim::Dot { at, rgb: ink, .. } if *ink == rgb => Some(*at),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_bar_that_lies_down_grows_sideways_from_one_baseline() {
+        // `barDir val="bar"`: for as long as bars have been drawn, a chart
+        // that asked for them lying down got them standing up.
+        let mut flat = plot(ChartKind::Bar);
+        flat.horizontal = true;
+        flat.series[0].values = vec![Some(1.0), Some(2.0), Some(3.0)];
+        let series = cached_series(&flat);
+        let prims = primitives(
+            Rect::new(0.0, 0.0, 400.0, 300.0),
+            &flat,
+            &series,
+            &style(),
+            &mut Half,
+        );
+        let bars = bars(&prims, SERIES_COLORS[0]);
+        assert_eq!(bars.len(), 3);
+        assert!(
+            bars.windows(2).all(|w| w[0].left() == w[1].left()),
+            "every bar grows from the same axis"
+        );
+        assert!(
+            bars[0].width < bars[1].width && bars[1].width < bars[2].width,
+            "longer values, longer bars"
+        );
+        assert!(
+            bars.windows(2)
+                .all(|w| (w[0].height - w[1].height).abs() < 1e-6),
+            "and all of them equally fat"
+        );
+        // The first category at the bottom: a column chart laid on its side
+        // by an anticlockwise turn, which is the way Excel lays it.
+        assert!(bars[0].center().1 > bars[2].center().1);
+    }
+
+    #[test]
+    fn a_percent_stack_plots_shares_and_labels_the_axis_in_percent() {
+        let mut plot = plot(ChartKind::Bar);
+        plot.grouping = Grouping::PercentStacked;
+        plot.series[0].values = vec![Some(10.0)];
+        plot.series.push(Series {
+            values: vec![Some(90.0)],
+            ..Series::default()
+        });
+        let series = cached_series(&plot);
+        let prims = primitives(
+            Rect::new(0.0, 0.0, 400.0, 300.0),
+            &plot,
+            &series,
+            &style(),
+            &mut Half,
+        );
+        let small = bars(&prims, SERIES_COLORS[0]);
+        let large = bars(&prims, SERIES_COLORS[1]);
+        assert_eq!((small.len(), large.len()), (1, 1));
+        assert!(
+            (large[0].height / small[0].height - 9.0).abs() < 1e-6,
+            "10 and 90 plot as a tenth and nine tenths, not as sizes"
+        );
+        assert!(
+            prims
+                .iter()
+                .any(|p| matches!(p, Prim::Text { text, .. } if text == "100%")),
+            "the axis reads in percent"
+        );
+    }
+
+    #[test]
+    fn a_stacked_area_stands_each_band_on_the_one_below() {
+        let mut plot = plot(ChartKind::Area);
+        plot.grouping = Grouping::Stacked;
+        plot.series[0].values = vec![Some(1.0), Some(1.0)];
+        plot.series.push(Series {
+            values: vec![Some(1.0), Some(1.0)],
+            ..Series::default()
+        });
+        let series = cached_series(&plot);
+        let prims = primitives(
+            Rect::new(0.0, 0.0, 400.0, 300.0),
+            &plot,
+            &series,
+            &style(),
+            &mut Half,
+        );
+        // Stacked bands are opaque in the series' own colour — they cannot
+        // overlap — where the overlapping standard areas are blended.
+        let band_top = |rgb: [u8; 3]| {
+            prims
+                .iter()
+                .find_map(|p| match p {
+                    Prim::Poly {
+                        points, rgb: ink, ..
+                    } if *ink == rgb => points.iter().map(|p| p.1).min_by(f64::total_cmp),
+                    _ => None,
+                })
+                .expect("a band")
+        };
+        assert!(
+            band_top(SERIES_COLORS[1]) < band_top(SERIES_COLORS[0]),
+            "the second band rides on the first"
+        );
+    }
+
+    #[test]
+    fn a_radar_closes_each_series_into_a_ring_over_its_spokes() {
+        // Radar fell through to the bar renderer, which drew a radar file as
+        // a bar chart with the wrong everything.
+        let mut plot = plot(ChartKind::Radar);
+        plot.series[0].values = vec![Some(1.0), Some(2.0), Some(3.0)];
+        let series = cached_series(&plot);
+        let prims = primitives(
+            Rect::new(0.0, 0.0, 400.0, 300.0),
+            &plot,
+            &series,
+            &style(),
+            &mut Half,
+        );
+        let ring = prims
+            .iter()
+            .find_map(|p| match p {
+                Prim::Line { points, rgb, .. } if *rgb == SERIES_COLORS[0] => Some(points.clone()),
+                _ => None,
+            })
+            .expect("the series line");
+        assert_eq!(ring.len(), 4, "three points, closed");
+        assert_eq!(ring.first(), ring.last(), "closed");
+        assert_eq!(dots(&prims, SERIES_COLORS[0]).len(), 3);
+        assert!(bars(&prims, SERIES_COLORS[0]).is_empty(), "no bars");
+    }
+
+    #[test]
+    fn a_scatter_puts_each_point_at_its_own_x() {
+        // Scatter shared the line renderer, which spaced the points evenly
+        // along the categories and threw their X values away.
+        let mut plot = plot(ChartKind::Scatter);
+        plot.series[0].categories = vec!["1".into(), "2".into(), "4".into()];
+        plot.series[0].values = vec![Some(5.0), Some(5.0), Some(5.0)];
+        let series = cached_series(&plot);
+        let prims = primitives(
+            Rect::new(0.0, 0.0, 400.0, 300.0),
+            &plot,
+            &series,
+            &style(),
+            &mut Half,
+        );
+        let dots = dots(&prims, SERIES_COLORS[0]);
+        assert_eq!(dots.len(), 3);
+        assert!(
+            dots.windows(2).all(|w| (w[0].1 - w[1].1).abs() < 1e-6),
+            "equal values, one height"
+        );
+        let (a, b) = (dots[1].0 - dots[0].0, dots[2].0 - dots[1].0);
+        assert!(
+            (b - 2.0 * a).abs() < 1e-6,
+            "the gap from 2 to 4 is twice the gap from 1 to 2: {a} then {b}"
+        );
+        assert!(
+            !prims
+                .iter()
+                .any(|p| matches!(p, Prim::Line { rgb, .. } if *rgb == SERIES_COLORS[0])),
+            "plain scatter draws markers, not a line"
+        );
+
+        // `<c:scatterStyle val="lineMarker"/>` is what joins them.
+        plot.scatter_lines = true;
+        let joined = primitives(
+            Rect::new(0.0, 0.0, 400.0, 300.0),
+            &plot,
+            &series,
+            &style(),
+            &mut Half,
+        );
+        assert!(joined
+            .iter()
+            .any(|p| matches!(p, Prim::Line { rgb, points, .. }
+                if *rgb == SERIES_COLORS[0] && points.len() == 3)));
+    }
+
+    #[test]
+    fn a_pies_legend_names_its_slices_and_not_its_one_series() {
+        let mut pie = plot(ChartKind::Pie);
+        pie.legend = Some(LegendPosition::Right);
+        pie.series[0].name = Some("Sales".to_string());
+        pie.series[0].values = vec![Some(1.0), Some(2.0)];
+        pie.series[0].categories = vec!["Q1".into(), "Q2".into()];
+        let series = cached_series(&pie);
+        let prims = primitives(
+            Rect::new(0.0, 0.0, 400.0, 300.0),
+            &pie,
+            &series,
+            &style(),
+            &mut Half,
+        );
+        let texts: Vec<&String> = prims
+            .iter()
+            .filter_map(|p| match p {
+                Prim::Text { text, .. } => Some(text),
+                _ => None,
+            })
+            .collect();
+        assert!(texts.iter().any(|t| *t == "Q1"), "{texts:?}");
+        assert!(texts.iter().any(|t| *t == "Q2"), "{texts:?}");
+        assert!(
+            !texts.iter().any(|t| *t == "Sales"),
+            "the one series' name means nothing beside a pie: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn a_scatter_axis_leaves_zero_out_when_the_data_stands_far_from_it() {
+        // Excel's own rule: years plot as years, not as bars from nought.
+        let (low, _, _) = scatter_axis(2020.0, 2026.0);
+        assert!(low > 2000.0, "not dragged to zero: {low}");
+        let (low, high, _) = scatter_axis(3.0, 9.0);
+        assert_eq!(low, 0.0, "a spread wider than a sixth reaches back to it");
+        assert!(high >= 9.0);
+        let (low, high, _) = scatter_axis(5.0, 5.0);
+        assert!(low < 5.0 && high > 5.0, "one value still gets a range");
     }
 }

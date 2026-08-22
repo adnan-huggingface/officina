@@ -383,6 +383,10 @@ fn pic_anchor(picture: &Picture, rel_id: &str, id: u32) -> Vec<u8> {
 /// it, or the workbook is being read by something simpler than Excel — still
 /// has the numbers to draw.
 pub(crate) fn chart_part(chart: &Chart) -> Vec<u8> {
+    // A scatter's series carry the same references under different names:
+    // its first column is `<c:xVal>` with a numeric cache — `<c:cat>` inside
+    // a scatter series is not schema — and its values are `<c:yVal>`.
+    let scatter = chart.plot.kind == ss_model::ChartKind::Scatter;
     let mut series = String::new();
     for (index, s) in chart.plot.series.iter().enumerate() {
         series.push_str(&format!(
@@ -399,23 +403,48 @@ pub(crate) fn chart_part(chart: &Chart) -> Vec<u8> {
             ));
             series.push_str("</c:strRef></c:tx>");
         }
+        // Excel classifies a scatter by each series' *line*, not by the
+        // stated style: a series that says nothing has an automatic line and
+        // reads back as scatter-with-lines however the style protests.
+        // Markers-only is spelled out per series (measured 2026-08-21).
+        if scatter && !chart.plot.scatter_lines {
+            series.push_str("<c:spPr><a:ln><a:noFill/></a:ln></c:spPr>");
+        }
         if let Some(cat_ref) = &s.categories_ref {
-            series.push_str(&format!(
-                r#"<c:cat><c:strRef><c:f>{}</c:f><c:strCache><c:ptCount val="{}"/>"#,
-                xml_escape(cat_ref),
-                s.categories.len(),
-            ));
-            for (i, c) in s.categories.iter().enumerate() {
+            if scatter {
                 series.push_str(&format!(
-                    r#"<c:pt idx="{i}"><c:v>{}</c:v></c:pt>"#,
-                    xml_escape(c)
+                    r#"<c:xVal><c:numRef><c:f>{}</c:f><c:numCache><c:formatCode>General</c:formatCode><c:ptCount val="{}"/>"#,
+                    xml_escape(cat_ref),
+                    s.categories.len(),
                 ));
+                for (i, c) in s.categories.iter().enumerate() {
+                    if c.trim().parse::<f64>().is_ok() {
+                        series.push_str(&format!(
+                            r#"<c:pt idx="{i}"><c:v>{}</c:v></c:pt>"#,
+                            c.trim()
+                        ));
+                    }
+                }
+                series.push_str("</c:numCache></c:numRef></c:xVal>");
+            } else {
+                series.push_str(&format!(
+                    r#"<c:cat><c:strRef><c:f>{}</c:f><c:strCache><c:ptCount val="{}"/>"#,
+                    xml_escape(cat_ref),
+                    s.categories.len(),
+                ));
+                for (i, c) in s.categories.iter().enumerate() {
+                    series.push_str(&format!(
+                        r#"<c:pt idx="{i}"><c:v>{}</c:v></c:pt>"#,
+                        xml_escape(c)
+                    ));
+                }
+                series.push_str("</c:strCache></c:strRef></c:cat>");
             }
-            series.push_str("</c:strCache></c:strRef></c:cat>");
         }
         if let Some(values_ref) = &s.values_ref {
+            let tag = if scatter { "yVal" } else { "val" };
             series.push_str(&format!(
-                r#"<c:val><c:numRef><c:f>{}</c:f><c:numCache>"#,
+                r#"<c:{tag}><c:numRef><c:f>{}</c:f><c:numCache>"#,
                 xml_escape(values_ref)
             ));
             series.push_str(&format!(
@@ -433,7 +462,7 @@ pub(crate) fn chart_part(chart: &Chart) -> Vec<u8> {
                     ));
                 }
             }
-            series.push_str("</c:numCache></c:numRef></c:val>");
+            series.push_str(&format!("</c:numCache></c:numRef></c:{tag}>"));
         }
         series.push_str("</c:ser>");
     }
@@ -443,6 +472,18 @@ pub(crate) fn chart_part(chart: &Chart) -> Vec<u8> {
         ss_model::ChartKind::Pie => ("pieChart", String::new()),
         ss_model::ChartKind::Doughnut => ("doughnutChart", String::new()),
         ss_model::ChartKind::Area => ("areaChart", String::new()),
+        ss_model::ChartKind::Scatter => (
+            "scatterChart",
+            format!(
+                r#"<c:scatterStyle val="{}"/>"#,
+                if chart.plot.scatter_lines {
+                    "lineMarker"
+                } else {
+                    "marker"
+                }
+            ),
+        ),
+        ss_model::ChartKind::Radar => ("radarChart", r#"<c:radarStyle val="marker"/>"#.to_string()),
         _ => (
             "barChart",
             format!(
@@ -452,7 +493,7 @@ pub(crate) fn chart_part(chart: &Chart) -> Vec<u8> {
         ),
     };
     let grouping = match (element, chart.plot.grouping) {
-        ("pieChart" | "doughnutChart", _) => String::new(),
+        ("pieChart" | "doughnutChart" | "scatterChart" | "radarChart", _) => String::new(),
         (_, ss_model::chart::Grouping::Stacked) => r#"<c:grouping val="stacked"/>"#.to_string(),
         (_, ss_model::chart::Grouping::PercentStacked) => {
             r#"<c:grouping val="percentStacked"/>"#.to_string()
@@ -462,16 +503,34 @@ pub(crate) fn chart_part(chart: &Chart) -> Vec<u8> {
     };
 
     // The axes a plot with axes must declare, and their ids, which the plot
-    // itself repeats. Excel picks arbitrary numbers; these are ours.
-    let axes = if chart.plot.kind.has_axes() {
+    // itself repeats. Excel picks arbitrary numbers; these are ours. A
+    // scatter's bottom axis is a second *value* axis — that is what makes it
+    // a scatter — and a bar that lies down has its axes traded.
+    let axes = if scatter {
         concat!(
-            r#"<c:catAx><c:axId val="111111111"/><c:scaling><c:orientation val="minMax"/></c:scaling>"#,
-            r#"<c:delete val="0"/><c:axPos val="b"/><c:crossAx val="222222222"/></c:catAx>"#,
+            r#"<c:valAx><c:axId val="111111111"/><c:scaling><c:orientation val="minMax"/></c:scaling>"#,
+            r#"<c:delete val="0"/><c:axPos val="b"/><c:crossAx val="222222222"/></c:valAx>"#,
             r#"<c:valAx><c:axId val="222222222"/><c:scaling><c:orientation val="minMax"/></c:scaling>"#,
             r#"<c:delete val="0"/><c:axPos val="l"/><c:crossAx val="111111111"/></c:valAx>"#,
         )
+        .to_string()
+    } else if chart.plot.kind.has_axes() {
+        let (cat_pos, val_pos) = if element == "barChart" && chart.plot.horizontal {
+            ("l", "b")
+        } else {
+            ("b", "l")
+        };
+        format!(
+            concat!(
+                r#"<c:catAx><c:axId val="111111111"/><c:scaling><c:orientation val="minMax"/></c:scaling>"#,
+                r#"<c:delete val="0"/><c:axPos val="{}"/><c:crossAx val="222222222"/></c:catAx>"#,
+                r#"<c:valAx><c:axId val="222222222"/><c:scaling><c:orientation val="minMax"/></c:scaling>"#,
+                r#"<c:delete val="0"/><c:axPos val="{}"/><c:crossAx val="111111111"/></c:valAx>"#,
+            ),
+            cat_pos, val_pos
+        )
     } else {
-        ""
+        String::new()
     };
     let axis_ids = if chart.plot.kind.has_axes() {
         r#"<c:axId val="111111111"/><c:axId val="222222222"/>"#
@@ -512,7 +571,7 @@ pub(crate) fn chart_part(chart: &Chart) -> Vec<u8> {
     out.push_str(&format!(
         "<c:{element}>{shape}{grouping}{series}{axis_ids}</c:{element}>"
     ));
-    out.push_str(axes);
+    out.push_str(&axes);
     out.push_str("</c:plotArea>");
     out.push_str(&legend);
     out.push_str(r#"<c:plotVisOnly val="1"/><c:dispBlanksAs val="gap"/>"#);
@@ -642,6 +701,54 @@ mod tests {
         let text = String::from_utf8(chart_part(&a_chart())).expect("utf-8");
         assert!(text.contains("<c:catAx>"), "{text}");
         assert!(text.contains(r#"<c:barDir val="col"/>"#), "{text}");
+    }
+
+    #[test]
+    fn a_scatter_writes_value_pairs_and_two_value_axes() {
+        // `<c:cat>` inside a scatter series is not schema: the X column goes
+        // out as `<c:xVal>` with a numeric cache, the values as `<c:yVal>`,
+        // and the bottom axis is a second *value* axis — that is what makes
+        // the chart a scatter rather than a line.
+        let mut chart = a_chart();
+        chart.plot.kind = ss_model::ChartKind::Scatter;
+        chart.plot.series[0].categories = vec!["1.5".into(), "2".into(), "4".into()];
+        let text = String::from_utf8(chart_part(&chart)).expect("utf-8");
+        assert!(text.contains("<c:scatterChart>"), "{text}");
+        assert!(text.contains(r#"<c:scatterStyle val="marker"/>"#), "{text}");
+        assert!(
+            text.contains("<c:spPr><a:ln><a:noFill/></a:ln></c:spPr>"),
+            "markers-only is spelled on the series, or Excel reads lines: {text}"
+        );
+        assert!(text.contains("<c:xVal><c:numRef>"), "{text}");
+        assert!(text.contains("<c:yVal><c:numRef>"), "{text}");
+        assert!(!text.contains("<c:cat>"), "{text}");
+        assert!(!text.contains("<c:grouping"), "{text}");
+        assert!(!text.contains("<c:catAx>"), "{text}");
+        assert_eq!(text.matches("<c:valAx>").count(), 2, "{text}");
+
+        let read = ss_model::chart::read::plot(text.as_bytes()).expect("parses");
+        assert_eq!(read.kind, ss_model::ChartKind::Scatter);
+        assert_eq!(read.series[0].categories, ["1.5", "2", "4"]);
+        assert_eq!(read.series[0].values, [Some(1.0), Some(2.5)]);
+    }
+
+    #[test]
+    fn a_radar_names_its_style_and_a_flat_bar_trades_its_axes() {
+        let mut chart = a_chart();
+        chart.plot.kind = ss_model::ChartKind::Radar;
+        let text = String::from_utf8(chart_part(&chart)).expect("utf-8");
+        assert!(text.contains("<c:radarChart>"), "{text}");
+        assert!(text.contains(r#"<c:radarStyle val="marker"/>"#), "{text}");
+        assert!(text.contains("<c:catAx>"), "a radar still has both axes");
+
+        let mut flat = a_chart();
+        flat.plot.horizontal = true;
+        let text = String::from_utf8(chart_part(&flat)).expect("utf-8");
+        assert!(text.contains(r#"<c:barDir val="bar"/>"#), "{text}");
+        assert!(
+            text.contains(r#"<c:axPos val="l"/><c:crossAx val="222222222"/>"#),
+            "the category axis stands on the left: {text}"
+        );
     }
 
     #[test]

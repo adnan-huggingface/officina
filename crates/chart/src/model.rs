@@ -276,6 +276,10 @@ pub struct Plot {
     /// one bar's width. Office's default is 150 — the gap is one and a half
     /// bars wide — and it is what sets how fat the bars are.
     pub gap: f64,
+    /// `<c:scatterStyle>`: whether a scatter's points are joined by lines
+    /// (`lineMarker`, `smoothMarker`) or stand alone (`marker`), which is what
+    /// Excel writes for the plain scatter it inserts.
+    pub scatter_lines: bool,
     pub series: Vec<Series>,
 }
 
@@ -295,6 +299,7 @@ impl Default for Plot {
             cat_axis: Axis::default(),
             val_axis: Axis::default(),
             gap: 150.0,
+            scatter_lines: false,
             series: Vec::new(),
         }
     }
