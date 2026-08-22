@@ -882,6 +882,8 @@ impl Calx {
                 categories_ref: categories_ref.clone(),
                 categories: categories.clone(),
                 color: None,
+                symbol: ss_model::chart::Symbol::Auto,
+                smooth: None,
             });
         }
         if series.is_empty() {
@@ -909,6 +911,19 @@ impl Calx {
                 ss_model::ChartKind::Pie | ss_model::ChartKind::Doughnut
             ))
         .then_some(ss_model::chart::LegendPosition::Right);
+        // What Excel's own Insert states for the kind, set on the model so
+        // that the chart drawn now is the chart the saved part describes.
+        let mut plot = ss_model::chart::Plot {
+            kind,
+            grouping,
+            horizontal,
+            title: None,
+            title_ref: None,
+            legend,
+            series,
+            ..ss_model::chart::Plot::default()
+        };
+        ss_model::chart::excel_defaults(&mut plot);
         let chart = ss_model::Chart {
             part: String::new(),
             drawing_part: String::new(),
@@ -917,16 +932,7 @@ impl Calx {
                 from: corner(left, range.start.row),
                 to: corner(left + 7, range.start.row.saturating_add(15)),
             },
-            plot: ss_model::chart::Plot {
-                kind,
-                grouping,
-                horizontal,
-                title: None,
-                title_ref: None,
-                legend,
-                series,
-                ..ss_model::chart::Plot::default()
-            },
+            plot,
         };
 
         let Some(target) = self.doc.workbook.sheet_mut(index) else {

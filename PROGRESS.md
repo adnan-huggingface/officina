@@ -1661,6 +1661,43 @@ the grid, which took it as "deselect the chart" — and the rest of the title
 went into a cell. A text box that is not the cell's own editor now owns the
 keyboard (`keys_belong_elsewhere`), which fixes the name box the same way.
 
+## The gallery measured against Excel (2026-08-22)
+
+Opened the fourteen-chart gallery in Excel beside Calx and compared every
+one, chart by chart, with Excel's own PNG export (`Chart.Export`, which needs a
+visible window scrolled to the chart — a hidden instance exports empty files
+for charts it has not painted). Most of them were different, some beyond
+recognition, and every difference had one of two causes.
+
+The first was the painter drawing what the part did not say: gridlines on
+every chart, straight lines without markers, translucent outlined areas set
+between the ticks, a pie built from triangles with visible seams, a doughnut
+of one ring. The painter now gates gridlines on `<c:majorGridlines>`, bends a
+line series Excel would bend and marks its points in Excel's rotation (a
+diamond, a square, a triangle, an x, a star…), paints areas solid and edge to
+edge, paints a pie's slices without seams and nearly to the plot's edge, draws
+every series of a doughnut as a ring of its own at the stated hole, varies
+colour and marker per point on a one-series chart that asks to, orders a
+stack's legend top down and a flat bar's bottom up, and divides a radar's
+scale the way Excel divides a short axis. The type was also a quarter too
+small in Calx alone: the painter sizes its type in points and the grid's unit
+is a 96-dpi pixel, and the grid had been handing it its own zoom. The same
+slip sat in the EMU conversion for anchor offsets, which put a chart pinned
+half an inch into a column a quarter inch short.
+
+The second was the writer leaving out what Excel fills in with its own
+defaults — the subject of today's LEARNINGS entry. The writer now states
+everything the model says, and `excel_defaults` sets on an inserted chart what
+Excel's own Insert would have written, so the chart on screen and the chart
+in the file are one chart.
+
+Rebuilding the gallery through the GUI found a regression of yesterday's focus
+fix: the cell editor let egui walk the focus on Tab, which the grid's new
+guard then found sitting on a toolbar button and went deaf, and the Enter
+meant to finish the next cell pressed Save — the run left a `Mar.xlsx`
+behind. The editor now holds its focus and hands the Tab to the grid
+(`tab_commits_and_moves_right_and_the_focus_stays_with_the_grid`).
+
 ## Deferred
 
 - [x] **PDF** — was dropped per Q3; built after ship as `wp-print`. See above.

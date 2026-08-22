@@ -387,6 +387,7 @@ pub(crate) fn chart_part(chart: &Chart) -> Vec<u8> {
     // its first column is `<c:xVal>` with a numeric cache — `<c:cat>` inside
     // a scatter series is not schema — and its values are `<c:yVal>`.
     let scatter = chart.plot.kind == ss_model::ChartKind::Scatter;
+    let kind = &chart.plot.kind;
     let mut series = String::new();
     for (index, s) in chart.plot.series.iter().enumerate() {
         series.push_str(&format!(
@@ -409,6 +410,27 @@ pub(crate) fn chart_part(chart: &Chart) -> Vec<u8> {
         // Markers-only is spelled out per series (measured 2026-08-21).
         if scatter && !chart.plot.scatter_lines {
             series.push_str("<c:spPr><a:ln><a:noFill/></a:ln></c:spPr>");
+        }
+        // A series that names no marker gets Excel's automatic one — a
+        // diamond, a square — so a series the model marks with none says so,
+        // per series, because that is the only place it can be said.
+        let symbol = match s.symbol {
+            ss_model::chart::Symbol::Auto => None,
+            ss_model::chart::Symbol::None => Some("none"),
+            ss_model::chart::Symbol::Circle => Some("circle"),
+            ss_model::chart::Symbol::Square => Some("square"),
+            ss_model::chart::Symbol::Diamond => Some("diamond"),
+            ss_model::chart::Symbol::Triangle => Some("triangle"),
+            ss_model::chart::Symbol::X => Some("x"),
+            ss_model::chart::Symbol::Star => Some("star"),
+            ss_model::chart::Symbol::Plus => Some("plus"),
+            ss_model::chart::Symbol::Dash => Some("dash"),
+            ss_model::chart::Symbol::Dot => Some("dot"),
+        };
+        if let Some(symbol) = symbol {
+            series.push_str(&format!(
+                r#"<c:marker><c:symbol val="{symbol}"/></c:marker>"#
+            ));
         }
         if let Some(cat_ref) = &s.categories_ref {
             if scatter {
@@ -464,6 +486,14 @@ pub(crate) fn chart_part(chart: &Chart) -> Vec<u8> {
             }
             series.push_str(&format!("</c:numCache></c:numRef></c:{tag}>"));
         }
+        // Excel reads a line series that says nothing about smoothing as
+        // smoothed (measured 2026-08-21): a chart of straight lines must say
+        // so, and a scatter's straight lines likewise.
+        if let (ss_model::ChartKind::Line | ss_model::ChartKind::Scatter, Some(smooth)) =
+            (kind, s.smooth)
+        {
+            series.push_str(&format!(r#"<c:smooth val="{}"/>"#, u8::from(smooth)));
+        }
         series.push_str("</c:ser>");
     }
 
@@ -492,7 +522,7 @@ pub(crate) fn chart_part(chart: &Chart) -> Vec<u8> {
             ),
         ),
     };
-    let grouping = match (element, chart.plot.grouping) {
+    let mut grouping = match (element, chart.plot.grouping) {
         ("pieChart" | "doughnutChart" | "scatterChart" | "radarChart", _) => String::new(),
         (_, ss_model::chart::Grouping::Stacked) => r#"<c:grouping val="stacked"/>"#.to_string(),
         (_, ss_model::chart::Grouping::PercentStacked) => {
@@ -501,19 +531,70 @@ pub(crate) fn chart_part(chart: &Chart) -> Vec<u8> {
         ("barChart", _) => r#"<c:grouping val="clustered"/>"#.to_string(),
         _ => r#"<c:grouping val="standard"/>"#.to_string(),
     };
+    // Silence here means *yes* to Excel: a one-series chart that does not
+    // say `varyColors="0"` gets a different colour per bar, and per marker on
+    // a scatter. So the model's word is always written.
+    grouping.push_str(&format!(
+        r#"<c:varyColors val="{}"/>"#,
+        u8::from(chart.plot.vary_colors)
+    ));
+    // What follows the series inside the plot element: a line chart's own
+    // word on markers, a pie's first slice at twelve o'clock, a doughnut's
+    // hole — which must be stated, since silence draws none at all.
+    let after_series = match kind {
+        ss_model::ChartKind::Line => {
+            format!(r#"<c:marker val="{}"/>"#, u8::from(chart.plot.markers))
+        }
+        ss_model::ChartKind::Pie => r#"<c:firstSliceAng val="0"/>"#.to_string(),
+        ss_model::ChartKind::Doughnut => format!(
+            r#"<c:firstSliceAng val="0"/><c:holeSize val="{}"/>"#,
+            chart.plot.hole.round() as i64
+        ),
+        _ => String::new(),
+    };
 
     // The axes a plot with axes must declare, and their ids, which the plot
     // itself repeats. Excel picks arbitrary numbers; these are ours. A
     // scatter's bottom axis is a second *value* axis — that is what makes it
     // a scatter — and a bar that lies down has its axes traded.
+    //
+    // Each axis says what the model says, because Excel fills every silence
+    // with the schema's defaults and those are not its own: no
+    // `majorTickMark` means ticks crossing the axis at every major *and*
+    // minor unit, no `majorGridlines` means none where Excel's default chart
+    // has them, no `crossBetween` means whatever the kind implies.
+    const TICKS: &str =
+        r#"<c:majorTickMark val="none"/><c:minorTickMark val="none"/><c:tickLblPos val="nextTo"/>"#;
+    let between = if chart.plot.categories_between() {
+        "between"
+    } else {
+        "midCat"
+    };
+    let gridlines = |axis: &ss_model::chart::Axis| {
+        if axis.gridlines {
+            "<c:majorGridlines/>"
+        } else {
+            ""
+        }
+    };
+    let (cat_grid, val_grid) = (
+        gridlines(&chart.plot.cat_axis),
+        gridlines(&chart.plot.val_axis),
+    );
     let axes = if scatter {
-        concat!(
-            r#"<c:valAx><c:axId val="111111111"/><c:scaling><c:orientation val="minMax"/></c:scaling>"#,
-            r#"<c:delete val="0"/><c:axPos val="b"/><c:crossAx val="222222222"/></c:valAx>"#,
-            r#"<c:valAx><c:axId val="222222222"/><c:scaling><c:orientation val="minMax"/></c:scaling>"#,
-            r#"<c:delete val="0"/><c:axPos val="l"/><c:crossAx val="111111111"/></c:valAx>"#,
+        format!(
+            concat!(
+                r#"<c:valAx><c:axId val="111111111"/><c:scaling><c:orientation val="minMax"/></c:scaling>"#,
+                r#"<c:delete val="0"/><c:axPos val="b"/>{cat_grid}<c:numFmt formatCode="General" sourceLinked="1"/>{ticks}"#,
+                r#"<c:crossAx val="222222222"/><c:crosses val="autoZero"/><c:crossBetween val="midCat"/></c:valAx>"#,
+                r#"<c:valAx><c:axId val="222222222"/><c:scaling><c:orientation val="minMax"/></c:scaling>"#,
+                r#"<c:delete val="0"/><c:axPos val="l"/>{val_grid}<c:numFmt formatCode="General" sourceLinked="1"/>{ticks}"#,
+                r#"<c:crossAx val="111111111"/><c:crosses val="autoZero"/><c:crossBetween val="midCat"/></c:valAx>"#,
+            ),
+            ticks = TICKS,
+            cat_grid = cat_grid,
+            val_grid = val_grid,
         )
-        .to_string()
     } else if chart.plot.kind.has_axes() {
         let (cat_pos, val_pos) = if element == "barChart" && chart.plot.horizontal {
             ("l", "b")
@@ -523,11 +604,18 @@ pub(crate) fn chart_part(chart: &Chart) -> Vec<u8> {
         format!(
             concat!(
                 r#"<c:catAx><c:axId val="111111111"/><c:scaling><c:orientation val="minMax"/></c:scaling>"#,
-                r#"<c:delete val="0"/><c:axPos val="{}"/><c:crossAx val="222222222"/></c:catAx>"#,
+                r#"<c:delete val="0"/><c:axPos val="{cat_pos}"/>{cat_grid}<c:numFmt formatCode="General" sourceLinked="1"/>{ticks}"#,
+                r#"<c:crossAx val="222222222"/><c:crosses val="autoZero"/><c:auto val="1"/><c:lblAlgn val="ctr"/><c:lblOffset val="100"/></c:catAx>"#,
                 r#"<c:valAx><c:axId val="222222222"/><c:scaling><c:orientation val="minMax"/></c:scaling>"#,
-                r#"<c:delete val="0"/><c:axPos val="{}"/><c:crossAx val="111111111"/></c:valAx>"#,
+                r#"<c:delete val="0"/><c:axPos val="{val_pos}"/>{val_grid}<c:numFmt formatCode="General" sourceLinked="1"/>{ticks}"#,
+                r#"<c:crossAx val="111111111"/><c:crosses val="autoZero"/><c:crossBetween val="{between}"/></c:valAx>"#,
             ),
-            cat_pos, val_pos
+            cat_pos = cat_pos,
+            val_pos = val_pos,
+            ticks = TICKS,
+            between = between,
+            cat_grid = cat_grid,
+            val_grid = val_grid,
         )
     } else {
         String::new()
@@ -569,7 +657,7 @@ pub(crate) fn chart_part(chart: &Chart) -> Vec<u8> {
     out.push_str(&title);
     out.push_str("<c:plotArea><c:layout/>");
     out.push_str(&format!(
-        "<c:{element}>{shape}{grouping}{series}{axis_ids}</c:{element}>"
+        "<c:{element}>{shape}{grouping}{series}{after_series}{axis_ids}</c:{element}>"
     ));
     out.push_str(&axes);
     out.push_str("</c:plotArea>");
@@ -656,6 +744,7 @@ mod tests {
                     categories_ref: Some("Sheet1!$A$2:$A$4".to_string()),
                     categories: vec!["Jan".into(), "Feb".into(), "Mar".into()],
                     color: None,
+                    ..ss_model::chart::Series::default()
                 }],
                 ..ss_model::chart::Plot::default()
             },
@@ -733,6 +822,58 @@ mod tests {
     }
 
     #[test]
+    fn every_silence_excel_would_fill_with_its_own_default_is_spoken() {
+        // The gallery, opened in Excel: smoothed lines with markers, a
+        // scatter whose every point had its own colour and shape, minor
+        // ticks crossing every axis, and no gridlines. None of it was in the
+        // part; all of it was Excel's reading of what the part left out.
+        let excels = |kind: ss_model::ChartKind| {
+            let mut chart = a_chart();
+            chart.plot.kind = kind;
+            ss_model::chart::excel_defaults(&mut chart.plot);
+            String::from_utf8(chart_part(&chart)).expect("utf-8")
+        };
+        let line = excels(ss_model::ChartKind::Line);
+        assert!(line.contains(r#"<c:varyColors val="0"/>"#), "{line}");
+        assert!(
+            line.contains(r#"<c:marker><c:symbol val="none"/></c:marker>"#),
+            "{line}"
+        );
+        assert!(line.contains(r#"<c:smooth val="0"/></c:ser>"#), "{line}");
+        assert!(line.contains(r#"<c:marker val="1"/><c:axId"#), "{line}");
+        assert!(
+            line.contains(r#"<c:axPos val="l"/><c:majorGridlines/>"#),
+            "{line}"
+        );
+        assert!(
+            line.contains(r#"<c:crossBetween val="between"/>"#),
+            "{line}"
+        );
+        assert_eq!(
+            line.matches(r#"<c:majorTickMark val="none"/><c:minorTickMark val="none"/>"#)
+                .count(),
+            2,
+            "{line}"
+        );
+        let read = ss_model::chart::read::plot(line.as_bytes()).expect("parses");
+        assert!(read.val_axis.gridlines && !read.cat_axis.gridlines);
+        assert_eq!(read.series[0].smooth, Some(false));
+        assert!(!read.vary_colors);
+
+        let area = excels(ss_model::ChartKind::Area);
+        assert!(area.contains(r#"<c:crossBetween val="midCat"/>"#), "{area}");
+        assert!(!area.contains("<c:smooth"), "{area}");
+
+        let doughnut = excels(ss_model::ChartKind::Doughnut);
+        assert!(
+            doughnut.contains(r#"<c:varyColors val="1"/>"#),
+            "{doughnut}"
+        );
+        assert!(doughnut.contains(r#"<c:holeSize val="75"/>"#), "{doughnut}");
+        assert!(!doughnut.contains("<c:majorGridlines/>"), "{doughnut}");
+    }
+
+    #[test]
     fn a_radar_names_its_style_and_a_flat_bar_trades_its_axes() {
         let mut chart = a_chart();
         chart.plot.kind = ss_model::ChartKind::Radar;
@@ -746,7 +887,7 @@ mod tests {
         let text = String::from_utf8(chart_part(&flat)).expect("utf-8");
         assert!(text.contains(r#"<c:barDir val="bar"/>"#), "{text}");
         assert!(
-            text.contains(r#"<c:axPos val="l"/><c:crossAx val="222222222"/>"#),
+            text.contains(r#"<c:catAx><c:axId val="111111111"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="l"/>"#),
             "the category axis stands on the left: {text}"
         );
     }

@@ -907,6 +907,25 @@ impl GridView {
         self.editor_box = None;
         let zoom = self.zoom as f32;
         let accent = Palette::of(ui).selection_edge;
+        if self.editor.is_some() && editing.is_some() {
+            // The Tab is the grid's: see `tabbed`.
+            self.tabbed = ui.input_mut(|i| {
+                let mut tabbed = None;
+                i.events.retain(|event| match event {
+                    egui::Event::Key {
+                        key: egui::Key::Tab,
+                        pressed: true,
+                        modifiers,
+                        ..
+                    } => {
+                        tabbed = Some(modifiers.shift);
+                        false
+                    }
+                    _ => true,
+                });
+                tabbed
+            });
+        }
         let Some(open) = &mut self.editor else {
             return;
         };
@@ -1004,7 +1023,7 @@ impl GridView {
             .desired_width(room.width())
             .desired_rows(1)
             .horizontal_align(align)
-            .lock_focus(false)
+            .lock_focus(true)
             .return_key(Some(egui::KeyboardShortcut::new(
                 egui::Modifiers::ALT,
                 egui::Key::Enter,
@@ -1506,7 +1525,10 @@ impl GridView {
                     outline: ui_kit::chart::rgb(palette.grid),
                     text: ui_kit::chart::rgb(palette.text),
                     grid: ui_kit::chart::rgb(palette.header_text),
-                    zoom: self.zoom,
+                    // The painter sizes its type in points; the grid's unit
+                    // is a 96-dpi pixel, four thirds of one. Handing it the
+                    // grid's own zoom drew every label a quarter too small.
+                    zoom: self.zoom * 96.0 / 72.0,
                     label: ss_model::format_general,
                 },
             );
@@ -2698,6 +2720,7 @@ impl GridView {
         // events rather than waiting to be given focus, so egui's modal — which
         // does stop the pointer — never stopped these: typing at an open box
         // was putting characters into the cells behind it.
+        let tabbed = self.tabbed.take();
         if self.blocked {
             return;
         }
@@ -2708,6 +2731,13 @@ impl GridView {
         // The cell the view should chase, when a key moved one: the cursor
         // for plain movement, the growing corner for an extension.
         let mut follow: Option<CellRef> = None;
+        if let (Some(shift), true) = (tabbed, self.editor.is_some()) {
+            let modifiers = egui::Modifiers {
+                shift,
+                ..egui::Modifiers::NONE
+            };
+            follow = self.editing_key(egui::Key::Tab, None, modifiers);
+        }
 
         for event in events {
             match event {
@@ -5563,6 +5593,45 @@ mod tests {
                 advance: Some(Direction::Down),
             }]
         );
+    }
+
+    #[test]
+    fn tab_commits_and_moves_right_and_the_focus_stays_with_the_grid() {
+        // The editor used to let egui walk the focus on Tab: the text was
+        // committed, and the next button in the toolbar was what had the
+        // keyboard — so the next cell's typing went nowhere and its Enter
+        // pressed Save. Nor may the editor keep the tab as text.
+        let (ctx, mut book, mut view) = typing();
+        frame(
+            &mut view,
+            &mut book,
+            vec![egui::Event::Text("hi".into())],
+            &ctx,
+        );
+        frame(&mut view, &mut book, vec![plain(egui::Key::Tab)], &ctx);
+
+        assert!(view.editor.is_none());
+        assert_eq!(
+            view.take_actions(),
+            vec![Action::Commit {
+                at: CellRef::new(0, 0),
+                text: "hi".into(),
+                advance: Some(Direction::Right),
+            }]
+        );
+        let focused = ctx.memory(|m| m.focused());
+        assert!(
+            focused.is_none_or(|id| id == egui::Id::new("calx-cell-editor")),
+            "the focus walked off to {focused:?}"
+        );
+        // And typing carries straight on into the next cell.
+        frame(
+            &mut view,
+            &mut book,
+            vec![egui::Event::Text("there".into())],
+            &ctx,
+        );
+        assert!(view.editor.is_some(), "the next cell is being edited");
     }
 
     #[test]

@@ -23,7 +23,7 @@
 use quick_xml::events::{BytesEnd, BytesStart, Event};
 use quick_xml::{Reader, XmlVersion};
 
-use crate::{ChartKind, Grouping, LegendPosition, Paint, Plot, Series, TickMark};
+use crate::{ChartKind, Grouping, LegendPosition, Paint, Plot, Series, Symbol, TickMark};
 
 /// Which reference of a series is being read. `<c:f>` and `<c:pt>` are the same
 /// elements under `<c:tx>`, `<c:cat>`, and `<c:val>`.
@@ -133,7 +133,16 @@ pub fn plot(data: &[u8]) -> Option<Plot> {
                 b"plotArea" => in_plot_area = in_plot_area || !empty,
                 b"catAx" | b"dateAx" | b"serAx" if !empty => in_axis = Some(Which::Category),
                 b"valAx" if !empty => in_axis = Some(Which::Value),
-                b"majorGridlines" | b"minorGridlines" => in_gridlines = in_gridlines || !empty,
+                b"majorGridlines" | b"minorGridlines" => {
+                    in_gridlines = in_gridlines || !empty;
+                    if local_name(e) == b"majorGridlines" {
+                        match in_axis {
+                            Some(Which::Category) => out.cat_axis.gridlines = true,
+                            Some(Which::Value) => out.val_axis.gridlines = true,
+                            None => {}
+                        }
+                    }
+                }
                 b"txPr" => in_text_props = in_text_props || !empty,
                 b"dLbls" => in_dlbls = in_dlbls || !empty,
                 b"majorTickMark" => {
@@ -196,8 +205,40 @@ pub fn plot(data: &[u8]) -> Option<Plot> {
                 b"scatterStyle" => {
                     // Every joined style names its line: `lineMarker`, `line`,
                     // `smooth`, `smoothMarker`. Only `marker` and `none` do not.
-                    out.scatter_lines = attr_text(e, b"val")
-                        .is_some_and(|v| v.contains("ine") || v.contains("mooth"));
+                    let style = attr_text(e, b"val").unwrap_or_default();
+                    out.scatter_lines = style.contains("ine") || style.contains("mooth");
+                    out.scatter_smooth = style.contains("mooth");
+                    out.markers = style.contains("arker");
+                }
+                b"radarStyle" => {
+                    out.markers = attr_text(e, b"val").as_deref() == Some("marker");
+                }
+                // The chart's own `<c:marker val>` says whether a line marks
+                // its points; a series' `<c:marker>` holds the symbol instead.
+                b"marker" if !in_series => {
+                    out.markers = !matches!(attr_text(e, b"val").as_deref(), Some("0" | "false"));
+                }
+                b"symbol" if in_series => {
+                    series.symbol =
+                        attr_text(e, b"val").map_or(Symbol::Auto, |v| Symbol::from_val(v.trim()));
+                }
+                b"smooth" if in_series => {
+                    series.smooth = Some(!matches!(
+                        attr_text(e, b"val").as_deref(),
+                        Some("0" | "false")
+                    ));
+                }
+                b"varyColors" => {
+                    out.vary_colors =
+                        !matches!(attr_text(e, b"val").as_deref(), Some("0" | "false"));
+                }
+                b"holeSize" => {
+                    if let Some(v) = attr_text(e, b"val").and_then(|v| v.trim().parse().ok()) {
+                        out.hole = v;
+                    }
+                }
+                b"crossBetween" => {
+                    out.between = Some(attr_text(e, b"val").as_deref() != Some("midCat"));
                 }
                 b"gapWidth" => {
                     if let Some(v) = attr_text(e, b"val").and_then(|v| v.trim().parse().ok()) {
@@ -521,6 +562,51 @@ mod tests {
             Some("Sheet1!$A$2:$A$4"),
             "the X reference rides in the category slot"
         );
+    }
+
+    #[test]
+    fn what_a_line_marks_smooths_and_rules_is_read_and_silence_is_excels_yes() {
+        let line = plot(
+            br#"<?xml version="1.0"?>
+<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart">
+ <c:chart><c:plotArea>
+  <c:lineChart>
+   <c:grouping val="standard"/><c:varyColors val="0"/>
+   <c:ser><c:idx val="0"/><c:order val="0"/>
+    <c:marker><c:symbol val="none"/></c:marker>
+    <c:val><c:numRef><c:f>Sheet1!$B$2:$B$3</c:f></c:numRef></c:val>
+    <c:smooth val="0"/>
+   </c:ser>
+   <c:ser><c:idx val="1"/><c:order val="1"/>
+    <c:marker><c:symbol val="triangle"/></c:marker>
+    <c:val><c:numRef><c:f>Sheet1!$C$2:$C$3</c:f></c:numRef></c:val>
+   </c:ser>
+   <c:marker val="1"/>
+   <c:axId val="1"/><c:axId val="2"/>
+  </c:lineChart>
+  <c:catAx><c:axId val="1"/><c:crossAx val="2"/></c:catAx>
+  <c:valAx><c:axId val="2"/><c:majorGridlines/><c:crossAx val="1"/>
+   <c:crossBetween val="midCat"/></c:valAx>
+ </c:plotArea></c:chart>
+</c:chartSpace>"#,
+        )
+        .expect("parses");
+        assert!(line.markers);
+        assert!(!line.vary_colors);
+        assert_eq!(line.series[0].symbol, Symbol::None);
+        assert_eq!(line.series[0].smooth, Some(false));
+        assert_eq!(line.series[1].symbol, Symbol::Triangle);
+        assert_eq!(line.series[1].smooth, None, "unstated, which Excel smooths");
+        assert!(line.val_axis.gridlines && !line.cat_axis.gridlines);
+        assert_eq!(line.between, Some(false));
+        assert!(!line.categories_between());
+
+        // And the part that states none of it: Excel's defaults, not the schema's.
+        let bare = chart();
+        assert!(bare.markers && bare.vary_colors);
+        assert!(!bare.val_axis.gridlines);
+        assert_eq!(bare.hole, 0.0);
+        assert!(bare.categories_between());
     }
 
     #[test]

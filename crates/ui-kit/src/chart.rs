@@ -151,10 +151,13 @@ mod tests {
     use super::*;
     use chart::{ChartKind, Grouping, Series};
 
+    /// One series in its own colour throughout, as an Excel-made part
+    /// states with `varyColors="0"`.
     fn plot(kind: ChartKind) -> Plot {
         Plot {
             kind,
             grouping: Grouping::Clustered,
+            vary_colors: false,
             series: vec![Series {
                 name: Some("Sales".to_string()),
                 values: vec![Some(1.0), Some(2.0), Some(3.0)],

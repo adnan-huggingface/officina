@@ -21,6 +21,6 @@ mod model;
 pub mod read;
 
 pub use model::{
-    Anchor, AnchorPoint, Axis, Chart, ChartKind, Grouping, LegendPosition, Paint, Plot, Series,
-    TickMark, EMU_PER_POINT,
+    excel_defaults, Anchor, AnchorPoint, Axis, Chart, ChartKind, Grouping, LegendPosition, Paint,
+    Plot, Series, Symbol, TickMark, EMU_PER_POINT,
 };

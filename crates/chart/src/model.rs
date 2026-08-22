@@ -164,6 +164,69 @@ pub struct Series {
     /// which is not read — and because a document has no workbook theme to
     /// resolve one against.
     pub color: Option<[u8; 3]>,
+    /// `<c:marker><c:symbol val>`: the shape this series marks its points
+    /// with, when the part names one.
+    pub symbol: Symbol,
+    /// `<c:smooth>` on a line or scatter series. `None` when the part says
+    /// nothing, which Excel reads as *smoothed* for a line chart — the one
+    /// boolean in the part whose silence means yes (measured 2026-08-21).
+    pub smooth: Option<bool>,
+}
+
+/// The shape a series marks its points with: `<c:symbol val>`.
+///
+/// `Auto` is silence, and Office fills it from its own rotation — diamond,
+/// square, triangle, x, star, circle, plus, dash, dot — by the series'
+/// index, or by the point's when the chart varies colours by point.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Symbol {
+    #[default]
+    Auto,
+    None,
+    Circle,
+    Square,
+    Diamond,
+    Triangle,
+    X,
+    Star,
+    Plus,
+    Dash,
+    Dot,
+}
+
+impl Symbol {
+    pub fn from_val(text: &str) -> Symbol {
+        match text {
+            "none" => Symbol::None,
+            "circle" => Symbol::Circle,
+            "square" | "picture" => Symbol::Square,
+            "diamond" => Symbol::Diamond,
+            "triangle" => Symbol::Triangle,
+            "x" => Symbol::X,
+            "star" => Symbol::Star,
+            "plus" => Symbol::Plus,
+            "dash" => Symbol::Dash,
+            "dot" => Symbol::Dot,
+            _ => Symbol::Auto,
+        }
+    }
+
+    /// Office's automatic rotation, which is what `Auto` comes to for the
+    /// n-th series or point.
+    pub fn automatic(index: usize) -> Symbol {
+        const ROTATION: [Symbol; 9] = [
+            Symbol::Diamond,
+            Symbol::Square,
+            Symbol::Triangle,
+            Symbol::X,
+            Symbol::Star,
+            Symbol::Circle,
+            Symbol::Plus,
+            Symbol::Dash,
+            Symbol::Dot,
+        ];
+        ROTATION[index % ROTATION.len()]
+    }
 }
 
 /// One paint decision the chart part may state: the chart area's fill, or its
@@ -238,6 +301,11 @@ pub struct Axis {
     /// drawn. Its labels still are — a separate gap, and a wider one, since
     /// the gutter they stand in is what the plot is measured against.
     pub deleted: bool,
+    /// `<c:majorGridlines>`: a line across the plot at every major unit.
+    /// Drawn only when stated — Office draws none for an axis that has none,
+    /// and a chart of our invention with lines Excel would not show is a
+    /// chart that looks different in every application that opens it.
+    pub gridlines: bool,
 }
 
 /// What a chart part plots, which is everything a painter needs.
@@ -280,6 +348,27 @@ pub struct Plot {
     /// (`lineMarker`, `smoothMarker`) or stand alone (`marker`), which is what
     /// Excel writes for the plain scatter it inserts.
     pub scatter_lines: bool,
+    /// `<c:scatterStyle>` again: whether those lines bend (`smooth`,
+    /// `smoothMarker`).
+    pub scatter_smooth: bool,
+    /// Whether a line, scatter or radar marks its points at all: the chart's
+    /// own `<c:marker val>`, a scatter style that names markers, or a radar
+    /// style that does. Each series may still say `none` for itself.
+    pub markers: bool,
+    /// `<c:varyColors>`: every point in its own colour. The part's silence
+    /// means yes — Excel gives a one-series chart that says nothing a
+    /// different colour per bar, and per marker on a scatter. With more than
+    /// one series it means nothing; the series keep their colours.
+    pub vary_colors: bool,
+    /// `<c:holeSize>`: a doughnut's hole as a percentage of its radius. Excel
+    /// inserts 75 and draws a part that states none with *no* hole — the
+    /// schema's ten is not what it does (measured 2026-08-21).
+    pub hole: f64,
+    /// `<c:crossBetween val="between"/>` on the value axis: categories stand
+    /// in the middle of their slots rather than at the tick marks. `None`
+    /// when unstated, for which Excel chooses by chart type — an area runs
+    /// edge to edge, everything else stands between.
+    pub between: Option<bool>,
     pub series: Vec<Series>,
 }
 
@@ -300,6 +389,11 @@ impl Default for Plot {
             val_axis: Axis::default(),
             gap: 150.0,
             scatter_lines: false,
+            scatter_smooth: false,
+            markers: true,
+            vary_colors: true,
+            hole: 0.0,
+            between: None,
             series: Vec::new(),
         }
     }
@@ -318,6 +412,13 @@ impl Plot {
             .unwrap_or(&[])
     }
 
+    /// Whether the categories stand in the middle of their slots or at the
+    /// ticks: the part's word, or Excel's choice for the kind when it has
+    /// none.
+    pub fn categories_between(&self) -> bool {
+        self.between.unwrap_or(self.kind != ChartKind::Area)
+    }
+
     /// The most points any one series has.
     pub fn points(&self) -> usize {
         self.series
@@ -325,6 +426,32 @@ impl Plot {
             .map(|s| s.values.len())
             .max()
             .unwrap_or(0)
+    }
+}
+
+/// Sets on a plot built from nothing what Excel's own Insert states for the
+/// kind: gridlines up the value axis, no colour varied except a pie's, a
+/// line's points unmarked and its segments straight, a doughnut's hole at
+/// three quarters. What the reader finds in an Excel-made part, in other
+/// words — so a chart Calx draws the moment it is inserted is the chart Excel
+/// draws from the file it saves.
+pub fn excel_defaults(plot: &mut Plot) {
+    let pie = matches!(plot.kind, ChartKind::Pie | ChartKind::Doughnut);
+    plot.vary_colors = pie;
+    plot.markers = true;
+    plot.val_axis.gridlines = plot.kind.has_axes();
+    plot.hole = if plot.kind == ChartKind::Doughnut {
+        75.0
+    } else {
+        0.0
+    };
+    for series in &mut plot.series {
+        if matches!(plot.kind, ChartKind::Line | ChartKind::Radar) {
+            series.symbol = Symbol::None;
+        }
+        if matches!(plot.kind, ChartKind::Line | ChartKind::Scatter) {
+            series.smooth = Some(false);
+        }
     }
 }
 

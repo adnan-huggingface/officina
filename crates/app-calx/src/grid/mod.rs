@@ -821,6 +821,14 @@ pub struct GridView {
     pub blocked: bool,
     /// The open cell editor, if any. The formula bar edits the same buffer.
     pub editor: Option<Editor>,
+    /// A Tab pressed while the editor was up, `true` with Shift, taken out
+    /// of the frame's events before the editor's widget could see it and
+    /// handed to the key handler afterwards. The widget holds the focus
+    /// against egui's own Tab-walk — which otherwise moved it to the next
+    /// button in the toolbar, where the grid's guard then found it and went
+    /// deaf, and where an Enter meant to finish the next cell pressed Save —
+    /// but a widget that holds it types the tab it was given.
+    pub(crate) tabbed: Option<bool>,
     /// What the last frame asked the application to do. Drained by the caller.
     pub actions: Vec<Action>,
     /// Rebuilt only when the sheet, the zoom, or a size changes — building it
@@ -1000,6 +1008,7 @@ impl Default for GridView {
             zoom: 1.0,
             blocked: false,
             editor: None,
+            tabbed: None,
             actions: Vec::new(),
             layout: None,
             conditional: None,

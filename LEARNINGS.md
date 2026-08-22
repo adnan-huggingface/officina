@@ -488,3 +488,29 @@ guessed conventions against Excel's own render of our parts: a bar chart laid
 on its side puts its first category at the *bottom* and its first series
 nearest the axis — a column chart turned anticlockwise, both ends — and a
 radar runs its first category from the top, clockwise.
+
+**A chart part's silences are Excel's defaults, and they are not the
+schema's.** Fourteen charts authored by Calx, each stating only its type, its
+series and its axes, opened in Excel as fourteen different charts: the line
+chart came up *smoothed* with a diamond and a square on every point, the
+one-series scatter gave every point its own colour and shape, every axis grew
+ticks crossing it at every major and minor unit, and none of them had a
+gridline. None of that was in the part. A missing `<c:smooth>` is smoothed;
+a missing `<c:varyColors>` varies; a missing `<c:marker>` on a series is an
+automatic marker; a missing `majorTickMark` is `cross` and a missing
+`minorTickMark` is too; a missing `holeSize` on a doughnut is *no hole at all*
+(measured from Excel's export of the part: rings from the centre outward,
+where the schema says ten percent); a missing `crossBetween` is `midCat` for
+an area and `between` for everything else. Excel's own Insert writes every one
+of these out, which is why nobody sees the defaults until a second producer
+leaves them blank. Two rules follow. The reader fills a silence the way Excel
+does, so what Calx draws from a sparse part is what Excel draws from it. The
+writer never leaves one: a chart Calx inserts says `varyColors="0"`,
+`<c:smooth val="0"/>`, `<c:symbol val="none"/>`, ticks `none`, gridlines up
+the value axis and a seventy-five percent hole, and states them on the model
+too, so the chart drawn the moment it is inserted is the chart Excel draws
+from the saved file. The same afternoon pinned two conventions of Excel's
+layout: a stack's legend reads top down (the series on top first) and a bar
+laid on its side reads bottom up, and one that is both is back in order; a
+doughnut draws its first series as the innermost ring and shares the band
+between hole and rim equally among the rest.

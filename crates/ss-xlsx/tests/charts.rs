@@ -279,6 +279,7 @@ fn a_chart_inserted_into_a_blank_workbook_comes_back_as_a_chart() {
                 categories_ref: Some("Sheet1!$A$2:$A$4".to_string()),
                 categories: vec!["Jan".into(), "Feb".into(), "Mar".into()],
                 color: None,
+                ..Series::default()
             }],
             ..ss_model::chart::Plot::default()
         },

@@ -15,7 +15,7 @@
 //! That approximation costs nothing, because both applications put back the
 //! bytes their file came with.
 
-use crate::{Axis, ChartKind, Grouping, LegendPosition, Paint, Plot};
+use crate::{Axis, ChartKind, Grouping, LegendPosition, Paint, Plot, Symbol};
 
 /// The size a chart sets its own text in, before the caller's zoom.
 ///
@@ -142,6 +142,31 @@ pub struct Plotted {
     /// happened to be numeric — which the renderers for those kinds never read.
     pub xs: Vec<Option<f64>>,
     pub rgb: [u8; 3],
+    /// The shape its points are marked with, `Auto` meaning Office's own
+    /// rotation by series index, and `None` meaning none.
+    pub symbol: Symbol,
+    /// Whether its line bends through the points rather than breaking at
+    /// them.
+    pub smooth: bool,
+}
+
+/// What a series' points are marked with, and whether its line is smoothed,
+/// the part's silences filled in the way Excel fills them.
+///
+/// The same answer for the live series a workbook resolves and the cached
+/// ones a document draws, so the two builders cannot come to differ.
+pub fn marks(plot: &Plot, index: usize) -> (Symbol, bool) {
+    let series = plot.series.get(index);
+    let symbol = series.map_or(Symbol::Auto, |s| s.symbol);
+    // A line series that says nothing about smoothing is smoothed: Excel's
+    // reading, measured against a part that states none. A scatter's is its
+    // style's word.
+    let smooth = series.and_then(|s| s.smooth).unwrap_or(match plot.kind {
+        ChartKind::Line => true,
+        ChartKind::Scatter => plot.scatter_smooth,
+        _ => false,
+    });
+    (symbol, smooth)
 }
 
 /// Everything the geometry needs that is not the chart itself.
@@ -250,8 +275,146 @@ pub fn cached_series(plot: &Plot) -> Vec<Plotted> {
             rgb: series
                 .color
                 .unwrap_or(SERIES_COLORS[index % SERIES_COLORS.len()]),
+            symbol: marks(plot, index).0,
+            smooth: marks(plot, index).1,
         })
         .collect()
+}
+
+/// Excel's default for a series' line, in points.
+const LINE: f64 = 2.25;
+
+/// Half the width of a marker, in points: Excel's default marker is five
+/// points across.
+const MARK: f64 = 2.5;
+
+/// A point's marker, in its series' ink.
+///
+/// `Auto` has already been resolved by the caller — by series index for most
+/// charts, by point index for a one-series chart that varies its colours —
+/// so the only silence left here is `None`.
+fn mark(out: &mut Vec<Prim>, at: (f64, f64), symbol: Symbol, r: f64, rgb: [u8; 3], zoom: f64) {
+    let (x, y) = at;
+    let stroke = 1.2 * zoom;
+    let line = |points: Vec<(f64, f64)>| Prim::Line {
+        points,
+        thickness: stroke,
+        rgb,
+    };
+    let poly = |points: Vec<(f64, f64)>| Prim::Poly {
+        points,
+        rgb,
+        edge: None,
+    };
+    match symbol {
+        Symbol::None => {}
+        Symbol::Auto | Symbol::Circle => out.push(Prim::Dot { at, radius: r, rgb }),
+        Symbol::Dot => out.push(Prim::Dot {
+            at,
+            radius: r * 0.5,
+            rgb,
+        }),
+        Symbol::Square => out.push(Prim::Fill {
+            rect: Rect::new(x - r, y - r, 2.0 * r, 2.0 * r),
+            rgb,
+            round: 0.0,
+        }),
+        Symbol::Diamond => out.push(poly(vec![(x, y - r), (x + r, y), (x, y + r), (x - r, y)])),
+        Symbol::Triangle => out.push(poly(vec![(x, y - r), (x + r, y + r), (x - r, y + r)])),
+        Symbol::X => {
+            out.push(line(vec![(x - r, y - r), (x + r, y + r)]));
+            out.push(line(vec![(x - r, y + r), (x + r, y - r)]));
+        }
+        Symbol::Plus => {
+            out.push(line(vec![(x - r, y), (x + r, y)]));
+            out.push(line(vec![(x, y - r), (x, y + r)]));
+        }
+        Symbol::Star => {
+            out.push(line(vec![(x - r, y - r), (x + r, y + r)]));
+            out.push(line(vec![(x - r, y + r), (x + r, y - r)]));
+            out.push(line(vec![(x, y - r), (x, y + r)]));
+        }
+        Symbol::Dash => out.push(Prim::Fill {
+            rect: Rect::new(x - r, y - stroke / 2.0, 2.0 * r, stroke),
+            rgb,
+            round: 0.0,
+        }),
+    }
+}
+
+/// The path a smoothed line takes through its points.
+///
+/// A Catmull-Rom spline: it passes through every point and bends between
+/// them, which is what Excel's smoothing looks like at the size a chart is
+/// drawn. Flattened to a polyline, because that is the one shape every
+/// backend here draws.
+fn smoothed(points: &[(f64, f64)]) -> Vec<(f64, f64)> {
+    if points.len() < 3 {
+        return points.to_vec();
+    }
+    const STEPS: usize = 12;
+    let mut out = Vec::with_capacity(points.len() * STEPS);
+    for i in 0..points.len() - 1 {
+        let p0 = points[i.saturating_sub(1)];
+        let p1 = points[i];
+        let p2 = points[i + 1];
+        let p3 = points[(i + 2).min(points.len() - 1)];
+        for step in 0..STEPS {
+            let t = step as f64 / STEPS as f64;
+            let (t2, t3) = (t * t, t * t * t);
+            let at = |a: f64, b: f64, c: f64, d: f64| {
+                0.5 * (2.0 * b
+                    + (c - a) * t
+                    + (2.0 * a - 5.0 * b + 4.0 * c - d) * t2
+                    + (3.0 * b - a - 3.0 * c + d) * t3)
+            };
+            out.push((at(p0.0, p1.0, p2.0, p3.0), at(p0.1, p1.1, p2.1, p3.1)));
+        }
+    }
+    out.push(points[points.len() - 1]);
+    out
+}
+
+/// A series' line through its points, bent or straight as the series says,
+/// and a marker at each point in the shape it asked for.
+fn trace(
+    out: &mut Vec<Prim>,
+    path: &[(f64, f64)],
+    entry: &Plotted,
+    index: usize,
+    markers: bool,
+    zoom: f64,
+) {
+    if path.len() > 1 {
+        out.push(Prim::Line {
+            points: if entry.smooth {
+                smoothed(path)
+            } else {
+                path.to_vec()
+            },
+            thickness: LINE * zoom,
+            rgb: entry.rgb,
+        });
+    }
+    if markers {
+        let symbol = match entry.symbol {
+            Symbol::Auto => Symbol::automatic(index),
+            other => other,
+        };
+        for &point in path {
+            mark(out, point, symbol, MARK * zoom, entry.rgb, zoom);
+        }
+    }
+}
+
+/// The colour of one point, which is its series' unless the chart varies
+/// colours and has only the one series to vary them over.
+fn point_rgb(plot: &Plot, series: &[Plotted], entry: &Plotted, point: usize) -> [u8; 3] {
+    if plot.vary_colors && series.len() == 1 {
+        SERIES_COLORS[point % SERIES_COLORS.len()]
+    } else {
+        entry.rgb
+    }
 }
 
 /// The one question the geometry cannot answer for itself.
@@ -369,8 +532,12 @@ pub fn primitives(
 
     // The legend takes its strip before the plot area is measured, so the plot
     // never draws underneath it. A pie's legend names its slices, not its one
-    // series — the categories are what the colours mean there.
+    // series — the categories are what the colours mean there. A stack's
+    // legend reads top down, so the series on top of the stack comes first;
+    // a bar that lies down reads bottom up for the same reason, and one that
+    // is both is back in order.
     let slices;
+    let reversed;
     let named = if matches!(plot.kind, ChartKind::Pie | ChartKind::Doughnut)
         && !plot.categories().is_empty()
     {
@@ -385,6 +552,14 @@ pub fn primitives(
             })
             .collect::<Vec<_>>();
         slices.as_slice()
+    } else if plot.grouping.stacked() != plot.horizontal
+        && matches!(
+            plot.kind,
+            ChartKind::Bar | ChartKind::Area | ChartKind::Line
+        )
+    {
+        reversed = series.iter().rev().cloned().collect::<Vec<_>>();
+        reversed.as_slice()
     } else {
         series
     };
@@ -397,7 +572,7 @@ pub fn primitives(
 
     match plot.kind {
         ChartKind::Pie | ChartKind::Doughnut => {
-            pie(&mut out, area, series, plot.kind == ChartKind::Doughnut);
+            pie(&mut out, area, plot, series, small, style.zoom);
         }
         ChartKind::Radar => radar(&mut out, area, plot, series, style, small, measure),
         ChartKind::Scatter => scatter(&mut out, area, plot, series, style, small, measure),
@@ -581,6 +756,22 @@ fn axes_chart(
     }
 
     let y_of = |value: f64| area.bottom() - (value - low) / (high - low) * area.height;
+    // Where a category stands: in the middle of its slot, or — an area chart,
+    // or any chart whose part says `midCat` — at the ticks, the first at the
+    // axis's very start and the last at its end.
+    let between = plot.categories_between();
+    let slot = if between {
+        area.width / points as f64
+    } else {
+        area.width / (points - 1).max(1) as f64
+    };
+    let x_at = |i: usize| {
+        if between {
+            area.left() + slot * (i as f64 + 0.5)
+        } else {
+            area.left() + slot * i as f64
+        }
+    };
 
     // The plot area's own ground, under everything drawn inside it. Office's
     // modern default is bare paper, so silence paints nothing.
@@ -598,16 +789,19 @@ fn axes_chart(
     let stub = TICK * size;
     let val_tick = tick_marks(&plot.val_axis, stub, style.grid);
     let cat_tick = tick_marks(&plot.cat_axis, stub, style.grid);
+    let faint = blend(style.grid, style.background, 0.5);
 
-    // A gridline and its label at every major unit, which is what makes the
-    // heights readable.
+    // A gridline at every major unit when the axis has them, and a label
+    // there whether or not it does.
     for (value, text) in labels {
         let y = y_of(value);
-        out.push(Prim::Line {
-            points: vec![(area.left(), y), (area.right(), y)],
-            thickness: 1.0,
-            rgb: blend(style.grid, style.background, 0.5),
-        });
+        if plot.val_axis.gridlines {
+            out.push(Prim::Line {
+                points: vec![(area.left(), y), (area.right(), y)],
+                thickness: 1.0,
+                rgb: faint,
+            });
+        }
         if let Some((inside, outside, rgb)) = val_tick {
             out.push(Prim::Line {
                 points: vec![(area.left() - outside, y), (area.left() + inside, y)],
@@ -648,13 +842,27 @@ fn axes_chart(
         });
     }
 
-    let slot = area.width / points as f64;
     // The category axis's stubs stand at the *boundaries* between categories,
     // not under them: one at each end of every slot, both ends of the axis
-    // included. The labels are what go in the middle.
-    if let Some((inside, outside, rgb)) = cat_tick {
-        for step in 0..=points {
-            let x = area.left() + slot * step as f64;
+    // included. The labels are what go in the middle. An axis whose
+    // categories stand at the ticks has a stub under each one instead; its
+    // gridlines, when it has them, rise from the same places.
+    let seams: Vec<f64> = if between {
+        (0..=points)
+            .map(|i| area.left() + slot * i as f64)
+            .collect()
+    } else {
+        (0..points).map(x_at).collect()
+    };
+    for &x in &seams {
+        if plot.cat_axis.gridlines {
+            out.push(Prim::Line {
+                points: vec![(x, area.top()), (x, area.bottom())],
+                thickness: 1.0,
+                rgb: faint,
+            });
+        }
+        if let Some((inside, outside, rgb)) = cat_tick {
             out.push(Prim::Line {
                 points: vec![(x, base - inside), (x, base + outside)],
                 thickness: 1.0,
@@ -668,13 +876,13 @@ fn axes_chart(
             // A stacked line plots each series on top of the running total; a
             // blank contributes nothing to the stack and draws no marker.
             let mut totals = vec![0.0f64; points];
-            for entry in series {
+            for (index, entry) in series.iter().enumerate() {
                 let path: Vec<(f64, f64)> = entry
                     .values
                     .iter()
                     .enumerate()
                     .filter_map(|(i, v)| {
-                        let x = area.left() + slot * (i as f64 + 0.5);
+                        let x = x_at(i);
                         if stacked {
                             totals[i] += v.unwrap_or(0.0);
                             v.map(|_| (x, y_of(totals[i])))
@@ -683,20 +891,7 @@ fn axes_chart(
                         }
                     })
                     .collect();
-                if path.len() > 1 {
-                    out.push(Prim::Line {
-                        points: path.clone(),
-                        thickness: 1.6 * style.zoom,
-                        rgb: entry.rgb,
-                    });
-                }
-                for point in path {
-                    out.push(Prim::Dot {
-                        at: point,
-                        radius: 1.8 * style.zoom,
-                        rgb: entry.rgb,
-                    });
-                }
+                trace(out, &path, entry, index, plot.markers, style.zoom);
             }
         }
         ChartKind::Area => {
@@ -712,7 +907,6 @@ fn axes_chart(
                     for (i, v) in entry.values.iter().enumerate() {
                         above[i] += v.unwrap_or(0.0);
                     }
-                    let x_at = |i: usize| area.left() + slot * (i as f64 + 0.5);
                     let mut path: Vec<(f64, f64)> =
                         (0..points).map(|i| (x_at(i), y_of(above[i]))).collect();
                     path.extend((0..points).rev().map(|i| (x_at(i), y_of(below[i]))));
@@ -726,14 +920,16 @@ fn axes_chart(
                     below = above;
                 }
             } else {
+                // Each series is a solid shape down to the axis, drawn in
+                // order, so a later series stands in front of an earlier one
+                // and hides what it is taller than — which is what Office
+                // draws, and why Excel's own sort puts the small series last.
                 for entry in series {
                     let mut path: Vec<(f64, f64)> = entry
                         .values
                         .iter()
                         .enumerate()
-                        .filter_map(|(i, v)| {
-                            v.map(|v| (area.left() + slot * (i as f64 + 0.5), y_of(v)))
-                        })
+                        .filter_map(|(i, v)| v.map(|v| (x_at(i), y_of(v))))
                         .collect();
                     if path.len() < 2 {
                         continue;
@@ -742,8 +938,8 @@ fn axes_chart(
                     path.push((path[0].0, base));
                     out.push(Prim::Poly {
                         points: path,
-                        rgb: blend(entry.rgb, style.background, 0.45),
-                        edge: Some((entry.rgb, 1.2 * style.zoom)),
+                        rgb: entry.rgb,
+                        edge: None,
                     });
                 }
             }
@@ -759,7 +955,7 @@ fn axes_chart(
             for (index, entry) in series.iter().enumerate() {
                 for (i, value) in entry.values.iter().enumerate() {
                     let Some(value) = value else { continue };
-                    let centre = area.left() + slot * (i as f64 + 0.5);
+                    let centre = x_at(i);
                     let x = if stacked {
                         centre - bar / 2.0
                     } else {
@@ -774,7 +970,7 @@ fn axes_chart(
                     };
                     out.push(Prim::Fill {
                         rect: Rect::from_corners((x, y_of(from)), (x + bar, y_of(to))),
-                        rgb: entry.rgb,
+                        rgb: point_rgb(plot, series, entry, i),
                         round: 0.0,
                     });
                 }
@@ -791,7 +987,7 @@ fn axes_chart(
         let (width, _) = measure.size(label, size);
         out.push(Prim::Text {
             at: (
-                area.left() + slot * (i as f64 + 0.5) - width / 2.0,
+                x_at(i) - width / 2.0,
                 // The label's em box centred in the footer band, which is
                 // where Word sets them — measured ink margins of 9.3 and 9.1
                 // in the 24.8pt band. The em rather than the shaper's line,
@@ -989,14 +1185,17 @@ fn sideways(
     let val_tick = tick_marks(&plot.val_axis, stub, style.grid);
     let cat_tick = tick_marks(&plot.cat_axis, stub, style.grid);
 
-    // A gridline stands at every major unit, its label centred underneath.
+    // A gridline stands at every major unit when the axis has them, its
+    // label centred underneath either way.
     for (value, text) in labels {
         let x = x_of(value);
-        out.push(Prim::Line {
-            points: vec![(x, area.top()), (x, area.bottom())],
-            thickness: 1.0,
-            rgb: blend(style.grid, style.background, 0.5),
-        });
+        if plot.val_axis.gridlines {
+            out.push(Prim::Line {
+                points: vec![(x, area.top()), (x, area.bottom())],
+                thickness: 1.0,
+                rgb: blend(style.grid, style.background, 0.5),
+            });
+        }
         if let Some((inside, outside, rgb)) = val_tick {
             out.push(Prim::Line {
                 points: vec![(x, area.bottom() - inside), (x, area.bottom() + outside)],
@@ -1065,7 +1264,7 @@ fn sideways(
             };
             out.push(Prim::Fill {
                 rect: Rect::from_corners((x_of(from), y), (x_of(to), y - bar)),
-                rgb: entry.rgb,
+                rgb: point_rgb(plot, series, entry, i),
                 round: 0.0,
             });
         }
@@ -1107,7 +1306,17 @@ fn radar(
         return;
     }
     let (data_low, data_high) = bounds(series, false);
-    let (low, high, major) = axis(data_low, data_high);
+    // A radar's scale runs up half the plot, and Excel divides it the way it
+    // divides a short axis: about three major units, and no padding past the
+    // largest value — a web whose outermost ring the largest point touches.
+    let (low, high, major) = {
+        let (_, _, major) = axis(data_low * 5.0 / 3.0, data_high * 5.0 / 3.0);
+        (
+            (data_low / major).floor() * major,
+            (data_high / major).ceil() * major,
+            major,
+        )
+    };
     if !(high - low).is_finite() || high <= low {
         return;
     }
@@ -1122,24 +1331,35 @@ fn radar(
         (centre.0 + angle.cos() * r, centre.1 + angle.sin() * r)
     };
 
-    // The web: a ring at every major unit, and a spoke to every category.
+    // The web: a ring at every major unit and a spoke to every category,
+    // which are the value axis's gridlines and drawn only when it has them.
     let faint = blend(style.grid, style.background, 0.5);
     let rings = ((high - low) / major).round() as usize;
-    for ring in 1..=rings {
-        let value = low + major * ring as f64;
-        let mut path: Vec<(f64, f64)> = (0..points).map(|k| spoke(k, value)).collect();
-        path.push(path[0]);
-        out.push(Prim::Line {
-            points: path,
-            thickness: 1.0,
-            rgb: faint,
-        });
+    if plot.val_axis.gridlines {
+        for ring in 1..=rings {
+            let value = low + major * ring as f64;
+            let mut path: Vec<(f64, f64)> = (0..points).map(|k| spoke(k, value)).collect();
+            path.push(path[0]);
+            out.push(Prim::Line {
+                points: path,
+                thickness: 1.0,
+                rgb: faint,
+            });
+        }
+        for k in 0..points {
+            out.push(Prim::Line {
+                points: vec![centre, spoke(k, high)],
+                thickness: 1.0,
+                rgb: faint,
+            });
+        }
     }
-    for k in 0..points {
+    // The axis itself, up the first spoke, in its own ink.
+    if let Some(rgb) = ink(plot.val_axis.line, style.grid).filter(|_| !plot.val_axis.deleted) {
         out.push(Prim::Line {
-            points: vec![centre, spoke(k, high)],
+            points: vec![centre, spoke(0, high)],
             thickness: 1.0,
-            rgb: faint,
+            rgb,
         });
     }
 
@@ -1180,7 +1400,7 @@ fn radar(
         });
     }
 
-    for entry in series {
+    for (index, entry) in series.iter().enumerate() {
         let path: Vec<(f64, f64)> = entry
             .values
             .iter()
@@ -1192,16 +1412,18 @@ fn radar(
             closed.push(path[0]);
             out.push(Prim::Line {
                 points: closed,
-                thickness: 1.6 * style.zoom,
+                thickness: LINE * style.zoom,
                 rgb: entry.rgb,
             });
         }
-        for point in path {
-            out.push(Prim::Dot {
-                at: point,
-                radius: 1.8 * style.zoom,
-                rgb: entry.rgb,
-            });
+        if plot.markers {
+            let symbol = match entry.symbol {
+                Symbol::Auto => Symbol::automatic(index),
+                other => other,
+            };
+            for point in path {
+                mark(out, point, symbol, MARK * style.zoom, entry.rgb, style.zoom);
+            }
         }
     }
 }
@@ -1327,11 +1549,13 @@ fn scatter(
     let val_tick = tick_marks(&plot.val_axis, stub, style.grid);
     for (value, text) in y_labels {
         let y = y_of(value);
-        out.push(Prim::Line {
-            points: vec![(area.left(), y), (area.right(), y)],
-            thickness: 1.0,
-            rgb: blend(style.grid, style.background, 0.5),
-        });
+        if plot.val_axis.gridlines {
+            out.push(Prim::Line {
+                points: vec![(area.left(), y), (area.right(), y)],
+                thickness: 1.0,
+                rgb: blend(style.grid, style.background, 0.5),
+            });
+        }
         if let Some((inside, outside, rgb)) = val_tick {
             out.push(Prim::Line {
                 points: vec![(area.left() - outside, y), (area.left() + inside, y)],
@@ -1388,60 +1612,113 @@ fn scatter(
         }
     }
 
-    for (entry, path) in series.iter().zip(&dots) {
+    // A one-series scatter that varies its colours gives every point its own
+    // colour *and* its own marker from the rotation, which is how Excel
+    // draws one.
+    let by_point = plot.vary_colors && series.len() == 1;
+    for (index, (entry, path)) in series.iter().zip(&dots).enumerate() {
         let path: Vec<(f64, f64)> = path.iter().map(|&(x, y)| (x_of(x), y_of(y))).collect();
         if plot.scatter_lines && path.len() > 1 {
             out.push(Prim::Line {
-                points: path.clone(),
-                thickness: 1.6 * style.zoom,
+                points: if entry.smooth {
+                    smoothed(&path)
+                } else {
+                    path.clone()
+                },
+                thickness: LINE * style.zoom,
                 rgb: entry.rgb,
             });
         }
-        for point in path {
-            out.push(Prim::Dot {
-                at: point,
-                radius: 1.8 * style.zoom,
-                rgb: entry.rgb,
-            });
+        if !plot.markers {
+            continue;
+        }
+        for (i, point) in path.into_iter().enumerate() {
+            let (symbol, rgb) = match (entry.symbol, by_point) {
+                (Symbol::Auto, true) => {
+                    (Symbol::automatic(i), SERIES_COLORS[i % SERIES_COLORS.len()])
+                }
+                (Symbol::Auto, false) => (Symbol::automatic(index), entry.rgb),
+                (other, _) => (other, point_rgb(plot, series, entry, i)),
+            };
+            mark(out, point, symbol, MARK * style.zoom, rgb, style.zoom);
         }
     }
 }
 
-fn pie(out: &mut Vec<Prim>, area: Rect, series: &[Plotted], doughnut: bool) {
-    let Some(first) = series.first() else { return };
-    let total: f64 = first.values.iter().flatten().map(|v| v.abs()).sum();
-    if total <= 0.0 {
+/// A pie, or a doughnut: every series a ring of its own.
+///
+/// Excel draws a doughnut's first series as the innermost ring and each later
+/// one around it, the rings sharing the band between the hole and the rim
+/// equally. A pie plots only its first series, as Excel does. Slices start at
+/// twelve o'clock and run clockwise, each point in its own colour when the
+/// chart varies them.
+fn pie(out: &mut Vec<Prim>, area: Rect, plot: &Plot, series: &[Plotted], size: f64, zoom: f64) {
+    let doughnut = plot.kind == ChartKind::Doughnut;
+    let rings = if doughnut {
+        series.len()
+    } else {
+        series.len().min(1)
+    };
+    if rings == 0 {
         return;
     }
     let centre = area.center();
-    let radius = area.width.min(area.height) / 2.0 - 2.0;
-    let hole = if doughnut { radius * 0.5 } else { 0.0 };
-    let mut from = -std::f64::consts::FRAC_PI_2;
+    // Excel's pie nearly fills its plot area: about half a line of text
+    // stands between the rim and the chart's edge.
+    let radius = (area.width.min(area.height) / 2.0 - 0.5 * size).max(4.0);
+    let hole = if doughnut {
+        radius * (plot.hole / 100.0).clamp(0.0, 0.9)
+    } else {
+        0.0
+    };
+    let band = (radius - hole) / rings as f64;
 
-    for (index, value) in first.values.iter().enumerate() {
-        let Some(value) = value else { continue };
-        let sweep = (value.abs() / total) * std::f64::consts::TAU;
-        // A slice is drawn as a fan of quads: no backend here has an arc, and
-        // a polygon approximation is indistinguishable at this size.
-        let steps = ((sweep / 0.15).ceil() as usize).max(2);
-        let rgb = SERIES_COLORS[index % SERIES_COLORS.len()];
-        for step in 0..steps {
-            let a = from + sweep * step as f64 / steps as f64;
-            let b = from + sweep * (step + 1) as f64 / steps as f64;
+    for (ring, entry) in series.iter().take(rings).enumerate() {
+        let total: f64 = entry.values.iter().flatten().map(|v| v.abs()).sum();
+        if total <= 0.0 {
+            continue;
+        }
+        let inner_r = hole + band * ring as f64;
+        let outer_r = inner_r + band;
+        let mut from = -std::f64::consts::FRAC_PI_2;
+        for (index, value) in entry.values.iter().enumerate() {
+            let Some(value) = value else { continue };
+            let sweep = (value.abs() / total) * std::f64::consts::TAU;
+            let rgb = point_rgb(plot, &series[..1], entry, index);
+            // A slice is a fan of thin quads: no backend here has an arc.
+            // Each quad wears a hairline edge in its own colour, because an
+            // antialiased edge shared by two polygons shows through as a
+            // pale seam — the spokes that used to cut every slice into
+            // stripes.
+            let steps = ((sweep / 0.15).ceil() as usize).max(2);
             let outer = |angle: f64| {
                 (
-                    centre.0 + angle.cos() * radius,
-                    centre.1 + angle.sin() * radius,
+                    centre.0 + angle.cos() * outer_r,
+                    centre.1 + angle.sin() * outer_r,
                 )
             };
-            let inner = |angle: f64| (centre.0 + angle.cos() * hole, centre.1 + angle.sin() * hole);
-            out.push(Prim::Poly {
-                points: vec![inner(a), outer(a), outer(b), inner(b)],
-                rgb,
-                edge: None,
-            });
+            let inner = |angle: f64| {
+                (
+                    centre.0 + angle.cos() * inner_r,
+                    centre.1 + angle.sin() * inner_r,
+                )
+            };
+            for step in 0..steps {
+                let a = from + sweep * step as f64 / steps as f64;
+                let b = from + sweep * (step + 1) as f64 / steps as f64;
+                let points = if inner_r > 0.0 {
+                    vec![inner(a), outer(a), outer(b), inner(b)]
+                } else {
+                    vec![centre, outer(a), outer(b)]
+                };
+                out.push(Prim::Poly {
+                    points,
+                    rgb,
+                    edge: Some((rgb, 0.8 * zoom)),
+                });
+            }
+            from += sweep;
         }
-        from += sweep;
     }
 }
 
@@ -1474,11 +1751,18 @@ mod tests {
         }
     }
 
+    /// One series, in its own colour at every point — a part that states
+    /// `varyColors="0"`, as Excel's every chart does — marking its points
+    /// with circles so a test can count them as dots.
     fn plot(kind: ChartKind) -> Plot {
         Plot {
             kind,
             grouping: Grouping::Clustered,
-            series: vec![Series::default()],
+            vary_colors: false,
+            series: vec![Series {
+                symbol: Symbol::Circle,
+                ..Series::default()
+            }],
             ..Plot::default()
         }
     }
@@ -1685,6 +1969,7 @@ mod tests {
             line: Paint::Rgb([0xB3, 0xB3, 0xB3]),
             major_tick: crate::TickMark::Out,
             deleted: false,
+            gridlines: false,
         };
         ticked.val_axis = ticked.cat_axis;
         ticked.series[0].values = vec![Some(1.0), Some(2.0), Some(3.0), Some(4.0)];
@@ -1753,6 +2038,7 @@ mod tests {
             line: Paint::None,
             major_tick: crate::TickMark::Out,
             deleted: false,
+            gridlines: false,
         };
         let prims = primitives(rect, &hidden, &series, &style(), &mut Half);
         assert!(
@@ -1768,6 +2054,7 @@ mod tests {
             line: Paint::Rgb([1, 2, 3]),
             major_tick: crate::TickMark::Out,
             deleted: true,
+            gridlines: false,
         };
         let prims = primitives(rect, &gone, &series, &style(), &mut Half);
         assert!(!prims
@@ -2179,5 +2466,284 @@ mod tests {
         assert!(high >= 9.0);
         let (low, high, _) = scatter_axis(5.0, 5.0);
         assert!(low < 5.0 && high > 5.0, "one value still gets a range");
+    }
+
+    fn faint_lines(prims: &[Prim]) -> Vec<Path> {
+        let faint = blend(style().grid, style().background, 0.5);
+        prims
+            .iter()
+            .filter_map(|p| match p {
+                Prim::Line { points, rgb, .. } if *rgb == faint => Some(points.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn gridlines_are_drawn_only_for_an_axis_that_states_them() {
+        // Every chart used to get gridlines whatever its part said, which is
+        // what made a chart Calx wrote look ruled here and bare in Excel.
+        let rect = Rect::new(0.0, 0.0, 400.0, 300.0);
+        let mut bare = plot(ChartKind::Bar);
+        bare.series[0].values = vec![Some(1.0), Some(2.0)];
+        let series = cached_series(&bare);
+        assert!(
+            faint_lines(&primitives(rect, &bare, &series, &style(), &mut Half)).is_empty(),
+            "an axis without majorGridlines rules nothing"
+        );
+        let mut ruled = bare.clone();
+        ruled.val_axis.gridlines = true;
+        let lines = faint_lines(&primitives(rect, &ruled, &series, &style(), &mut Half));
+        assert!(!lines.is_empty());
+        assert!(
+            lines.iter().all(|l| l[0].1 == l[1].1),
+            "across, at the values"
+        );
+        ruled.cat_axis.gridlines = true;
+        let lines = faint_lines(&primitives(rect, &ruled, &series, &style(), &mut Half));
+        assert!(
+            lines.iter().any(|l| l[0].0 == l[1].0),
+            "and upright at the seams"
+        );
+    }
+
+    #[test]
+    fn a_line_that_says_nothing_about_smoothing_bends_and_one_that_says_no_does_not() {
+        // Excel reads a missing `<c:smooth>` as smoothed, so the gallery's
+        // straight lines came up as curves there. Markers follow the chart's
+        // word, and Excel's rotation when the series names none.
+        let rect = Rect::new(0.0, 0.0, 400.0, 300.0);
+        let mut line = plot(ChartKind::Line);
+        line.series[0].symbol = Symbol::Auto;
+        line.series[0].values = vec![Some(1.0), Some(3.0), Some(2.0)];
+        let series = cached_series(&line);
+        assert!(series[0].smooth, "silence is Excel's yes");
+        let prims = primitives(rect, &line, &series, &style(), &mut Half);
+        let path = prims
+            .iter()
+            .find_map(|p| match p {
+                Prim::Line { points, rgb, .. } if *rgb == SERIES_COLORS[0] => Some(points.clone()),
+                _ => None,
+            })
+            .expect("the series line");
+        assert!(path.len() > 3, "a curve is many segments: {}", path.len());
+        let diamonds = prims
+            .iter()
+            .filter(|p| matches!(p, Prim::Poly { rgb, points, .. } if *rgb == SERIES_COLORS[0] && points.len() == 4))
+            .count();
+        assert_eq!(
+            diamonds, 3,
+            "the first series in the rotation marks with diamonds"
+        );
+
+        line.series[0].smooth = Some(false);
+        line.series[0].symbol = Symbol::None;
+        let series = cached_series(&line);
+        let prims = primitives(rect, &line, &series, &style(), &mut Half);
+        let path = prims
+            .iter()
+            .find_map(|p| match p {
+                Prim::Line { points, rgb, .. } if *rgb == SERIES_COLORS[0] => Some(points.clone()),
+                _ => None,
+            })
+            .expect("the series line");
+        assert_eq!(path.len(), 3, "straight: one vertex per point");
+        assert!(
+            !prims.iter().any(|p| matches!(p, Prim::Poly { rgb, .. } | Prim::Dot { rgb, .. } if *rgb == SERIES_COLORS[0])),
+            "symbol none marks nothing"
+        );
+    }
+
+    #[test]
+    fn an_area_is_solid_and_runs_from_edge_to_edge() {
+        // Translucent bands with outlines, set between the ticks, against
+        // Excel's opaque shapes whose first and last categories stand at the
+        // ends of the axis.
+        let rect = Rect::new(0.0, 0.0, 400.0, 300.0);
+        let mut area = plot(ChartKind::Area);
+        area.grouping = Grouping::Standard;
+        area.series[0].values = vec![Some(1.0), Some(2.0), Some(3.0)];
+        let series = cached_series(&area);
+        let prims = primitives(rect, &area, &series, &style(), &mut Half);
+        let (points, edge) = prims
+            .iter()
+            .find_map(|p| match p {
+                Prim::Poly { points, rgb, edge } if *rgb == SERIES_COLORS[0] => {
+                    Some((points.clone(), *edge))
+                }
+                _ => None,
+            })
+            .expect("the area, in the series' own unblended colour");
+        assert!(edge.is_none(), "no outline");
+        let axis = prims
+            .iter()
+            .find_map(|p| match p {
+                Prim::Line { points, rgb, .. }
+                    if *rgb == style().grid && points[0].1 == points[1].1 =>
+                {
+                    Some(points.clone())
+                }
+                _ => None,
+            })
+            .expect("the category axis");
+        assert!(
+            (points[0].0 - axis[0].0).abs() < 1e-9,
+            "the first category at the axis's start"
+        );
+        assert!(
+            (points[2].0 - axis[1].0).abs() < 1e-9,
+            "and the last at its end"
+        );
+
+        // The part may say otherwise.
+        area.between = Some(true);
+        let prims = primitives(rect, &area, &series, &style(), &mut Half);
+        let points = prims
+            .iter()
+            .find_map(|p| match p {
+                Prim::Poly { points, rgb, .. } if *rgb == SERIES_COLORS[0] => Some(points.clone()),
+                _ => None,
+            })
+            .expect("the area");
+        assert!(
+            points[0].0 > axis[0].0 + 10.0,
+            "between: the first category stands in from the edge"
+        );
+    }
+
+    #[test]
+    fn a_doughnut_draws_every_series_as_a_ring_and_a_pie_shows_no_seams() {
+        let rect = Rect::new(0.0, 0.0, 400.0, 300.0);
+        let mut doughnut = plot(ChartKind::Doughnut);
+        doughnut.hole = 50.0;
+        doughnut.series[0].values = vec![Some(1.0), Some(1.0)];
+        doughnut.series.push(Series {
+            values: vec![Some(1.0), Some(3.0)],
+            ..Series::default()
+        });
+        let series = cached_series(&doughnut);
+        let prims = primitives(rect, &doughnut, &series, &style(), &mut Half);
+        // The rings are whole, so their vertices average to their centre —
+        // wherever the margins and the legend have put it.
+        let vertices: Vec<(f64, f64)> = prims
+            .iter()
+            .filter_map(|p| match p {
+                Prim::Poly { points, .. } => Some(points.clone()),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        let n = vertices.len() as f64;
+        let centre = (
+            vertices.iter().map(|p| p.0).sum::<f64>() / n,
+            vertices.iter().map(|p| p.1).sum::<f64>() / n,
+        );
+        let distance =
+            |p: &(f64, f64)| ((p.0 - centre.0).powi(2) + (p.1 - centre.1).powi(2)).sqrt();
+        let radii: Vec<f64> = prims
+            .iter()
+            .filter_map(|p| match p {
+                Prim::Poly { points, edge, .. } => {
+                    assert!(edge.is_some(), "a slice wears its own colour on its edges");
+                    Some(points.iter().map(distance).fold(0.0f64, f64::max))
+                }
+                _ => None,
+            })
+            .collect();
+        let rim = radii.iter().copied().fold(0.0f64, f64::max);
+        let inner_rim = radii
+            .iter()
+            .copied()
+            .filter(|r| *r < rim - 1.0)
+            .fold(0.0f64, f64::max);
+        assert!(
+            inner_rim > 0.0,
+            "two rings, the first series inside the second"
+        );
+        assert!(
+            (inner_rim - (rim * 0.5 + (rim - rim * 0.5) / 2.0)).abs() < 1.0,
+            "the band between the hole and the rim shared equally: {inner_rim} of {rim}"
+        );
+        let nearest = prims
+            .iter()
+            .filter_map(|p| match p {
+                Prim::Poly { points, .. } => {
+                    Some(points.iter().map(distance).fold(f64::INFINITY, f64::min))
+                }
+                _ => None,
+            })
+            .fold(f64::INFINITY, f64::min);
+        assert!(
+            (nearest - rim * 0.5).abs() < 1.0,
+            "the hole is half the radius, as stated"
+        );
+    }
+
+    #[test]
+    fn a_stacks_legend_reads_top_down_and_a_flat_bars_bottom_up() {
+        let rect = Rect::new(0.0, 0.0, 400.0, 300.0);
+        let mut stack = plot(ChartKind::Bar);
+        stack.grouping = Grouping::Stacked;
+        stack.legend = Some(LegendPosition::Right);
+        stack.series[0].name = Some("Sales".into());
+        stack.series[0].values = vec![Some(1.0)];
+        stack.series.push(Series {
+            name: Some("Costs".into()),
+            values: vec![Some(1.0)],
+            ..Series::default()
+        });
+        let names = |plot: &Plot| -> Vec<String> {
+            let series = cached_series(plot);
+            primitives(rect, plot, &series, &style(), &mut Half)
+                .iter()
+                .filter_map(|p| match p {
+                    Prim::Text { text, .. } if text == "Sales" || text == "Costs" => {
+                        Some(text.clone())
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+        assert_eq!(
+            names(&stack),
+            ["Costs", "Sales"],
+            "the series on top of the stack first"
+        );
+        stack.grouping = Grouping::Clustered;
+        assert_eq!(names(&stack), ["Sales", "Costs"]);
+        stack.horizontal = true;
+        assert_eq!(names(&stack), ["Costs", "Sales"], "bars lie down bottom up");
+        stack.grouping = Grouping::Stacked;
+        assert_eq!(
+            names(&stack),
+            ["Sales", "Costs"],
+            "and a stack of them is back in order"
+        );
+    }
+
+    #[test]
+    fn a_one_series_chart_that_varies_its_colours_gives_every_bar_its_own() {
+        let rect = Rect::new(0.0, 0.0, 400.0, 300.0);
+        let mut varied = plot(ChartKind::Bar);
+        varied.vary_colors = true;
+        varied.series[0].values = vec![Some(1.0), Some(2.0), Some(3.0)];
+        let series = cached_series(&varied);
+        let prims = primitives(rect, &varied, &series, &style(), &mut Half);
+        for (i, accent) in SERIES_COLORS.iter().enumerate().take(3) {
+            assert_eq!(
+                bars(&prims, *accent).len(),
+                1,
+                "bar {i} in accent {}",
+                i + 1
+            );
+        }
+        // Two series, and the word means nothing: each keeps its own.
+        varied.series.push(Series {
+            values: vec![Some(1.0), Some(1.0), Some(1.0)],
+            ..Series::default()
+        });
+        let series = cached_series(&varied);
+        let prims = primitives(rect, &varied, &series, &style(), &mut Half);
+        assert_eq!(bars(&prims, SERIES_COLORS[0]).len(), 3);
     }
 }

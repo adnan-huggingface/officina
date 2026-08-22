@@ -64,9 +64,12 @@ pub fn rect_of(layout: &Layout, anchor: &Anchor, view: egui::Rect, scroll: Scrol
 }
 
 /// EMUs are Office's internal unit: 12,700 to the point. The grid works in
-/// points at 100% zoom, so this is the whole conversion.
+/// 96-dpi pixels at 100% zoom — `axis::row_pixels` is the same conversion
+/// for a row's height in points — so an inch of offset is 96 of them, not
+/// 72. At 72 a chart pinned half an inch into a column stood a quarter inch
+/// short of where Excel put it, and a one-cell anchor's whole size with it.
 fn emu_to_pixels(emu: i64, zoom: f64) -> f64 {
-    emu as f64 / EMU_PER_POINT * zoom
+    emu as f64 / EMU_PER_POINT * 96.0 / 72.0 * zoom
 }
 
 /// Reads a chart's series out of the workbook, falling back to the cache.
@@ -123,6 +126,8 @@ pub fn resolve(book: &Workbook, chart: &Chart) -> Vec<Plotted> {
                 rgb: series
                     .color
                     .unwrap_or(SERIES_COLORS[index % SERIES_COLORS.len()]),
+                symbol: ss_model::chart::draw::marks(&chart.plot, index).0,
+                smooth: ss_model::chart::draw::marks(&chart.plot, index).1,
             }
         })
         .collect()
@@ -206,8 +211,8 @@ mod tests {
             height: 914_400,
         };
         let rect = rect_of(&layout, &anchor, view, Scroll::default());
-        assert_eq!(rect.left(), 36.0, "457200 EMU is 36 points");
-        assert_eq!(rect.width(), 72.0, "914400 EMU is an inch, 72 points");
+        assert_eq!(rect.left(), 48.0, "457200 EMU is half an inch: 48 pixels");
+        assert_eq!(rect.width(), 96.0, "914400 EMU is an inch, 96 pixels");
     }
 
     #[test]
