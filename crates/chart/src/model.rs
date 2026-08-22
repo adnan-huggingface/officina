@@ -344,6 +344,14 @@ pub struct Plot {
     /// one bar's width. Office's default is 150 — the gap is one and a half
     /// bars wide — and it is what sets how fat the bars are.
     pub gap: f64,
+    /// `<c:overlap>`: how far the bars of one category lie over each other,
+    /// as a percentage of a bar. 100 is a stack proper; 0 — which is what
+    /// Excel draws for a part that states none, *stacked or not* — sets the
+    /// series side by side, each bar's foot on the one before's total, and a
+    /// negative leaves a gap between them. Excel's own Insert writes 100 on
+    /// every stack, which is why nobody sees the default until a second
+    /// producer leaves it out (measured 2026-08-22).
+    pub overlap: f64,
     /// `<c:scatterStyle>`: whether a scatter's points are joined by lines
     /// (`lineMarker`, `smoothMarker`) or stand alone (`marker`), which is what
     /// Excel writes for the plain scatter it inserts.
@@ -388,6 +396,7 @@ impl Default for Plot {
             cat_axis: Axis::default(),
             val_axis: Axis::default(),
             gap: 150.0,
+            overlap: 0.0,
             scatter_lines: false,
             scatter_smooth: false,
             markers: true,
@@ -439,6 +448,7 @@ pub fn excel_defaults(plot: &mut Plot) {
     let pie = matches!(plot.kind, ChartKind::Pie | ChartKind::Doughnut);
     plot.vary_colors = pie;
     plot.markers = true;
+    plot.overlap = if plot.grouping.stacked() { 100.0 } else { 0.0 };
     plot.val_axis.gridlines = plot.kind.has_axes();
     plot.hole = if plot.kind == ChartKind::Doughnut {
         75.0

@@ -245,6 +245,11 @@ pub fn plot(data: &[u8]) -> Option<Plot> {
                         out.gap = v;
                     }
                 }
+                b"overlap" => {
+                    if let Some(v) = attr_text(e, b"val").and_then(|v| v.trim().parse().ok()) {
+                        out.overlap = v;
+                    }
+                }
                 b"spPr" if in_series => depth_in_series_props += 1,
                 b"spPr" if !in_chart => props = Props::Area,
                 b"spPr" if in_axis.is_some() && !in_gridlines && !in_text_props && !in_title => {

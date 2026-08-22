@@ -501,7 +501,11 @@ automatic marker; a missing `majorTickMark` is `cross` and a missing
 `minorTickMark` is too; a missing `holeSize` on a doughnut is *no hole at all*
 (measured from Excel's export of the part: rings from the centre outward,
 where the schema says ten percent); a missing `crossBetween` is `midCat` for
-an area and `between` for everything else. Excel's own Insert writes every one
+an area and `between` for everything else; and a missing `overlap` on a
+*stacked* bar chart is nought — the series stand side by side, each bar's
+foot on the one before's total, which the first pass of this comparison
+looked straight at and let go. Excel's Insert writes `overlap="100"` on
+every stack. Excel's own Insert writes every one
 of these out, which is why nobody sees the defaults until a second producer
 leaves them blank. Two rules follow. The reader fills a silence the way Excel
 does, so what Calx draws from a sparse part is what Excel draws from it. The

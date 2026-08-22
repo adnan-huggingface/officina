@@ -550,6 +550,13 @@ pub(crate) fn chart_part(chart: &Chart) -> Vec<u8> {
             r#"<c:firstSliceAng val="0"/><c:holeSize val="{}"/>"#,
             chart.plot.hole.round() as i64
         ),
+        // A stack that does not say `overlap="100"` is drawn by Excel with
+        // its series side by side.
+        ss_model::ChartKind::Bar => format!(
+            r#"<c:gapWidth val="{}"/><c:overlap val="{}"/>"#,
+            chart.plot.gap.round() as i64,
+            chart.plot.overlap.round() as i64
+        ),
         _ => String::new(),
     };
 
@@ -870,6 +877,17 @@ mod tests {
             "{doughnut}"
         );
         assert!(doughnut.contains(r#"<c:holeSize val="75"/>"#), "{doughnut}");
+
+        let mut chart = a_chart();
+        chart.plot.grouping = ss_model::chart::Grouping::Stacked;
+        ss_model::chart::excel_defaults(&mut chart.plot);
+        let stack = String::from_utf8(chart_part(&chart)).expect("utf-8");
+        assert!(
+            stack.contains(r#"<c:gapWidth val="150"/><c:overlap val="100"/><c:axId"#),
+            "{stack}"
+        );
+        let read = ss_model::chart::read::plot(stack.as_bytes()).expect("parses");
+        assert_eq!(read.overlap, 100.0);
         assert!(!doughnut.contains("<c:majorGridlines/>"), "{doughnut}");
     }
 

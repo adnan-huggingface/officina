@@ -1698,6 +1698,14 @@ meant to finish the next cell pressed Save — the run left a `Mar.xlsx`
 behind. The editor now holds its focus and hands the Tab to the grid
 (`tab_commits_and_moves_right_and_the_focus_stays_with_the_grid`).
 
+The one I missed: Excel drew the stacked columns with the two series side
+by side, each bar's foot on the other's top, and I passed it. The part said
+no `<c:overlap>`, and Excel's default for that is nought even on a stack. The
+model carries `overlap` now, the painter lays out every bar group by it — a
+stack is a group whose pitch is nought, not a special case — the writer
+states it, and `excel_defaults` sets 100 on a stack
+(`a_stack_whose_part_states_no_overlap_sets_its_series_side_by_side`).
+
 ## Deferred
 
 - [x] **PDF** — was dropped per Q3; built after ship as `wp-print`. See above.

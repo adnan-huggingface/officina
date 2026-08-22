@@ -407,6 +407,23 @@ fn trace(
     }
 }
 
+/// How the bars of one category share their slot: the width of one bar, the
+/// width of the whole group, and the pitch from one series' bar to the next.
+///
+/// `gapWidth` says how much of the slot is space between groups, in bars;
+/// `overlap` says how far each bar lies over the one before, as a fraction
+/// of a bar — one for a stack proper, nought for bars side by side, less for
+/// a gap between them. A stack is not a special case: it is a group whose
+/// pitch is nought, and a stack whose part states no overlap is a group whose
+/// pitch is a whole bar, which is what Excel draws for one.
+fn lanes(plot: &Plot, count: usize, slot: f64) -> (f64, f64, f64) {
+    let n = count.max(1) as f64;
+    let over = (plot.overlap / 100.0).clamp(-1.0, 1.0);
+    let group_in_bars = n - (n - 1.0) * over;
+    let bar = (slot / (group_in_bars + plot.gap.max(0.0) / 100.0)).max(1.0);
+    (bar, bar * group_in_bars, bar * (1.0 - over))
+}
+
 /// The colour of one point, which is its series' unless the chart varies
 /// colours and has only the one series to vary them over.
 fn point_rgb(plot: &Plot, series: &[Plotted], entry: &Plotted, point: usize) -> [u8; 3] {
@@ -947,20 +964,14 @@ fn axes_chart(
         _ => {
             // Bars. Clustered puts the series side by side inside the slot;
             // stacked puts each one on top of the running total. How fat they
-            // are is the file's `gapWidth`: the space between groups measured
-            // in bars, so a slot holds `lanes + gap/100` bar-widths of room.
-            let lanes = if stacked { 1 } else { series.len().max(1) };
-            let bar = (slot / (lanes as f64 + plot.gap.max(0.0) / 100.0)).max(1.0);
+            // are is the file's `gapWidth`, and how far they lie over one
+            // another its `overlap` — see `lanes`.
+            let (bar, group, pitch) = lanes(plot, series.len(), slot);
             let mut totals = vec![0.0f64; points];
             for (index, entry) in series.iter().enumerate() {
                 for (i, value) in entry.values.iter().enumerate() {
                     let Some(value) = value else { continue };
-                    let centre = x_at(i);
-                    let x = if stacked {
-                        centre - bar / 2.0
-                    } else {
-                        centre - bar * lanes as f64 / 2.0 + bar * index as f64
-                    };
+                    let x = x_at(i) - group / 2.0 + pitch * index as f64;
                     let (from, to) = if stacked {
                         let start = totals[i];
                         totals[i] += value;
@@ -1243,18 +1254,13 @@ fn sideways(
 
     // The first category at the bottom, and within a group the first series
     // nearest the axis — both ends of the anticlockwise turn.
-    let lanes = if stacked { 1 } else { series.len().max(1) };
-    let bar = (slot / (lanes as f64 + plot.gap.max(0.0) / 100.0)).max(1.0);
+    let (bar, group, pitch) = lanes(plot, series.len(), slot);
     let mut totals = vec![0.0f64; points];
     for (index, entry) in series.iter().enumerate() {
         for (i, value) in entry.values.iter().enumerate() {
             let Some(value) = value else { continue };
             let centre = area.bottom() - slot * (i as f64 + 0.5);
-            let y = if stacked {
-                centre + bar / 2.0
-            } else {
-                centre + bar * lanes as f64 / 2.0 - bar * index as f64
-            };
+            let y = centre + group / 2.0 - pitch * index as f64;
             let (from, to) = if stacked {
                 let start = totals[i];
                 totals[i] += value;
@@ -2718,6 +2724,52 @@ mod tests {
             names(&stack),
             ["Sales", "Costs"],
             "and a stack of them is back in order"
+        );
+    }
+
+    #[test]
+    fn a_stack_whose_part_states_no_overlap_sets_its_series_side_by_side() {
+        // Excel's reading of the gallery's stacked column: the second series
+        // stood beside the first, its foot at the first's top. The stack
+        // proper is overlap 100, which Excel's own Insert always writes.
+        let rect = Rect::new(0.0, 0.0, 400.0, 300.0);
+        let mut stack = plot(ChartKind::Bar);
+        stack.grouping = Grouping::Stacked;
+        stack.series[0].values = vec![Some(1.0)];
+        stack.series.push(Series {
+            values: vec![Some(1.0)],
+            ..Series::default()
+        });
+        let series = cached_series(&stack);
+        let beside = primitives(rect, &stack, &series, &style(), &mut Half);
+        let (a, b) = (
+            bars(&beside, SERIES_COLORS[0])[0],
+            bars(&beside, SERIES_COLORS[1])[0],
+        );
+        assert!(
+            (b.left() - a.right()).abs() < 1e-9,
+            "beside: {a:?} then {b:?}"
+        );
+        assert!(
+            (b.bottom() - a.top()).abs() < 1e-9,
+            "its foot on the first's total"
+        );
+        let beside_width = a.width;
+
+        stack.overlap = 100.0;
+        let atop = primitives(rect, &stack, &series, &style(), &mut Half);
+        let (a, b) = (
+            bars(&atop, SERIES_COLORS[0])[0],
+            bars(&atop, SERIES_COLORS[1])[0],
+        );
+        assert!(
+            (b.left() - a.left()).abs() < 1e-9,
+            "on top: {a:?} under {b:?}"
+        );
+        assert!(
+            // Two bars of 3.5 per slot against one of 2.5: fatter by 1.4.
+            (b.width / beside_width - 1.4).abs() < 1e-6,
+            "and each bar as wide as the whole group was"
         );
     }
 
