@@ -463,3 +463,16 @@ as bindings; only opening the file in the real application caught it. When a
 writer emits a prefixed attribute, it must own the declaration — putting
 `xmlns:r` on the element itself is legal, harmless when the root declares it
 too, and correct when nothing else does.
+
+**A document chart needs no workbook behind it.** Every chart Word writes into
+a `.docx` carries a `<c:externalData>` pointing at an embedded xlsx, so it was
+natural to assume the reference was load-bearing. Measured, it is not: a chart
+part holding only its caches — no embedded workbook, no colour part, no style
+part — opens in Word without complaint, is counted as a chart by its object
+model, and renders every bar from the cached values. What the embedded workbook
+buys is Edit Data, nothing else. That is what makes a chart clipboard between
+two applications cheap: the `<c:chartSpace>` alone is the whole payload, since
+`xl/charts/chart1.xml` and `word/charts/chart1.xml` are the same element. One
+cosmetic note from the same probe: a series that states no fill is coloured by
+the reader's own defaults, and Word's default varies the colour per point where
+Calx paints one blue — stating the fill is what pins the look across readers.

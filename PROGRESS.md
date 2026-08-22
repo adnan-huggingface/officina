@@ -1593,6 +1593,32 @@ The application was never at fault, which is its own lesson about
 validating the validator. What a keyboard still cannot reach, stated
 plainly: charts, cell merges, and page-number fields in a footer.
 
+## The chart crosses over (2026-08-21)
+
+The one gap the recreations could not close — Scriva has no chart authoring —
+is now closed the way the two applications were built to close it: the chart is
+made in Calx, where the numbers live, and travels to Scriva on the clipboard as
+the `<c:chartSpace>` part itself, under a registered format of our own
+(`chart::clipboard`, one statement of the wire format for both sides). Calx's
+copy branches to the selected chart and packs the part its own writer already
+authored, with the size measured off the sheet in EMUs; Scriva's paste embeds
+the bytes as `word/charts/chartN.xml` with relationship and content type
+(`media::embed_chart`), authors the inline graphicFrame around it — every
+prefix declared on the element, per the namespace lesson — and the render,
+resize, move and delete paths needed nothing at all, because a pasted chart is
+indistinguishable from one read out of a file. What Scriva deliberately cannot
+do is edit the plot: changing the data means going back to Calx, the same
+stated-limits rule as no-crop on pictures.
+
+Word, measured rather than assumed, accepts the result: opens clean, counts one
+chart, renders every bar from the caches — no embedded workbook required (see
+LEARNINGS on `externalData`). The hands-on pass earned its keep again before
+the feature was an hour old: with a chart selected, Ctrl+C read "Copied" where
+"Chart copied" belonged, because the key press deselected the chart before its
+own `Event::Copy` arrived, handing the copy to the cells underneath. A held
+command modifier now leaves the selection alone, and a regression test reads
+the two events in the order the platform sends them.
+
 ## Deferred
 
 - [x] **PDF** — was dropped per Q3; built after ship as `wp-print`. See above.

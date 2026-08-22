@@ -382,7 +382,7 @@ fn pic_anchor(picture: &Picture, rel_id: &str, id: u32) -> Vec<u8> {
 /// that cannot resolve the reference — because the sheet name has a space in
 /// it, or the workbook is being read by something simpler than Excel — still
 /// has the numbers to draw.
-fn chart_part(chart: &Chart) -> Vec<u8> {
+pub(crate) fn chart_part(chart: &Chart) -> Vec<u8> {
     let mut series = String::new();
     for (index, s) in chart.plot.series.iter().enumerate() {
         series.push_str(&format!(

@@ -33,6 +33,16 @@ use ss_model::{Sheet, SheetKind, Workbook};
 
 pub use error::{Error, Result};
 
+/// A whole `<c:chartSpace>` part for one chart, cached values beside every
+/// reference.
+///
+/// Public for the chart clipboard: a chart copied out of Calx travels as this
+/// part's bytes, because `xl/charts/chart1.xml` and `word/charts/chart1.xml`
+/// are the same element and a document renders it from the caches alone.
+pub fn chart_space(chart: &ss_model::Chart) -> Vec<u8> {
+    write::insert::chart_part(chart)
+}
+
 /// A workbook and the package it came from.
 ///
 /// Both are kept. The model is what the UI and the formula engine edit; the

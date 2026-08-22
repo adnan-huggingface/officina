@@ -2914,6 +2914,13 @@ impl GridView {
                     self.selected_chart = None;
                     return None;
                 }
+                // Ctrl+C arrives twice: as this key press and as its own
+                // `Event::Copy`. Deselecting on the press hands the copy to
+                // the cells underneath — so a held command modifier leaves
+                // the selection where the user put it. Both spellings,
+                // because the platform layer writes `command` and a raw
+                // `Modifiers::CTRL` does not.
+                _ if modifiers.command || modifiers.ctrl => {}
                 _ => self.selected_chart = None,
             }
         }
@@ -4707,6 +4714,50 @@ mod tests {
         frame(&mut view, &mut book, vec![plain(egui::Key::Delete)], &ctx);
         assert_eq!(view.actions, [Action::DeleteChart(0)]);
         assert!(view.selected_chart.is_none());
+    }
+
+    #[test]
+    fn ctrl_c_over_a_selected_chart_copies_the_chart_and_not_the_cells() {
+        // Ctrl+C arrives twice — as a key press and as `Event::Copy` — and
+        // the press used to deselect the chart before the copy could see it,
+        // handing the copy to the cells underneath. Found by copying a chart
+        // by hand and reading "Copied" where "Chart copied" belonged.
+        let ctx = context();
+        let mut book = with_chart();
+        let mut view = GridView::default();
+        frame(&mut view, &mut book, vec![], &ctx);
+
+        let sheet = book.sheet(0).expect("a sheet").clone();
+        let layout = Layout::for_sheet(&book, &sheet, view.zoom);
+        let origin = egui::vec2(layout.header_width as f32, layout.header_height as f32);
+        let rect =
+            crate::grid::picture::sheet_rect(&layout, &sheet.charts[0].anchor).translate(origin);
+        frame(&mut view, &mut book, vec![press(rect.center(), true)], &ctx);
+        frame(
+            &mut view,
+            &mut book,
+            vec![press(rect.center(), false)],
+            &ctx,
+        );
+        assert_eq!(view.selected_chart, Some(0));
+
+        view.actions.clear();
+        frame(
+            &mut view,
+            &mut book,
+            vec![ctrl(egui::Key::C), egui::Event::Copy],
+            &ctx,
+        );
+        assert_eq!(
+            view.selected_chart,
+            Some(0),
+            "the key press must not deselect what the copy is about"
+        );
+        assert!(
+            view.actions.contains(&Action::Copy { cut: false }),
+            "{:?}",
+            view.actions
+        );
     }
 
     /// Where a picture is on screen, given the same layout the view uses.

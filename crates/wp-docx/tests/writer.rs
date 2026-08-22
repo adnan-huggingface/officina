@@ -388,6 +388,73 @@ fn a_pasted_picture_becomes_a_part_a_relationship_and_a_drawing() {
 }
 
 #[test]
+fn a_chart_pasted_from_calx_becomes_a_part_a_relationship_and_a_drawing() {
+    // The chart clipboard: Calx puts a whole `<c:chartSpace>` on the board and
+    // Scriva embeds it as a part it never parses. All three pieces have to
+    // arrive together — a `<c:chart r:id>` naming a relationship that names a
+    // part that is not there is a file Word offers to repair — and the part
+    // needs its content type, or Word does not know it is looking at a chart.
+    use wp_model::doc::{Block, Drawing, Paragraph, Piece, Wrap};
+    use wp_model::Emu;
+
+    let chart_space: &[u8] = br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><c:chart><c:autoTitleDeleted val="1"/><c:plotArea><c:layout/><c:barChart><c:barDir val="col"/><c:grouping val="clustered"/><c:ser><c:idx val="0"/><c:order val="0"/><c:val><c:numRef><c:f>Sheet1!$A$1:$A$2</c:f><c:numCache><c:formatCode>General</c:formatCode><c:ptCount val="2"/><c:pt idx="0"><c:v>1</c:v></c:pt><c:pt idx="1"><c:v>2</c:v></c:pt></c:numCache></c:numRef></c:val></c:ser><c:axId val="111111111"/><c:axId val="222222222"/></c:barChart><c:catAx><c:axId val="111111111"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="b"/><c:crossAx val="222222222"/></c:catAx><c:valAx><c:axId val="222222222"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="l"/><c:crossAx val="111111111"/></c:valAx></c:plotArea><c:plotVisOnly val="1"/><c:dispBlanksAs val="gap"/></c:chart></c:chartSpace>"#;
+
+    let mut document = wp_model::Document::blank();
+    let mut package = wp_docx::write::blank::package_for(&document).expect("a package");
+    let rel = wp_docx::media::embed_chart(&mut package, chart_space).expect("the chart goes in");
+
+    let drawing = Drawing {
+        source: Vec::new().into(),
+        anchored: false,
+        extent: (Emu(5_486_400), Emu(3_200_400)),
+        rel: None,
+        chart: Some(rel.as_str().into()),
+        name: Some("Chart".into()),
+        description: None,
+        wrap: Wrap::None,
+        distance: (Emu(0), Emu(0), Emu(0), Emu(0)),
+        position: None,
+        behind_text: false,
+    };
+    document.body = vec![Block::Paragraph(Paragraph {
+        content: vec![Inline::Run(Run {
+            content: vec![Piece::Drawing(Box::new(drawing))],
+            ..Run::new()
+        })],
+        ..Paragraph::new()
+    })];
+
+    let temporary = std::env::temp_dir().join("scriva-pasted-chart.docx");
+    wp_docx::write::save(&mut document, &mut package, &temporary).expect("it writes");
+    let (read, reopened) = wp_docx::open(&temporary).expect("it reads back");
+    let _ = std::fs::remove_file(&temporary);
+
+    let drawings: Vec<_> = read
+        .paragraphs()
+        .iter()
+        .flat_map(|paragraph| paragraph.drawings().into_iter().cloned())
+        .collect();
+    let [drawing] = &drawings[..] else {
+        panic!("one chart, not {}", drawings.len());
+    };
+    assert_eq!(drawing.extent, (Emu(5_486_400), Emu(3_200_400)), "its size");
+
+    let parts = wp_docx::DocumentParts::locate_in(&reopened).expect("the parts");
+    let rel = drawing.chart.as_deref().expect("it names its part");
+    let name = parts.target(rel).expect("which resolves");
+    assert_eq!(
+        reopened.part(name).expect("to a part that is there").data(),
+        chart_space,
+        "holding the bytes exactly as the board carried them"
+    );
+    assert_eq!(
+        reopened.content_types().get(name),
+        Some("application/vnd.openxmlformats-officedocument.drawingml.chart+xml"),
+        "under the content type that makes it a chart"
+    );
+}
+
+#[test]
 fn a_duplicated_chart_is_a_cloned_part_with_its_own_relationship() {
     // Word refuses to open a document where two drawings name one chart part,
     // so a same-document chart paste clones the part — verified against Word

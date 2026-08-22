@@ -2957,6 +2957,12 @@ impl Calx {
     }
 
     fn copy(&mut self, ui: &egui::Ui, cut: bool) {
+        // A selected chart takes the copy: the user is holding the chart, not
+        // the cells underneath it.
+        if self.grid.selected_chart.is_some() {
+            self.copy_chart(cut);
+            return;
+        }
         let sheet = self.grid.sheet_index;
         let range = self.grid.selection.active_range();
         let Some(taken) = clip::copy(&self.doc.workbook, sheet, range) else {
@@ -2969,6 +2975,46 @@ impl Calx {
         // The ants say what would move or be pasted; Escape dismisses them.
         self.grid.marquee = Some((sheet, range));
         self.status = if cut { "Cut" } else { "Copied" }.to_string();
+    }
+
+    /// Puts the selected chart on the OS clipboard, as the part Scriva pastes.
+    ///
+    /// A cut deletes it afterwards, which is the whole difference — the board
+    /// does not care where the chart went.
+    fn copy_chart(&mut self, cut: bool) {
+        let sheet = self.grid.sheet_index;
+        let Some(index) = self.grid.selected_chart else {
+            return;
+        };
+        let Some(payload) = self.chart_payload(sheet, index) else {
+            return;
+        };
+        set_clipboard_chart(&payload);
+        if cut {
+            self.delete_chart(sheet, index);
+        }
+        self.status = if cut { "Chart cut" } else { "Chart copied" }.to_string();
+    }
+
+    /// The clipboard payload for one chart: its part, and its size on the
+    /// sheet.
+    ///
+    /// The size crosses over because a document has no cells for the anchor to
+    /// mean anything against: what the drawing on the other side states is an
+    /// extent, so the anchor is measured here, where the rows and columns are.
+    fn chart_payload(&self, sheet: usize, index: usize) -> Option<Vec<u8>> {
+        let sheet = self.doc.workbook.sheet(sheet)?;
+        let chart = sheet.charts.get(index)?;
+        let layout = grid::Layout::for_sheet(&self.doc.workbook, sheet, 1.0);
+        let rect = grid::picture::sheet_rect(&layout, &chart.anchor);
+        // Logical pixels at zoom 1 are 0.75 points each, as everywhere in the
+        // grid.
+        let to_emu = |px: f32| (f64::from(px) * 0.75 * ss_model::chart::EMU_PER_POINT) as i64;
+        Some(ss_model::chart::clipboard::pack(
+            to_emu(rect.width()),
+            to_emu(rect.height()),
+            &ss_xlsx::chart_space(chart),
+        ))
     }
 
     fn paste(&mut self, text: String) {
@@ -7139,6 +7185,30 @@ fn italic_letter(text: &'static str, on: bool) -> icons::Letter<'static> {
 }
 
 /// Whether two ranges touch at all.
+/// Puts a chart payload on the OS clipboard under our registered format.
+///
+/// The board is emptied first — writing the text is what empties it — because
+/// a paste that found yesterday's text beside today's chart would honour the
+/// text. A chart has no pixels or prose to offer other programs, so the only
+/// format worth writing is our own.
+#[cfg(windows)]
+fn set_clipboard_chart(payload: &[u8]) {
+    let Ok(_board) = clipboard_win::Clipboard::new_attempts(10) else {
+        return;
+    };
+    if clipboard_win::raw::set_string("").is_err() {
+        return;
+    }
+    if let Some(format) = clipboard_win::register_format(ss_model::chart::clipboard::FORMAT) {
+        let _ = clipboard_win::raw::set_without_clear(format.get(), payload);
+    }
+}
+
+/// Where there is no Win32 clipboard there is no registered format to write,
+/// and a copied chart goes nowhere. Linux code paths are unverified anyway.
+#[cfg(not(windows))]
+fn set_clipboard_chart(_payload: &[u8]) {}
+
 fn overlaps(a: CellRange, b: CellRange) -> bool {
     a.start.row <= b.end.row
         && b.start.row <= a.end.row
@@ -7389,6 +7459,36 @@ mod tests {
     fn value_at(app: &Calx, at: &str) -> Option<ss_model::CellValue> {
         let at = CellRef::from_a1(at).expect("valid");
         app.doc.workbook.sheet(0)?.get(at).map(|c| c.value)
+    }
+
+    #[test]
+    fn a_copied_chart_travels_as_the_part_scriva_pastes() {
+        // The clipboard payload is the whole `<c:chartSpace>` plus a size in
+        // EMUs — everything the other application needs, because a document
+        // renders a chart from its caches and has no cells to anchor it to.
+        let mut app = Calx::new();
+        type_into(&mut app, "A1", "3");
+        type_into(&mut app, "A2", "1");
+        type_into(&mut app, "A3", "4");
+        app.grid.selection = grid::Selection::at(CellRef::from_a1("A1").expect("valid"));
+        app.grid.selection.extend_to(
+            CellRef::from_a1("A3").expect("valid"),
+            app.doc.workbook.sheet(0).expect("sheet 0"),
+        );
+        app.insert_chart(ss_model::ChartKind::Bar);
+        assert_eq!(app.grid.selected_chart, Some(0), "the new chart is held");
+
+        let payload = app.chart_payload(0, 0).expect("a payload");
+        let (cx, cy, chart_space) =
+            ss_model::chart::clipboard::unpack(&payload).expect("our own format");
+        assert!(cx > 0 && cy > 0, "a size the drawing can state: {cx}x{cy}");
+        let plot = ss_model::chart::read::plot(chart_space).expect("a part the reader draws");
+        assert_eq!(plot.series.len(), 1);
+        assert_eq!(
+            plot.series[0].values,
+            vec![Some(3.0), Some(1.0), Some(4.0)],
+            "the numbers ride in the caches"
+        );
     }
 
     #[test]

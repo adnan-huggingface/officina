@@ -41,6 +41,55 @@ pub fn embed(package: &mut Package, data: &[u8], content_type: &str) -> Result<S
     Ok(id)
 }
 
+/// Adds a chart part from its bytes and relates it to the document part.
+///
+/// For a chart that arrives from outside the package — copied in Calx, whose
+/// clipboard payload is the `<c:chartSpace>` itself. The part carries no
+/// relationships of its own: an authored chart has no embedded workbook, no
+/// colour part and no style part, and its caches are what a reader draws.
+/// Answers the relationship id the drawing will name it by.
+pub fn embed_chart(package: &mut Package, data: &[u8]) -> Result<String> {
+    let located = parts::locate(package)?;
+    let name = free_chart_name(package, &located.document)?;
+    package.put_part(
+        name.clone(),
+        "application/vnd.openxmlformats-officedocument.drawingml.chart+xml",
+        data.to_vec(),
+    );
+
+    let mut rels = package.relationships(&located.document)?;
+    let id = rels.next_id();
+    rels.insert(Relationship {
+        id: id.clone(),
+        rel_type: format!("{REL_BASE}/chart"),
+        target: relative_to(&located.document, &name),
+        mode: TargetMode::Internal,
+    });
+    package.put_part(located.document.rels_part(), RELS_TYPE, rels.to_xml());
+    Ok(id)
+}
+
+/// The first `charts/chartN.xml` beside the document part that nothing has
+/// taken. Beside the document rather than at a fixed `/word/`, for the same
+/// reason as [`relative_to`]: the document part is where Word put it.
+fn free_chart_name(package: &Package, document: &PartName) -> Result<PartName> {
+    let dir = match document.parent() {
+        "/" => String::new(),
+        dir => dir.to_owned(),
+    };
+    for n in 1..10_000 {
+        let candidate =
+            PartName::new(&format!("{dir}/charts/chart{n}.xml")).map_err(Error::Package)?;
+        if package.part(&candidate).is_none() {
+            return Ok(candidate);
+        }
+    }
+    Err(Error::Package(ooxml::Error::BadPartName {
+        raw: format!("{dir}/charts/chartN.xml"),
+        reason: "the package already holds ten thousand of them",
+    }))
+}
+
 /// Clones a chart part and answers a fresh relationship naming the clone.
 ///
 /// A picture part can be shown by two drawings at once; a chart part cannot.

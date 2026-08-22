@@ -15,6 +15,7 @@
 //! into a PDF and onto a printer, so where its ink goes is worked out once, in
 //! numbers, and each renderer only chooses ink.
 
+pub mod clipboard;
 pub mod draw;
 mod model;
 pub mod read;

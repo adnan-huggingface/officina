@@ -22,7 +22,7 @@ mod blank;
 mod cells;
 mod chart_out;
 mod drawing_out;
-mod insert;
+pub(crate) mod insert;
 mod sheet_out;
 mod splice;
 mod strings_out;

@@ -101,6 +101,9 @@ pub fn patch(drawing: &Drawing) -> Vec<u8> {
 /// naming an undeclared prefix is not a picture Word cannot draw, it is a file
 /// Word offers to repair.
 fn author(drawing: &Drawing) -> Vec<u8> {
+    if drawing.chart.is_some() {
+        return author_chart(drawing);
+    }
     // A drawing with no relationship has no bytes to draw: writing the frame
     // without the picture would produce exactly the dangling `r:embed` that
     // makes Word call a document broken.
@@ -142,9 +145,45 @@ fn author(drawing: &Drawing) -> Vec<u8> {
     .into_bytes()
 }
 
+/// A `<w:drawing>` for a chart this application put in the document.
+///
+/// The same shape as the picture above with the graphic swapped: where a
+/// picture holds `<pic:pic>` with a blip, a chart holds a single `<c:chart>`
+/// naming its part by relationship. Word draws the part, not the frame, so
+/// this is everything there is to write. The namespaces — `c` and `r` both —
+/// are declared on the elements that use them, because a prefix the root did
+/// not bind is a file Word offers to repair, and `document.xml` written by
+/// this crate binds only `w`.
+fn author_chart(drawing: &Drawing) -> Vec<u8> {
+    let Some(rel) = &drawing.chart else {
+        return Vec::new();
+    };
+    let (cx, cy) = (drawing.extent.0 .0.max(1), drawing.extent.1 .0.max(1));
+    let name = drawing.name.as_deref().unwrap_or("Chart");
+    let name = crate::write::escape_attr(name);
+    format!(
+        "<w:drawing><wp:inline distT=\"0\" distB=\"0\" distL=\"0\" distR=\"0\" \
+           xmlns:wp=\"{WP}\">\
+           <wp:extent cx=\"{cx}\" cy=\"{cy}\"/>\
+           <wp:effectExtent l=\"0\" t=\"0\" r=\"0\" b=\"0\"/>\
+           <wp:docPr id=\"1\" name=\"{name}\"/>\
+           <wp:cNvGraphicFramePr>\
+             <a:graphicFrameLocks xmlns:a=\"{A}\" noChangeAspect=\"1\"/>\
+           </wp:cNvGraphicFramePr>\
+           <a:graphic xmlns:a=\"{A}\">\
+             <a:graphicData uri=\"{C}\">\
+               <c:chart xmlns:c=\"{C}\" xmlns:r=\"{R}\" r:id=\"{rel}\"/>\
+             </a:graphicData>\
+           </a:graphic>\
+         </wp:inline></w:drawing>"
+    )
+    .into_bytes()
+}
+
 const WP: &str = "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing";
 const A: &str = "http://schemas.openxmlformats.org/drawingml/2006/main";
 const PIC: &str = "http://schemas.openxmlformats.org/drawingml/2006/picture";
+const C: &str = "http://schemas.openxmlformats.org/drawingml/2006/chart";
 const R: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
 
 /// The local name of an element, without its prefix.
@@ -289,6 +328,29 @@ mod tests {
         model.chart = Some("rId3".into());
         let out = String::from_utf8(patch(&model)).expect("utf-8");
         assert_eq!(out, source);
+    }
+
+    #[test]
+    fn an_authored_chart_drawing_declares_every_prefix_it_uses() {
+        // The namespace lesson, kept as a tripwire: quick_xml is
+        // namespace-blind and will bless an element whose prefix nothing
+        // bound, and Word will refuse the whole file over it.
+        let mut model = drawing("");
+        model.anchored = false;
+        model.chart = Some("rId9".into());
+        let out = String::from_utf8(patch(&model)).expect("utf-8");
+        assert!(out.contains(r#"r:id="rId9""#), "{out}");
+        for prefix in ["wp", "a", "c", "r"] {
+            assert!(out.contains(&format!("xmlns:{prefix}=")), "{prefix}: {out}");
+        }
+        assert!(
+            out.contains(r#"<wp:extent cx="914400" cy="457200"/>"#),
+            "{out}"
+        );
+        assert!(
+            out.contains(r#"uri="http://schemas.openxmlformats.org/drawingml/2006/chart""#),
+            "{out}"
+        );
     }
 
     #[test]

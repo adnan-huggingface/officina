@@ -450,6 +450,7 @@ name = "calx"
 version = "0.1.0"
 dependencies = [
  "arboard",
+ "clipboard-win",
  "image",
  "rfd",
  "ss-csv",

@@ -30,3 +30,9 @@ time = { version = "0.3", features = ["local-offset"] }
 # Menu-driven paste has no key event to ride, so the OS clipboard has to be
 # *read*; egui only ever hears about it through Ctrl+V.
 arboard = { version = "3", default-features = false }
+
+# A copied chart travels under a registered clipboard format of our own, which
+# arboard has no way to write. Same choice as Scriva, for the same reason: the
+# crate arboard itself uses underneath, not a new dependency.
+[target.'cfg(windows)'.dependencies]
+clipboard-win = "5"

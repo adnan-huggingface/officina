@@ -1629,6 +1629,12 @@ impl Scriva {
     /// itself, not a flattened picture of it. Anything else on the board was
     /// put there by someone else and arrives as a fresh picture.
     fn paste_picture_from_board(&mut self) -> bool {
+        // A chart copied in Calx outranks everything else the board could
+        // hold: the registered format is only ever written by a chart copy,
+        // and that copy empties the board of anything older.
+        if let Some((cx, cy, chart_space)) = clipboard_chart() {
+            return self.insert_chart_part(&chart_space, cx, cy);
+        }
         match clipboard_image() {
             Some((png, width, height)) => {
                 let ours = self
@@ -1800,6 +1806,68 @@ impl Scriva {
             width,
             height,
         )];
+        let caret =
+            edit::paste_paragraphs(&mut self.document, &mut self.history, self.selection, &clip);
+        self.selection = Selection::at(clamp(&self.document, caret));
+        self.changed();
+        self.reveal = Some(self.caret());
+        true
+    }
+
+    /// Puts a chart from the board in the document at the caret.
+    ///
+    /// The same three pieces a pasted picture is, with the part's bytes
+    /// arriving ready-made: the clipboard payload *is* the `<c:chartSpace>`
+    /// Calx authored, caches and all, so the document draws it — and Word will
+    /// draw it — without ever resolving a cell reference. What Scriva can do
+    /// to it from here is what it can do to any drawing: move it, resize it,
+    /// delete it. Changing what it plots means going back to Calx.
+    fn insert_chart_part(&mut self, chart_space: &[u8], cx: i64, cy: i64) -> bool {
+        if self.package.is_none() {
+            match wp_docx::write::blank::package_for(&self.document) {
+                Ok(package) => self.package = Some(package),
+                Err(_) => return false,
+            }
+        }
+        let Some(package) = &mut self.package else {
+            return false;
+        };
+        let Ok(rel) = wp_docx::media::embed_chart(package, chart_space) else {
+            return false;
+        };
+        self.parts = wp_docx::DocumentParts::locate_in(package).ok();
+
+        // Too wide for the column shrinks to it, proportions kept — the same
+        // rule a pasted picture follows.
+        const EMU_PER_POINT: f64 = 12_700.0;
+        let column =
+            (wp_model::PageBox::of(&self.document.section).text_width() * EMU_PER_POINT) as i64;
+        let (mut cx, mut cy) = (cx.max(1), cy.max(1));
+        if cx > column && column > 0 {
+            cy = (cy * column / cx).max(1);
+            cx = column;
+        }
+        let drawing = wp_model::doc::Drawing {
+            // Ours, and there is nothing in it the model does not hold — the
+            // writer authors the element from these fields.
+            source: Vec::new().into(),
+            anchored: false,
+            extent: (wp_model::Emu(cx), wp_model::Emu(cy)),
+            rel: None,
+            chart: Some(rel.into()),
+            name: Some("Chart".into()),
+            description: None,
+            wrap: wp_model::doc::Wrap::None,
+            distance: (
+                wp_model::Emu(0),
+                wp_model::Emu(0),
+                wp_model::Emu(0),
+                wp_model::Emu(0),
+            ),
+            position: None,
+            behind_text: false,
+        };
+        let clip = vec![drawing_paragraph(drawing)];
         let caret =
             edit::paste_paragraphs(&mut self.document, &mut self.history, self.selection, &clip);
         self.selection = Selection::at(clamp(&self.document, caret));
@@ -2701,6 +2769,27 @@ fn clipboard_clear() {
     if let Ok(mut board) = arboard::Clipboard::new() {
         let _ = board.clear();
     }
+}
+
+/// The chart on the OS clipboard, if Calx put one there: the `<c:chartSpace>`
+/// bytes and the size the chart had on its sheet, in EMUs.
+///
+/// The registered format's name is a claim any program could make, so the
+/// payload's own magic decides — see [`chart::clipboard::unpack`].
+#[cfg(windows)]
+fn clipboard_chart() -> Option<(i64, i64, Vec<u8>)> {
+    let format = clipboard_win::register_format(chart::clipboard::FORMAT)?;
+    let _board = clipboard_win::Clipboard::new_attempts(10).ok()?;
+    let mut data = Vec::new();
+    clipboard_win::raw::get_vec(format.get(), &mut data).ok()?;
+    let (cx, cy, chart_space) = chart::clipboard::unpack(&data)?;
+    Some((cx, cy, chart_space.to_vec()))
+}
+
+/// Where there is no Win32 clipboard there is no registered format to read.
+#[cfg(not(windows))]
+fn clipboard_chart() -> Option<(i64, i64, Vec<u8>)> {
+    None
 }
 
 /// The picture on the OS clipboard, as PNG bytes and its size in pixels.
@@ -4497,6 +4586,55 @@ fn rule(ui: &mut egui::Ui) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_chart_from_the_board_arrives_as_a_part_and_a_drawing_that_renders() {
+        // What the paste hands over is exactly what Calx's copy packs: the
+        // chartSpace bytes and a size. The document must end up holding all
+        // three pieces — part, relationship, drawing — and the part must be
+        // one our own reader draws, or the paste has produced a hole.
+        let mut app = Scriva::new();
+        let chart_space = ss_xlsx_free_chart();
+        assert!(
+            app.insert_chart_part(&chart_space, 10_000_000, 3_000_000),
+            "the paste lands"
+        );
+
+        let drawings: Vec<_> = app
+            .document
+            .paragraphs()
+            .iter()
+            .flat_map(|paragraph| paragraph.drawings().into_iter().cloned())
+            .collect();
+        let [drawing] = &drawings[..] else {
+            panic!("one chart, not {}", drawings.len());
+        };
+        let rel = drawing.chart.as_deref().expect("the drawing names a part");
+        assert!(drawing.rel.is_none(), "a chart is not a picture");
+
+        // Wider than the text column, so it shrank to fit, proportions kept.
+        let (wp_model::Emu(cx), wp_model::Emu(cy)) = drawing.extent;
+        assert!(cx < 10_000_000, "shrunk: {cx}");
+        // Within one EMU of true proportion: the shrink divides integers.
+        assert!(
+            (cy * 10_000_000 - cx * 3_000_000).abs() <= 10_000_000,
+            "in proportion: {cx}x{cy}"
+        );
+
+        let parts = app.parts.as_ref().expect("the part index was rebuilt");
+        let name = parts.target(rel).expect("the relationship resolves");
+        let package = app.package.as_ref().expect("a package was authored");
+        let part = package.part(name).expect("the part is there");
+        let plot = chart::read::plot(part.data()).expect("and the reader draws it");
+        assert_eq!(plot.series.len(), 1);
+    }
+
+    /// A chartSpace as Calx would put one on the board — hand-written rather
+    /// than imported, because this crate must not depend on the spreadsheet
+    /// stack to test a paste.
+    fn ss_xlsx_free_chart() -> Vec<u8> {
+        br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><c:chart><c:autoTitleDeleted val="1"/><c:plotArea><c:layout/><c:barChart><c:barDir val="col"/><c:grouping val="clustered"/><c:ser><c:idx val="0"/><c:order val="0"/><c:val><c:numRef><c:f>Sheet1!$A$1:$A$2</c:f><c:numCache><c:formatCode>General</c:formatCode><c:ptCount val="2"/><c:pt idx="0"><c:v>5</c:v></c:pt><c:pt idx="1"><c:v>7</c:v></c:pt></c:numCache></c:numRef></c:val></c:ser><c:axId val="1"/><c:axId val="2"/></c:barChart><c:catAx><c:axId val="1"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="b"/><c:crossAx val="2"/></c:catAx><c:valAx><c:axId val="2"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="l"/><c:crossAx val="1"/></c:valAx></c:plotArea><c:plotVisOnly val="1"/><c:dispBlanksAs val="gap"/></c:chart></c:chartSpace>"#.to_vec()
+    }
 
     fn app_with(texts: &[&str]) -> Scriva {
         let mut app = Scriva::new();
