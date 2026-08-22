@@ -32,45 +32,38 @@ pub(crate) struct State {
     pub(crate) before: Option<(usize, usize, Plot)>,
 }
 
-/// The kinds a chart can be turned into, as the Insert menu names them.
+/// The families a chart can be turned into, as the Insert menu names them.
 ///
 /// Scatter is not among them: a scatter takes its first column as numbers,
 /// and a chart whose categories are months has no numbers to take.
-const KINDS: &[(&str, ChartKind, Grouping, bool)] = &[
-    (
-        "Clustered column",
-        ChartKind::Bar,
-        Grouping::Clustered,
-        false,
-    ),
-    ("Stacked column", ChartKind::Bar, Grouping::Stacked, false),
-    (
-        "100% stacked column",
-        ChartKind::Bar,
-        Grouping::PercentStacked,
-        false,
-    ),
-    ("Clustered bar", ChartKind::Bar, Grouping::Clustered, true),
-    ("Stacked bar", ChartKind::Bar, Grouping::Stacked, true),
-    (
-        "100% stacked bar",
-        ChartKind::Bar,
-        Grouping::PercentStacked,
-        true,
-    ),
-    ("Line", ChartKind::Line, Grouping::Standard, false),
-    ("Area", ChartKind::Area, Grouping::Standard, false),
-    ("Stacked area", ChartKind::Area, Grouping::Stacked, false),
-    (
-        "100% stacked area",
-        ChartKind::Area,
-        Grouping::PercentStacked,
-        false,
-    ),
-    ("Pie", ChartKind::Pie, Grouping::Standard, false),
-    ("Doughnut", ChartKind::Doughnut, Grouping::Standard, false),
-    ("Radar", ChartKind::Radar, Grouping::Standard, false),
+const FAMILIES: &[(&str, ChartKind, bool)] = &[
+    ("Column", ChartKind::Bar, false),
+    ("Bar", ChartKind::Bar, true),
+    ("Line", ChartKind::Line, false),
+    ("Area", ChartKind::Area, false),
+    ("Pie", ChartKind::Pie, false),
+    ("Doughnut", ChartKind::Doughnut, false),
+    ("Radar", ChartKind::Radar, false),
 ];
+
+/// The ways a family's series can stand against one another, as Excel
+/// names them: columns and bars cluster unless stacked, an area lies flat
+/// on the axis unless stacked, and the other families have one way only.
+fn stackings(kind: &ChartKind) -> &'static [(&'static str, Grouping)] {
+    match kind {
+        ChartKind::Bar => &[
+            ("Clustered", Grouping::Clustered),
+            ("Stacked", Grouping::Stacked),
+            ("100% stacked", Grouping::PercentStacked),
+        ],
+        ChartKind::Area => &[
+            ("Standard", Grouping::Standard),
+            ("Stacked", Grouping::Stacked),
+            ("100% stacked", Grouping::PercentStacked),
+        ],
+        _ => &[],
+    }
+}
 
 const LEGENDS: &[(&str, Option<LegendPosition>)] = &[
     ("None", None),
@@ -95,23 +88,17 @@ const SYMBOLS: &[(&str, Symbol)] = &[
     ("Dot", Symbol::Dot),
 ];
 
-/// The name the Insert menu gives a chart's kind, or none for a kind the
+/// The name the Insert menu gives a chart's family, or none for one the
 /// menu does not offer.
 ///
-/// A pie, a doughnut or a radar has no grouping element in its part and no
-/// direction, so the reader leaves both at their defaults; they are matched
-/// on the kind alone, or every pie would come up "Unsupported type".
-fn kind_name(plot: &Plot) -> Option<&'static str> {
-    let grouped = matches!(
-        plot.kind,
-        ChartKind::Bar | ChartKind::Line | ChartKind::Area
-    );
-    KINDS
+/// Only a column is told from a bar by its direction; a pie, a doughnut or
+/// a radar has no direction and no grouping in its part, so the reader
+/// leaves both at their defaults and they are matched on the kind alone.
+fn family_name(plot: &Plot) -> Option<&'static str> {
+    FAMILIES
         .iter()
-        .find(|(_, kind, grouping, horizontal)| {
-            *kind == plot.kind
-                && (!grouped || *grouping == plot.grouping)
-                && (plot.kind != ChartKind::Bar || *horizontal == plot.horizontal)
+        .find(|(_, kind, horizontal)| {
+            *kind == plot.kind && (plot.kind != ChartKind::Bar || *horizontal == plot.horizontal)
         })
         .map(|(name, ..)| *name)
 }
@@ -197,7 +184,7 @@ impl Calx {
             .spacing([10.0, 8.0])
             .show(ui, |ui| {
                 ui.label("Type");
-                let current = kind_name(&plot);
+                let current = family_name(&plot);
                 let mut chosen = None;
                 ui.add_enabled_ui(current.is_some() || plot.kind != ChartKind::Scatter, |ui| {
                     egui::ComboBox::from_id_salt("calx-chart-kind")
@@ -207,14 +194,23 @@ impl Calx {
                         }))
                         .width(ui.available_width())
                         .show_ui(ui, |ui| {
-                            for (name, kind, grouping, horizontal) in KINDS {
+                            for (name, kind, horizontal) in FAMILIES {
                                 if ui.selectable_label(current == Some(*name), *name).clicked() {
-                                    chosen = Some((kind.clone(), *grouping, *horizontal));
+                                    chosen = Some((kind.clone(), *horizontal));
                                 }
                             }
                         });
                 });
-                if let Some((kind, grouping, horizontal)) = chosen {
+                if let Some((kind, horizontal)) = chosen {
+                    // A stack stays a stack between column and bar; any
+                    // other family is entered the way Excel's Insert enters
+                    // it, which is the first way it has.
+                    let ways = stackings(&kind);
+                    let grouping = ways
+                        .iter()
+                        .find(|(_, g)| *g == plot.grouping)
+                        .or(ways.first())
+                        .map_or(Grouping::Standard, |(_, g)| *g);
                     self.chart_edit(|plot| {
                         plot.kind = kind;
                         plot.grouping = grouping;
@@ -226,6 +222,33 @@ impl Calx {
                     });
                 }
                 ui.end_row();
+
+                let ways = stackings(&plot.kind);
+                if !ways.is_empty() {
+                    ui.label("Stacking");
+                    let current = ways
+                        .iter()
+                        .find(|(_, g)| *g == plot.grouping)
+                        .map_or(ways[0].0, |(name, _)| *name);
+                    let mut picked = None;
+                    egui::ComboBox::from_id_salt("calx-chart-stacking")
+                        .selected_text(current)
+                        .width(ui.available_width())
+                        .show_ui(ui, |ui| {
+                            for (name, grouping) in ways {
+                                if ui.selectable_label(current == *name, *name).clicked() {
+                                    picked = Some(*grouping);
+                                }
+                            }
+                        });
+                    if let Some(grouping) = picked.filter(|g| *g != plot.grouping) {
+                        self.chart_edit(|plot| {
+                            plot.grouping = grouping;
+                            excel_defaults(plot);
+                        });
+                    }
+                    ui.end_row();
+                }
 
                 ui.label("Title");
                 self.chart_title_box(ui, sheet, index, &plot);
@@ -703,12 +726,36 @@ mod tests {
         app.settle_chart_gesture(true);
         assert_eq!(plot(&app).hole, 75.0, "a doughnut's hole");
         assert!(plot(&app).vary_colors, "and a slice per colour");
-        assert_eq!(kind_name(plot(&app)), Some("Doughnut"));
+        assert_eq!(family_name(plot(&app)), Some("Doughnut"));
         // As read from a file, where a pie states no grouping at all.
         let mut read = plot(&app).clone();
         read.grouping = Grouping::Clustered;
-        assert_eq!(kind_name(&read), Some("Doughnut"));
+        assert_eq!(family_name(&read), Some("Doughnut"));
         read.kind = ChartKind::Radar;
-        assert_eq!(kind_name(&read), Some("Radar"));
+        assert_eq!(family_name(&read), Some("Radar"));
+    }
+
+    #[test]
+    fn a_family_is_named_apart_from_its_stacking_and_offers_only_the_ways_it_has() {
+        let mut app = with_chart();
+        assert_eq!(family_name(plot(&app)), Some("Column"));
+        app.chart_edit(|p| p.grouping = Grouping::Stacked);
+        assert_eq!(
+            family_name(plot(&app)),
+            Some("Column"),
+            "a stack is still a column"
+        );
+        app.chart_edit(|p| p.horizontal = true);
+        assert_eq!(family_name(plot(&app)), Some("Bar"));
+        assert_eq!(stackings(&ChartKind::Bar).len(), 3);
+        assert_eq!(stackings(&ChartKind::Area).len(), 3);
+        for kind in [
+            ChartKind::Line,
+            ChartKind::Pie,
+            ChartKind::Doughnut,
+            ChartKind::Radar,
+        ] {
+            assert!(stackings(&kind).is_empty(), "{kind:?} has one way only");
+        }
     }
 }

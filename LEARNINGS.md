@@ -489,6 +489,14 @@ on its side puts its first category at the *bottom* and its first series
 nearest the axis — a column chart turned anticlockwise, both ends — and a
 radar runs its first category from the top, clockwise.
 
+**An egui popup is sized before it is measured.** A `ComboBox` list longer
+than `Spacing::combo_height` scrolls, and asking for more height does not
+give it: the popup's `Area` is laid out in a sizing pass bounded by
+`Spacing::default_area_size` (400 points tall) before its content has been
+seen, and the scroll area inside shrinks to that. A list that must show
+whole has to be short — about ten rows — which is a reason to split a long
+choice into two short ones rather than a limit to work around (2026-08-22).
+
 **A series has three places for a colour, and only one of them is the
 series'.** `<c:ser>` carries its own `<c:spPr>`, and so does every `<c:dPt>`
 (one point's override — Excel writes one per slice of a pie) and every

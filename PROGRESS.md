@@ -1755,6 +1755,16 @@ a series as the series' colour, a data label's or a single point's
 included — which is how a pie with a coloured slice read as a pie of one
 colour. A label's ink and a point's fill are now neither.
 
+"I don't see pie, doughnut, radar listed." They were there, thirteen rows
+down a list that egui had cut at its default popup height and given a
+scrollbar nobody notices; and raising the height does not help, because a
+popup's first frame is sized against `default_area_size` before its content
+is measured. The list was the wrong shape anyway: a chart's family and the
+way its series stack are two choices, and the inspector now asks them as
+two — Type over seven families, and a Stacking row that appears only for
+columns, bars and areas. A stack stays a stack when a column turns into a
+bar; any other family is entered the way Excel's Insert enters it.
+
 And found at the keyboard, as adr/0002 says such things are: the first
 title typed into the panel deselected the chart on Enter. The text box
 gives its focus up on Enter *while the panel is drawn*; the grid, drawn
