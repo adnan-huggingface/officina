@@ -81,6 +81,14 @@ pub enum Command {
     /// The dialog for a colour the palette does not offer.
     CustomColor,
     Highlight(wp_model::Highlight),
+    /// Paragraph ▸ Paragraph…: spacing and indents, by number.
+    ParagraphDialog,
+    /// Table ▸ Merge Cells: the cells the selection runs across, in one row,
+    /// become one.
+    MergeCells,
+    /// Table ▸ Border Colour: every rule of the caret's table in this colour.
+    BorderColor(wp_model::Color),
+    CustomBorderColor,
     /// Insert ▸ Header… — the dialog for the text on top of every page.
     EditHeader,
     /// Insert ▸ Footer… — the same, underneath.
@@ -227,13 +235,16 @@ pub struct Scriva {
     margins_draft: Option<[String; 4]>,
     /// The insert-table dialog: columns, then rows.
     table_draft: Option<[String; 2]>,
-    /// The text-colour dialog: six hex digits, as Word's Custom tab takes them.
-    color_draft: Option<String>,
+    /// The colour dialog: what it colours, and six hex digits, as Word's
+    /// Custom tab takes them.
+    color_draft: Option<(ColorTarget, String)>,
     /// The column-width dialog: inches, like the margins box.
     column_draft: Option<String>,
-    /// The header or footer dialog: which of the two, and its text, one
-    /// paragraph per line. Blank text takes the header away.
-    chrome_draft: Option<(bool, String)>,
+    /// The header or footer dialog. Blank text takes the header away.
+    chrome_draft: Option<ChromeDraft>,
+    /// The paragraph dialog: what it opened with, and what has been typed
+    /// since, so that only the fields the user touched are applied.
+    paragraph_draft: Option<(ParagraphDraft, ParagraphDraft)>,
     /// The picture-size dialog: width and height in inches, and whether the
     /// two are tied together.
     size_draft: Option<SizeDraft>,
@@ -356,6 +367,7 @@ impl Scriva {
             color_draft: None,
             column_draft: None,
             chrome_draft: None,
+            paragraph_draft: None,
             size_draft: None,
             copied_drawing: None,
             parts: None,
@@ -1040,7 +1052,13 @@ impl Scriva {
                 props.fonts.high_ansi_theme = None;
             }),
             Command::Color(color) => self.format_runs(move |props| props.color = Some(color)),
-            Command::CustomColor => self.color_draft = Some(String::new()),
+            Command::CustomColor => self.color_draft = Some((ColorTarget::Text, String::new())),
+            Command::ParagraphDialog => self.open_paragraph_dialog(),
+            Command::MergeCells => self.merge_cells(),
+            Command::BorderColor(color) => self.color_borders(color),
+            Command::CustomBorderColor => {
+                self.color_draft = Some((ColorTarget::Borders, String::new()))
+            }
             Command::Highlight(highlight) => self.format_runs(move |props| {
                 // Word removes the element rather than writing `none`: an
                 // explicit none is an override that would also blank a
@@ -2598,6 +2616,59 @@ fn starting_column(table: &wp_model::table::Table, row: usize, cell: usize) -> u
             .sum::<usize>()
 }
 
+/// What the hex-colour box is colouring: the selected text, or the rules of
+/// the caret's table. One box, because the colour is typed the same way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ColorTarget {
+    Text,
+    Borders,
+}
+
+/// Paragraph ▸ Paragraph…, as typed: points for the spacing, inches for the
+/// indents, and blank for "not stated" — a blank field applied takes the
+/// value away rather than writing zero, which is how the dialog can also
+/// undo a spacing the style did not ask for.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct ParagraphDraft {
+    before: String,
+    after: String,
+    left: String,
+    right: String,
+    first_line: String,
+    hanging: String,
+}
+
+/// The header or footer box: its text, one paragraph per line, and the
+/// formatting every line takes — a header is set in one voice, and a box that
+/// could format each word would be the editor again, in miniature.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ChromeDraft {
+    footer: bool,
+    text: String,
+    /// Blank for the document's own font.
+    font: String,
+    /// Points; blank for the document's own size.
+    size: String,
+    /// Six hex digits; blank for automatic.
+    color: String,
+    justify: Justify,
+    /// "Page N of M" at the centre of the first line, after a centre tab —
+    /// the way Word's own galleries lay a name and a page number on one line.
+    page_number: bool,
+}
+
+/// A number for a dialog field: two decimals at most, and none where none
+/// are needed, so that three points reads "3" and not "3.00".
+fn trim_number(value: f64) -> String {
+    let text = format!("{value:.2}");
+    let text = text.trim_end_matches('0').trim_end_matches('.');
+    if text.is_empty() || text == "-" {
+        "0".to_owned()
+    } else {
+        text.to_owned()
+    }
+}
+
 /// A caret that is inside the document it names.
 fn clamp(document: &Document, caret: Caret) -> Caret {
     let paragraphs = document.paragraphs();
@@ -3082,6 +3153,10 @@ impl DocumentApp for Scriva {
             self.chrome_dialog(ctx);
             return;
         }
+        if self.paragraph_draft.is_some() {
+            self.paragraph_dialog(ctx);
+            return;
+        }
         if self.zoom_draft.is_some() {
             self.zoom_dialog(ctx);
             return;
@@ -3199,6 +3274,7 @@ impl DocumentApp for Scriva {
             || self.color_draft.is_some()
             || self.column_draft.is_some()
             || self.chrome_draft.is_some()
+            || self.paragraph_draft.is_some()
             || self.size_draft.is_some()
             || self.zoom_draft.is_some()
             || self.finder_focused
@@ -3341,7 +3417,7 @@ impl Scriva {
     }
 
     fn color_dialog(&mut self, ctx: &egui::Context) {
-        let Some(mut draft) = self.color_draft.clone() else {
+        let Some((target, mut draft)) = self.color_draft.clone() else {
             return;
         };
         let mut done: Option<bool> = None;
@@ -3351,7 +3427,11 @@ impl Scriva {
                 dialog::form_style(ui.style_mut());
                 dialog::body(ui, |ui| {
                     ui.set_width(260.0);
-                    ui.label(egui::RichText::new("Text Colour").font(dialog::heading_font(16.0)));
+                    let title = match target {
+                        ColorTarget::Text => "Text Colour",
+                        ColorTarget::Borders => "Border Colour",
+                    };
+                    ui.label(egui::RichText::new(title).font(dialog::heading_font(16.0)));
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
                         ui.add_sized([72.0, 20.0], egui::Label::new("Hex:"));
@@ -3366,7 +3446,7 @@ impl Scriva {
                     }
                 });
             });
-        self.color_draft = Some(draft.clone());
+        self.color_draft = Some((target, draft.clone()));
         match done {
             Some(true) => {
                 self.color_draft = None;
@@ -3375,12 +3455,300 @@ impl Scriva {
                 // Anything else applies nothing rather than guessing at a
                 // colour nobody named.
                 if let Some(color) = wp_model::Color::from_val(&draft) {
-                    self.format_runs(move |props| props.color = Some(color));
+                    match target {
+                        ColorTarget::Text => {
+                            self.format_runs(move |props| props.color = Some(color))
+                        }
+                        ColorTarget::Borders => self.color_borders(color),
+                    }
                 }
             }
             Some(false) => self.color_draft = None,
             None => {}
         }
+    }
+
+    /// Colours every rule of the caret's table, cells' own rules included,
+    /// so that the table is one colour after it as it was before.
+    ///
+    /// A table whose rules are all inherited or all off gets Word's
+    /// half-point single lines to carry the colour: a colour on no line is no
+    /// colour at all, and a menu choice that did nothing visible would read
+    /// as broken.
+    fn color_borders(&mut self, color: wp_model::Color) {
+        use wp_model::prop::BorderStyle;
+        self.edit_table(move |table, _, _| {
+            let borders = &mut table.props.borders;
+            let drawn = |edge: &Option<wp_model::prop::Border>| {
+                edge.is_some_and(|b| b.style != BorderStyle::None)
+            };
+            let any_drawn = [
+                &borders.top,
+                &borders.start,
+                &borders.bottom,
+                &borders.end,
+                &borders.inside_h,
+                &borders.inside_v,
+            ]
+            .into_iter()
+            .any(drawn);
+            for edge in [
+                &mut borders.top,
+                &mut borders.start,
+                &mut borders.bottom,
+                &mut borders.end,
+                &mut borders.inside_h,
+                &mut borders.inside_v,
+            ] {
+                match edge {
+                    Some(border) if border.style != BorderStyle::None => border.color = Some(color),
+                    _ if !any_drawn => {
+                        let mut ruled = ruled_edge();
+                        ruled.color = Some(color);
+                        *edge = Some(ruled);
+                    }
+                    _ => {}
+                }
+            }
+            for row in &mut table.rows {
+                for cell in &mut row.cells {
+                    let borders = &mut cell.props.borders;
+                    // Only the four sides: on a cell the "inside" slots are
+                    // its diagonals, which a rule colour has no business with.
+                    for border in [
+                        &mut borders.top,
+                        &mut borders.start,
+                        &mut borders.bottom,
+                        &mut borders.end,
+                    ]
+                    .into_iter()
+                    .flatten()
+                    {
+                        if border.style != BorderStyle::None {
+                            border.color = Some(color);
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    /// Table ▸ Merge Cells: the cells the selection runs across become one,
+    /// spanning their columns and holding their paragraphs in order.
+    ///
+    /// A cell that held nothing but an empty paragraph contributes nothing,
+    /// as in Word — merging three blank cells must make one blank cell, not
+    /// a cell three lines tall. The merged cell keeps the first cell's
+    /// properties and the last cell's right-hand rule, which is the rule the
+    /// table's edge now falls on.
+    fn merge_cells(&mut self) {
+        let (start, end) = self.selection.ordered();
+        let from = edit::table_cell_at(&self.document, start);
+        let to = edit::table_cell_at(&self.document, end);
+        let (Some((index, at_row, first)), Some((index_end, row_end, last))) = (from, to) else {
+            self.message = Some((
+                "Not in a table".to_owned(),
+                "Select across the cells of one row first, then try again.".to_owned(),
+            ));
+            return;
+        };
+        if index != index_end || at_row != row_end || first == last {
+            self.message = Some((
+                "Nothing to merge".to_owned(),
+                "Select across two or more cells of one row first, then try again.".to_owned(),
+            ));
+            return;
+        }
+        self.history.push(edit::Change::Blocks {
+            index,
+            before: vec![self.document.body[index].clone()],
+            now: 1,
+        });
+        if let Block::Table(table) = &mut self.document.body[index] {
+            let column = starting_column(table, at_row, first);
+            let row = &mut table.rows[at_row];
+            let taken: Vec<wp_model::table::Cell> = row.cells.drain(first + 1..=last).collect();
+            let cell = &mut row.cells[first];
+            let blank = |content: &[Block]| {
+                content.iter().all(|block| match block {
+                    Block::Paragraph(p) => p.content.is_empty() && p.props.numbering.is_none(),
+                    _ => false,
+                })
+            };
+            let mut content = std::mem::take(&mut cell.content);
+            if blank(&content) {
+                content.clear();
+            }
+            let mut span = cell.props.span() as usize;
+            for other in taken {
+                span += other.props.span() as usize;
+                if other.props.borders.end.is_some() {
+                    cell.props.borders.end = other.props.borders.end;
+                }
+                if !blank(&other.content) {
+                    content.extend(other.content);
+                }
+            }
+            if content.is_empty() {
+                content.push(Block::Paragraph(Paragraph::new()));
+            }
+            cell.content = content;
+            cell.props.grid_span = span as u32;
+            let total: i32 = table.grid
+                [column.min(table.grid.len())..(column + span).min(table.grid.len())]
+                .iter()
+                .map(|t| t.0)
+                .sum();
+            cell.props.width = wp_model::table::Width::Fixed(Twips(total));
+        }
+        self.selection = Selection::at(clamp(&self.document, start));
+        self.reveal = Some(self.caret());
+        self.changed();
+    }
+
+    /// Opens the paragraph box on the caret's paragraph, showing what that
+    /// paragraph states itself — not what it inherits, which is the style's
+    /// to show.
+    fn open_paragraph_dialog(&mut self) {
+        let caret = self.caret();
+        let Some(paragraph) = edit::paragraph_at(&self.document, caret.paragraph) else {
+            return;
+        };
+        let props = &paragraph.props;
+        let points = |t: Option<Twips>| {
+            t.map(|t| trim_number(t.0 as f64 / 20.0))
+                .unwrap_or_default()
+        };
+        let inches = |t: Option<Twips>| {
+            t.map(|t| trim_number(t.0 as f64 / 1440.0))
+                .unwrap_or_default()
+        };
+        let draft = ParagraphDraft {
+            before: points(props.spacing.before),
+            after: points(props.spacing.after),
+            left: inches(props.indent.start),
+            right: inches(props.indent.end),
+            first_line: inches(props.indent.first_line),
+            hanging: inches(props.indent.hanging),
+        };
+        self.paragraph_draft = Some((draft.clone(), draft));
+    }
+
+    fn paragraph_dialog(&mut self, ctx: &egui::Context) {
+        let Some((opened, mut draft)) = self.paragraph_draft.clone() else {
+            return;
+        };
+        let mut done: Option<bool> = None;
+        egui::Modal::new(egui::Id::new("scriva-paragraph"))
+            .frame(dialog::frame(ctx))
+            .show(ctx, |ui| {
+                dialog::form_style(ui.style_mut());
+                dialog::body(ui, |ui| {
+                    ui.set_width(280.0);
+                    ui.label(egui::RichText::new("Paragraph").font(dialog::heading_font(16.0)));
+                    ui.add_space(8.0);
+                    ui.label(egui::RichText::new("Spacing").strong());
+                    for (label, field) in
+                        [("Before:", &mut draft.before), ("After:", &mut draft.after)]
+                    {
+                        ui.horizontal(|ui| {
+                            ui.add_sized([80.0, 20.0], egui::Label::new(label));
+                            ui.add(egui::TextEdit::singleline(field).desired_width(64.0));
+                            ui.label("pt");
+                        });
+                    }
+                    ui.add_space(6.0);
+                    ui.label(egui::RichText::new("Indentation").strong());
+                    for (label, field) in [
+                        ("Left:", &mut draft.left),
+                        ("Right:", &mut draft.right),
+                        ("First line:", &mut draft.first_line),
+                        ("Hanging:", &mut draft.hanging),
+                    ] {
+                        ui.horizontal(|ui| {
+                            ui.add_sized([80.0, 20.0], egui::Label::new(label));
+                            ui.add(egui::TextEdit::singleline(field).desired_width(64.0));
+                            ui.label("in");
+                        });
+                    }
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new("Blank leaves it to the style.")
+                            .small()
+                            .weak(),
+                    );
+                    ui.add_space(12.0);
+                    if let Some(answer) = dialog::confirm(ui, "Apply") {
+                        done = Some(answer);
+                    }
+                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                        done = Some(false);
+                    }
+                });
+            });
+        self.paragraph_draft = Some((opened.clone(), draft.clone()));
+        match done {
+            Some(true) => {
+                self.paragraph_draft = None;
+                self.apply_paragraph(&opened, &draft);
+            }
+            Some(false) => self.paragraph_draft = None,
+            None => {}
+        }
+    }
+
+    /// Applies the paragraph box to the selection: only the fields that
+    /// changed since it opened, so that a box opened on one paragraph and
+    /// applied to several states one thing about them and leaves the rest of
+    /// each as it was.
+    fn apply_paragraph(&mut self, opened: &ParagraphDraft, draft: &ParagraphDraft) {
+        // A blank is a stated absence; a number is twips; a typo changes
+        // nothing, as with the margins box.
+        let value = |was: &str, now: &str, per_unit: f64| -> Option<Option<Twips>> {
+            if was == now {
+                return None;
+            }
+            let now = now.trim();
+            if now.is_empty() {
+                return Some(None);
+            }
+            now.parse::<f64>()
+                .ok()
+                .filter(|v| (-22.0 * per_unit..=22.0 * per_unit).contains(&(v * per_unit)))
+                .map(|v| Some(Twips((v * per_unit).round() as i32)))
+        };
+        let before = value(&opened.before, &draft.before, 20.0);
+        let after = value(&opened.after, &draft.after, 20.0);
+        let left = value(&opened.left, &draft.left, 1440.0);
+        let right = value(&opened.right, &draft.right, 1440.0);
+        let first_line = value(&opened.first_line, &draft.first_line, 1440.0);
+        let hanging = value(&opened.hanging, &draft.hanging, 1440.0);
+        if [before, after, left, right, first_line, hanging]
+            .iter()
+            .all(Option::is_none)
+        {
+            return;
+        }
+        self.format_paragraphs(move |props| {
+            if let Some(v) = before {
+                props.spacing.before = v;
+            }
+            if let Some(v) = after {
+                props.spacing.after = v;
+            }
+            if let Some(v) = left {
+                props.indent.start = v;
+            }
+            if let Some(v) = right {
+                props.indent.end = v;
+            }
+            if let Some(v) = first_line {
+                props.indent.first_line = v;
+            }
+            if let Some(v) = hanging {
+                props.indent.hanging = v;
+            }
+        });
     }
 
     fn column_dialog(&mut self, ctx: &egui::Context) {
@@ -3426,14 +3794,16 @@ impl Scriva {
         }
     }
 
-    /// Opens the header or footer box, prefilled with what is there now —
-    /// its text, one paragraph per line, formatting not included.
+    /// Opens the header or footer box, prefilled with what is there now: its
+    /// text, one paragraph per line, and the formatting of its first words —
+    /// the box sets one voice, so the first is the one it can show.
     fn open_chrome_dialog(&mut self, footer: bool) {
+        use wp_model::doc::{Inline, Piece};
         let refs = match footer {
             true => &self.document.section.footers,
             false => &self.document.section.headers,
         };
-        let text = refs
+        let body = refs
             .iter()
             .find(|r| r.kind == wp_model::HeaderKind::Default)
             .and_then(|r| {
@@ -3441,14 +3811,74 @@ impl Scriva {
                     .headers
                     .iter()
                     .find(|h| h.id == r.body && h.footer == footer)
-            })
-            .map(|h| wp_model::doc::text_of(&h.content))
-            .unwrap_or_default();
-        self.chrome_draft = Some((footer, text));
+            });
+        let mut draft = ChromeDraft {
+            footer,
+            text: String::new(),
+            font: String::new(),
+            size: String::new(),
+            color: String::new(),
+            justify: Justify::Start,
+            page_number: false,
+        };
+        let Some(body) = body else {
+            self.chrome_draft = Some(draft);
+            return;
+        };
+        let paragraphs = body.content.iter().filter_map(|block| match block {
+            Block::Paragraph(p) => Some(p),
+            _ => None,
+        });
+        let mut lines = Vec::new();
+        for (index, paragraph) in paragraphs.enumerate() {
+            let runs = paragraph.content.iter().filter_map(|inline| match inline {
+                Inline::Run(run) => Some(run),
+                _ => None,
+            });
+            let mut paged = false;
+            for run in runs.clone() {
+                if run.content.iter().any(|piece| {
+                    matches!(piece, Piece::Instruction(code) if code.to_ascii_uppercase().contains("PAGE"))
+                }) {
+                    paged = true;
+                }
+            }
+            if index == 0 {
+                draft.justify = paragraph.props.justify.unwrap_or_default();
+                let first = runs
+                    .clone()
+                    .map(|run| &run.props)
+                    .chain(paragraph.props.mark.as_deref())
+                    .next();
+                if let Some(props) = first {
+                    draft.font = props.fonts.ascii.as_deref().unwrap_or_default().to_owned();
+                    draft.size = props
+                        .size
+                        .map(|s| trim_number(f64::from(s.0) / 2.0))
+                        .unwrap_or_default();
+                    draft.color = match props.color {
+                        Some(wp_model::Color::Rgb([r, g, b])) => format!("{r:02X}{g:02X}{b:02X}"),
+                        _ => String::new(),
+                    };
+                }
+            }
+            let mut text = paragraph.text();
+            if paged {
+                // The page number was put after a tab by this box; what the
+                // user typed is what stood before it.
+                draft.page_number = true;
+                if let Some(at) = text.find('\t') {
+                    text.truncate(at);
+                }
+            }
+            lines.push(text);
+        }
+        draft.text = lines.join("\n");
+        self.chrome_draft = Some(draft);
     }
 
     fn chrome_dialog(&mut self, ctx: &egui::Context) {
-        let Some((footer, mut draft)) = self.chrome_draft.clone() else {
+        let Some(mut draft) = self.chrome_draft.clone() else {
             return;
         };
         let mut done: Option<bool> = None;
@@ -3458,15 +3888,52 @@ impl Scriva {
                 dialog::form_style(ui.style_mut());
                 dialog::body(ui, |ui| {
                     ui.set_width(320.0);
-                    let title = if footer { "Footer" } else { "Header" };
+                    let title = if draft.footer { "Footer" } else { "Header" };
                     ui.label(egui::RichText::new(title).font(dialog::heading_font(16.0)));
                     ui.add_space(8.0);
                     ui.add(
-                        egui::TextEdit::multiline(&mut draft)
+                        egui::TextEdit::multiline(&mut draft.text)
                             .desired_width(288.0)
                             .desired_rows(3),
                     );
-                    ui.label("One paragraph per line. Blank takes it away.");
+                    ui.label(
+                        egui::RichText::new("One paragraph per line. Blank takes it away.")
+                            .small()
+                            .weak(),
+                    );
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        ui.add_sized([56.0, 20.0], egui::Label::new("Font:"));
+                        ui.add(egui::TextEdit::singleline(&mut draft.font).desired_width(150.0));
+                    });
+                    ui.horizontal(|ui| {
+                        ui.add_sized([56.0, 20.0], egui::Label::new("Size:"));
+                        ui.add(egui::TextEdit::singleline(&mut draft.size).desired_width(64.0));
+                        ui.label("pt");
+                    });
+                    ui.horizontal(|ui| {
+                        ui.add_sized([56.0, 20.0], egui::Label::new("Colour:"));
+                        ui.add(egui::TextEdit::singleline(&mut draft.color).desired_width(64.0));
+                        ui.label("hex");
+                    });
+                    ui.horizontal(|ui| {
+                        ui.add_sized([56.0, 20.0], egui::Label::new("Align:"));
+                        let name = |j: Justify| match j {
+                            Justify::Center => "Centre",
+                            Justify::End => "Right",
+                            _ => "Left",
+                        };
+                        egui::ComboBox::from_id_salt("scriva-chrome-align")
+                            .selected_text(name(draft.justify))
+                            .width(100.0)
+                            .show_ui(ui, |ui| {
+                                for justify in [Justify::Start, Justify::Center, Justify::End] {
+                                    ui.selectable_value(&mut draft.justify, justify, name(justify));
+                                }
+                            });
+                    });
+                    ui.add_space(4.0);
+                    ui.checkbox(&mut draft.page_number, "\"Page N of M\" at the centre");
                     ui.add_space(12.0);
                     if let Some(answer) = dialog::confirm(ui, "Apply") {
                         done = Some(answer);
@@ -3476,29 +3943,39 @@ impl Scriva {
                     }
                 });
             });
-        self.chrome_draft = Some((footer, draft.clone()));
+        self.chrome_draft = Some(draft.clone());
         match done {
             Some(true) => {
                 self.chrome_draft = None;
-                self.apply_chrome(footer, &draft);
+                self.apply_chrome(&draft);
             }
             Some(false) => self.chrome_draft = None,
             None => {}
         }
     }
 
-    /// Puts `text` into the default header or footer, making one when there
-    /// is none and taking it away when the text is blank — one undo step,
-    /// bodies and references together.
-    fn apply_chrome(&mut self, footer: bool, text: &str) {
-        use wp_model::doc::HeaderFooter;
+    /// Puts the box's text into the default header or footer, making one
+    /// when there is none and taking it away when the text is blank — one
+    /// undo step, bodies and references together.
+    ///
+    /// The page number is a PAGE and a NUMPAGES field after a centre tab at
+    /// the middle of the text column, on the first line: Word's own way of
+    /// laying a name on the left and a page number in the middle of one
+    /// line, and what its galleries write.
+    fn apply_chrome(&mut self, draft: &ChromeDraft) {
+        use wp_model::doc::{HeaderFooter, Inline, Piece, Run};
+        use wp_model::prop::{TabKind, TabLeader, TabStop};
         use wp_model::section::{HeaderId, HeaderKind, HeaderRef};
+        let footer = draft.footer;
+        let text = draft.text.as_str();
         self.history.push(edit::Change::Chrome {
             headers: self.document.headers.clone(),
             section: Box::new(self.document.section.clone()),
             caret: self.caret(),
         });
         let document = &mut self.document;
+        let margins = &document.section.margins;
+        let middle = Twips((document.section.page.width.0 - margins.start.0 - margins.end.0) / 2);
         let refs = match footer {
             true => &mut document.section.footers,
             false => &mut document.section.headers,
@@ -3507,7 +3984,7 @@ impl Scriva {
             .iter()
             .find(|r| r.kind == HeaderKind::Default)
             .map(|r| r.body);
-        if text.trim().is_empty() {
+        if text.trim().is_empty() && !draft.page_number {
             if let Some(id) = existing {
                 refs.retain(|r| !(r.kind == HeaderKind::Default && r.body == id));
                 document
@@ -3515,9 +3992,67 @@ impl Scriva {
                     .retain(|h| !(h.id == id && h.footer == footer));
             }
         } else {
-            let content: Vec<Block> = text
-                .lines()
-                .map(|line| Block::Paragraph(Paragraph::of(line)))
+            let mut props = wp_model::RunProps::default();
+            let font = draft.font.trim();
+            if !font.is_empty() {
+                props.fonts.ascii = Some(font.into());
+                props.fonts.high_ansi = Some(font.into());
+            }
+            if let Some(size) = draft.size.trim().parse::<f64>().ok().filter(|s| *s > 0.0) {
+                props.size = Some(HalfPoint((size * 2.0).round() as i32).clamped());
+            }
+            if let Some(color) = wp_model::Color::from_val(&draft.color) {
+                props.color = Some(color);
+            }
+            let lines: Vec<&str> = if text.trim().is_empty() {
+                vec![""]
+            } else {
+                text.lines().collect()
+            };
+            let content: Vec<Block> = lines
+                .iter()
+                .enumerate()
+                .map(|(index, line)| {
+                    let mut paragraph = Paragraph::new();
+                    paragraph.props.justify = Some(draft.justify);
+                    paragraph.props.mark = Some(Box::new(props.clone()));
+                    let mut pieces = Vec::new();
+                    if !line.is_empty() {
+                        pieces.push(Piece::Text((*line).into()));
+                    }
+                    if index == 0 && draft.page_number {
+                        paragraph.props.tabs = Some(vec![TabStop {
+                            position: middle,
+                            kind: TabKind::Center,
+                            leader: TabLeader::None,
+                        }]);
+                        let field = |code: &str| {
+                            [
+                                Piece::FieldStart {
+                                    dirty: false,
+                                    lock: false,
+                                },
+                                Piece::Instruction(format!(" {code} ").into()),
+                                Piece::FieldSeparate,
+                                Piece::Text("1".into()),
+                                Piece::FieldEnd,
+                            ]
+                        };
+                        pieces.push(Piece::Tab);
+                        pieces.push(Piece::Text("Page ".into()));
+                        pieces.extend(field("PAGE"));
+                        pieces.push(Piece::Text(" of ".into()));
+                        pieces.extend(field("NUMPAGES"));
+                    }
+                    if !pieces.is_empty() {
+                        paragraph.content.push(Inline::Run(Run {
+                            props: props.clone(),
+                            content: pieces,
+                            ..Run::new()
+                        }));
+                    }
+                    Block::Paragraph(paragraph)
+                })
                 .collect();
             match existing {
                 Some(id) => {
@@ -4707,6 +5242,211 @@ mod tests {
     }
 
     #[test]
+    fn merging_cells_spans_their_columns_and_keeps_their_paragraphs_in_order() {
+        let mut app = app_with(&["text"]);
+        app.insert_table(2, 3);
+        // The caret is in the first cell; the cells' paragraphs are 0, 1, 2
+        // across the first row. Fill the first and the third, leave the
+        // middle blank.
+        app.selection = Selection::at(Caret {
+            paragraph: 0,
+            offset: 0,
+        });
+        app.type_text("left");
+        app.selection = Selection::at(Caret {
+            paragraph: 2,
+            offset: 0,
+        });
+        app.type_text("right");
+        app.selection = Selection {
+            anchor: Caret {
+                paragraph: 0,
+                offset: 0,
+            },
+            head: Caret {
+                paragraph: 2,
+                offset: 0,
+            },
+        };
+        app.run(Command::MergeCells);
+        let Block::Table(table) = &app.document.body[0] else {
+            panic!("the table is the first block");
+        };
+        let row = &table.rows[0];
+        assert_eq!(row.cells.len(), 1, "one cell where three were");
+        let cell = &row.cells[0];
+        assert_eq!(cell.props.grid_span, 3);
+        let whole: i32 = table.grid.iter().map(|t| t.0).sum();
+        assert_eq!(
+            cell.props.width,
+            wp_model::table::Width::Fixed(Twips(whole))
+        );
+        // The blank middle cell left no blank line behind it.
+        assert_eq!(wp_model::doc::text_of(&cell.content), "left\nright");
+        assert_eq!(table.rows[1].cells.len(), 3, "the other row is untouched");
+        assert_eq!(app.caret().paragraph, 0);
+
+        app.run(Command::Undo);
+        let Block::Table(table) = &app.document.body[0] else {
+            panic!("the table is still the first block");
+        };
+        assert_eq!(table.rows[0].cells.len(), 3);
+    }
+
+    #[test]
+    fn merging_needs_a_selection_across_cells_of_one_row() {
+        let mut app = app_with(&["text"]);
+        app.insert_table(2, 2);
+        // One cell: nothing to merge.
+        app.run(Command::MergeCells);
+        assert!(app.message.is_some(), "a caret in one cell is told why");
+        app.message = None;
+        // Two cells in different rows: not a merge either.
+        app.selection = Selection {
+            anchor: Caret {
+                paragraph: 0,
+                offset: 0,
+            },
+            head: Caret {
+                paragraph: 2,
+                offset: 0,
+            },
+        };
+        app.run(Command::MergeCells);
+        assert!(app.message.is_some());
+        let Block::Table(table) = &app.document.body[0] else {
+            panic!("the table is the first block");
+        };
+        assert!(table.rows.iter().all(|row| row.cells.len() == 2));
+    }
+
+    #[test]
+    fn a_border_colour_reaches_every_rule_and_draws_rules_where_there_were_none() {
+        let grey = wp_model::Color::Rgb([0xC0, 0xC0, 0xC0]);
+        let mut app = app_with(&["text"]);
+        app.insert_table(2, 2);
+        app.run(Command::BorderColor(grey));
+        let Block::Table(table) = &app.document.body[0] else {
+            panic!("the table is the first block");
+        };
+        let b = &table.props.borders;
+        for edge in [b.top, b.start, b.bottom, b.end, b.inside_h, b.inside_v] {
+            let edge = edge.expect("every rule is stated");
+            assert_eq!(edge.color, Some(grey));
+            assert_eq!(edge.style, wp_model::prop::BorderStyle::Single);
+        }
+
+        // With the rules off, a colour brings them back in that colour: a
+        // colour on no line would be a menu choice that did nothing.
+        app.run(Command::TableBorders(false));
+        app.run(Command::BorderColor(grey));
+        let Block::Table(table) = &app.document.body[0] else {
+            panic!("the table is still the first block");
+        };
+        let top = table.props.borders.top.expect("ruled again");
+        assert_eq!(top.style, wp_model::prop::BorderStyle::Single);
+        assert_eq!(top.color, Some(grey));
+    }
+
+    #[test]
+    fn the_paragraph_box_applies_only_the_fields_that_were_changed() {
+        let mut app = app_with(&["one", "two"]);
+        app.selection = Selection {
+            anchor: Caret {
+                paragraph: 0,
+                offset: 0,
+            },
+            head: Caret {
+                paragraph: 1,
+                offset: 0,
+            },
+        };
+        app.format_paragraphs(|props| props.spacing.before = Some(Twips(120)));
+        app.open_paragraph_dialog();
+        let (opened, _) = app.paragraph_draft.clone().expect("the box is open");
+        assert_eq!(opened.before, "6", "six points, not 6.00");
+        let mut draft = opened.clone();
+        draft.after = "3".into();
+        draft.left = "0.17".into();
+        draft.hanging = "0.17".into();
+        app.apply_paragraph(&opened, &draft);
+        for paragraph in app.document.paragraphs().iter() {
+            assert_eq!(
+                paragraph.props.spacing.before,
+                Some(Twips(120)),
+                "untouched"
+            );
+            assert_eq!(paragraph.props.spacing.after, Some(Twips(60)));
+            assert_eq!(paragraph.props.indent.start, Some(Twips(245)));
+            assert_eq!(paragraph.props.indent.hanging, Some(Twips(245)));
+        }
+        // A field blanked takes the value away rather than writing zero.
+        let opened = draft.clone();
+        let mut draft = opened.clone();
+        draft.before = String::new();
+        app.apply_paragraph(&opened, &draft);
+        assert!(app
+            .document
+            .paragraphs()
+            .iter()
+            .all(|p| p.props.spacing.before.is_none()));
+    }
+
+    #[test]
+    fn a_footer_with_a_page_number_is_one_line_with_fields_after_a_centre_tab() {
+        use wp_model::doc::{Inline, Piece};
+        let mut app = app_with(&["text"]);
+        app.apply_chrome(&ChromeDraft {
+            footer: true,
+            text: "ADNAN KHAN".into(),
+            font: "Verdana".into(),
+            size: "8".into(),
+            color: String::new(),
+            justify: Justify::Start,
+            page_number: true,
+        });
+        let footer = app
+            .document
+            .headers
+            .iter()
+            .find(|h| h.footer)
+            .expect("a footer was made");
+        assert_eq!(footer.content.len(), 1, "name and number share the line");
+        let Block::Paragraph(paragraph) = &footer.content[0] else {
+            panic!("a paragraph");
+        };
+        let text_width = app.document.section.page.width.0
+            - app.document.section.margins.start.0
+            - app.document.section.margins.end.0;
+        let tabs = paragraph.props.tabs.as_ref().expect("a tab stop");
+        assert_eq!(tabs[0].kind, wp_model::prop::TabKind::Center);
+        assert_eq!(tabs[0].position, Twips(text_width / 2));
+        let Inline::Run(run) = &paragraph.content[0] else {
+            panic!("a run");
+        };
+        assert_eq!(run.props.size, Some(HalfPoint(16)));
+        assert_eq!(run.props.fonts.ascii.as_deref(), Some("Verdana"));
+        let codes: Vec<String> = run
+            .content
+            .iter()
+            .filter_map(|piece| match piece {
+                Piece::Instruction(code) => Some(code.trim().to_owned()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(codes, ["PAGE", "NUMPAGES"]);
+        assert!(run.content.contains(&Piece::Tab));
+
+        // Reopened, the box shows the name alone and remembers the number.
+        app.open_chrome_dialog(true);
+        let draft = app.chrome_draft.clone().expect("the box is open");
+        assert_eq!(draft.text, "ADNAN KHAN");
+        assert!(draft.page_number);
+        assert_eq!(draft.size, "8");
+        assert_eq!(draft.font, "Verdana");
+    }
+
+    #[test]
     fn turning_borders_off_writes_none_rather_than_nothing() {
         let mut app = app_with(&["text"]);
         app.insert_table(2, 2);
@@ -4834,10 +5574,23 @@ mod tests {
         );
     }
 
+    /// The header box as it was before it could format: text alone.
+    fn plain_chrome(footer: bool, text: &str) -> ChromeDraft {
+        ChromeDraft {
+            footer,
+            text: text.into(),
+            font: String::new(),
+            size: String::new(),
+            color: String::new(),
+            justify: Justify::Start,
+            page_number: false,
+        }
+    }
+
     #[test]
     fn the_header_box_makes_a_header_and_blank_takes_it_away() {
         let mut app = app_with(&["text"]);
-        app.apply_chrome(false, "RESUME / CV");
+        app.apply_chrome(&plain_chrome(false, "RESUME / CV"));
         assert_eq!(app.document.headers.len(), 1);
         let header = &app.document.headers[0];
         assert!(!header.footer);
@@ -4852,14 +5605,14 @@ mod tests {
 
         // Editing keeps the body's identity, because the writer finds the
         // part to rewrite by it.
-        app.apply_chrome(false, "CURRICULUM VITAE");
+        app.apply_chrome(&plain_chrome(false, "CURRICULUM VITAE"));
         assert_eq!(app.document.headers.len(), 1, "still the one header");
         assert_eq!(
             wp_model::doc::text_of(&app.document.headers[0].content),
             "CURRICULUM VITAE"
         );
 
-        app.apply_chrome(false, "");
+        app.apply_chrome(&plain_chrome(false, ""));
         assert!(app.document.headers.is_empty(), "blank takes it away");
         assert!(app.document.section.headers.is_empty(), "reference and all");
 

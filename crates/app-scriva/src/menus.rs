@@ -348,6 +348,10 @@ impl Scriva {
                 if menu::item(ui, "&Decrease Indent", "Ctrl+Shift+M").clicked() {
                     chosen = Some(Command::Indent(-1));
                 }
+                menu::sep(ui);
+                if menu::item(ui, "&Paragraph…", "").clicked() {
+                    chosen = Some(Command::ParagraphDialog);
+                }
             });
 
             menu::top(ui, "&Layout", |ui| {
@@ -467,6 +471,21 @@ impl Scriva {
                         chosen = Some(Command::TableBorders(false));
                     }
                 });
+                menu::sub(ui, "Border &Colour", |ui| {
+                    if menu::item(ui, "&Automatic", "").clicked() {
+                        chosen = Some(Command::BorderColor(wp_model::Color::Auto));
+                    }
+                    menu::sep(ui);
+                    for (name, rgb) in PALETTE {
+                        if menu::item(ui, name, "").clicked() {
+                            chosen = Some(Command::BorderColor(wp_model::Color::Rgb(rgb)));
+                        }
+                    }
+                    menu::sep(ui);
+                    if menu::item(ui, "&Other…", "").clicked() {
+                        chosen = Some(Command::CustomBorderColor);
+                    }
+                });
                 menu::sub(ui, "&Shading", |ui| {
                     if menu::item(ui, "&No Fill", "").clicked() {
                         chosen = Some(Command::TableShading(None));
@@ -481,6 +500,9 @@ impl Scriva {
                 menu::sep(ui);
                 if menu::item(ui, "Column &Width…", "").clicked() {
                     chosen = Some(Command::ColumnWidth);
+                }
+                if menu::item(ui, "&Merge Cells", "").clicked() {
+                    chosen = Some(Command::MergeCells);
                 }
             });
 
