@@ -1,0 +1,12 @@
+[package]
+name = "brand"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "The applications' icons, drawn in code — shared by the window and the build script that stamps the executable"
+
+# No dependencies, on purpose: the build scripts of both applications compile
+# this before anything else, and a build script that pulls in a UI toolkit to
+# draw a 16-pixel icon would double the cold build.
+[dependencies]

@@ -59,6 +59,7 @@ pub fn run(app: impl DocumentApp + 'static) -> eframe::Result<()> {
         viewport: {
             let mut viewport = egui::ViewportBuilder::default()
                 .with_title(id.display)
+                .with_icon(std::sync::Arc::new(crate::brand::icon(id)))
                 .with_inner_size(placement.size)
                 .with_min_inner_size([640.0, 400.0]);
             // Only where the window was left, and only when it was left

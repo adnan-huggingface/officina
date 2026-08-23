@@ -13,6 +13,10 @@ path = "src/lib.rs"
 name = "calx"
 path = "src/main.rs"
 
+# The executable's icon is drawn by the build script; see build.rs.
+[build-dependencies]
+brand.workspace = true
+
 [dependencies]
 ui-kit.workspace = true
 ss-model.workspace = true

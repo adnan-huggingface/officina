@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/brand",
     "crates/chart",
     "crates/ooxml",
     "crates/ss-model",
@@ -30,6 +31,7 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/adnan-huggingface/officina"
 
 [workspace.dependencies]
+brand = { path = "crates/brand" }
 chart = { path = "crates/chart" }
 ooxml = { path = "crates/ooxml" }
 ss-model = { path = "crates/ss-model" }

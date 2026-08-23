@@ -1788,6 +1788,31 @@ greyed every box and blacked out every selected tab. The inspector got its
 groups parted by hairlines, its labels quietened, its axes in a grid, and
 Scriva's dialogs the body margin Calx's always had (`dialog::body`).
 
+"In the taskbar, both Scriva and Calx have the same icon." Neither set one,
+so both wore eframe's. Nothing in the suite is bundled, so the icon is
+rasterised at start-up (`ui_kit::brand`): a rounded tile with a white glyph,
+supersampled, handed to the viewport. Calx is the suite's green with a grid
+of cells; Scriva is a blue of the same weight with a page — colour first,
+glyph second, because a taskbar button is seen at a glance.
+
+"What about this icon?" — the one Explorer and "Open with" show, which is
+the executable's own, and the executable had none. The picture moved into a
+crate of its own with no dependencies (`brand`), so that each application's
+build script can afford to draw it too: it writes the icon as an `.ico` in
+every size Windows asks for (an ICO writer of forty lines — a directory, a
+bitmap header that states twice the height, BGRA rows bottom-up, an empty
+mask), wraps it in a one-line resource script, compiles it with the
+`windres` the GNU toolchain carries, and asks cargo to link the object into
+the binary. No new dependency; off Windows nothing happens, and without
+`windres` the build warns and goes on, because an icon is not worth failing
+a build over.
+
+"The text should be simply Calx." Explorer calls an executable by the
+`FileDescription` in its version resource, and one without is called by its
+file name. The same resource script now carries a `VERSIONINFO` block —
+description, product name, the crate's version — so "Open with", the Task
+Manager and a file's Properties say Calx and Scriva.
+
 And found at the keyboard, as adr/0002 says such things are: the first
 title typed into the panel deselected the chart on Enter. The text box
 gives its focus up on Enter *while the panel is drawn*; the grid, drawn
