@@ -6226,18 +6226,11 @@ fn modal(ctx: &egui::Context, title: &str, add: impl FnOnce(&mut egui::Ui)) {
         .frame(dialog::frame(ctx))
         .show(ctx, |ui| {
             ui.set_min_width(340.0);
-            egui::Frame::new()
-                .inner_margin(egui::Margin {
-                    left: 22,
-                    right: 22,
-                    top: 18,
-                    bottom: 18,
-                })
-                .show(ui, |ui| {
-                    ui.label(egui::RichText::new(title).font(dialog::heading_font(16.0)));
-                    ui.add_space(12.0);
-                    add(ui);
-                });
+            dialog::body(ui, |ui| {
+                ui.label(egui::RichText::new(title).font(dialog::heading_font(16.0)));
+                ui.add_space(12.0);
+                dialog::form(ui, add);
+            });
         });
 }
 
@@ -6937,31 +6930,9 @@ fn rule(ui: &mut egui::Ui) {
     }
 }
 
-/// Draws `add` with the look of a form field rather than a toolbar button.
-///
-/// The shared theme paints inactive controls flat and borderless, which is
-/// right for forty buttons and wrong for the three things on the row that are
-/// *inputs*. A combo box with no edge is a word floating on the chrome, and
-/// nothing about it says it can be opened; a number with no box around it does
-/// not look like something you are allowed to change.
+/// A toolbar control that takes a value: the form look, on the bar.
 fn field<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
-    ui.scope(|ui| {
-        let v = &mut ui.style_mut().visuals;
-        let edge = egui::Stroke::new(1.0, egui::Color32::from_gray(0xBC));
-        let lit = egui::Stroke::new(1.0, egui::Color32::from_gray(0x8C));
-        for (widget, stroke) in [
-            (&mut v.widgets.inactive, edge),
-            (&mut v.widgets.hovered, lit),
-            (&mut v.widgets.active, lit),
-            (&mut v.widgets.open, lit),
-        ] {
-            widget.weak_bg_fill = egui::Color32::WHITE;
-            widget.bg_fill = egui::Color32::WHITE;
-            widget.bg_stroke = stroke;
-        }
-        add(ui)
-    })
-    .inner
+    dialog::form(ui, add)
 }
 
 /// The colours a colour menu offers, as Excel arranges them: greys along the

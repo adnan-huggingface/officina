@@ -3236,27 +3236,29 @@ impl Scriva {
         egui::Modal::new(egui::Id::new("scriva-margins"))
             .frame(dialog::frame(ctx))
             .show(ctx, |ui| {
-                ui.set_width(260.0);
-                ui.add_space(16.0);
-                ui.label(egui::RichText::new("Margins").font(dialog::heading_font(16.0)));
-                ui.add_space(8.0);
-                for (label, field) in ["Top:", "Bottom:", "Left:", "Right:"]
-                    .into_iter()
-                    .zip(draft.iter_mut())
-                {
-                    ui.horizontal(|ui| {
-                        ui.add_sized([56.0, 20.0], egui::Label::new(label));
-                        ui.add(egui::TextEdit::singleline(field).desired_width(64.0));
-                        ui.label("in");
-                    });
-                }
-                ui.add_space(12.0);
-                if let Some(answer) = dialog::confirm(ui, "Set") {
-                    done = Some(answer);
-                }
-                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                    done = Some(false);
-                }
+                dialog::form_style(ui.style_mut());
+                dialog::body(ui, |ui| {
+                    ui.set_width(260.0);
+                    ui.label(egui::RichText::new("Margins").font(dialog::heading_font(16.0)));
+                    ui.add_space(8.0);
+                    for (label, field) in ["Top:", "Bottom:", "Left:", "Right:"]
+                        .into_iter()
+                        .zip(draft.iter_mut())
+                    {
+                        ui.horizontal(|ui| {
+                            ui.add_sized([56.0, 20.0], egui::Label::new(label));
+                            ui.add(egui::TextEdit::singleline(field).desired_width(64.0));
+                            ui.label("in");
+                        });
+                    }
+                    ui.add_space(12.0);
+                    if let Some(answer) = dialog::confirm(ui, "Set") {
+                        done = Some(answer);
+                    }
+                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                        done = Some(false);
+                    }
+                });
             });
         self.margins_draft = Some(draft.clone());
         match done {
@@ -3296,23 +3298,25 @@ impl Scriva {
         egui::Modal::new(egui::Id::new("scriva-table"))
             .frame(dialog::frame(ctx))
             .show(ctx, |ui| {
-                ui.set_width(260.0);
-                ui.add_space(16.0);
-                ui.label(egui::RichText::new("Insert Table").font(dialog::heading_font(16.0)));
-                ui.add_space(8.0);
-                for (label, field) in ["Columns:", "Rows:"].into_iter().zip(draft.iter_mut()) {
-                    ui.horizontal(|ui| {
-                        ui.add_sized([72.0, 20.0], egui::Label::new(label));
-                        ui.add(egui::TextEdit::singleline(field).desired_width(64.0));
-                    });
-                }
-                ui.add_space(12.0);
-                if let Some(answer) = dialog::confirm(ui, "Insert") {
-                    done = Some(answer);
-                }
-                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                    done = Some(false);
-                }
+                dialog::form_style(ui.style_mut());
+                dialog::body(ui, |ui| {
+                    ui.set_width(260.0);
+                    ui.label(egui::RichText::new("Insert Table").font(dialog::heading_font(16.0)));
+                    ui.add_space(8.0);
+                    for (label, field) in ["Columns:", "Rows:"].into_iter().zip(draft.iter_mut()) {
+                        ui.horizontal(|ui| {
+                            ui.add_sized([72.0, 20.0], egui::Label::new(label));
+                            ui.add(egui::TextEdit::singleline(field).desired_width(64.0));
+                        });
+                    }
+                    ui.add_space(12.0);
+                    if let Some(answer) = dialog::confirm(ui, "Insert") {
+                        done = Some(answer);
+                    }
+                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                        done = Some(false);
+                    }
+                });
             });
         self.table_draft = Some(draft.clone());
         match done {
@@ -3344,21 +3348,23 @@ impl Scriva {
         egui::Modal::new(egui::Id::new("scriva-color"))
             .frame(dialog::frame(ctx))
             .show(ctx, |ui| {
-                ui.set_width(260.0);
-                ui.add_space(16.0);
-                ui.label(egui::RichText::new("Text Colour").font(dialog::heading_font(16.0)));
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    ui.add_sized([72.0, 20.0], egui::Label::new("Hex:"));
-                    ui.add(egui::TextEdit::singleline(&mut draft).desired_width(64.0));
+                dialog::form_style(ui.style_mut());
+                dialog::body(ui, |ui| {
+                    ui.set_width(260.0);
+                    ui.label(egui::RichText::new("Text Colour").font(dialog::heading_font(16.0)));
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        ui.add_sized([72.0, 20.0], egui::Label::new("Hex:"));
+                        ui.add(egui::TextEdit::singleline(&mut draft).desired_width(64.0));
+                    });
+                    ui.add_space(12.0);
+                    if let Some(answer) = dialog::confirm(ui, "Apply") {
+                        done = Some(answer);
+                    }
+                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                        done = Some(false);
+                    }
                 });
-                ui.add_space(12.0);
-                if let Some(answer) = dialog::confirm(ui, "Apply") {
-                    done = Some(answer);
-                }
-                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                    done = Some(false);
-                }
             });
         self.color_draft = Some(draft.clone());
         match done {
@@ -3385,21 +3391,23 @@ impl Scriva {
         egui::Modal::new(egui::Id::new("scriva-column"))
             .frame(dialog::frame(ctx))
             .show(ctx, |ui| {
-                ui.set_width(260.0);
-                ui.add_space(16.0);
-                ui.label(egui::RichText::new("Column Width").font(dialog::heading_font(16.0)));
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    ui.add_sized([72.0, 20.0], egui::Label::new("Inches:"));
-                    ui.add(egui::TextEdit::singleline(&mut draft).desired_width(64.0));
+                dialog::form_style(ui.style_mut());
+                dialog::body(ui, |ui| {
+                    ui.set_width(260.0);
+                    ui.label(egui::RichText::new("Column Width").font(dialog::heading_font(16.0)));
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        ui.add_sized([72.0, 20.0], egui::Label::new("Inches:"));
+                        ui.add(egui::TextEdit::singleline(&mut draft).desired_width(64.0));
+                    });
+                    ui.add_space(12.0);
+                    if let Some(answer) = dialog::confirm(ui, "Apply") {
+                        done = Some(answer);
+                    }
+                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                        done = Some(false);
+                    }
                 });
-                ui.add_space(12.0);
-                if let Some(answer) = dialog::confirm(ui, "Apply") {
-                    done = Some(answer);
-                }
-                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                    done = Some(false);
-                }
             });
         self.column_draft = Some(draft.clone());
         match done {
@@ -3447,24 +3455,26 @@ impl Scriva {
         egui::Modal::new(egui::Id::new("scriva-chrome"))
             .frame(dialog::frame(ctx))
             .show(ctx, |ui| {
-                ui.set_width(320.0);
-                ui.add_space(16.0);
-                let title = if footer { "Footer" } else { "Header" };
-                ui.label(egui::RichText::new(title).font(dialog::heading_font(16.0)));
-                ui.add_space(8.0);
-                ui.add(
-                    egui::TextEdit::multiline(&mut draft)
-                        .desired_width(288.0)
-                        .desired_rows(3),
-                );
-                ui.label("One paragraph per line. Blank takes it away.");
-                ui.add_space(12.0);
-                if let Some(answer) = dialog::confirm(ui, "Apply") {
-                    done = Some(answer);
-                }
-                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                    done = Some(false);
-                }
+                dialog::form_style(ui.style_mut());
+                dialog::body(ui, |ui| {
+                    ui.set_width(320.0);
+                    let title = if footer { "Footer" } else { "Header" };
+                    ui.label(egui::RichText::new(title).font(dialog::heading_font(16.0)));
+                    ui.add_space(8.0);
+                    ui.add(
+                        egui::TextEdit::multiline(&mut draft)
+                            .desired_width(288.0)
+                            .desired_rows(3),
+                    );
+                    ui.label("One paragraph per line. Blank takes it away.");
+                    ui.add_space(12.0);
+                    if let Some(answer) = dialog::confirm(ui, "Apply") {
+                        done = Some(answer);
+                    }
+                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                        done = Some(false);
+                    }
+                });
             });
         self.chrome_draft = Some((footer, draft.clone()));
         match done {
@@ -3663,61 +3673,63 @@ impl Scriva {
         egui::Modal::new(egui::Id::new("scriva-size"))
             .frame(dialog::frame(ctx))
             .show(ctx, |ui| {
-                ui.set_width(260.0);
-                ui.add_space(16.0);
-                ui.label(egui::RichText::new("Size").font(dialog::heading_font(16.0)));
-                ui.add_space(8.0);
-                let mut typed: Option<bool> = None;
-                for (label, horizontal) in [("Width:", true), ("Height:", false)] {
-                    ui.horizontal(|ui| {
-                        ui.add_sized([56.0, 20.0], egui::Label::new(label));
-                        let field = match horizontal {
-                            true => &mut draft.width,
-                            false => &mut draft.height,
+                dialog::form_style(ui.style_mut());
+                dialog::body(ui, |ui| {
+                    ui.set_width(260.0);
+                    ui.label(egui::RichText::new("Size").font(dialog::heading_font(16.0)));
+                    ui.add_space(8.0);
+                    let mut typed: Option<bool> = None;
+                    for (label, horizontal) in [("Width:", true), ("Height:", false)] {
+                        ui.horizontal(|ui| {
+                            ui.add_sized([56.0, 20.0], egui::Label::new(label));
+                            let field = match horizontal {
+                                true => &mut draft.width,
+                                false => &mut draft.height,
+                            };
+                            if ui
+                                .add(egui::TextEdit::singleline(field).desired_width(64.0))
+                                .changed()
+                            {
+                                typed = Some(horizontal);
+                            }
+                            ui.label("in");
+                        });
+                    }
+                    // The locked field follows the typed one, so the box always
+                    // shows the size it would set.
+                    if let Some(horizontal) = typed.filter(|_| draft.locked) {
+                        let (from, to) = match horizontal {
+                            true => (&draft.width, draft.ratio.recip()),
+                            false => (&draft.height, draft.ratio),
                         };
-                        if ui
-                            .add(egui::TextEdit::singleline(field).desired_width(64.0))
-                            .changed()
-                        {
-                            typed = Some(horizontal);
-                        }
-                        ui.label("in");
-                    });
-                }
-                // The locked field follows the typed one, so the box always
-                // shows the size it would set.
-                if let Some(horizontal) = typed.filter(|_| draft.locked) {
-                    let (from, to) = match horizontal {
-                        true => (&draft.width, draft.ratio.recip()),
-                        false => (&draft.height, draft.ratio),
-                    };
-                    if let Some(value) = from.trim().parse::<f64>().ok().filter(|v| *v > 0.0) {
-                        let other = inches(value * to * 72.0);
-                        match horizontal {
-                            true => draft.height = other,
-                            false => draft.width = other,
+                        if let Some(value) = from.trim().parse::<f64>().ok().filter(|v| *v > 0.0) {
+                            let other = inches(value * to * 72.0);
+                            match horizontal {
+                                true => draft.height = other,
+                                false => draft.width = other,
+                            }
                         }
                     }
-                }
-                ui.add_space(4.0);
-                ui.checkbox(&mut draft.locked, "Lock aspect ratio");
-                if let Some((width, height)) = draft.natural {
                     ui.add_space(4.0);
-                    if ui.button("Original size").clicked() {
-                        draft.width = inches(width);
-                        draft.height = inches(height);
+                    ui.checkbox(&mut draft.locked, "Lock aspect ratio");
+                    if let Some((width, height)) = draft.natural {
+                        ui.add_space(4.0);
+                        if ui.button("Original size").clicked() {
+                            draft.width = inches(width);
+                            draft.height = inches(height);
+                        }
                     }
-                }
-                ui.add_space(12.0);
-                if let Some(answer) = dialog::confirm(ui, "OK") {
-                    done = Some(answer);
-                }
-                if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                    done = Some(true);
-                }
-                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                    done = Some(false);
-                }
+                    ui.add_space(12.0);
+                    if let Some(answer) = dialog::confirm(ui, "OK") {
+                        done = Some(answer);
+                    }
+                    if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        done = Some(true);
+                    }
+                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                        done = Some(false);
+                    }
+                });
             });
         match done {
             Some(true) => {
@@ -3755,64 +3767,66 @@ impl Scriva {
         egui::Modal::new(egui::Id::new("scriva-zoom"))
             .frame(dialog::frame(ctx))
             .show(ctx, |ui| {
-                ui.set_width(240.0);
-                ui.add_space(16.0);
-                ui.label(egui::RichText::new("Zoom").font(dialog::heading_font(16.0)));
-                ui.add_space(8.0);
-                ui.label("Zoom to");
-                let mut preset: Option<i32> = None;
-                ui.horizontal(|ui| {
-                    for percent in [200, 100, 75] {
-                        if ui.button(format!("{percent}%")).clicked() {
-                            preset = Some(percent);
+                dialog::form_style(ui.style_mut());
+                dialog::body(ui, |ui| {
+                    ui.set_width(240.0);
+                    ui.label(egui::RichText::new("Zoom").font(dialog::heading_font(16.0)));
+                    ui.add_space(8.0);
+                    ui.label("Zoom to");
+                    let mut preset: Option<i32> = None;
+                    ui.horizontal(|ui| {
+                        for percent in [200, 100, 75] {
+                            if ui.button(format!("{percent}%")).clicked() {
+                                preset = Some(percent);
+                            }
                         }
+                    });
+                    ui.horizontal(|ui| {
+                        if ui.button("Page width").clicked() {
+                            preset = self.fit_percent(true);
+                        }
+                        if ui.button("Whole page").clicked() {
+                            preset = self.fit_percent(false);
+                        }
+                    });
+                    if let Some(percent) = preset {
+                        draft = percent.to_string();
+                        self.zoom_fresh = true;
+                    }
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        ui.label("Percent:");
+                        // While the field is untouched its number stays selected,
+                        // re-seeded every frame — egui clears the selection on
+                        // frames the field is not yet focused, and a keystroke
+                        // can arrive on any frame. First touch ends it.
+                        if self.zoom_fresh {
+                            select_percent(ui.ctx(), &draft);
+                        }
+                        let field = ui.add(
+                            egui::TextEdit::singleline(&mut draft)
+                                .id(egui::Id::new("scriva-zoom-percent"))
+                                .desired_width(56.0),
+                        );
+                        ui.label("%");
+                        if field.changed() || field.clicked() || field.dragged() {
+                            self.zoom_fresh = false;
+                        }
+                        field.request_focus();
+                    });
+                    ui.add_space(12.0);
+                    if let Some(answer) = dialog::confirm(ui, "OK") {
+                        done = Some(answer);
+                    }
+                    // The percent field is the only thing to type into, so Enter
+                    // anywhere in the box means OK — the way Word's box reads it.
+                    if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        done = Some(true);
+                    }
+                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                        done = Some(false);
                     }
                 });
-                ui.horizontal(|ui| {
-                    if ui.button("Page width").clicked() {
-                        preset = self.fit_percent(true);
-                    }
-                    if ui.button("Whole page").clicked() {
-                        preset = self.fit_percent(false);
-                    }
-                });
-                if let Some(percent) = preset {
-                    draft = percent.to_string();
-                    self.zoom_fresh = true;
-                }
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    ui.label("Percent:");
-                    // While the field is untouched its number stays selected,
-                    // re-seeded every frame — egui clears the selection on
-                    // frames the field is not yet focused, and a keystroke
-                    // can arrive on any frame. First touch ends it.
-                    if self.zoom_fresh {
-                        select_percent(ui.ctx(), &draft);
-                    }
-                    let field = ui.add(
-                        egui::TextEdit::singleline(&mut draft)
-                            .id(egui::Id::new("scriva-zoom-percent"))
-                            .desired_width(56.0),
-                    );
-                    ui.label("%");
-                    if field.changed() || field.clicked() || field.dragged() {
-                        self.zoom_fresh = false;
-                    }
-                    field.request_focus();
-                });
-                ui.add_space(12.0);
-                if let Some(answer) = dialog::confirm(ui, "OK") {
-                    done = Some(answer);
-                }
-                // The percent field is the only thing to type into, so Enter
-                // anywhere in the box means OK — the way Word's box reads it.
-                if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                    done = Some(true);
-                }
-                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                    done = Some(false);
-                }
             });
         self.zoom_draft = Some(draft.clone());
         if done.is_some() {
@@ -3861,24 +3875,26 @@ impl Scriva {
         egui::Modal::new(egui::Id::new("scriva-comment"))
             .frame(dialog::frame(ctx))
             .show(ctx, |ui| {
-                ui.set_width(420.0);
-                ui.add_space(16.0);
-                ui.label(egui::RichText::new("New comment").font(dialog::heading_font(16.0)));
-                ui.add_space(8.0);
-                let field = ui.add(
-                    egui::TextEdit::multiline(&mut text)
-                        .desired_rows(4)
-                        .desired_width(f32::INFINITY)
-                        .hint_text("What is there to say about this?"),
-                );
-                field.request_focus();
-                ui.add_space(12.0);
-                if let Some(answer) = dialog::confirm(ui, "Add") {
-                    done = Some(answer);
-                }
-                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                    done = Some(false);
-                }
+                dialog::form_style(ui.style_mut());
+                dialog::body(ui, |ui| {
+                    ui.set_width(420.0);
+                    ui.label(egui::RichText::new("New comment").font(dialog::heading_font(16.0)));
+                    ui.add_space(8.0);
+                    let field = ui.add(
+                        egui::TextEdit::multiline(&mut text)
+                            .desired_rows(4)
+                            .desired_width(f32::INFINITY)
+                            .hint_text("What is there to say about this?"),
+                    );
+                    field.request_focus();
+                    ui.add_space(12.0);
+                    if let Some(answer) = dialog::confirm(ui, "Add") {
+                        done = Some(answer);
+                    }
+                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                        done = Some(false);
+                    }
+                });
             });
         self.drafting = Some(text.clone());
         match done {

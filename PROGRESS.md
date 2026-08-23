@@ -1772,6 +1772,22 @@ one — ended past where the sheet would go. A chart and a picture are
 content: the extent now reaches the row and column after each drawing's
 far corner (`a_chart_below_the_data_can_be_scrolled_into_view`).
 
+"Styling is quite poor, and the same poor styling exists in other places
+too." It did, and for one reason: the shared theme draws every control flat
+so that the toolbar is not a wall of boxes, and the menus and the toolbar
+then set that flatness again for themselves — so the only things the global
+flatness reached were the form controls, which it stripped of their boxes.
+An unticked checkbox was a word; a drop-down was a word with an arrow.
+`dialog::form` now draws a control as a control — a white field with an
+edge, darker under the pointer, the accent while open — and every Calx
+modal, every Scriva modal, the toolbar's fields and the chart inspector go
+through it. Sliders take their rail grey and accent fill in a scope of their
+own (`dialog::slider_style`), because egui paints the rail in the checkbox's
+fill and the travelled part in the selected row's, and the first attempt
+greyed every box and blacked out every selected tab. The inspector got its
+groups parted by hairlines, its labels quietened, its axes in a grid, and
+Scriva's dialogs the body margin Calx's always had (`dialog::body`).
+
 And found at the keyboard, as adr/0002 says such things are: the first
 title typed into the panel deselected the chart on Enter. The text box
 gives its focus up on Enter *while the panel is drawn*; the grid, drawn

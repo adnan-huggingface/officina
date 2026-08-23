@@ -156,7 +156,9 @@ impl Calx {
                 ui.add_space(2.0);
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
-                    .show(ui, |ui| self.chart_controls(ui, sheet, index));
+                    .show(ui, |ui| {
+                        dialog::form(ui, |ui| self.chart_controls(ui, sheet, index))
+                    });
             });
 
         // The gesture ends when nothing is being dragged, typed into, or
@@ -183,7 +185,7 @@ impl Calx {
             .num_columns(2)
             .spacing([10.0, 8.0])
             .show(ui, |ui| {
-                ui.label("Type");
+                label(ui, "Type");
                 let current = family_name(&plot);
                 let mut chosen = None;
                 ui.add_enabled_ui(current.is_some() || plot.kind != ChartKind::Scatter, |ui| {
@@ -225,7 +227,7 @@ impl Calx {
 
                 let ways = stackings(&plot.kind);
                 if !ways.is_empty() {
-                    ui.label("Stacking");
+                    label(ui, "Stacking");
                     let current = ways
                         .iter()
                         .find(|(_, g)| *g == plot.grouping)
@@ -250,11 +252,11 @@ impl Calx {
                     ui.end_row();
                 }
 
-                ui.label("Title");
+                label(ui, "Title");
                 self.chart_title_box(ui, sheet, index, &plot);
                 ui.end_row();
 
-                ui.label("Legend");
+                label(ui, "Legend");
                 let legend = LEGENDS
                     .iter()
                     .find(|(_, p)| *p == plot.legend)
@@ -327,34 +329,38 @@ impl Calx {
 
         if plot.kind.has_axes() {
             section(ui, "Axes");
-            for (label, value) in [("Value", true), ("Category", false)] {
-                ui.horizontal(|ui| {
-                    ui.label(label);
-                    let axis = if value { plot.val_axis } else { plot.cat_axis };
-                    let mut shown = !axis.deleted;
-                    if ui.checkbox(&mut shown, "Shown").changed() {
-                        self.chart_edit(|plot| {
-                            let axis = if value {
-                                &mut plot.val_axis
-                            } else {
-                                &mut plot.cat_axis
-                            };
-                            axis.deleted = !shown;
-                        });
-                    }
-                    let mut gridlines = axis.gridlines;
-                    if ui.checkbox(&mut gridlines, "Gridlines").changed() {
-                        self.chart_edit(|plot| {
-                            let axis = if value {
-                                &mut plot.val_axis
-                            } else {
-                                &mut plot.cat_axis
-                            };
-                            axis.gridlines = gridlines;
-                        });
+            egui::Grid::new("calx-chart-axes")
+                .num_columns(3)
+                .spacing([14.0, 6.0])
+                .show(ui, |ui| {
+                    for (name, value) in [("Value", true), ("Category", false)] {
+                        label(ui, name);
+                        let axis = if value { plot.val_axis } else { plot.cat_axis };
+                        let mut shown = !axis.deleted;
+                        if ui.checkbox(&mut shown, "Shown").changed() {
+                            self.chart_edit(|plot| {
+                                let axis = if value {
+                                    &mut plot.val_axis
+                                } else {
+                                    &mut plot.cat_axis
+                                };
+                                axis.deleted = !shown;
+                            });
+                        }
+                        let mut gridlines = axis.gridlines;
+                        if ui.checkbox(&mut gridlines, "Gridlines").changed() {
+                            self.chart_edit(|plot| {
+                                let axis = if value {
+                                    &mut plot.val_axis
+                                } else {
+                                    &mut plot.cat_axis
+                                };
+                                axis.gridlines = gridlines;
+                            });
+                        }
+                        ui.end_row();
                     }
                 });
-            }
         }
 
         ui.add_space(8.0);
@@ -367,10 +373,17 @@ impl Calx {
             self.chart_edit(|plot| plot.vary_colors = vary);
         }
 
+        ui.add_space(14.0);
+        rule(ui);
         ui.add_space(10.0);
-        ui.separator();
-        ui.add_space(4.0);
-        if ui.button("Delete chart").clicked() {
+        // In the colour of a thing no slider undoes.
+        let red = egui::Color32::from_rgb(0xB3, 0x26, 0x1E);
+        if ui
+            .add(egui::Button::new(
+                egui::RichText::new("Delete chart").color(red),
+            ))
+            .clicked()
+        {
             self.delete_chart(sheet, index);
         }
     }
@@ -506,9 +519,34 @@ impl Calx {
     }
 }
 
+/// A group's heading: a hairline to part it from the group above, and the
+/// title in the bold face.
 fn section(ui: &mut egui::Ui, title: &str) {
-    ui.add_space(10.0);
-    ui.label(egui::RichText::new(title).font(dialog::heading_font(12.5)));
+    ui.add_space(12.0);
+    rule(ui);
+    ui.add_space(8.0);
+    ui.label(
+        egui::RichText::new(title)
+            .font(dialog::heading_font(12.5))
+            .color(egui::Color32::from_gray(0x30)),
+    );
+    ui.add_space(2.0);
+}
+
+/// A field's name, quieter than its value.
+fn label(ui: &mut egui::Ui, text: &str) {
+    ui.label(egui::RichText::new(text).color(egui::Color32::from_gray(0x5C)));
+}
+
+/// A hairline across the panel.
+fn rule(ui: &mut egui::Ui) {
+    let (rect, _) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 1.0), egui::Sense::hover());
+    ui.painter().hline(
+        rect.x_range(),
+        rect.center().y,
+        egui::Stroke::new(1.0, egui::Color32::from_gray(0xE2)),
+    );
 }
 
 /// A labelled percentage slider; true when it moved this frame.
@@ -519,8 +557,12 @@ fn slider(
     range: std::ops::RangeInclusive<f64>,
 ) -> bool {
     ui.horizontal(|ui| {
-        ui.add_sized([70.0, 18.0], egui::Label::new(label));
-        ui.spacing_mut().slider_width = (ui.available_width() - 56.0).max(60.0);
+        ui.add_sized(
+            [70.0, 18.0],
+            egui::Label::new(egui::RichText::new(label).color(egui::Color32::from_gray(0x5C))),
+        );
+        ui.spacing_mut().slider_width = (ui.available_width() - 60.0).max(60.0);
+        dialog::slider_style(ui.style_mut());
         ui.add(
             egui::Slider::new(value, range)
                 .suffix("%")

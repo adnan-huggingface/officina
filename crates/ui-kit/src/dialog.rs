@@ -180,6 +180,21 @@ pub fn frame(ctx: &egui::Context) -> egui::Frame {
         .inner_margin(0)
 }
 
+/// A form dialog's body: the margin that keeps its heading and its fields off
+/// the frame's edge. The action row inside it draws its own rule across the
+/// body's width, so the margin is the same on every side.
+pub fn body<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    egui::Frame::new()
+        .inner_margin(egui::Margin {
+            left: 22,
+            right: 22,
+            top: 18,
+            bottom: 18,
+        })
+        .show(ui, add)
+        .inner
+}
+
 /// A dialog's heading, in the real bold face rather than a darker grey.
 pub fn heading_font(size: f32) -> egui::FontId {
     egui::FontId::new(size, face(Family::Sans, true, false))
@@ -275,6 +290,58 @@ pub fn one_of(ui: &mut egui::Ui, choices: &[Choice<'_>]) -> Option<usize> {
         }
     }
     chosen
+}
+
+/// Form controls drawn as controls.
+///
+/// The theme draws everything flat, because a toolbar of forty framed buttons
+/// is a wall of boxes; but a checkbox with no box is a word, and a drop-down
+/// with no field is a word with an arrow. Everything that asks for a value —
+/// a combo, a checkbox, a text box, a slider, a colour well — goes through
+/// here: a white field with an edge, the edge darkening under the pointer and
+/// turning the accent colour while the control is open or held.
+pub fn form<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    ui.scope(|ui| {
+        form_style(ui.style_mut());
+        add(ui)
+    })
+    .inner
+}
+
+/// [`form`] as a style, for a container whose closure is already written.
+pub fn form_style(style: &mut egui::Style) {
+    let v = &mut style.visuals;
+    let edge = egui::Stroke::new(1.0, egui::Color32::from_gray(0xC4));
+    let lit = egui::Stroke::new(1.0, egui::Color32::from_gray(0x8C));
+    let held = egui::Stroke::new(1.0, ACCENT);
+    for (w, fill, stroke) in [
+        (&mut v.widgets.inactive, egui::Color32::WHITE, edge),
+        (&mut v.widgets.hovered, egui::Color32::from_gray(0xFA), lit),
+        (&mut v.widgets.active, egui::Color32::from_gray(0xF0), held),
+        (&mut v.widgets.open, egui::Color32::WHITE, held),
+    ] {
+        w.weak_bg_fill = fill;
+        w.bg_fill = egui::Color32::WHITE;
+        w.bg_stroke = stroke;
+        w.corner_radius = egui::CornerRadius::same(4);
+    }
+    v.handle_shape = egui::style::HandleShape::Circle;
+    style.spacing.slider_rail_height = 4.0;
+    style.spacing.interact_size.y = 24.0;
+}
+
+/// A slider's own colours, for the scope that holds one and nothing else.
+///
+/// egui draws the rail in the same fill as a checkbox's box and the travelled
+/// part in the same colour as a selected row, so a rail grey enough to be
+/// seen and a fill strong enough to read cannot be set for a whole form
+/// without greying every checkbox and blacking out every selected tab.
+pub fn slider_style(style: &mut egui::Style) {
+    let v = &mut style.visuals;
+    v.widgets.inactive.bg_fill = egui::Color32::from_gray(0xDE);
+    v.widgets.hovered.bg_fill = egui::Color32::from_gray(0xD4);
+    v.widgets.active.bg_fill = egui::Color32::from_gray(0xD4);
+    v.selection.bg_fill = ACCENT;
 }
 
 /// A dialog button: a real button, sized as one, with a state to hover into.

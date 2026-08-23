@@ -489,6 +489,16 @@ on its side puts its first category at the *bottom* and its first series
 nearest the axis — a column chart turned anticlockwise, both ends — and a
 radar runs its first category from the top, clockwise.
 
+**egui's widget colours are shared in ways a theme has to respect.** A
+`WidgetVisuals::bg_fill` paints a checkbox's box *and* a slider's rail; a
+`Visuals::selection.bg_fill` paints a selected row, a selected tab *and* a
+slider's travelled part; `bg_stroke` edges a button, a combo and a checkbox
+alike. A look set for one widget is set for all of them, so a theme made
+flat for a toolbar strips the boxes off every form, and a rail greyed for a
+slider greys every checkbox. The way through is scope: the toolbar sets its
+own flatness, a form its own edges, a slider its own rail, each on the `Ui`
+that holds it (2026-08-22).
+
 **An egui popup is sized before it is measured.** A `ComboBox` list longer
 than `Spacing::combo_height` scrolls, and asking for more height does not
 give it: the popup's `Area` is laid out in a sizing pass bounded by
