@@ -117,9 +117,14 @@ fn document_of(count: usize) -> u128 {
         .collect();
 
     let theme = document.theme.clone();
+    let marks = wp_layout::NoteMarks::of(&document);
     let fields = wp_layout::FieldValues::default();
     let ctx = wp_layout::inline::Context {
         theme: &theme,
+        styles: &document.styles,
+        notes: &marks,
+        note_mark: None,
+        table_part: None,
         default_tab: document.settings.default_tab_stop,
         fallback_font: "Calibri",
         has_face: |_| false,
@@ -162,9 +167,14 @@ fn time(path: &Path, kind: Kind) -> Option<(u128, u128)> {
             let read = start.elapsed().as_millis();
             let start = Instant::now();
             let theme = document.theme.clone();
+            let marks = wp_layout::NoteMarks::of(&document);
             let fields = wp_layout::FieldValues::default();
             let ctx = wp_layout::inline::Context {
                 theme: &theme,
+                styles: &document.styles,
+                notes: &marks,
+                note_mark: None,
+                table_part: None,
                 default_tab: document.settings.default_tab_stop,
                 fallback_font: "Calibri",
                 has_face: |_| false,

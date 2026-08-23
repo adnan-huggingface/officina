@@ -29,7 +29,11 @@ pub struct Egui {
     /// kept. The layout engine asks in break units — words — and a document
     /// repeats its words, so this hits far more often than it misses.
     runs: HashMap<(Key, String), Vec<f64>>,
-    metrics: HashMap<Key, Metrics>,
+    /// The ascent and row height epaint reports, per *drawn* face. The line
+    /// gap is deliberately not kept here: several names can share one drawn
+    /// face, and the gap belongs to the file the name resolves to, so caching
+    /// it beside these handed the second name the first one's gap.
+    rows: HashMap<Key, (f64, f64)>,
     /// Which named face each (family, bold, italic) resolved to, if the machine
     /// has it registered — interned so a `Key` stays `Copy` and cheap to hash.
     /// `None` remembers that the name has only the generic families to fall to.
@@ -39,6 +43,10 @@ pub struct Egui {
     /// the font file once, `None` when the machine has no file to ask.
     #[allow(clippy::type_complexity)]
     pitches: HashMap<(String, bool, bool, u32), Option<(f64, f64)>>,
+    /// Each face's `hhea` line gap as a fraction of its em, which is where
+    /// Word puts a line's baseline — see [`Egui::gap`]. Size-independent, so
+    /// one lookup serves every size the document sets the face in.
+    gaps: HashMap<(String, bool, bool), f64>,
 }
 
 /// A font, reduced to what epaint distinguishes.
@@ -76,11 +84,45 @@ impl Egui {
         Egui {
             ctx: ctx.clone(),
             runs: HashMap::new(),
-            metrics: HashMap::new(),
+            rows: HashMap::new(),
             codes: HashMap::new(),
+            gaps: HashMap::new(),
             named: Vec::new(),
             pitches: HashMap::new(),
         }
+    }
+
+    /// The font file behind a name, the document's own copy first.
+    ///
+    /// A face the document embedded is the one the screen shaped with, so it
+    /// is the one whose tables must be read; going to the machine's fonts
+    /// instead answers with a substitute's metrics for a face that is right
+    /// here in the package.
+    fn face_bytes(family: &str, bold: bool, italic: bool) -> Option<Vec<u8>> {
+        if let Some(bytes) = ui_kit::fonts::document_face_file(family, bold, italic) {
+            return Some(bytes.to_vec());
+        }
+        ui_kit::fonts::face_file(family, bold, italic).map(|(_, bytes)| bytes)
+    }
+
+    /// The face's `hhea` line gap, as a fraction of its em.
+    ///
+    /// Word lays the baseline of a line at the face's ascent *plus its line
+    /// gap*, so the gap has to be known apart from the descent — and epaint
+    /// only ever reports the two added together as a row height.
+    fn gap(&mut self, font: &FontRequest) -> f64 {
+        let ask = (font.family.to_ascii_lowercase(), font.bold, font.italic);
+        if let Some(&known) = self.gaps.get(&ask) {
+            return known;
+        }
+        let found = Egui::face_bytes(&font.family, font.bold, font.italic)
+            .and_then(|bytes| {
+                let face = wp_print::ttf::Face::parse(&bytes)?;
+                Some(f64::from(face.line_gap) / face.units_per_em())
+            })
+            .unwrap_or(0.0);
+        self.gaps.insert(ask, found);
+        found
     }
 
     fn key(&mut self, font: &FontRequest) -> Key {
@@ -107,12 +149,26 @@ impl Egui {
         if let Some(&code) = self.codes.get(&ask) {
             return code;
         }
-        let code = ui_kit::fonts::named_face(&ask.0, bold, italic).map(|face| {
-            self.named.push(face);
-            NAMED_BASE + (self.named.len() - 1) as u16
-        });
+        let code = ui_kit::fonts::named_face(&ask.0, bold, italic)
+            .filter(|face| self.registered(face))
+            .map(|face| {
+                self.named.push(face);
+                NAMED_BASE + (self.named.len() - 1) as u16
+            });
         self.codes.insert(ask, code);
         code
+    }
+
+    /// Whether epaint has really been given this family.
+    ///
+    /// A document that carries its own type registers it and asks for it in
+    /// the same breath, and `set_fonts` does not take effect until the next
+    /// frame begins. Until then the family exists everywhere except where it
+    /// is drawn — and epaint answers a family it has never been given with a
+    /// panic rather than a substitute, so the question has to be asked before
+    /// the name is used. Asked once per name; the answer is cached with it.
+    fn registered(&self, face: &egui::FontFamily) -> bool {
+        self.ctx.fonts_mut(|fonts| fonts.families().contains(face))
     }
 
     fn id_of(&self, key: Key) -> egui::FontId {
@@ -204,8 +260,23 @@ fn is_combining(c: char) -> bool {
 impl Shaper for Egui {
     fn metrics(&mut self, font: &FontRequest) -> Metrics {
         let key = self.key(font);
-        if let Some(&metrics) = self.metrics.get(&key) {
-            return metrics;
+        // epaint hands back a row height with the face's line gap already
+        // folded into it. The gap is taken back out here, because Word puts it
+        // above the baseline and the rest of the descent below: the row is the
+        // same height, the split is not. It is never taken from anywhere but
+        // below the baseline, so a name whose file states a larger gap than
+        // the face actually drawn leaves room for cannot grow the line.
+        let stated = self.gap(font) * font.size;
+        let split = |ascent: f64, row_height: f64| {
+            let gap = stated.clamp(0.0, (row_height - ascent).max(0.0));
+            Metrics {
+                ascent,
+                descent: row_height - ascent - gap,
+                line_gap: gap,
+            }
+        };
+        if let Some(&(ascent, row_height)) = self.rows.get(&key) {
+            return split(ascent, row_height);
         }
         let id = self.id_of(key);
         let pixels_per_point = self.ctx.pixels_per_point();
@@ -224,13 +295,8 @@ impl Shaper for Egui {
             );
             (styled.ascent as f64, styled.row_height as f64)
         });
-        let metrics = Metrics {
-            ascent,
-            descent: (row_height - ascent).max(0.0),
-            line_gap: 0.0,
-        };
-        self.metrics.insert(key, metrics);
-        metrics
+        self.rows.insert(key, (ascent, row_height));
+        split(ascent, row_height)
     }
 
     fn advances(&mut self, text: &str, font: &FontRequest, into: &mut Vec<Advance>) {
@@ -272,7 +338,7 @@ impl Shaper for Egui {
                 return Pitch { base, ideal };
             }
             let metrics = self.metrics(font);
-            let natural = metrics.ascent + metrics.descent;
+            let natural = metrics.line_height();
             return Pitch {
                 base: natural,
                 ideal: natural,
@@ -281,22 +347,19 @@ impl Shaper for Egui {
         // The exact hhea sum, from the same file the screen resolved the name
         // to. epaint's metrics went through f32 and a pixel grid; the
         // accumulator needs the design value to the unit.
-        let computed = ui_kit::fonts::face_file(&font.family, font.bold, font.italic).and_then(
-            |(_, bytes)| {
-                let face = wp_print::ttf::Face::parse(&bytes)?;
-                let units =
-                    f64::from(face.ascent) - f64::from(face.descent) + f64::from(face.line_gap);
-                let ideal = units / face.units_per_em() * font.size;
-                let base = measured_base(&ask.0, ask.3).unwrap_or((ideal * 24.0).round() / 24.0);
-                Some((base, ideal))
-            },
-        );
+        let computed = Egui::face_bytes(&font.family, font.bold, font.italic).and_then(|bytes| {
+            let face = wp_print::ttf::Face::parse(&bytes)?;
+            let units = f64::from(face.ascent) - f64::from(face.descent) + f64::from(face.line_gap);
+            let ideal = units / face.units_per_em() * font.size;
+            let base = measured_base(&ask.0, ask.3).unwrap_or((ideal * 24.0).round() / 24.0);
+            Some((base, ideal))
+        });
         self.pitches.insert(ask, computed);
         match computed {
             Some((base, ideal)) => Pitch { base, ideal },
             None => {
                 let metrics = self.metrics(font);
-                let natural = metrics.ascent + metrics.descent;
+                let natural = metrics.line_height();
                 Pitch {
                     base: natural,
                     ideal: natural,
@@ -325,6 +388,14 @@ fn measured_base(family: &str, half_points: u32) -> Option<f64> {
         ("arial", 20, 11.5808),
         ("arial", 21, 12.0839),
         ("times new roman", 20, 11.5808),
+        // Symbol draws a list's bullet, so its pitch decides the height of
+        // every bulleted line even though the words on that line are in
+        // another face. Thirty lines of `U+F0B7` per size, printed and read
+        // back off the page.
+        ("symbol", 20, 12.2524),
+        ("symbol", 22, 13.4772),
+        ("symbol", 24, 14.6979),
+        ("symbol", 28, 17.1517),
     ];
     MEASURED
         .iter()
@@ -388,6 +459,28 @@ mod tests {
     }
 
     #[test]
+    fn a_face_registered_this_frame_is_not_asked_for_until_epaint_has_it() {
+        // What opening a document that carries its own type does: register the
+        // faces and lay the page out in them. `set_fonts` lands between
+        // frames, so for the length of this one the family is known everywhere
+        // except where it is drawn — and epaint answers a family it has never
+        // been given by panicking. The name falls back to its shape for the
+        // one frame, and the window stays up.
+        let ctx = context();
+        let name = "Nonesuch Grotesk";
+        let faces = [(name.to_owned(), false, false, vec![0u8; 64])];
+        ui_kit::fonts::embed_document(&ctx, &faces, &[]);
+        let mut shaper = Egui::new(&ctx);
+        let font = FontRequest::new(name, 12.0);
+        assert_eq!(
+            shaper.font_id(&font).family,
+            ui_kit::fonts::face(ui_kit::Family::Sans, false, false),
+            "the embedded face is registered but not yet live"
+        );
+        assert!(shaper.width("some words", &font) > 0.0, "and it measured");
+    }
+
+    #[test]
     fn measuring_the_same_text_twice_asks_the_font_once() {
         let ctx = context();
         let mut shaper = Egui::new(&ctx);
@@ -420,7 +513,59 @@ mod tests {
         let metrics = shaper.metrics(&FontRequest::new("Arial", 12.0));
         assert!(metrics.line_height() > 0.0);
         assert!(metrics.ascent > metrics.descent);
-        assert!((metrics.ascent + metrics.descent - metrics.line_height()).abs() < 1e-9);
+        // The three parts are kept apart because Word seats the baseline at
+        // the ascent *plus the line gap* and puts the rest of the descent
+        // below it. They still sum to the row height epaint reports.
+        assert!(metrics.line_gap >= 0.0);
+        assert!(metrics.ascent + metrics.line_gap < metrics.line_height());
+    }
+
+    #[test]
+    fn a_faces_line_gap_is_taken_out_of_the_descent_rather_than_added_to_it() {
+        // Verdana has no line gap at all and Calibri has one, so the pair
+        // shows both that the gap is found and that the row height a caller
+        // lays out with does not change when it is.
+        let ctx = context();
+        let mut shaper = Egui::new(&ctx);
+        for family in ["Verdana", "Calibri", "Arial"] {
+            let font = FontRequest::new(family, 12.0);
+            let metrics = shaper.metrics(&font);
+            let gap = shaper.gap(&font) * 12.0;
+            assert!(
+                metrics.line_gap <= gap + 1e-9,
+                "{family}: never more gap than the face's own file states"
+            );
+            assert!(metrics.descent >= 0.0, "{family}: descent stays positive");
+            assert!(metrics.descent >= 0.0, "{family}: descent stays positive");
+        }
+    }
+
+    #[test]
+    fn one_faces_line_gap_does_not_leak_into_another_that_draws_the_same() {
+        // With no fonts registered every name falls back to one built-in face
+        // and so shares a cache key. The ascent they share is real — it is the
+        // face being drawn — but the gap is not: it belongs to the file the
+        // *name* resolves to, and caching it beside the ascent handed Calibri's
+        // gap to Arial and Verdana.
+        let ctx = context();
+        let mut shaper = Egui::new(&ctx);
+        let of = |shaper: &mut Egui, family: &str| shaper.metrics(&FontRequest::new(family, 12.0));
+        let calibri = of(&mut shaper, "Calibri");
+        let verdana = of(&mut shaper, "Verdana");
+        let again = of(&mut shaper, "Calibri");
+        assert_eq!(
+            calibri.line_gap, again.line_gap,
+            "asking twice gives one answer"
+        );
+        assert_eq!(
+            calibri.ascent, verdana.ascent,
+            "the drawn face is shared, so its ascent is"
+        );
+        assert_eq!(
+            calibri.ascent + calibri.descent + calibri.line_gap,
+            verdana.ascent + verdana.descent + verdana.line_gap,
+            "and the row they are drawn on is one height however it is split"
+        );
     }
 
     #[test]

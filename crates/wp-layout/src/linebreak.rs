@@ -155,6 +155,17 @@ pub fn opportunities(text: &str) -> Vec<usize> {
     out
 }
 
+/// Whether a line may be broken between two adjacent characters.
+///
+/// The same table [`opportunities`] walks, asked one boundary at a time. A
+/// paragraph is measured in pieces — a run of bold, a stretch of a different
+/// script, a field — and those seams are *not* break opportunities: a bold
+/// opening quotation mark must not be left hanging at the end of a line merely
+/// because the roman text before it ended there.
+pub fn may_break_at(before: char, after: char) -> bool {
+    may_break(class(before), class(after))
+}
+
 /// Whether the character at `offset` is a space that may hang past the margin.
 pub fn is_hanging_space(c: char) -> bool {
     matches!(class(c), Class::Space)

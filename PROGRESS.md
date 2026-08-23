@@ -1958,6 +1958,105 @@ on the text column rather than in a middle cell, 13pt to the right. And it reads
 "Page 1 of 5" against a page 1 of 1, which is what NUMPAGES says about a
 recreation of one page.
 
+## Nine pages of a stranger's document (2026-08-23)
+
+`demo.docx` from the calibre project — a deliberate exercise of every feature a
+`.docx` has, written by someone else's Word, and the first document in this
+repository that nobody here authored. Word lays it out in eight pages. Scriva
+laid it out in nine, and no page of the nine was right.
+
+The method was the one adr/0001 sets out and the resume chase refined: render
+both to PDF, compare *files* rather than screens, and where a rule was needed
+ask Word for it with a probe rather than reading it out of the specification.
+Word's own PDF text layer turned out to be untrustworthy for runs in a font it
+could not embed — it writes the glyphs of one face and the widths of another —
+so the last word on those went to the rendered pixels.
+
+What the document needed, in the order the pages needed it:
+
+- **Embedded fonts.** The package carries Ubuntu, Ubuntu Mono and Tahoma as
+  obfuscated `.odttf` parts. Undoing the obfuscation is ECMA-376 §17.8.1 and
+  twelve lines; finding out that it mattered took one look at a page laid out in
+  Arial. `wp_docx::fonts`.
+- **What the machine has outranks what the package carries.** An embedded font
+  is Word's fallback for a machine that lacks the face, not an override. This
+  machine has Ubuntu Mono installed at 560 units to the em where the package's
+  copy measures 500, and preferring the package re-wrapped three paragraphs.
+  Telling the two apart needs an index of what is actually installed, by the
+  name a document calls it: `ui_kit::catalogue`.
+- **The line gap belongs above the baseline.** Word seats a line's baseline at
+  the face's ascent *plus* its `hhea` line gap, and every extra point a line
+  multiple adds goes below the type, not around it. Measured over Arial,
+  Verdana and Georgia at multiples of 1.0, 1.15, 1.5 and 2.0. This one moved
+  every baseline in every document.
+- **Paragraph and run borders**, with the geometry measured rather than guessed:
+  the rule takes `w:space` plus its own thickness out of the page on every side,
+  and stands 1.4pt outside the text column — a number that appears nowhere in
+  the file.
+- **Character styles.** `w:rStyle` was read and modelled and never reached the
+  layout, so Strong was not bold and Subtle Emphasis was not grey.
+- **A stated face beats an inherited theme reference.** `w:ascii="Ubuntu Mono"`
+  on a run lost to `w:asciiTheme="minorHAnsi"` on the document defaults, because
+  the two layered separately. They are two ways of saying one thing and now
+  layer as one.
+- **Table styles.** `w:tblStylePr` — the header row, the stripes, the doubled
+  rule above a total — was skipped outright. Five tables rendered as bare grids.
+  `wp_model::banding` resolves the scheme; the order the parts apply in is
+  §17.7.6 and is not the order they are written in.
+- **Floating tables**, with the text set beside them rather than below.
+- **Tab leaders**, which is what a table of contents is made of.
+- **Footnotes and endnotes** — the mark in the text, the note at the foot of the
+  page it landed on, the rule above it, and the room pagination has to keep
+  clear for all of it.
+- **Drop caps**, which turn out to be the floating table again: a paragraph
+  standing beside the flow with the next one wrapping round it.
+- **Symbol's laid line pitch**, measured at four sizes and added to
+  `measured_base`. A list's bullet is drawn in Symbol whatever face the words
+  beside it are in, so that one face decides the height of every bulleted line.
+- **A table's own `<w:jc>`**, which moves the whole table within the text column
+  and was read but never acted on. The nested table is centred and Scriva put it
+  against the left margin, sixty-six points from where Word draws it. Measured:
+  a table placed by its justification is measured from the column and not from
+  its indent, so the hang `w:tblInd` otherwise gives it does not apply.
+- **A percentage table width is a preference, not an instruction.** The
+  automatic layout a table gets unless it says `fixed` sizes from the grid.
+  Measured across this document's five percentage tables: one asks for 70% of
+  the column and Word draws it at its grid's 71.6, another asks for 80% and is
+  drawn at its grid's 27.9.
+
+Pages 1, 2, 5, 6 and 8 now match Word's own PDF line for line, within about a
+tenth of a point. What is left is named in "Where the demonstration document
+still differs" below.
+
+## Where the demonstration document still differs
+
+- **Word draws the text in every one of its tables a point smaller than the
+  resolution rules say.** The document's default paragraph style states 12pt and
+  Word reports the cells as carrying that style, yet renders them at the
+  document default of 11. It is reproducible in a four-style file and it is not
+  the table style's own `rPr`; beyond that the probes disagreed with each other,
+  and a rule that cannot be stated is not one to build. The cost is table
+  wrapping on pages 3 and 4 — "Highlighter" wraps where Word fits it — and a
+  paragraph's worth of drift at the page 3/4 boundary.
+- **Text does not wrap between the two arrows on page 7.** They are anchored to
+  the *margin*, so which text they displace is known only after pagination; the
+  obstacle machinery the floating table and the drop cap use is flow-relative.
+  Stated already in `wp_layout::block`'s limits.
+- **Glyph advances drift about a third of a point across a line.** epaint
+  measures on a pixel grid where Word measures in design units. It has never
+  changed a line ending in this document; it is the whole of the residual on
+  pages 1 and 2.
+
+The document opened in the window and took it straight down. A face the
+package carries is registered and asked for in the same breath, and
+`set_fonts` does not land until the next frame begins: for the length of
+one frame the family is known to everything except epaint, which answers a
+family it has never been given by panicking rather than substituting. The
+page is now laid out a frame later, and the shaper asks epaint whether it
+really has a name before drawing with it, so no ordering mistake can take
+the window down again.
+
+
 ## Deferred
 
 - [x] **PDF** — was dropped per Q3; built after ship as `wp-print`. See above.

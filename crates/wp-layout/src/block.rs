@@ -185,6 +185,22 @@ pub struct Flow {
     /// How many paragraphs have been flowed. Counts in the same order as
     /// [`wp_model::Document::paragraphs`], so it *is* the next paragraph's index.
     pub paragraphs: usize,
+    /// Set while a note's own content is being flowed, so that a note holding
+    /// a reference to another note cannot send the layout round for ever.
+    pub in_note: bool,
+    /// Something standing beside the flow that the next paragraphs must make
+    /// room for — a floating table, which is the only thing that makes one.
+    /// Its depth counts down as paragraphs are laid past it.
+    pub obstacle: Option<inline::Obstacle>,
+    /// Where a drop cap's baseline sits inside its own float, and which line
+    /// of the paragraph that follows it must stand on. Word seats the capital
+    /// on the baseline of the *body* line, not on its own descent, so the
+    /// float is shifted once that line's baseline is known.
+    pub floating_baseline: Option<(f64, usize)>,
+    /// A floating table's own drawing, waiting for an item to ride with. It is
+    /// not in the flow: nothing gives it height, and pagination has to move it
+    /// with the text that wraps round it rather than on its own.
+    pub floating: Vec<Placement>,
     /// Word's half-point accumulator: how far the laid lines lag their ideal,
     /// in points. See [`crate::shape::Pitch`]. It runs across paragraphs and
     /// through table rows; a fresh flow — a cell, a header band — starts at
@@ -318,6 +334,10 @@ fn layout_once(document: &Document, ctx: &Context<'_>, shaper: &mut dyn Shaper) 
                 &mut flow,
             );
         }
+        let is_last_section = range.end >= document.body.len();
+        if is_last_section {
+            flow_endnotes(document, ctx, shaper, &mut counters, width, &mut flow);
+        }
         let mut breaks = paginate(&flow.items, height);
 
         // Word restarts the half-point accumulator at every page top — the
@@ -347,6 +367,9 @@ fn layout_once(document: &Document, ctx: &Context<'_>, shaper: &mut dyn Shaper) 
                     width,
                     &mut second,
                 );
+            }
+            if is_last_section {
+                flow_endnotes(document, ctx, shaper, &mut counters, width, &mut second);
             }
             flow = second;
             breaks = paginate(&flow.items, height);
@@ -418,6 +441,25 @@ fn layout_once(document: &Document, ctx: &Context<'_>, shaper: &mut dyn Shaper) 
             }
             placed = *end;
 
+            // The notes referred to by the text just placed, set at the foot
+            // of the page under the rule Word draws there.
+            let referenced: Vec<i32> = slice
+                .iter()
+                .flat_map(|item| &item.footnotes)
+                .map(|(id, _)| *id)
+                .collect();
+            if !referenced.is_empty() {
+                place_notes(
+                    &mut page,
+                    &referenced,
+                    document,
+                    ctx,
+                    shaper,
+                    &mut counters,
+                    width,
+                );
+            }
+
             let is_first_page_of_section = page_index == 0;
             place_bands(
                 &mut page,
@@ -433,6 +475,77 @@ fn layout_once(document: &Document, ctx: &Context<'_>, shaper: &mut dyn Shaper) 
         }
     }
     pages
+}
+
+/// Sets a page's notes at its foot, under the rule that separates them.
+///
+/// The band grows upward from the bottom margin: Word fills the page with
+/// text first and the notes take what is left, which is why pagination has
+/// already made room for exactly this much.
+fn place_notes(
+    page: &mut Page,
+    referenced: &[i32],
+    document: &Document,
+    ctx: &Context<'_>,
+    shaper: &mut dyn Shaper,
+    counters: &mut Counters,
+    width: f64,
+) {
+    let mut flows = Vec::new();
+    let mut total = 0.0;
+    // The rule above the notes is a paragraph of the document's own, holding a
+    // `<w:separator/>`. Laying it out rather than inventing one puts the rule
+    // where Word puts it, indent and all.
+    if let Some(note) = document
+        .footnotes
+        .iter()
+        .find(|note| note.kind == wp_model::doc::NoteKind::Separator)
+    {
+        let flow = flow_note(note, document, ctx, shaper, counters, width);
+        total += flow.items.iter().map(|item| item.height).sum::<f64>();
+        flows.push(flow);
+    }
+    for id in referenced {
+        let Some(note) = document.footnote(*id).filter(|n| n.kind.is_real()) else {
+            continue;
+        };
+        let flow = flow_note(note, document, ctx, shaper, counters, width);
+        total += flow.items.iter().map(|item| item.height).sum::<f64>();
+        flows.push(flow);
+    }
+    if flows.is_empty() {
+        return;
+    }
+
+    let bottom = page.geometry.height - page.geometry.bottom;
+    let mut y = bottom - total;
+    let mut first = true;
+    for flow in flows {
+        for item in flow.items {
+            for part in item.parts {
+                // The separator's own line draws the rule Word draws through
+                // it — three points above its baseline, measured.
+                if first {
+                    if let Placed::Line { line, .. } = &part.kind {
+                        page.footnotes.push(Placement {
+                            x: page.geometry.start + part.x,
+                            y: y + part.y + line.baseline - 3.0,
+                            width: 0.0,
+                            height: 0.0,
+                            kind: Placed::FootnoteSeparator,
+                        });
+                        first = false;
+                    }
+                }
+                page.footnotes.push(Placement {
+                    x: page.geometry.start + part.x,
+                    y: y + part.y,
+                    ..part
+                });
+            }
+            y += item.height;
+        }
+    }
 }
 
 /// How far the body must actually stay from the page's edges.
@@ -586,14 +699,30 @@ fn flow_block(
 ) {
     match block {
         Block::Paragraph(paragraph) => {
-            flow_paragraph(paragraph, document, ctx, shaper, counters, width, 0.0, into)
+            // A drop cap is a paragraph of its own that the paragraph after it
+            // wraps around, which is the same thing a floating table is.
+            let cap = document
+                .styles
+                .resolve_paragraph(&paragraph.props, None)
+                .para
+                .frame
+                .is_some_and(|frame| frame.drop_cap.is_cap());
+            if cap {
+                flow_drop_cap(paragraph, document, ctx, shaper, counters, width, into);
+            } else {
+                flow_paragraph(paragraph, document, ctx, shaper, counters, width, 0.0, into)
+            }
         }
         Block::Table(table) => {
             // A table does not collapse spacing with the text around it: the
             // paragraph above keeps its space-after whole, and the paragraph
             // below starts its space-before fresh.
             into.last_after = 0.0;
-            flow_table(table, document, ctx, shaper, counters, width, into)
+            if table.props.float.is_some() {
+                flow_floating_table(table, document, ctx, shaper, counters, width, into);
+            } else {
+                flow_table(table, document, ctx, shaper, counters, width, into)
+            }
         }
         Block::Structured(sdt) => {
             for inner in &sdt.content {
@@ -602,6 +731,149 @@ fn flow_block(
         }
         Block::Anchor(_) | Block::AltChunk { .. } => {}
     }
+}
+
+/// The large capital at the head of a section, which the text runs around.
+///
+/// Word states the whole of it in the paragraph holding the letter: an exact
+/// line height as tall as the lines it displaces, and a frame that says how
+/// many those are. So the letter is laid out on its own and then stood beside
+/// the flow exactly as a floating table is — the paragraph that follows keeps
+/// clear of it until its depth is used up.
+fn flow_drop_cap(
+    paragraph: &Paragraph,
+    document: &Document,
+    ctx: &Context<'_>,
+    shaper: &mut dyn Shaper,
+    counters: &mut Counters,
+    width: f64,
+    into: &mut Flow,
+) {
+    let lines = document
+        .styles
+        .resolve_paragraph(&paragraph.props, None)
+        .para
+        .frame
+        .map(|frame| frame.lines as usize)
+        .unwrap_or(0);
+    let mut aside = Flow {
+        paragraphs: into.paragraphs,
+        ..Flow::default()
+    };
+    flow_paragraph(
+        paragraph, document, ctx, shaper, counters, width, 0.0, &mut aside,
+    );
+    into.paragraphs = aside.paragraphs;
+
+    let height: f64 = aside.items.iter().map(|item| item.height).sum();
+    let extent = aside
+        .items
+        .iter()
+        .flat_map(|item| &item.parts)
+        .map(|part| part.x + part.width)
+        .fold(0.0f64, f64::max);
+    if height <= 0.0 || extent <= 0.0 {
+        // Nothing to stand beside; better in the flow than lost.
+        for item in aside.items {
+            into.items.push(item);
+        }
+        return;
+    }
+
+    // Where the capital's own baseline falls inside the float, so the caller
+    // can seat it on the right line of the paragraph that follows.
+    let mut baseline = 0.0;
+    let mut top = 0.0;
+    for item in aside.items {
+        for part in item.parts {
+            if let Placed::Line { line, .. } = &part.kind {
+                // Where the letter is actually *drawn*, which is the line's
+                // baseline less whatever `w:position` raised the run by. Word
+                // seats the drawn letter on the body line, so a capital that
+                // its own paragraph lowers must not be lowered again.
+                let raise = line
+                    .fragments
+                    .first()
+                    .map(|fragment| fragment.style.raise)
+                    .unwrap_or(0.0);
+                baseline = top + part.y + line.baseline - raise;
+            }
+            into.floating.push(Placement {
+                y: part.y + top,
+                ..part
+            });
+        }
+        top += item.height;
+    }
+    into.obstacle = Some(inline::Obstacle {
+        depth: height,
+        indent: extent,
+    });
+    into.floating_baseline = Some((baseline, lines.max(1)));
+}
+
+/// A table the text runs past rather than under.
+///
+/// `<w:tblpPr>` takes the table out of the flow and puts it at a place of its
+/// own, and the paragraphs that follow are set in what measure is left beside
+/// it until it is passed. Only the common case is built: anchored to the text,
+/// against the left margin, with the text to its right. A float that Word
+/// would put elsewhere is laid in the flow as an ordinary table, which is
+/// where this reader put every one of them before.
+fn flow_floating_table(
+    table: &Table,
+    document: &Document,
+    ctx: &Context<'_>,
+    shaper: &mut dyn Shaper,
+    counters: &mut Counters,
+    width: f64,
+    into: &mut Flow,
+) {
+    let float = table.props.float.as_deref().copied().unwrap_or_default();
+    // Anywhere but the left of the text column is not built; laying it in the
+    // flow is wrong by less than putting it in the wrong place would be.
+    let left = float.x.map(|t| t.points()).unwrap_or(0.0);
+    if left > 0.5 {
+        flow_table(table, document, ctx, shaper, counters, width, into);
+        return;
+    }
+
+    // The table is laid out on its own so its size is known before anything is
+    // set beside it.
+    let mut aside = Flow {
+        paragraphs: into.paragraphs,
+        ..Flow::default()
+    };
+    flow_table(table, document, ctx, shaper, counters, width, &mut aside);
+    into.paragraphs = aside.paragraphs;
+
+    let height: f64 = aside.items.iter().map(|item| item.height).sum();
+    let extent = aside
+        .items
+        .iter()
+        .flat_map(|item| &item.parts)
+        .map(|part| part.x + part.width)
+        .fold(0.0f64, f64::max);
+    let gap = float.right_from_text.map(|t| t.points()).unwrap_or(0.0);
+    let below = float.bottom_from_text.map(|t| t.points()).unwrap_or(0.0);
+
+    // Flattened to placements at the float's own position. Nothing here takes
+    // height from the flow: the text beside it is what fills that space.
+    let mut top = float.y.map(|t| t.points()).unwrap_or(0.0);
+    for item in aside.items {
+        for part in item.parts {
+            into.floating.push(Placement {
+                y: part.y + top,
+                ..part
+            });
+        }
+        top += item.height;
+    }
+
+    into.obstacle = Some(inline::Obstacle {
+        depth: height + below,
+        indent: extent + gap,
+    });
 }
 
 /// Resolves and lays out a paragraph, then turns its lines into items.
@@ -618,9 +890,10 @@ pub fn flow_paragraph(
 ) {
     let reference = resolved_numbering(paragraph, document);
     let numbering = reference.and_then(|r| document.numbering.layers(r));
-    let layers = document
-        .styles
-        .resolve_paragraph(&paragraph.props, numbering.as_ref());
+    let layers =
+        document
+            .styles
+            .resolve_paragraph_in(&paragraph.props, numbering.as_ref(), ctx.table_part);
     let label = reference.and_then(|r| {
         let text = counters.advance(&document.numbering, r)?;
         let level = document.numbering.level(r.num_id, r.level)?;
@@ -639,6 +912,14 @@ pub fn flow_paragraph(
         })
     });
 
+    // The notes this paragraph refers to are laid out and measured now: the
+    // page they land on has that much less room for text, and pagination is
+    // what decides which page that is.
+    let notes = if into.in_note {
+        Vec::new()
+    } else {
+        notes_referenced(paragraph, document, ctx, shaper, counters, width)
+    };
     let index = into.paragraphs;
     let laid = inline::layout(
         paragraph,
@@ -647,9 +928,172 @@ pub fn flow_paragraph(
         label.as_ref(),
         ctx,
         width,
+        into.obstacle,
         shaper,
     );
-    push_paragraph(paragraph, &layers, laid, left, into);
+    let first = into.items.len();
+    push_paragraph(paragraph, &layers, laid, left, width, ctx.theme, into);
+    // Attached to the paragraph's first item. Word attaches a note to the
+    // *line* its mark sits on, so a paragraph split across a page break can
+    // leave its note behind; matching that needs the mark's line, and this
+    // does not have it. Stated as a limit: a note travels with the paragraph.
+    if let Some(item) = into.items.get_mut(first) {
+        item.footnotes = notes;
+    }
+}
+
+/// Every footnote this paragraph refers to, with the height its content needs.
+///
+/// Endnotes are not here: they are collected at the end of the document rather
+/// than at the foot of the page, so a reference to one costs the page nothing.
+fn notes_referenced(
+    paragraph: &Paragraph,
+    document: &Document,
+    ctx: &Context<'_>,
+    shaper: &mut dyn Shaper,
+    counters: &mut Counters,
+    width: f64,
+) -> Vec<(i32, f64)> {
+    let mut out = Vec::new();
+    for run in paragraph.runs() {
+        for piece in &run.content {
+            let Piece::FootnoteRef { id, .. } = piece else {
+                continue;
+            };
+            if out.iter().any(|(seen, _)| seen == id) {
+                continue;
+            }
+            let Some(note) = document.footnote(*id) else {
+                continue;
+            };
+            if !note.kind.is_real() {
+                continue;
+            }
+            out.push((
+                *id,
+                note_height(note, document, ctx, shaper, counters, width),
+            ));
+        }
+    }
+    out
+}
+
+/// How tall one note's own content is, laid out in the text column.
+fn note_height(
+    note: &wp_model::doc::Note,
+    document: &Document,
+    ctx: &Context<'_>,
+    shaper: &mut dyn Shaper,
+    counters: &mut Counters,
+    width: f64,
+) -> f64 {
+    flow_note(note, document, ctx, shaper, counters, width)
+        .items
+        .iter()
+        .map(|item| item.height)
+        .sum()
+}
+
+/// The endnotes, set after the last of the body.
+///
+/// A footnote belongs to the page its mark landed on; an endnote belongs to
+/// the end of the document, so it is simply more content at the end of the
+/// last section and paginates like any other. Word puts the same rule above
+/// them that it puts above a page's footnotes, and it is the separator entry
+/// of `endnotes.xml` that draws it.
+fn flow_endnotes(
+    document: &Document,
+    ctx: &Context<'_>,
+    shaper: &mut dyn Shaper,
+    counters: &mut Counters,
+    width: f64,
+    into: &mut Flow,
+) {
+    if !document.endnotes.iter().any(|note| note.kind.is_real()) {
+        return;
+    }
+    // The separator entry first: it is an ordinary paragraph and its height is
+    // the gap Word leaves between the body and the notes.
+    for note in &document.endnotes {
+        if note.kind != wp_model::doc::NoteKind::Separator {
+            continue;
+        }
+        let mut flow = Flow {
+            in_note: true,
+            paragraphs: into.paragraphs,
+            ..Flow::default()
+        };
+        for block in &note.content {
+            flow_block(block, document, ctx, shaper, counters, width, &mut flow);
+        }
+        into.paragraphs = flow.paragraphs;
+        // The same rule the foot of a page carries, drawn through the
+        // separator's own line.
+        if let Some(item) = flow.items.first_mut() {
+            let seat = item.parts.iter().find_map(|part| match &part.kind {
+                Placed::Line { line, .. } => Some((part.x, part.y + line.baseline - 3.0)),
+                _ => None,
+            });
+            if let Some((x, y)) = seat {
+                item.parts.push(Placement {
+                    x,
+                    y,
+                    width: 0.0,
+                    height: 0.0,
+                    kind: Placed::FootnoteSeparator,
+                });
+            }
+        }
+        into.items.append(&mut flow.items);
+        break;
+    }
+    for note in &document.endnotes {
+        if !note.kind.is_real() {
+            continue;
+        }
+        let mark = ctx.notes.mark(true, note.id).unwrap_or_default();
+        let ctx = &Context {
+            note_mark: Some(mark),
+            ..*ctx
+        };
+        let mut flow = Flow {
+            in_note: true,
+            paragraphs: into.paragraphs,
+            ..Flow::default()
+        };
+        for block in &note.content {
+            flow_block(block, document, ctx, shaper, counters, width, &mut flow);
+        }
+        into.paragraphs = flow.paragraphs;
+        into.items.append(&mut flow.items);
+    }
+}
+
+/// A note's content as its own flow, which is how it is both measured and
+/// placed.
+fn flow_note(
+    note: &wp_model::doc::Note,
+    document: &Document,
+    ctx: &Context<'_>,
+    shaper: &mut dyn Shaper,
+    counters: &mut Counters,
+    width: f64,
+) -> Flow {
+    let mut flow = Flow {
+        in_note: true,
+        ..Flow::default()
+    };
+    // The note knows its own number only from where it sits in the list, so
+    // it is told: `<w:footnoteRef/>` at its head draws exactly this.
+    let mark = ctx.notes.mark(false, note.id).unwrap_or_default();
+    let ctx = &Context {
+        note_mark: Some(mark),
+        ..*ctx
+    };
+    for block in &note.content {
+        flow_block(block, document, ctx, shaper, counters, width, &mut flow);
+    }
+    flow
 }
 
 /// A bullet stated in a symbol font's private-use range, translated to the
@@ -707,11 +1151,53 @@ fn resolved_numbering(
         .filter(|reference| reference.is_numbered())
 }
 
+/// How far a paragraph border stands off the text it surrounds.
+///
+/// Measured, not read: Word's own printed output over `w:sz` 2 to 48 and
+/// `w:space` 0 to 20 puts the rule's inner edge exactly `space + 1.4pt` outside
+/// the text column on the sides, and `space` plus the rule's own thickness
+/// beyond the first and last line vertically. The 1.4 is Word's, has no name in
+/// the format, and appears nowhere in the file.
+const BORDER_STANDOFF: f64 = 1.4;
+
+/// A border with its colour already turned into pixels.
+///
+/// A theme colour has to be resolved while the document's own theme is in
+/// reach. A placement travels on to a printer and to a PDF writer that never
+/// see the document, and resolving there means resolving against a *default*
+/// theme — which draws this document's accent in some other document's blue.
+fn themed(border: Border, theme: &wp_model::color::Theme) -> Border {
+    Border {
+        color: border.color.map(|c| match c.resolve(theme) {
+            Some(rgb) => wp_model::color::Color::Rgb(rgb),
+            // Word draws an automatic border black; the painters already
+            // read a colour they cannot resolve that way.
+            None => wp_model::color::Color::Auto,
+        }),
+        ..border
+    }
+}
+
+/// The thickness a border draws at, in points. `w:sz` counts eighths.
+fn border_thickness(border: &Border) -> f64 {
+    border.size.map(|s| s.points()).unwrap_or(0.5)
+}
+
+/// The room a border takes above or below the text, thickness included.
+fn border_depth(border: Option<&Border>) -> f64 {
+    border
+        .filter(|b| b.style.draws())
+        .map(|b| f64::from(b.space.unwrap_or(0)) + border_thickness(b))
+        .unwrap_or(0.0)
+}
+
 fn push_paragraph(
     paragraph: &Paragraph,
     layers: &Layers,
     laid: LaidParagraph,
     left: f64,
+    width: f64,
+    theme: &wp_model::color::Theme,
     into: &mut Flow,
 ) {
     // Named apart from the line loop's own `index` below, which shadowed this
@@ -781,7 +1267,24 @@ fn push_paragraph(
 
     let group = into.items.len();
     into.paragraphs += 1;
+    // The float stands beside this paragraph and whatever follows until its
+    // depth is used up. What the paragraph consumes is taken off here, before
+    // its lines are turned into items.
+    let laid_height: f64 = laid.lines.iter().map(|line| line.height).sum();
+    if let Some(obstacle) = &mut into.obstacle {
+        obstacle.depth -= laid_height + laid.space_before;
+        if obstacle.depth <= 0.01 {
+            into.obstacle = None;
+        }
+    }
     let count = laid.lines.len().max(1);
+    // Each line's height and where its baseline sits inside it, so a drop cap
+    // riding with this paragraph can be seated on the right one.
+    let lines_ahead: Vec<(f64, f64)> = laid
+        .lines
+        .iter()
+        .map(|line| (line.height, line.baseline))
+        .collect();
     let explicit_break = paragraph
         .runs()
         .iter()
@@ -813,6 +1316,35 @@ fn push_paragraph(
         .collect();
     let mut floats = Some(floats);
 
+    // A paragraph border stands off the text by a measured amount and takes
+    // that room from the page: every line below a bordered paragraph moves
+    // down by the rule and its gap. See [`BORDER_STANDOFF`].
+    let borders = layers.para.borders.as_deref();
+    let drawn = |edge: Option<Border>| edge.filter(|b| b.style.draws()).map(|b| themed(b, theme));
+    let (bdr_top, bdr_bottom, bdr_start, bdr_end) = match borders {
+        Some(b) => (drawn(b.top), drawn(b.bottom), drawn(b.start), drawn(b.end)),
+        None => (None, None, None, None),
+    };
+    let above = border_depth(bdr_top.as_ref());
+    let below = border_depth(bdr_bottom.as_ref());
+    // How far past the text column the box reaches on each side: the standoff
+    // alone where there is no side rule, and the rule's own gap and thickness
+    // where there is one.
+    let reach = |edge: Option<&Border>| match edge {
+        Some(b) => f64::from(b.space.unwrap_or(0)) + BORDER_STANDOFF + border_thickness(b),
+        None => BORDER_STANDOFF,
+    };
+    let box_left = left - reach(bdr_start.as_ref());
+    let box_right = left + width + reach(bdr_end.as_ref());
+    // The thickness of each side rule, which shading stops short of.
+    let start_rule = bdr_start.as_ref().map(border_thickness).unwrap_or(0.0);
+    let end_rule = bdr_end.as_ref().map(border_thickness).unwrap_or(0.0);
+    let shading = layers
+        .para
+        .shading
+        .and_then(|s| s.background())
+        .and_then(|c| c.resolve(theme));
+
     for (index, line) in laid.lines.into_iter().enumerate() {
         let mut line = line;
         // The half-point dance: lines are laid a hair off their exact height,
@@ -841,15 +1373,118 @@ fn push_paragraph(
         let mut height = line.height;
         let mut top = 0.0;
         if is_first {
-            height += before;
-            top = before;
+            height += before + above;
+            top = before + above;
         }
         if is_last {
-            height += after;
+            height += after + below;
         }
         let ends_page = line.ended_by == Some(Break::Page);
         let x = left + line.x;
         let mut parts = floats.take().unwrap_or_default();
+        // A floating table rides with the first line set beside it, so that
+        // pagination moves the two together rather than leaving the table on
+        // one page and its text on the next.
+        if is_first && !into.floating.is_empty() {
+            let carried = std::mem::take(&mut into.floating);
+            // A drop cap stands on a line of *this* paragraph rather than on
+            // its own descent, so it is dropped by whatever the two differ by.
+            let seat = into
+                .floating_baseline
+                .take()
+                .and_then(|(baseline, nth)| {
+                    let mut y = 0.0;
+                    for (index, line) in lines_ahead.iter().enumerate() {
+                        if index + 1 == nth {
+                            return Some(y + line.1 - baseline);
+                        }
+                        y += line.0;
+                    }
+                    None
+                })
+                .unwrap_or(0.0);
+            parts.extend(carried.into_iter().map(|part| Placement {
+                x: left + part.x,
+                y: top + part.y + seat,
+                ..part
+            }));
+        }
+
+        // Each rule is placed as the named edge of a flattened box, which is
+        // what [`Placed::Edge`] strokes down the middle of — so the box edge
+        // sits half a thickness inside the gap the border was given.
+        let line_top = top;
+        let line_bottom = top + line.height;
+        // A paragraph's shading fills the *inside* of its border box, line by
+        // line — Word paints one rectangle per line, from the left standoff to
+        // the right one, and lets the border rules sit outside it.
+        if let Some(rgb) = shading {
+            let fill_top = if is_first { line_top - above } else { line_top };
+            let fill_bottom = if is_last {
+                line_bottom + below
+            } else {
+                line_bottom
+            };
+            parts.push(Placement {
+                x: box_left + start_rule,
+                y: fill_top,
+                width: (box_right - end_rule) - (box_left + start_rule),
+                height: fill_bottom - fill_top,
+                kind: Placed::Fill(rgb),
+            });
+        }
+        if is_first {
+            if let Some(border) = bdr_top {
+                let gap = f64::from(border.space.unwrap_or(0)) + border_thickness(&border) / 2.0;
+                parts.push(Placement {
+                    x: box_left,
+                    y: line_top - gap,
+                    width: box_right - box_left,
+                    height: 0.0,
+                    kind: Placed::Edge {
+                        border,
+                        side: Side::Top,
+                    },
+                });
+            }
+        }
+        if is_last {
+            if let Some(border) = bdr_bottom {
+                let gap = f64::from(border.space.unwrap_or(0)) + border_thickness(&border) / 2.0;
+                parts.push(Placement {
+                    x: box_left,
+                    y: line_bottom + gap,
+                    width: box_right - box_left,
+                    height: 0.0,
+                    kind: Placed::Edge {
+                        border,
+                        side: Side::Bottom,
+                    },
+                });
+            }
+        }
+        // The sides run the whole height of every line, so that a bordered
+        // paragraph of many lines is boxed rather than striped.
+        for (edge, side) in [(bdr_start, Side::Start), (bdr_end, Side::End)] {
+            let Some(border) = edge else { continue };
+            let inset = f64::from(border.space.unwrap_or(0))
+                + BORDER_STANDOFF
+                + border_thickness(&border) / 2.0;
+            let at = match side {
+                Side::Start => left - inset,
+                _ => left + width + inset,
+            };
+            parts.push(Placement {
+                x: at,
+                y: if is_first { line_top - above } else { line_top },
+                width: 0.0,
+                height: line.height
+                    + if is_first { above } else { 0.0 }
+                    + if is_last { below } else { 0.0 },
+                kind: Placed::Edge { border, side },
+            });
+        }
+
         parts.push(Placement {
             x,
             y: top,
@@ -953,7 +1588,17 @@ pub fn column_widths(table: &Table, available: f64) -> Vec<f64> {
     };
     let target = match table.props.width {
         Width::Fixed(twips) if twips.points() > 0.0 => twips.points(),
-        Width::Percent(pct) if pct.0 > 0 => pct.of(Twips::from_points(available)).points(),
+        // A percentage is a *preferred* width, and the automatic layout a
+        // table gets unless it says `fixed` sizes from the grid instead.
+        // Measured across the demonstration document: a table asking for 70%
+        // of the column is drawn at its grid's 71.6%, and the nested one
+        // asking for 80% is drawn at its grid's 27.9%. Where the grid is the
+        // wider of the two the clamp above still holds it to the column.
+        Width::Percent(pct)
+            if pct.0 > 0 && table.props.layout == wp_model::table::TableLayout::Fixed =>
+        {
+            pct.of(Twips::from_points(available)).points()
+        }
         _ => from_grid,
     };
 
@@ -982,12 +1627,31 @@ fn flow_table(
     into: &mut Flow,
 ) {
     let widths = column_widths(table, available);
-    let indent = table
-        .props
-        .indent
-        .and_then(|w| w.resolve(Twips::from_points(available)))
-        .map(|t| t.points())
-        .unwrap_or(0.0);
+    // Not simply `w:tblInd`: an indent that is stated at all is measured to
+    // the text inside the first cell, so the table's edge hangs left of the
+    // margin by the cell's own padding. See `resolve_table_indent`.
+    let indent = document
+        .styles
+        .resolve_table_indent(&table.props, Twips::from_points(available));
+    // `<w:jc>` on a table moves the whole table within the text column rather
+    // than the text within its cells. A centred table is what the
+    // demonstration document's nested one is, and without this it sat against
+    // the left margin sixty-six points from where Word draws it.
+    // A table placed by its justification is measured from the text column and
+    // not from the indent: Word centres the demonstration document's nested
+    // table on 306, the middle of the column, with no sign of the hang that
+    // `w:tblInd` otherwise gives it.
+    let indent = match table.props.justify {
+        Some(wp_model::prop::Justify::Center) => {
+            let laid: f64 = column_widths(table, available).iter().sum();
+            ((available - laid) / 2.0).max(0.0)
+        }
+        Some(wp_model::prop::Justify::End) => {
+            let laid: f64 = column_widths(table, available).iter().sum();
+            (available - laid).max(0.0)
+        }
+        _ => indent,
+    };
     // The style chain is heard from: a table whose margins live in its style —
     // where Google Docs puts them — pads its cells all the same.
     let margins = document.styles.resolve_cell_margins(&table.props);
@@ -1033,6 +1697,18 @@ fn flow_table(
 
         for cell in &row.cells {
             let span = cell.props.span();
+            // What the table's style says about a cell in this position: the
+            // header row's fill, the stripe's rules, the doubled line above a
+            // total. Direct properties are laid over it below.
+            let styled = document.styles.resolve_table_cell(
+                &table.props,
+                wp_model::banding::CellAt {
+                    row: row_index,
+                    rows: row_count,
+                    column: column as usize,
+                    columns: widths.len(),
+                },
+            );
             let cell_width: f64 = widths
                 .iter()
                 .skip(column as usize)
@@ -1060,6 +1736,13 @@ fn flow_table(
                 ..Flow::default()
             };
             if !is_continuation {
+                // Everything in the cell is laid out knowing which part of the
+                // table style covers it, so a header row's text is the header
+                // row's colour without the cell having to say so.
+                let ctx = &Context {
+                    table_part: Some(&styled),
+                    ..*ctx
+                };
                 for block in &cell.content {
                     flow_block(
                         block,
@@ -1104,30 +1787,93 @@ fn flow_table(
             cells.push(CellPlan {
                 x,
                 width: cell_width,
-                align: cell.props.v_align,
+                align: match cell.props.v_align {
+                    CellVAlign::Top => styled.cell_v_align.unwrap_or(CellVAlign::Top),
+                    stated => stated,
+                },
+                // The cell's own fill, then the table's, then whatever the
+                // style gives a cell in this position — the header's green,
+                // the stripe's pale blue.
                 fill: cell
                     .props
                     .shading
+                    .or(table.props.shading)
+                    .or(styled.cell_shading)
                     .and_then(|s| s.background())
                     .and_then(|c| c.resolve(&document.theme)),
-                borders: [
-                    (
-                        Side::Top,
-                        cell.props.borders.top.or(table.props.borders.top),
-                    ),
-                    (
-                        Side::Start,
-                        cell.props.borders.start.or(table.props.borders.start),
-                    ),
-                    (
-                        Side::Bottom,
-                        cell.props.borders.bottom.or(table.props.borders.bottom),
-                    ),
-                    (
-                        Side::End,
-                        cell.props.borders.end.or(table.props.borders.end),
-                    ),
-                ],
+                borders: {
+                    // A cell on the outside of the table takes the outer rule;
+                    // one inside takes the rule that runs between. Most
+                    // specific first, and direct formatting ahead of the style
+                    // at each level.
+                    let outer_top = row_index == 0;
+                    let outer_bottom = is_last_row;
+                    let outer_start = column == 0;
+                    let outer_end = column + span >= widths.len() as u32;
+                    let pick = |side: Side| -> Option<Border> {
+                        let (direct_cell, direct_table, style_cell, style_table) = match side {
+                            Side::Top => (
+                                cell.props.borders.top,
+                                if outer_top {
+                                    table.props.borders.top
+                                } else {
+                                    table.props.borders.inside_h
+                                },
+                                styled.cell_borders.top,
+                                if outer_top {
+                                    styled.borders.top
+                                } else {
+                                    styled.borders.inside_h
+                                },
+                            ),
+                            Side::Bottom => (
+                                cell.props.borders.bottom,
+                                if outer_bottom {
+                                    table.props.borders.bottom
+                                } else {
+                                    table.props.borders.inside_h
+                                },
+                                styled.cell_borders.bottom,
+                                if outer_bottom {
+                                    styled.borders.bottom
+                                } else {
+                                    styled.borders.inside_h
+                                },
+                            ),
+                            Side::Start => (
+                                cell.props.borders.start,
+                                if outer_start {
+                                    table.props.borders.start
+                                } else {
+                                    table.props.borders.inside_v
+                                },
+                                styled.cell_borders.start,
+                                if outer_start {
+                                    styled.borders.start
+                                } else {
+                                    styled.borders.inside_v
+                                },
+                            ),
+                            Side::End => (
+                                cell.props.borders.end,
+                                if outer_end {
+                                    table.props.borders.end
+                                } else {
+                                    table.props.borders.inside_v
+                                },
+                                styled.cell_borders.end,
+                                if outer_end {
+                                    styled.borders.end
+                                } else {
+                                    styled.borders.inside_v
+                                },
+                            ),
+                        };
+                        direct_cell.or(direct_table).or(style_cell).or(style_table)
+                    };
+                    [Side::Top, Side::Start, Side::Bottom, Side::End]
+                        .map(|side| (side, pick(side).map(|b| themed(b, &document.theme))))
+                },
                 content: y,
                 lines,
             });
@@ -1363,6 +2109,10 @@ pub fn paginate(items: &[Item], height: f64) -> Vec<usize> {
     let mut start = 0usize;
     while start < items.len() {
         let mut y = 0.0;
+        // The foot of the page belongs to whatever notes the text on it
+        // refers to, so every line that carries one takes its own height and
+        // the note's out of the page at once.
+        let mut notes = 0.0;
         let mut end = start;
         // Items repeated at the top of a continuation page — a table's header
         // rows — cost their height on every page after the first.
@@ -1374,10 +2124,18 @@ pub fn paginate(items: &[Item], height: f64) -> Vec<usize> {
             if item.break_before && end > start {
                 break;
             }
-            if y + item.height - item.slack > height + 0.01 && end > start {
+            let mut wants = notes;
+            for (_, note) in &item.footnotes {
+                if wants == 0.0 {
+                    wants += SEPARATOR_LINES * item.height;
+                }
+                wants += note;
+            }
+            if y + item.height - item.slack + wants > height + 0.01 && end > start {
                 break;
             }
             y += item.height;
+            notes = wants;
             end += 1;
         }
         if end == start {
@@ -1396,6 +2154,19 @@ pub fn paginate(items: &[Item], height: f64) -> Vec<usize> {
     }
     breaks
 }
+
+/// How much of the page the rule above the notes costs, as a multiple of the
+/// line the reference sits on.
+///
+/// Measured on the demonstration document, whose body is set 12pt on a 15.86pt
+/// line: the last body baseline sits at 647.02 and the separator rule at
+/// 680.38, with the notes running to a text bottom of 720. The separator is a
+/// paragraph of the body's own size and Word keeps a second such line clear
+/// above it — two lines, not one, which is why a page that reserved a single
+/// line fitted one line of text too many. Expressed against the line rather
+/// than in points so that a document set in some other size keeps the
+/// proportion.
+const SEPARATOR_LINES: f64 = 2.0;
 
 /// The height of the header rows that repeat above `start`.
 fn repeated_height(items: &[Item], start: usize) -> f64 {
@@ -1644,6 +2415,10 @@ mod tests {
     fn ctx<'a>(theme: &'a wp_model::color::Theme) -> Context<'a> {
         Context {
             theme,
+            styles: Box::leak(Box::new(wp_model::style::StyleTable::default())),
+            notes: Box::leak(Box::new(crate::notes::NoteMarks::default())),
+            note_mark: None,
+            table_part: None,
             default_tab: Twips(720),
             fallback_font: "test",
             has_face: |_| false,
@@ -2773,9 +3548,14 @@ mod tests {
             theme: &'a wp_model::Theme,
             document: &'a Document,
             fields: &'a crate::FieldValues,
+            marks: &'a crate::notes::NoteMarks,
         ) -> Context<'a> {
             Context {
                 theme,
+                styles: &document.styles,
+                notes: marks,
+                note_mark: None,
+                table_part: None,
                 default_tab: document.settings.default_tab_stop,
                 fallback_font: "Calibri",
                 has_face: |_| false,
@@ -2788,12 +3568,21 @@ mod tests {
 
         let empty = crate::FieldValues::default();
         let mut cold = Counting::default();
-        let pages = layout(&document, &make(&theme, &document, &empty), &mut cold);
+        let marks = crate::notes::NoteMarks::of(&document);
+        let pages = layout(
+            &document,
+            &make(&theme, &document, &empty, &marks),
+            &mut cold,
+        );
         let settled = evaluate(&pages, &empty);
         assert!(!settled.is_empty(), "the field was evaluated");
 
         let mut warm = Counting::default();
-        let again = layout(&document, &make(&theme, &document, &settled), &mut warm);
+        let again = layout(
+            &document,
+            &make(&theme, &document, &settled, &marks),
+            &mut warm,
+        );
         assert_eq!(again.len(), pages.len(), "and the same pages come out");
         assert!(
             warm.asked * 2 <= cold.asked,

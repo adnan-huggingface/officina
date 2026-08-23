@@ -349,6 +349,15 @@ pub(crate) fn para_props(reader: &mut Reader<&[u8]>, ctx: &mut Ctx<'_>) -> ParaP
                         out.section = Some(Box::new(section_props(reader, e.clone(), ctx)))
                     }
                     b"tabs" if !empty => out.props.tabs = Some(read_tabs(reader)),
+                    b"framePr" => {
+                        out.props.frame = Some(Box::new(wp_model::prop::FrameProps {
+                            drop_cap: attr(&e, b"dropCap")
+                                .as_deref()
+                                .and_then(wp_model::prop::DropCap::from_val)
+                                .unwrap_or_default(),
+                            lines: attr_u32(&e, b"lines").unwrap_or(0),
+                        }));
+                    }
                     b"pBdr" if !empty => {
                         out.props.borders = Some(Box::new(read_para_borders(reader)))
                     }

@@ -244,6 +244,14 @@ pub struct Scriva {
     column_draft: Option<String>,
     /// Table ▸ Cell Margins, in points: top, left, bottom, right.
     cell_margin_draft: Option<[String; 4]>,
+    /// The faces the newly opened document embedded and the names it asks for,
+    /// waiting for a frame in which egui will accept them. `None` once they
+    /// have been handed over.
+    #[allow(clippy::type_complexity)]
+    pending_fonts: Option<(Vec<(String, bool, bool, Vec<u8>)>, Vec<String>)>,
+    /// Set for the one frame between handing egui new fonts and it having
+    /// built them, during which nothing measured is to be believed.
+    fonts_settling: bool,
     /// The header or footer dialog. Blank text takes the header away.
     chrome_draft: Option<ChromeDraft>,
     /// The paragraph dialog: what it opened with, and what has been typed
@@ -371,6 +379,8 @@ impl Scriva {
             color_draft: None,
             column_draft: None,
             cell_margin_draft: None,
+            pending_fonts: None,
+            fonts_settling: false,
             chrome_draft: None,
             paragraph_draft: None,
             size_draft: None,
@@ -628,6 +638,7 @@ impl Scriva {
         };
         self.package = None;
         self.parts = None;
+        self.adopt_document_fonts();
         self.pictures.clear();
         self.path = Some(path.to_path_buf());
         self.dirty = false;
@@ -651,6 +662,7 @@ impl Scriva {
                 self.document = document;
                 self.package = None;
                 self.parts = None;
+                self.adopt_document_fonts();
                 self.pictures.clear();
                 // Named after the original, but with the modern extension, so
                 // the save dialog opens on the right name in the right folder.
@@ -682,12 +694,32 @@ impl Scriva {
         }
     }
 
+    /// Takes up the faces the open document carries in its own package.
+    ///
+    /// Called for every document, including those with none and those with no
+    /// package at all: the previous document's embedded type has to go, or the
+    /// next one is laid out in a face it never named.
+    ///
+    /// The registration itself waits for a frame, because it is egui that owns
+    /// the font atlas and it rebuilds it between frames, not during one.
+    fn adopt_document_fonts(&mut self) {
+        let faces = match (&self.package, &self.parts) {
+            (Some(package), Some(parts)) => wp_docx::embedded(package, parts)
+                .into_iter()
+                .map(|face| (face.family, face.bold, face.italic, face.bytes))
+                .collect(),
+            _ => Vec::new(),
+        };
+        self.pending_fonts = Some((faces, font_names(&self.document)));
+    }
+
     fn open_docx(&mut self, path: &Path) {
         match wp_docx::open(path) {
             Ok((document, package)) => {
                 self.document = document;
                 self.parts = wp_docx::DocumentParts::locate_in(&package).ok();
                 self.package = Some(package);
+                self.adopt_document_fonts();
                 self.pictures.clear();
                 self.path = Some(path.to_path_buf());
                 self.dirty = false;
@@ -920,6 +952,7 @@ impl Scriva {
         self.document = blank();
         self.package = None;
         self.parts = None;
+        self.adopt_document_fonts();
         self.pictures.clear();
         self.path = None;
         self.dirty = false;
@@ -2998,6 +3031,55 @@ fn with_extension(path: PathBuf) -> PathBuf {
 /// heading has to exist before the Styles menu can apply it, and a document
 /// born here has nowhere else to get one. Ids and names are spelled the way
 /// Word spells them, which is also what the outline recognises as headings.
+/// Every face name the document asks for, anywhere.
+///
+/// The machine's own copy of a face outranks one embedded in the package, so
+/// the names have to be collected before anything is registered — a document
+/// that names Ubuntu Mono must be drawn in the Ubuntu Mono this machine has,
+/// whatever the package carries under that name. Split on `;` because
+/// LibreOffice writes its own fallback chain into `w:rFonts` and the first
+/// entry is the face being asked for.
+pub fn font_names(document: &Document) -> Vec<String> {
+    use std::collections::BTreeSet;
+    let mut names: BTreeSet<String> = BTreeSet::new();
+    let mut add = |fonts: &wp_model::prop::Fonts| {
+        for named in [
+            &fonts.ascii,
+            &fonts.high_ansi,
+            &fonts.east_asian,
+            &fonts.complex,
+        ] {
+            let Some(named) = named else { continue };
+            for part in named.split(';') {
+                let part = part.trim();
+                if !part.is_empty() {
+                    names.insert(part.to_owned());
+                }
+            }
+        }
+    };
+    for (_, style) in document.styles.iter() {
+        add(&style.run.fonts);
+    }
+    for paragraph in document.paragraphs() {
+        for run in paragraph.runs() {
+            add(&run.props.fonts);
+        }
+        if let Some(mark) = paragraph.props.mark.as_deref() {
+            add(&mark.fonts);
+        }
+    }
+    for faces in [&document.theme.major, &document.theme.minor] {
+        for named in [&faces.latin, &faces.east_asian, &faces.complex]
+            .into_iter()
+            .flatten()
+        {
+            names.insert(named.to_string());
+        }
+    }
+    names.into_iter().collect()
+}
+
 fn blank() -> Document {
     let mut document = Document {
         body: vec![Block::Paragraph(Paragraph::new())],
@@ -3246,12 +3328,33 @@ impl DocumentApp for Scriva {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui) {
+        // A change of fonts lands between frames, so the atlas this frame draws
+        // with is still the old one and every width the shaper has cached was
+        // measured against it — and a family registered but not yet live is
+        // not a family epaint substitutes for, it is one it panics on. The new
+        // type is handed over here and *believed* one frame later, when the
+        // shaper is thrown away and the page is laid out again in the face the
+        // document actually asked for.
+        if let Some((faces, named)) = self.pending_fonts.take() {
+            ui_kit::fonts::embed_document(ui.ctx(), &faces, &named);
+            self.fonts_settling = true;
+            self.shaper = None;
+            self.view.invalidate();
+            ui.ctx().request_repaint();
+        } else if self.fonts_settling {
+            self.fonts_settling = false;
+            self.shaper = None;
+            self.view.invalidate();
+        }
         if self.shaper.is_none() {
             self.shaper = Some(Egui::new(ui.ctx()));
         }
         let stamp = self.stamp;
         let fields = self.fields.clone();
-        if let Some(shaper) = &mut self.shaper {
+        // Nothing is laid out in the frame the fonts changed in. Measuring now
+        // would measure the type the document replaced, and the page would be
+        // thrown away and done again a frame later regardless.
+        if let (false, Some(shaper)) = (self.fonts_settling, &mut self.shaper) {
             self.view.refresh(&self.document, &fields, stamp, shaper);
         }
         if self.navigator {

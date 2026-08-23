@@ -227,19 +227,48 @@ impl Fonts {
     }
 
     fn layer(&mut self, over: &Fonts) {
-        fn take(slot: &mut Option<Arc<str>>, over: &Option<Arc<str>>) {
-            if over.is_some() {
-                slot.clone_from(over);
+        // A name and a theme reference are two ways of saying the same thing,
+        // so they layer as one: a level that states *either* for a script
+        // replaces both from the level beneath. Letting the reference survive
+        // on its own means an inherited `w:asciiTheme` outranks a run that
+        // names its face outright — which drew the demonstration document's
+        // `w:ascii="Ubuntu Mono"` runs in the theme's Ubuntu, and re-wrapped
+        // three paragraphs around it.
+        fn take(
+            name: &mut Option<Arc<str>>,
+            theme: &mut Option<ThemeFont>,
+            over_name: &Option<Arc<str>>,
+            over_theme: Option<ThemeFont>,
+        ) {
+            if over_name.is_some() || over_theme.is_some() {
+                name.clone_from(over_name);
+                *theme = over_theme;
             }
         }
-        take(&mut self.ascii, &over.ascii);
-        take(&mut self.high_ansi, &over.high_ansi);
-        take(&mut self.east_asian, &over.east_asian);
-        take(&mut self.complex, &over.complex);
-        self.ascii_theme = over.ascii_theme.or(self.ascii_theme);
-        self.high_ansi_theme = over.high_ansi_theme.or(self.high_ansi_theme);
-        self.east_asian_theme = over.east_asian_theme.or(self.east_asian_theme);
-        self.complex_theme = over.complex_theme.or(self.complex_theme);
+        take(
+            &mut self.ascii,
+            &mut self.ascii_theme,
+            &over.ascii,
+            over.ascii_theme,
+        );
+        take(
+            &mut self.high_ansi,
+            &mut self.high_ansi_theme,
+            &over.high_ansi,
+            over.high_ansi_theme,
+        );
+        take(
+            &mut self.east_asian,
+            &mut self.east_asian_theme,
+            &over.east_asian,
+            over.east_asian_theme,
+        );
+        take(
+            &mut self.complex,
+            &mut self.complex_theme,
+            &over.complex,
+            over.complex_theme,
+        );
         self.hint = over.hint.or(self.hint);
     }
 }
@@ -691,6 +720,21 @@ pub enum TabLeader {
 }
 
 impl TabLeader {
+    /// The character Word fills the gap with, if it fills it at all.
+    pub fn character(self) -> Option<char> {
+        Some(match self {
+            TabLeader::None => return None,
+            TabLeader::Dot => '.',
+            TabLeader::Hyphen => '-',
+            TabLeader::Underscore => '_',
+            // Word's "heavy" leader is a thicker underscore; no face this
+            // application loads has such a glyph, so the plain one stands in
+            // rather than the gap coming out empty.
+            TabLeader::Heavy => '_',
+            TabLeader::MiddleDot => '·',
+        })
+    }
+
     pub fn from_val(text: &str) -> Option<TabLeader> {
         Some(match text {
             "none" => TabLeader::None,
@@ -774,6 +818,50 @@ impl BorderStyle {
 
     pub const fn draws(self) -> bool {
         !matches!(self, BorderStyle::None)
+    }
+}
+
+/// `<w:framePr>` — a paragraph lifted out of the flow into a frame of its own.
+///
+/// Only the drop cap is acted on. A frame is Word's old text box and can be
+/// anchored anywhere on the page; a drop cap is the one use of it that appears
+/// in ordinary prose, and the one whose absence is glaring — without it the
+/// large capital sits on a line of its own and the paragraph it belongs to
+/// starts underneath.
+///
+/// Not written back from here: `w:framePr` is not among the children the
+/// writer emits, so the vault carries the original element through untouched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct FrameProps {
+    pub drop_cap: DropCap,
+    /// `<w:lines>` — how many lines of the following paragraph the capital is
+    /// as tall as, and therefore how many of them stand clear of it.
+    pub lines: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DropCap {
+    /// Not a drop cap; an ordinary frame.
+    #[default]
+    None,
+    /// Sunk into the text, with the paragraph wrapping round it.
+    Drop,
+    /// Hung in the margin beside the text.
+    Margin,
+}
+
+impl DropCap {
+    pub fn from_val(text: &str) -> Option<DropCap> {
+        Some(match text {
+            "none" => DropCap::None,
+            "drop" => DropCap::Drop,
+            "margin" => DropCap::Margin,
+            _ => return None,
+        })
+    }
+
+    pub fn is_cap(self) -> bool {
+        !matches!(self, DropCap::None)
     }
 }
 
@@ -927,6 +1015,8 @@ pub struct ParaProps {
     pub outline_level: Option<u8>,
     pub tabs: Option<Vec<TabStop>>,
     pub borders: Option<Box<ParaBorders>>,
+    /// `<w:framePr>` — see [`FrameProps`].
+    pub frame: Option<Box<FrameProps>>,
     pub shading: Option<Shading>,
     pub text_align: Option<TextAlign>,
     /// `<w:rPr>` inside `<w:pPr>` — the formatting of the **paragraph mark
@@ -971,6 +1061,9 @@ impl ParaProps {
         }
         if over.borders.is_some() {
             self.borders.clone_from(&over.borders);
+        }
+        if over.frame.is_some() {
+            self.frame.clone_from(&over.frame);
         }
         self.shading = over.shading.or(self.shading);
         self.text_align = over.text_align.or(self.text_align);

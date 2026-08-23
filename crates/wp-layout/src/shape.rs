@@ -112,7 +112,7 @@ pub trait Shaper {
     /// the half-point dance and keeps every line at its design height.
     fn pitch(&mut self, font: &FontRequest) -> Pitch {
         let metrics = self.metrics(font);
-        let natural = metrics.ascent + metrics.descent;
+        let natural = metrics.line_height();
         Pitch {
             base: natural,
             ideal: natural,

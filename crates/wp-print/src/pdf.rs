@@ -783,6 +783,7 @@ mod tests {
             color: Some([20, 30, 40]),
             highlight: None,
             shading: None,
+            border: None,
             underline: wp_model::prop::UnderlineKind::None,
             underline_color: None,
             strike: false,
@@ -815,6 +816,7 @@ mod tests {
                         fragments: vec![Fragment {
                             x: 0.0,
                             width: 30.0,
+                            lead: 0.0,
                             style,
                             content: Content::Text {
                                 text: "Hi".to_owned(),

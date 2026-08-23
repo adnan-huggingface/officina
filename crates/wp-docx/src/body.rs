@@ -390,6 +390,8 @@ fn read_piece(e: &BytesStart<'_>) -> Option<Piece> {
                 .and_then(|hex| u32::from_str_radix(hex.trim(), 16).ok())
                 .and_then(char::from_u32)?,
         },
+        b"footnoteRef" => Piece::NoteMark { endnote: false },
+        b"endnoteRef" => Piece::NoteMark { endnote: true },
         b"footnoteReference" => Piece::FootnoteRef {
             id: attr_i32(e, b"id")?,
             custom_mark: attr(e, b"customMarkFollows")
@@ -827,7 +829,7 @@ fn read_table_children(
     }
 }
 
-fn width(e: &BytesStart<'_>) -> Width {
+pub(crate) fn width(e: &BytesStart<'_>) -> Width {
     Width::from_parts(
         attr(e, b"type").as_deref().unwrap_or("auto"),
         attr_i32(e, b"w").unwrap_or(0),
@@ -928,7 +930,7 @@ fn read_look(e: &BytesStart<'_>) -> TableLook {
 
 /// Reads a borders element. The second half of the pair is the diagonals, which
 /// only a cell has.
-fn read_table_borders(
+pub(crate) fn read_table_borders(
     reader: &mut Reader<&[u8]>,
     until: &[u8],
 ) -> (

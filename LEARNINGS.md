@@ -587,3 +587,61 @@ paragraph in a header takes the document's own `docDefaults` instead, so a
 document spaced 8pt after every paragraph grows its header by 8pt and pushes its
 own text down the page to make room. Whatever writes a header has to state the
 spacing, because the thing it would otherwise inherit is about the body.
+
+
+An embedded font is a fallback, not an override.
+
+A `.docx` may carry the type it is set in, obfuscated, inside the package. It is
+tempting to treat that as the authoritative copy — the author put it there, so
+draw with it. Word does the opposite: it uses the face the machine has installed
+and reaches into the package only when there is none. The difference is not
+academic. The demonstration document embeds Ubuntu Mono at 500 units to the em;
+the copy installed on this machine measures 560, and preferring the package
+re-wrapped three paragraphs and moved a page break. Getting this right needs
+something a font stack usually does not have: an index of what is installed, by
+the name a document would call it, rather than a table of the dozen faces a
+reader expects to meet.
+
+The line gap sits above the baseline, and extra leading sits below it.
+
+A face states three vertical numbers and a renderer has to decide what to do
+with the third. Word adds `hhea.lineGap` to the ascent — the baseline sits that
+much further down — and when a paragraph asks for one-and-a-half lines, every
+extra point goes *below* the type rather than being shared around it. Both
+halves were measured rather than derived: three faces, four line multiples, and
+the first baseline of a spaced paragraph never moved. A renderer that centres
+the extra instead is wrong by half of it on every line of every document, which
+is small enough to look like a rounding error and large enough to move a page
+break.
+
+A seam in the measuring is not a place a line may end.
+
+A paragraph is cut into pieces for reasons that have nothing to do with line
+breaking: a run changes face, a character belongs to another script, a field
+begins. If the line filler treats those cuts as break opportunities it will
+break at them, and the results are the kind of wrong that looks like a font bug
+— a bold opening quotation mark left alone at the end of a line with the words
+it opens on the next. The break table has to be asked about the *text*, at every
+seam, and not merely within each piece.
+
+A table style is a scheme, not a set of properties.
+
+`<w:tblStyle>` names one entry in `styles.xml`, but what that entry contributes
+to a cell depends on where the cell sits — the header row, the last row, the
+first column, which stripe. Word keeps each as a `<w:tblStylePr>` and the table
+says through `<w:tblLook>` which of them it wants. A reader that takes only the
+style's base properties draws every such table as a bare grid, which is what
+five tables of the demonstration document looked like. The order the parts apply
+in is ECMA-376 §17.7.6 and is not the order they are written in: whole table,
+then the column bands, then the row bands, then the first and last column, then
+the first and last row, and the corner cells last.
+
+Word's own PDF is not a reliable oracle for text it could not embed.
+
+The rule in adr/0001 is to measure Word rather than read the specification, and
+the usual instrument is a PDF exported from Word and read back. That instrument
+has a blind spot. Where a run is set in a font Word cannot embed — a variable
+font, in this case — Word writes the glyphs of the real face and the widths of a
+substitute, so the text layer reports positions the page does not show. Two
+lines that matched Word exactly were reported as twenty points adrift. When the
+text layer and the picture disagree, the picture is the document.

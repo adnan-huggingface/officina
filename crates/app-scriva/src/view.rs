@@ -92,6 +92,7 @@ impl View {
             return;
         }
         let theme = document.theme.clone();
+        let notes = wp_layout::NoteMarks::of(document);
         // The application's own strings — file name, author, today's date — are
         // always the fresh ones; only the page numbers are carried over.
         let mut carried = self.settled.clone();
@@ -102,6 +103,10 @@ impl View {
         carried.title = fields.title.clone();
         let ctx = wp_layout::inline::Context {
             theme: &theme,
+            styles: &document.styles,
+            notes: &notes,
+            note_mark: None,
+            table_part: None,
             default_tab: document.settings.default_tab_stop,
             // The font of last resort when nothing in the document names one.
             // Word's is Calibri only because every document it writes carries
@@ -851,7 +856,16 @@ fn paint_placement(
         }
         // Resolved into `Edge` or dropped at pagination; never on a page.
         Placed::BreakEdge { .. } => {}
-        Placed::FootnoteSeparator => {}
+        Placed::FootnoteSeparator => {
+            // The same two inches of hairline `wp_print::ops` puts on paper.
+            const SEPARATOR_WIDTH: f64 = 144.0;
+            let from = at(placement.x, placement.y);
+            let to = at(placement.x + SEPARATOR_WIDTH, placement.y);
+            painter.line_segment(
+                [from, to],
+                egui::Stroke::new(zoom.max(0.5), egui::Color32::BLACK),
+            );
+        }
     }
 }
 
@@ -903,6 +917,20 @@ fn paint_line(
         painter.rect_filled(band, 0.0, SELECTION);
     }
 
+    // Shading and highlight for the same reason, and joined the same way: two
+    // words of one inverse-video run must not show a hairline of paper where
+    // their rectangles meet. `wp_print::ops` draws them from the same list.
+    for (from, to, rgb) in wp_print::ops::painted_runs(line) {
+        let rect = egui::Rect::from_min_size(
+            page + egui::vec2(
+                (placement.x + from) as f32 * zoom,
+                placement.y as f32 * zoom,
+            ),
+            egui::vec2((to - from) as f32 * zoom, placement.height as f32 * zoom),
+        );
+        painter.rect_filled(rect, 0.0, egui::Color32::from_rgb(rgb[0], rgb[1], rgb[2]));
+    }
+
     for fragment in &line.fragments {
         let x = placement.x + fragment.x;
         if let Some(source) = fragment.source {
@@ -939,20 +967,17 @@ fn paint_line(
         // A list label draws exactly like text — it just is not text the
         // document holds, so it comes with its own.
         let text = match &fragment.content {
-            Content::Text { text, .. } | Content::Label { text, .. } => text,
+            Content::Text { text, .. }
+            | Content::Label { text, .. }
+            // A leadered tab draws the dots of a table of contents, and is
+            // otherwise an empty stretch that draws nothing at all.
+            | Content::Tab { fill: text, .. } => text,
             _ => continue,
         };
         if text.is_empty() {
             continue;
         }
         let style = &fragment.style;
-        if let Some(rgb) = style.highlight {
-            let rect = egui::Rect::from_min_size(
-                page + egui::vec2(x as f32 * zoom, placement.y as f32 * zoom),
-                egui::vec2(fragment.width as f32 * zoom, placement.height as f32 * zoom),
-            );
-            painter.rect_filled(rect, 0.0, egui::Color32::from_rgb(rgb[0], rgb[1], rgb[2]));
-        }
         let color = style
             .color
             .map(|rgb| egui::Color32::from_rgb(rgb[0], rgb[1], rgb[2]))

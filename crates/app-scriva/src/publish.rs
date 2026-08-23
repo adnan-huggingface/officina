@@ -33,11 +33,17 @@ impl wp_print::Faces for SystemFaces {
         if let Some(known) = self.by_request.get(&key) {
             return known.clone();
         }
-        let resolved = ui_kit::fonts::face_file(family, bold, italic).map(|(path, bytes)| {
-            self.by_path
-                .entry(path)
-                .or_insert_with(|| Arc::from(bytes.into_boxed_slice()))
-                .clone()
+        // A face the document carried with it is the one the screen shaped
+        // with, so it is the one that must be embedded — resolving the name
+        // against the machine's fonts here would print a different face from
+        // the one shown.
+        let resolved = ui_kit::fonts::document_face_file(family, bold, italic).or_else(|| {
+            ui_kit::fonts::face_file(family, bold, italic).map(|(path, bytes)| {
+                self.by_path
+                    .entry(path)
+                    .or_insert_with(|| Arc::from(bytes.into_boxed_slice()))
+                    .clone()
+            })
         });
         self.by_request.insert(key, resolved.clone());
         resolved

@@ -69,7 +69,15 @@ pub enum Content {
         hyphen: bool,
     },
     /// A tab's whitespace, and the leader drawn across it.
-    Tab { leader: TabLeader },
+    Tab {
+        leader: TabLeader,
+        /// The leader drawn across the gap, once the gap's width is known —
+        /// a table of contents is dots, and Word draws them as characters of
+        /// the paragraph's own face at that face's own advance, from where the
+        /// entry ends to where the page number begins.
+        fill: String,
+        advances: Vec<f64>,
+    },
     /// An inline drawing, and the relationship naming the part that holds its
     /// bytes. Without the relationship the painter has a rectangle of the right
     /// size and nothing to put in it.
@@ -93,9 +101,12 @@ pub enum Content {
 /// One drawn piece of a line.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Fragment {
-    /// Left edge, from the left of the *page's text column*.
+    /// Left edge, from the left of the *page's text column*. With a run
+    /// border this is the left of the *box*; the text starts `lead` further on.
     pub x: f64,
     pub width: f64,
+    /// Room reserved before the text for the left side of a run's border.
+    pub lead: f64,
     pub style: TextStyle,
     pub content: Content,
     pub source: Option<Source>,
@@ -167,6 +178,22 @@ pub struct ListLabel {
 #[derive(Clone, Copy)]
 pub struct Context<'a> {
     pub theme: &'a wp_model::color::Theme,
+    /// The number of the note whose own content is being laid out, which is
+    /// what `<w:footnoteRef/>` draws. `None` anywhere but inside a note.
+    pub note_mark: Option<&'a str>,
+    /// The mark each note is referenced by. Built once per document — see
+    /// [`crate::notes::NoteMarks`].
+    pub notes: &'a crate::notes::NoteMarks,
+    /// What the table style says about the cell being laid out, if this is
+    /// one. Carried on the context because it changes per cell and every
+    /// paragraph inside that cell needs it.
+    pub table_part: Option<&'a wp_model::TablePart>,
+    /// The document's styles, for the character style a *run* names.
+    ///
+    /// The paragraph's own chain is resolved before layout begins, but
+    /// `<w:rStyle>` is per run — one paragraph's runs may name Strong, Subtle
+    /// Emphasis and nothing at all — so the table has to be in reach here.
+    pub styles: &'a wp_model::style::StyleTable,
     /// `<w:defaultTabStop>` — where tabs land when the paragraph defines none.
     pub default_tab: Twips,
     /// The face to use when neither the run nor the theme names one.
@@ -195,6 +222,10 @@ impl Default for Context<'_> {
     fn default() -> Self {
         Context {
             theme: Box::leak(Box::new(wp_model::color::Theme::default())),
+            notes: Box::leak(Box::new(crate::notes::NoteMarks::default())),
+            note_mark: None,
+            table_part: None,
+            styles: Box::leak(Box::new(wp_model::style::StyleTable::default())),
             default_tab: Twips(720),
             fallback_font: "Calibri",
             has_face: |_| false,
@@ -217,6 +248,17 @@ struct Unit {
     width: f64,
     /// Width of the trailing spaces, which may hang past the margin.
     trailing: f64,
+    /// Part of `width` that is a run border's own room, before the text.
+    lead: f64,
+    /// No line may be broken between this unit and the one before it.
+    ///
+    /// A paragraph is cut into units at every break opportunity *and* at every
+    /// seam where the measuring has to change — a new run, a new script, a
+    /// field. Only the first kind is a place a line may end, and without this
+    /// flag the second kind becomes one: the demonstration document's bold
+    /// quotation mark was left alone at the end of a line, with the words it
+    /// opens on the next.
+    joined: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -247,6 +289,19 @@ enum UnitKind {
     },
 }
 
+/// Something beside the paragraph that its lines have to make room for.
+///
+/// A floating table with text running past it, which is the only thing that
+/// makes one today. The depth is measured from the top of the paragraph, so a
+/// paragraph that starts halfway down the table is told how much of it is left.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Obstacle {
+    /// How far down from the top of this paragraph the obstacle still reaches.
+    pub depth: f64,
+    /// How much measure it takes away, from the left.
+    pub indent: f64,
+}
+
 /// Lays a paragraph out into lines of `width` points.
 #[allow(clippy::too_many_arguments)]
 pub fn layout(
@@ -256,6 +311,7 @@ pub fn layout(
     label: Option<&ListLabel>,
     ctx: &Context<'_>,
     width: f64,
+    obstacle: Option<Obstacle>,
     shaper: &mut dyn Shaper,
 ) -> LaidParagraph {
     let units = units(paragraph, index, layers, label, ctx, shaper);
@@ -265,11 +321,42 @@ pub fn layout(
     let first = indent.first_line_offset().points();
 
     let tabs = tab_stops(layers, ctx);
-    let mut lines = fill(&units, width, start, end, first, &tabs, ctx);
+    // Which lines a float narrows cannot be known before the lines exist, and
+    // the lines cannot be laid without knowing how wide they are. So it is
+    // settled by going round: lay them, see which ones the float actually
+    // reaches, lay them again. Two passes settle every real case; the bound is
+    // there so a pathological one cannot spin.
+    let mut indents: Vec<f64> = Vec::new();
+    let mut lines;
+    for _ in 0..4 {
+        lines = fill(&units, width, start, end, first, &tabs, ctx, &indents);
+        finish(
+            &mut lines, layers, width, start, end, first, &indents, paragraph, ctx, shaper,
+        );
+        let settled = beside(&lines, obstacle);
+        if settled == indents {
+            return done(lines, layers, paragraph, ctx, shaper);
+        }
+        indents = settled;
+    }
+    let mut lines = fill(&units, width, start, end, first, &tabs, ctx, &indents);
     finish(
-        &mut lines, layers, width, start, end, first, paragraph, ctx, shaper,
+        &mut lines, layers, width, start, end, first, &indents, paragraph, ctx, shaper,
     );
+    done(lines, layers, paragraph, ctx, shaper)
+}
 
+/// The paragraph, once its lines have settled.
+fn done(
+    lines: Vec<Line>,
+    layers: &Layers,
+    paragraph: &Paragraph,
+    ctx: &Context<'_>,
+    shaper: &mut dyn Shaper,
+) -> LaidParagraph {
+    let _ = (paragraph, ctx);
+    let mut lines = lines;
+    lead_in(&mut lines, shaper);
     let height = lines.iter().map(|line| line.height).sum();
     LaidParagraph {
         lines,
@@ -282,6 +369,103 @@ pub fn layout(
         space_after: layers.para.spacing.after.map(|t| t.points()).unwrap_or(0.0),
         height,
     }
+}
+
+/// Fills every leadered tab on the line with the characters Word draws there.
+///
+/// Measured: a dot leader is the paragraph's own full stop repeated at the
+/// face's own advance, laid from where the text before the tab ends and
+/// stopping short of where the text after it begins. Nothing is squeezed or
+/// spread — the gap simply holds as many as it holds.
+fn lead_in(lines: &mut [Line], shaper: &mut dyn Shaper) {
+    for line in lines.iter_mut() {
+        for fragment in line.fragments.iter_mut() {
+            let style = fragment.style.clone();
+            let width = fragment.width;
+            let Content::Tab {
+                leader,
+                fill,
+                advances,
+            } = &mut fragment.content
+            else {
+                continue;
+            };
+            let Some(glyph) = leader.character() else {
+                continue;
+            };
+            let one = shaper.width(&glyph.to_string(), &style.font);
+            if one <= 0.0 {
+                continue;
+            }
+            let count = (width / one).floor().max(0.0) as usize;
+            *fill = std::iter::repeat_n(glyph, count).collect();
+            *advances = vec![one; count];
+        }
+    }
+}
+
+/// A note's number, which the layout makes rather than the document holding.
+///
+/// Emitted as a *label* and not as text for the same reason a list's bullet is:
+/// it is drawn, it takes room on the line, and it is not a character of the
+/// paragraph. A caret cannot sit inside it and a search cannot find it.
+#[allow(clippy::too_many_arguments)]
+fn push_note_mark(
+    mark: &str,
+    props: &RunProps,
+    run: usize,
+    piece: usize,
+    at: usize,
+    ctx: &Context<'_>,
+    shaper: &mut dyn Shaper,
+    out: &mut Vec<Unit>,
+) {
+    let style = style_for(mark.chars().next().unwrap_or('1'), props, ctx);
+    let mut advances = Vec::new();
+    let width = measure(mark, &style, shaper, &mut advances);
+    out.push(Unit {
+        style,
+        source: Some(Source {
+            run,
+            piece,
+            start: at,
+            end: at,
+        }),
+        field: None,
+        kind: UnitKind::Label {
+            text: mark.to_owned(),
+            advances,
+        },
+        width,
+        trailing: 0.0,
+        joined: false,
+        lead: 0.0,
+    });
+}
+
+/// How far each line has to stand clear of an obstacle beside the paragraph.
+///
+/// A line is pushed aside when any part of it lies within the obstacle's depth,
+/// which is what makes the line that straddles the bottom of a floating table
+/// the last narrow one rather than the first wide one.
+fn beside(lines: &[Line], obstacle: Option<Obstacle>) -> Vec<f64> {
+    let Some(obstacle) = obstacle.filter(|o| o.depth > 0.0 && o.indent > 0.0) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let mut y = 0.0;
+    for line in lines {
+        out.push(if y < obstacle.depth - 0.01 {
+            obstacle.indent
+        } else {
+            0.0
+        });
+        y += line.height;
+    }
+    while out.last() == Some(&0.0) {
+        out.pop();
+    }
+    out
 }
 
 /// The tab stops in force, the paragraph's own ahead of the document default.
@@ -389,6 +573,8 @@ fn units(
             },
             width,
             trailing: 0.0,
+            joined: false,
+            lead: 0.0,
         });
         match label.suffix {
             Suffix::Tab => out.push(tab_unit(&out[0].style, TabLeader::None, true)),
@@ -407,6 +593,8 @@ fn units(
                     },
                     width: 0.0,
                     trailing: width,
+                    joined: false,
+                    lead: 0.0,
                 });
             }
             Suffix::Nothing => {}
@@ -439,6 +627,7 @@ fn units(
         base += length;
     }
     number_drawings(paragraph, &mut out);
+    join_unbreakable(&mut out);
     out
 }
 
@@ -528,6 +717,8 @@ fn tab_unit(style: &TextStyle, leader: TabLeader, after_label: bool) -> Unit {
         },
         width: 0.0,
         trailing: 0.0,
+        joined: false,
+        lead: 0.0,
     }
 }
 
@@ -558,6 +749,27 @@ fn deleted_runs(paragraph: &Paragraph) -> Vec<usize> {
     }
     walk(&paragraph.content, false, &mut index, &mut out);
     out
+}
+
+/// Marks the seams that are not places a line may end.
+///
+/// The paragraph has been cut wherever the *measuring* has to change — a new
+/// run, a change of script, a field boundary — and those cuts are not break
+/// opportunities. The text either side of each seam is asked, one boundary at
+/// a time, exactly as the text inside a run was asked.
+fn join_unbreakable(out: &mut [Unit]) {
+    for i in 1..out.len() {
+        let (before, after) = (&out[i - 1], &out[i]);
+        let (UnitKind::Text { text: left, .. }, UnitKind::Text { text: right, .. }) =
+            (&before.kind, &after.kind)
+        else {
+            continue;
+        };
+        let (Some(last), Some(first)) = (left.chars().next_back(), right.chars().next()) else {
+            continue;
+        };
+        out[i].joined = !linebreak::may_break_at(last, first);
+    }
 }
 
 /// Tells each inline drawing which of the paragraph's drawings it is.
@@ -616,11 +828,9 @@ fn push_run(
     fields: &mut FieldWalk,
     out: &mut Vec<Unit>,
 ) {
-    // The run's own properties over the paragraph's — the last layer of the
-    // resolution, done here because the character style chain was already
-    // applied by the caller into `layers.run`.
-    let mut props = layers.run.clone();
-    props.layer(&run.props, wp_model::prop::Layer::Direct);
+    // The paragraph's run layer, then whatever character style this run names,
+    // then the run's own direct properties on top.
+    let props = ctx.styles.resolve_run(layers, &run.props);
     if props.hidden() && !ctx.show_hidden {
         return;
     }
@@ -672,6 +882,8 @@ fn push_run(
                                 },
                                 width: 0.0,
                                 trailing: 0.0,
+                                joined: false,
+                                lead: 0.0,
                             }),
                         }
                     }
@@ -740,6 +952,8 @@ fn push_run(
                     kind: UnitKind::Break(*kind),
                     width: 0.0,
                     trailing: 0.0,
+                    joined: false,
+                    lead: 0.0,
                 });
             }
             Piece::Hyphen { breaking } => {
@@ -774,6 +988,44 @@ fn push_run(
                     out,
                 );
             }
+            // The note's own number, at the head of the note itself.
+            Piece::NoteMark { .. } => {
+                let Some(mark) = ctx.note_mark else { continue };
+                push_note_mark(
+                    mark,
+                    &props,
+                    index,
+                    piece_index,
+                    span.start,
+                    ctx,
+                    shaper,
+                    out,
+                );
+            }
+            // The little number where a note is referenced. The run carries
+            // the `FootnoteReference` character style, which is what raises
+            // and shrinks it — nothing here has to know it is superscript.
+            Piece::FootnoteRef { id, custom_mark } | Piece::EndnoteRef { id, custom_mark } => {
+                if *custom_mark {
+                    // The author supplied the mark as text of its own; drawing
+                    // a number beside it would show both.
+                    continue;
+                }
+                let endnote = matches!(piece, Piece::EndnoteRef { .. });
+                let Some(mark) = ctx.notes.mark(endnote, *id) else {
+                    continue;
+                };
+                push_note_mark(
+                    mark,
+                    &props,
+                    index,
+                    piece_index,
+                    span.start,
+                    ctx,
+                    shaper,
+                    out,
+                );
+            }
             Piece::Drawing(drawing) if !drawing.anchored => {
                 let style = style_for(' ', &props, ctx);
                 out.push(Unit {
@@ -795,6 +1047,8 @@ fn push_run(
                     },
                     width: drawing.extent.0.points(),
                     trailing: 0.0,
+                    joined: false,
+                    lead: 0.0,
                 });
             }
             _ => {}
@@ -870,12 +1124,21 @@ fn push_text(
     bounds.sort_unstable();
     bounds.dedup();
 
+    // A run's own border takes room outside the type on all four sides. The
+    // horizontal share falls on the ends of the run: the first piece is pushed
+    // right of where it would have sat, the last reserves the same again.
+    let first_bound = bounds.first().copied().unwrap_or(0);
+    let last_bound = bounds.last().copied().unwrap_or(0);
+    let pad = style_for(text.chars().next().unwrap_or(' '), props, ctx).border_pad();
+
     for pair in bounds.windows(2) {
         let (start, end) = (pair[0], pair[1]);
         let slice = &text[start..end];
         if slice.is_empty() {
             continue;
         }
+        let lead = if start == first_bound { pad } else { 0.0 };
+        let tail = if end == last_bound { pad } else { 0.0 };
         let first = slice.chars().next().unwrap_or(' ');
         let style = style_for(first, props, ctx);
         let drawn = style.transform(slice);
@@ -914,8 +1177,10 @@ fn push_text(
                 advances,
                 hyphen: linebreak::breaks_with_hyphen(text, end),
             },
-            width: content_width,
+            width: content_width + lead + tail,
             trailing: total - content_width,
+            joined: false,
+            lead,
         });
     }
 }
@@ -930,9 +1195,16 @@ fn fill(
     first: f64,
     tabs: &[TabStop],
     ctx: &Context<'_>,
+    // How far each line stands clear of something beside the paragraph. Short
+    // or empty means the rest of the lines are unobstructed.
+    beside: &[f64],
 ) -> Vec<Line> {
     let mut lines: Vec<Line> = Vec::new();
     let mut fragments: Vec<Fragment> = Vec::new();
+    // Where the two pens stood before each fragment was placed, so that a
+    // cluster that must not be broken can be taken back off the line it did
+    // not fit on and carried whole to the next.
+    let mut rewind: Vec<(f64, f64)> = Vec::new();
     let mut is_first = true;
     // Two pens, and the difference between them is the whole trailing-space
     // rule. `pen` is where the next unit starts; `used` is where the line's
@@ -940,15 +1212,15 @@ fn fill(
     // hang past the margin instead of counting against it.
     let mut pen = 0.0f64;
     let mut used = 0.0f64;
-    let available = |is_first: bool| {
+    let available = |is_first: bool, line: usize| {
         let left = if is_first { start + first } else { start };
-        (width - end - left).max(1.0)
+        (width - end - left - beside.get(line).copied().unwrap_or(0.0)).max(1.0)
     };
 
     let mut index = 0usize;
     while index < units.len() {
         let unit = &units[index];
-        let limit = available(is_first);
+        let limit = available(is_first, lines.len());
         match &unit.kind {
             UnitKind::Break(kind) => {
                 index += 1;
@@ -1003,6 +1275,7 @@ fn fill(
                 fragments.push(Fragment {
                     x: pen,
                     width: advance,
+                    lead: 0.0,
                     style: unit.style.clone(),
                     content: Content::Tab {
                         leader: if *leader == TabLeader::None {
@@ -1010,6 +1283,9 @@ fn fill(
                         } else {
                             *leader
                         },
+                        // Filled in once the gap is settled — see `lead_in`.
+                        fill: String::new(),
+                        advances: Vec::new(),
                     },
                     source: unit.source,
                     field: unit.field,
@@ -1024,7 +1300,25 @@ fn fill(
 
         let fits = pen + unit.width <= limit + 0.01;
         if !fits && !fragments.is_empty() {
+            // The break belongs at the head of whatever cluster this unit is
+            // part of, not between it and the piece it is joined to.
+            let mut back = 0usize;
+            while back < fragments.len() && units[index - back].joined {
+                back += 1;
+            }
+            // A cluster wider than the whole line has nowhere better to go, so
+            // it is left to break where it falls rather than looping.
+            if back > 0 && back < fragments.len() {
+                let keep = fragments.len() - back;
+                // The pens as they stood before the first unit of the cluster
+                // was placed: that unit's own `used` is the line's new end.
+                used = rewind[keep].1;
+                fragments.truncate(keep);
+                rewind.truncate(keep);
+                index -= back;
+            }
             lines.push(raw_line(std::mem::take(&mut fragments), used, None));
+            rewind.clear();
             pen = 0.0;
             used = 0.0;
             is_first = false;
@@ -1040,10 +1334,11 @@ fn fill(
                 lines.push(raw_line(std::mem::take(&mut fragments), head.width, None));
                 let mut rest = units[index + 1..].to_vec();
                 rest.insert(0, tail);
-                return continue_fill(lines, &rest, width, start, end, tabs, ctx);
+                return continue_fill(lines, &rest, width, start, end, tabs, ctx, beside);
             }
         }
 
+        rewind.push((pen, used));
         fragments.push(fragment_of(unit, pen));
         used = pen + unit.width;
         pen = used + unit.trailing;
@@ -1077,10 +1372,11 @@ fn continue_fill(
     end: f64,
     tabs: &[TabStop],
     ctx: &Context<'_>,
+    beside: &[f64],
 ) -> Vec<Line> {
     // Every line after the first uses the non-first-line indent, which is what
     // passing `0.0` for the first-line offset says.
-    let rest = fill(units, width, start, end, 0.0, tabs, ctx);
+    let rest = fill(units, width, start, end, 0.0, tabs, ctx, beside);
     lines.extend(rest);
     lines
 }
@@ -1096,7 +1392,11 @@ fn fragment_of(unit: &Unit, x: f64) -> Fragment {
             advances: advances.clone(),
             hyphen: *hyphen,
         },
-        UnitKind::Tab { leader, .. } => Content::Tab { leader: *leader },
+        UnitKind::Tab { leader, .. } => Content::Tab {
+            leader: *leader,
+            fill: String::new(),
+            advances: Vec::new(),
+        },
         UnitKind::Object {
             height,
             rel,
@@ -1121,6 +1421,7 @@ fn fragment_of(unit: &Unit, x: f64) -> Fragment {
     Fragment {
         x,
         width: unit.width + unit.trailing,
+        lead: unit.lead,
         style: unit.style.clone(),
         content,
         source: unit.source,
@@ -1166,6 +1467,8 @@ fn split_to_fit(unit: &Unit, limit: f64) -> Option<(Unit, Unit)> {
         },
         width: used,
         trailing: 0.0,
+        joined: false,
+        lead: 0.0,
     };
     let tail_width: f64 = advances[chars..].iter().sum();
     let tail = Unit {
@@ -1185,6 +1488,8 @@ fn split_to_fit(unit: &Unit, limit: f64) -> Option<(Unit, Unit)> {
         },
         width: tail_width - unit.trailing,
         trailing: unit.trailing,
+        joined: false,
+        lead: 0.0,
     };
     Some((head, tail))
 }
@@ -1213,6 +1518,7 @@ fn finish(
     start: f64,
     end: f64,
     first: f64,
+    beside: &[f64],
     paragraph: &Paragraph,
     ctx: &Context<'_>,
     shaper: &mut dyn Shaper,
@@ -1230,6 +1536,11 @@ fn finish(
     for (index, line) in lines.iter_mut().enumerate() {
         let mut ascent: f64 = 0.0;
         let mut descent: f64 = 0.0;
+        // The tallest face on the line decides the gap, as it decides the
+        // ascent: a line of mixed sizes is spaced for the largest type on it.
+        let mut gap: f64 = 0.0;
+        // Room a run border demands above and below the type.
+        let mut pad: f64 = 0.0;
         // Word lays a line at the font's *laid* pitch — hinted, a hair off the
         // design height — while an accumulator counts the exact value. Both
         // are collected here; the debt is settled where lines stack, because
@@ -1248,6 +1559,12 @@ fn finish(
             let metrics = fragment_metrics(fragment, shaper);
             ascent = ascent.max(metrics.ascent + fragment.style.raise);
             descent = descent.max(metrics.descent - fragment.style.raise);
+            gap = gap.max(metrics.line_gap);
+            // A run's border grows the line above and below by the same
+            // amount it takes beside the type. Kept apart from the type's own
+            // metrics because the line *pitch* is a property of the face and
+            // must not change: the border adds to the height the pitch gave.
+            pad = pad.max(fragment.style.border_pad());
             if let Content::Object { height, .. } = &fragment.content {
                 object = object.max(*height);
                 // The picture sits on the baseline, and the type of the run
@@ -1270,11 +1587,14 @@ fn finish(
         if line.fragments.is_empty() {
             ascent = mark.ascent;
             descent = mark.descent;
+            gap = mark.line_gap;
             let pitch = shaper.pitch(&mark_face);
             base = pitch.base;
             ideal = pitch.ideal;
         }
-        let natural = ascent + descent;
+        // The gap counts toward the line's natural height, but not toward the
+        // room above the baseline that the *type* occupies.
+        let natural = ascent + descent + gap;
         if boost > ideal {
             base = boost;
             ideal = boost;
@@ -1297,12 +1617,27 @@ fn finish(
             LineSpacing::Multiple(n) => (ideal * n.multiple()).max(natural.min(object + descent)),
             _ => line.height,
         };
-        line.baseline = ascent + (line.height - natural).max(0.0) / 2.0;
+        // Word seats the baseline at the face's ascent plus its line gap and
+        // leaves it there: measured over Arial, Verdana and Georgia at line
+        // multiples of 1.0, 1.15, 1.5 and 2.0, the first baseline of a spaced
+        // paragraph never moved — every extra point of leading went *below*
+        // the type, not around it.
+        line.height += 2.0 * pad;
+        line.ideal += 2.0 * pad;
+        line.baseline = match spacing {
+            // An exact line is a box the type is dropped into rather than one
+            // the type decides, and Word stands the type on the bottom of it:
+            // a drop cap set on an exact line three body lines tall has its
+            // baseline on the third of them, which is the whole effect.
+            LineSpacing::Exact(_) => (line.height - descent - pad).max(0.0),
+            _ => ascent + gap + pad,
+        };
         line.y = y;
         y += line.height;
 
         let is_first = index == 0;
-        let left = if is_first { start + first } else { start };
+        let aside = beside.get(index).copied().unwrap_or(0.0);
+        let left = aside + if is_first { start + first } else { start };
         let limit = (width - end - left).max(0.0);
         let slack = (limit - line.width).max(0.0);
         // The last line of a justified paragraph is not stretched, and neither
@@ -1383,6 +1718,10 @@ mod tests {
     fn ctx<'a>(theme: &'a Theme) -> Context<'a> {
         Context {
             theme,
+            table_part: None,
+            styles: Box::leak(Box::new(wp_model::style::StyleTable::default())),
+            notes: Box::leak(Box::new(crate::notes::NoteMarks::default())),
+            note_mark: None,
             default_tab: Twips(720),
             fallback_font: "test",
             has_face: |_| false,
@@ -1412,7 +1751,7 @@ mod tests {
         let theme = theme();
         let ctx = ctx(&theme);
         let mut shaper = crate::shape::Fixed;
-        layout(&paragraph, 0, &layers, None, &ctx, width, &mut shaper)
+        layout(&paragraph, 0, &layers, None, &ctx, width, None, &mut shaper)
     }
 
     fn texts(line: &Line) -> Vec<&str> {
@@ -1624,7 +1963,8 @@ mod tests {
         assert!(matches!(
             line.fragments[1].content,
             Content::Tab {
-                leader: TabLeader::Dot
+                leader: TabLeader::Dot,
+                ..
             }
         ));
     }
@@ -1731,6 +2071,7 @@ mod tests {
             None,
             &ctx(&theme),
             500.0,
+            None,
             &mut shaper,
         );
         assert_eq!(texts(&showing.lines[0]), ["kept ", "gone"]);
@@ -1739,7 +2080,16 @@ mod tests {
             show_revisions: false,
             ..ctx(&theme)
         };
-        let hidden = layout(&paragraph, 0, &layers(), None, &hiding, 500.0, &mut shaper);
+        let hidden = layout(
+            &paragraph,
+            0,
+            &layers(),
+            None,
+            &hiding,
+            500.0,
+            None,
+            &mut shaper,
+        );
         assert_eq!(texts(&hidden.lines[0]), ["kept "]);
     }
 
@@ -1760,6 +2110,7 @@ mod tests {
             None,
             &ctx(&theme),
             500.0,
+            None,
             &mut shaper,
         );
         assert!(texts(&hidden.lines[0]).is_empty());
@@ -1768,7 +2119,16 @@ mod tests {
             show_hidden: true,
             ..ctx(&theme)
         };
-        let shown = layout(&paragraph, 0, &layers(), None, &showing, 500.0, &mut shaper);
+        let shown = layout(
+            &paragraph,
+            0,
+            &layers(),
+            None,
+            &showing,
+            500.0,
+            None,
+            &mut shaper,
+        );
         assert_eq!(texts(&shown.lines[0]), ["secret"]);
     }
 
@@ -1795,6 +2155,7 @@ mod tests {
             Some(&label),
             &ctx(&theme),
             500.0,
+            None,
             &mut shaper,
         );
         let line = &laid.lines[0];
@@ -1845,6 +2206,7 @@ mod tests {
             Some(&label),
             &ctx(&theme),
             500.0,
+            None,
             &mut shaper,
         );
         let line = &laid.lines[0];
@@ -1879,6 +2241,7 @@ mod tests {
             Some(&bullet),
             &ctx(&theme),
             500.0,
+            None,
             &mut shaper,
         );
         let fragment = &laid.lines[0].fragments[0];
@@ -1915,6 +2278,7 @@ mod tests {
             Some(&label),
             &ctx(&theme),
             500.0,
+            None,
             &mut shaper,
         );
         let line = &laid.lines[0];
@@ -1962,6 +2326,7 @@ mod tests {
             None,
             &ctx(&theme),
             500.0,
+            None,
             &mut shaper,
         );
         let mark = laid.lines[0]
@@ -1983,7 +2348,16 @@ mod tests {
             fields: &values,
             ..ctx(&theme)
         };
-        let again = layout(&paragraph, 3, &layers(), None, &knowing, 500.0, &mut shaper);
+        let again = layout(
+            &paragraph,
+            3,
+            &layers(),
+            None,
+            &knowing,
+            500.0,
+            None,
+            &mut shaper,
+        );
         assert_eq!(texts(&again.lines[0]), ["7"]);
     }
 
@@ -2012,6 +2386,7 @@ mod tests {
             None,
             &ctx(&theme),
             500.0,
+            None,
             &mut shaper,
         );
         let text = paragraph.text();
@@ -2060,6 +2435,7 @@ mod tests {
             None,
             &ctx(&theme),
             500.0,
+            None,
             &mut shaper,
         );
         let spans: Vec<(usize, usize)> = laid.lines[0]

@@ -472,6 +472,12 @@ pub enum Piece {
         ch: char,
     },
     Drawing(Box<Drawing>),
+    /// `<w:footnoteRef/>` or `<w:endnoteRef/>` — the note's *own* number,
+    /// standing at the head of the note rather than in the running text. The
+    /// element is empty: which note it belongs to is where it sits.
+    NoteMark {
+        endnote: bool,
+    },
     /// `<w:footnoteReference>`. The note itself is in `footnotes.xml`.
     FootnoteRef {
         id: i32,

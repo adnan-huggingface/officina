@@ -1095,6 +1095,13 @@ fn piece(out: &mut String, piece: &Piece) {
                 *ch as u32
             );
         }
+        Piece::NoteMark { endnote } => {
+            out.push_str(if *endnote {
+                "<w:endnoteRef/>"
+            } else {
+                "<w:footnoteRef/>"
+            });
+        }
         Piece::FootnoteRef { id, custom_mark } => {
             let _ = write!(out, r#"<w:footnoteReference"#);
             if *custom_mark {

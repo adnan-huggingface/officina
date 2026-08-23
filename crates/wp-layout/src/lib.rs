@@ -28,11 +28,13 @@ pub mod block;
 pub mod field;
 pub mod inline;
 pub mod linebreak;
+pub mod notes;
 pub mod resolve;
 pub mod shape;
 
 pub use block::{Flow, Frame, Page, Placement};
 pub use field::{FieldMark, FieldValues};
 pub use inline::{Content, Context, Fragment, LaidParagraph, Line, ListLabel, Source};
+pub use notes::NoteMarks;
 pub use resolve::TextStyle;
 pub use shape::{Advance, Fixed, FontRequest, Metrics, Shaper};

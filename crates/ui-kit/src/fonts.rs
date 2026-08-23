@@ -14,7 +14,7 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, OnceLock, RwLock};
 
 use eframe::egui;
 
@@ -307,6 +307,22 @@ fn first_name(name: &str) -> &str {
 /// process keeps the first answer, which is also the one epaint kept.
 static NAMED_FACES: OnceLock<BTreeMap<(String, bool, bool), egui::FontFamily>> = OnceLock::new();
 
+/// What [`register`] built out of the machine's own fonts, kept so a document's
+/// own faces can be laid over it without reading every file again.
+static SYSTEM: OnceLock<egui::FontDefinitions> = OnceLock::new();
+
+/// The faces the open document carries in its own package, which outrank
+/// anything the machine has under the same name — the author embedded them
+/// precisely so that this reader would use *these* and not a look-alike.
+///
+/// A lock rather than a `OnceLock` because documents open and close, and the
+/// set has to be replaced each time rather than accumulate: a face left behind
+/// from the last document would silently re-wrap the next one.
+#[allow(clippy::type_complexity)]
+static DOCUMENT_FACES: RwLock<
+    Option<BTreeMap<(String, bool, bool), (egui::FontFamily, Arc<[u8]>)>>,
+> = RwLock::new(None);
+
 /// The registered face for a document's font name, if the machine has it —
 /// the exact face first, Word's substitute for it second.
 ///
@@ -328,10 +344,37 @@ pub fn named_face(name: &str, bold: bool, italic: bool) -> Option<egui::FontFami
 /// This is how a caller keying its own tables — measured line pitches — asks
 /// whether the document's face is real on this machine or standing in.
 pub fn exact_face(name: &str, bold: bool, italic: bool) -> Option<egui::FontFamily> {
-    let faces = NAMED_FACES.get()?;
+    let key = (first_name(name).to_ascii_lowercase(), bold, italic);
+    if let Some(family) = document_face(&key) {
+        return Some(family);
+    }
+    NAMED_FACES.get()?.get(&key).cloned()
+}
+
+/// The registered family for a face the open document embedded, if it did.
+fn document_face(key: &(String, bool, bool)) -> Option<egui::FontFamily> {
+    let held = DOCUMENT_FACES.read().ok()?;
+    let faces = held.as_ref()?;
+    // An embedded family that carries only its regular face still answers for
+    // bold and italic: Word draws those by leaning and thickening the face it
+    // has, which is closer than dropping to a different family altogether.
     faces
-        .get(&(first_name(name).to_ascii_lowercase(), bold, italic))
-        .cloned()
+        .get(key)
+        .or_else(|| faces.get(&(key.0.clone(), false, false)))
+        .map(|(family, _)| family.clone())
+}
+
+/// The bytes of an embedded face, for a renderer that must carry the font
+/// rather than draw with it. Answers only for faces the document itself
+/// supplied, so a caller can try the machine's fonts when it says no.
+pub fn document_face_file(name: &str, bold: bool, italic: bool) -> Option<Arc<[u8]>> {
+    let key = (first_name(name).to_ascii_lowercase(), bold, italic);
+    let held = DOCUMENT_FACES.read().ok()?;
+    let faces = held.as_ref()?;
+    faces
+        .get(&key)
+        .or_else(|| faces.get(&(key.0.clone(), false, false)))
+        .map(|(_, bytes)| bytes.clone())
 }
 
 /// One candidate file per face, in preference order.
@@ -397,7 +440,7 @@ fn candidates(family: Family, bold: bool, italic: bool) -> Vec<&'static str> {
 }
 
 /// Where to look for a bare font file name.
-fn font_directories() -> Vec<PathBuf> {
+pub(crate) fn font_directories() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     if let Some(windir) = std::env::var_os("SystemRoot") {
         dirs.push(PathBuf::from(windir).join("Fonts"));
@@ -529,9 +572,104 @@ pub fn register(ctx: &egui::Context, dirs: &[PathBuf]) -> Loaded {
     // A second registration keeps the first process-wide answer — which is
     // fine, because it is also the set of families epaint was actually given.
     let _ = NAMED_FACES.set(named);
+    let _ = SYSTEM.set(definitions.clone());
 
     ctx.set_fonts(definitions);
     loaded
+}
+
+/// Lays the faces a document carries over the machine's own, and drops
+/// whatever the last document left.
+///
+/// Called on every open, including with an empty list — a document with no
+/// embedded type has to *clear* the previous one's, or its Ubuntu is drawn in
+/// the Ubuntu of a file that is no longer on screen.
+///
+/// Each face is given the same `Name` family an installed face of that name
+/// would have had, so nothing downstream needs to know where the type came
+/// from; the generic chain still follows it, so a glyph the embedded subset
+/// lacks is drawn from a system face rather than coming out as tofu.
+pub fn embed_document(
+    ctx: &egui::Context,
+    faces: &[(String, bool, bool, Vec<u8>)],
+    named: &[String],
+) {
+    let had = DOCUMENT_FACES
+        .read()
+        .ok()
+        .map(|held| held.is_some())
+        .unwrap_or(false);
+
+    // Every face this document could want, from the two places one can come
+    // from. The machine's own copy is preferred over the package's: an
+    // embedded font is what Word falls back to when the face is missing, not
+    // something it draws with in preference to the real thing — see
+    // [`crate::catalogue`].
+    let mut wanted: Vec<(String, bool, bool, Vec<u8>)> = Vec::new();
+    let mut seen: BTreeMap<(String, bool, bool), usize> = BTreeMap::new();
+    let mut want = |name: &str, bold: bool, italic: bool, fallback: Option<&Vec<u8>>| {
+        let key = (name.to_ascii_lowercase(), bold, italic);
+        if seen.contains_key(&key) {
+            return;
+        }
+        // Already known to the named-face table, and registered from the same
+        // file: registering it twice would only cost the atlas.
+        if NAMED.iter().any(|(known, _)| *known == key.0) {
+            return;
+        }
+        let bytes = match crate::catalogue::file(name, bold, italic) {
+            Some(path) => std::fs::read(path).ok(),
+            None => None,
+        };
+        let Some(bytes) = bytes.or_else(|| fallback.cloned()) else {
+            return;
+        };
+        seen.insert(key, wanted.len());
+        wanted.push((name.to_owned(), bold, italic, bytes));
+    };
+    for (name, bold, italic, bytes) in faces {
+        want(name, *bold, *italic, Some(bytes));
+    }
+    for name in named {
+        for (bold, italic) in [(false, false), (true, false), (false, true), (true, true)] {
+            want(name, bold, italic, None);
+        }
+    }
+
+    if wanted.is_empty() && !had {
+        return;
+    }
+    let faces = &wanted;
+
+    let mut definitions = SYSTEM.get().cloned().unwrap_or_default();
+    let mut registered = BTreeMap::new();
+    for (index, (name, bold, italic, bytes)) in faces.iter().enumerate() {
+        // Two embeddings of one face would otherwise collide on the key; the
+        // position keeps them apart and the later one wins the family.
+        let key = format!("embedded-{index}-{name}-{}{}", *bold as u8, *italic as u8);
+        let family =
+            egui::FontFamily::Name(format!("{name}-{}{}", *bold as u8, *italic as u8).into());
+        let mut chain: Vec<String> = definitions
+            .families
+            .get(&face(Family::of(name), *bold, *italic))
+            .cloned()
+            .unwrap_or_default();
+        definitions.font_data.insert(
+            key.clone(),
+            Arc::new(egui::FontData::from_owned(bytes.clone())),
+        );
+        chain.insert(0, key);
+        definitions.families.insert(family.clone(), chain);
+        registered.insert(
+            (name.to_ascii_lowercase(), *bold, *italic),
+            (family, Arc::from(bytes.clone().into_boxed_slice())),
+        );
+    }
+
+    if let Ok(mut held) = DOCUMENT_FACES.write() {
+        *held = Some(registered);
+    }
+    ctx.set_fonts(definitions);
 }
 
 /// The font file a document's face name resolves to, and where it came from.

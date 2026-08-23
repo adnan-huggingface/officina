@@ -21,6 +21,10 @@ pub struct TextStyle {
     pub color: Option<[u8; 3]>,
     pub highlight: Option<[u8; 3]>,
     pub shading: Option<[u8; 3]>,
+    /// `<w:bdr>` — a box drawn around the run itself, with its colour already
+    /// resolved. It costs the line room on all four sides: see
+    /// [`TextStyle::border_pad`].
+    pub border: Option<wp_model::prop::Border>,
     pub underline: UnderlineKind,
     pub underline_color: Option<[u8; 3]>,
     pub strike: bool,
@@ -38,6 +42,17 @@ pub struct TextStyle {
 }
 
 impl TextStyle {
+    /// The room a run's own border takes on every side of it.
+    ///
+    /// Measured against Word over `w:sz` 2 to 24 and `w:space` 0 and 4: the
+    /// line grows by the gap plus the rule's thickness above and below, and
+    /// the run is pushed the same distance right of where it would have sat.
+    pub fn border_pad(&self) -> f64 {
+        self.border
+            .map(|b| f64::from(b.space.unwrap_or(0)) + b.size.map(|s| s.points()).unwrap_or(0.5))
+            .unwrap_or(0.0)
+    }
+
     /// Applies the character-level transformations the *style* performs rather
     /// than the font: `w:caps` and `w:smallCaps` change what glyphs are drawn.
     ///
@@ -168,6 +183,16 @@ pub fn text_style(props: &RunProps, theme: &Theme, script: Script, fallback: &st
             .shading
             .and_then(|s| s.background())
             .and_then(|c| c.resolve(theme)),
+        border: props.border.filter(|b| b.style.draws()).map(|b| {
+            // Resolved here for the same reason a paragraph's border is: the
+            // theme is in reach now and is gone by the time a page is painted.
+            let mut b = b;
+            b.color = b.color.map(|c| match c.resolve(theme) {
+                Some(rgb) => wp_model::color::Color::Rgb(rgb),
+                None => wp_model::color::Color::Auto,
+            });
+            b
+        }),
         underline: underline.map(|u| u.kind).unwrap_or_default(),
         underline_color: underline
             .and_then(|u| u.color)

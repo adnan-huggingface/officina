@@ -29,6 +29,7 @@ mod bits;
 mod body;
 mod ctx;
 mod error;
+pub mod fonts;
 pub mod media;
 mod notes;
 mod numbering;
@@ -43,6 +44,7 @@ use std::path::Path;
 use ooxml::Package;
 
 pub use error::{Error, Result};
+pub use fonts::{embedded, EmbeddedFace};
 pub use media::embed;
 pub use parts::DocumentParts;
 pub use write::{document_out, flush, save};

@@ -24,6 +24,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod banding;
 pub mod color;
 pub mod doc;
 pub mod field;
@@ -36,6 +37,7 @@ pub mod style;
 pub mod table;
 pub mod units;
 
+pub use banding::{Band, CellAt, TablePart, TableScheme};
 pub use color::{Color, Highlight, Theme, ThemeSlot};
 pub use doc::{
     Block, Break, Document, Drawing, HeaderFooter, Hyperlink, Inline, Note, NoteKind, Paragraph,

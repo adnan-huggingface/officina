@@ -102,6 +102,11 @@ pub struct Style {
     /// resolves, because a row's height is wrong by exactly the sum of the
     /// margins nobody read. All-`None` means the style says nothing.
     pub cell_margins: crate::table::CellMargins,
+    /// The whole conditional scheme of a table style — the header row's
+    /// shading, the stripes, the doubled rule above the total. `None` for
+    /// every style that is not a table style, and for a table style that says
+    /// nothing beyond its margins. See [`crate::banding`].
+    pub table: Option<Box<crate::banding::TableScheme>>,
     /// `w:default="1"` — the style used when nothing names one. Exactly one per
     /// kind, in a well-formed document.
     pub default: bool,
@@ -128,6 +133,7 @@ impl Style {
             para: ParaProps::default(),
             run: RunProps::default(),
             cell_margins: crate::table::CellMargins::default(),
+            table: None,
             default: false,
             quick: false,
             semi_hidden: false,
@@ -297,10 +303,30 @@ impl StyleTable {
     /// paragraph is in a list, which the caller looks up because this crate's
     /// numbering lives in its own table.
     pub fn resolve_paragraph(&self, direct: &ParaProps, numbering: Option<&Layers>) -> Layers {
+        self.resolve_paragraph_in(direct, numbering, None)
+    }
+
+    /// The same, for a paragraph inside a table cell.
+    ///
+    /// A table style's conditional formatting sits between the document
+    /// defaults and the paragraph style — ECMA-376 Part 1 §17.7.2 — so a
+    /// header row's white bold reaches text that names no style of its own
+    /// and yields to any paragraph style that does say otherwise.
+    pub fn resolve_paragraph_in(
+        &self,
+        direct: &ParaProps,
+        numbering: Option<&Layers>,
+        table: Option<&crate::banding::TablePart>,
+    ) -> Layers {
         let mut layers = Layers {
             para: self.defaults.para.clone(),
             run: self.defaults.run.clone(),
         };
+
+        if let Some(part) = table {
+            layers.para.layer(&part.para, Layer::Style);
+            layers.run.layer(&part.run, Layer::Style);
+        }
 
         // A paragraph naming no style still gets the default one.
         let style = direct
@@ -364,6 +390,73 @@ impl StyleTable {
         out
     }
 
+    /// Everything a table style says about one cell, already layered.
+    ///
+    /// The chain is walked root-first so a style based on another inherits its
+    /// scheme, and within each style the parts apply in the order
+    /// [`crate::banding::bands`] returns them — whole table, stripes, edges,
+    /// corners. Direct properties on the table, the row and the cell are *not*
+    /// applied here: they outrank the style and the caller lays them on top.
+    pub fn resolve_table_cell(
+        &self,
+        table: &crate::table::TableProps,
+        at: crate::banding::CellAt,
+    ) -> crate::banding::TablePart {
+        let mut out = crate::banding::TablePart::default();
+        // A table naming no style is still the default table style's table.
+        let Some(id) = table.style.or_else(|| self.default_style(StyleKind::Table)) else {
+            return out;
+        };
+        for step in self.chain(id) {
+            let Some(scheme) = self.get(step).and_then(|style| style.table.as_deref()) else {
+                continue;
+            };
+            overlay_part(&mut out, &scheme.whole);
+            for band in crate::banding::bands(at, table.look, scheme) {
+                if let Some(part) = scheme.parts.get(&band) {
+                    overlay_part(&mut out, part);
+                }
+            }
+        }
+        out
+    }
+
+    /// Where a table starts, and what its own leading edge does about it.
+    ///
+    /// Measured against Word over three cell margins and three indents: an
+    /// indent that is *stated at all* — even as zero, which is what every
+    /// built-in table style states — is measured to the text inside the first
+    /// cell, so the table's edge hangs left of it by the cell's left margin.
+    /// An indent nobody states leaves the edge on the margin itself.
+    ///
+    /// Answers the offset from the text margin to the table's leading edge.
+    pub fn resolve_table_indent(
+        &self,
+        table: &crate::table::TableProps,
+        available: crate::units::Twips,
+    ) -> f64 {
+        let mut stated = table.props_indent();
+        if stated.is_none() {
+            let styled = table.style.or_else(|| self.default_style(StyleKind::Table));
+            if let Some(id) = styled {
+                for step in self.chain(id) {
+                    if let Some(part) = self.get(step).and_then(|s| s.table.as_deref()) {
+                        stated = part.whole.indent.or(stated);
+                    }
+                }
+            }
+        }
+        let Some(indent) = stated else { return 0.0 };
+        let indent = indent.resolve(available).map(|t| t.points()).unwrap_or(0.0);
+        let padding = self
+            .resolve_cell_margins(table)
+            .start
+            .and_then(|w| w.resolve(available))
+            .map(|t| t.points())
+            .unwrap_or(0.0);
+        indent - padding
+    }
+
     pub fn resolve_run(&self, paragraph: &Layers, direct: &RunProps) -> RunProps {
         let mut run = paragraph.run.clone();
         if let Some(style) = direct.style {
@@ -378,6 +471,28 @@ impl StyleTable {
         run.style = direct.style;
         run
     }
+}
+
+/// Lays one conditional part over what the parts below it said.
+fn overlay_part(out: &mut crate::banding::TablePart, over: &crate::banding::TablePart) {
+    fn edges(out: &mut crate::table::TableBorders, over: &crate::table::TableBorders) {
+        out.top = over.top.or(out.top);
+        out.start = over.start.or(out.start);
+        out.bottom = over.bottom.or(out.bottom);
+        out.end = over.end.or(out.end);
+        out.inside_h = over.inside_h.or(out.inside_h);
+        out.inside_v = over.inside_v.or(out.inside_v);
+    }
+    out.para.layer(&over.para, crate::prop::Layer::Style);
+    out.run.layer(&over.run, crate::prop::Layer::Style);
+    edges(&mut out.borders, &over.borders);
+    edges(&mut out.cell_borders, &over.cell_borders);
+    out.cell_margins.top = over.cell_margins.top.or(out.cell_margins.top);
+    out.cell_margins.start = over.cell_margins.start.or(out.cell_margins.start);
+    out.cell_margins.bottom = over.cell_margins.bottom.or(out.cell_margins.bottom);
+    out.cell_margins.end = over.cell_margins.end.or(out.cell_margins.end);
+    out.cell_shading = over.cell_shading.or(out.cell_shading);
+    out.cell_v_align = over.cell_v_align.or(out.cell_v_align);
 }
 
 /// A paragraph's resolved formatting: everything the layers agreed on.

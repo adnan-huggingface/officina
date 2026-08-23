@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 pub mod brand;
+pub mod catalogue;
 pub mod chart;
 pub mod dialog;
 pub mod fonts;

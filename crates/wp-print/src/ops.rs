@@ -79,6 +79,43 @@ pub enum Op {
     },
 }
 
+/// How long the rule above a page's footnotes is: two inches, measured off
+/// Word's own output.
+const SEPARATOR_WIDTH: f64 = 144.0;
+
+/// The stretches of a line that carry a fill, with neighbours of one colour
+/// joined into one.
+///
+/// Shading first and highlight over it: Word's highlighter is a marker laid on
+/// the page, and a run's own shading is the paper it is drawn on.
+pub fn painted_runs(line: &wp_layout::inline::Line) -> Vec<(f64, f64, [u8; 3])> {
+    let mut out: Vec<(f64, f64, [u8; 3])> = Vec::new();
+    for which in 0..2 {
+        let mut open: Option<(f64, f64, [u8; 3])> = None;
+        for fragment in &line.fragments {
+            let colour = if which == 0 {
+                fragment.style.shading
+            } else {
+                fragment.style.highlight
+            };
+            let colour = colour.filter(|_| !fragment.style.hidden);
+            match (open.as_mut(), colour) {
+                // Abutting to within a rounding error counts as touching.
+                (Some(run), Some(rgb)) if run.2 == rgb && fragment.x <= run.1 + 0.01 => {
+                    run.1 = fragment.x + fragment.width;
+                }
+                (_, Some(rgb)) => {
+                    out.extend(open.take());
+                    open = Some((fragment.x, fragment.x + fragment.width, rgb));
+                }
+                (_, None) => out.extend(open.take()),
+            }
+        }
+        out.extend(open);
+    }
+    out
+}
+
 /// Everything one page draws, in the order the screen draws it.
 pub fn flatten(page: &Page) -> Vec<Op> {
     let mut ops = Vec::new();
@@ -117,6 +154,20 @@ pub fn flatten(page: &Page) -> Vec<Op> {
             }
             Placed::Line { line, .. } => {
                 let baseline = placement.y + line.baseline;
+                // Shading and highlight are laid down for the whole stretch
+                // they cover before any type goes on, and neighbours that
+                // share a colour are drawn as one. Filling them fragment by
+                // fragment leaves a hairline of paper between two words of an
+                // inverse-video run, where the two rectangles fail to meet.
+                for (from, to, rgb) in painted_runs(line) {
+                    ops.push(Op::Fill {
+                        x: placement.x + from,
+                        y: placement.y,
+                        width: to - from,
+                        height: placement.height,
+                        rgb,
+                    });
+                }
                 for fragment in &line.fragments {
                     let x = placement.x + fragment.x;
                     if let Content::Object {
@@ -148,7 +199,14 @@ pub fn flatten(page: &Page) -> Vec<Op> {
                     }
                     let (text, advances) = match &fragment.content {
                         Content::Text { text, advances, .. }
-                        | Content::Label { text, advances } => (text, advances),
+                        | Content::Label { text, advances }
+                        // A leadered tab draws the dots of a table of
+                        // contents, and is otherwise an empty stretch.
+                        | Content::Tab {
+                            fill: text,
+                            advances,
+                            ..
+                        } => (text, advances),
                         _ => continue,
                     };
                     if text.is_empty() {
@@ -160,18 +218,38 @@ pub fn flatten(page: &Page) -> Vec<Op> {
                         // marks on; a printed page has no such mode.
                         continue;
                     }
-                    if let Some(rgb) = style.highlight {
-                        ops.push(Op::Fill {
-                            x,
-                            y: placement.y,
-                            width: fragment.width,
-                            height: placement.height,
-                            rgb,
-                        });
+                    if let Some(border) = style.border {
+                        let thickness = border.size.map(|s| s.points()).unwrap_or(0.5);
+                        let rgb = border
+                            .color
+                            .and_then(|c| c.resolve(&theme))
+                            .unwrap_or([0, 0, 0]);
+                        // The rule is stroked down the middle of the box edge,
+                        // so the box is drawn half a thickness inside the room
+                        // the line reserved for it.
+                        let half = thickness / 2.0;
+                        let (bx, by) = (x + half, placement.y + half);
+                        let (bw, bh) = (
+                            (fragment.width - thickness).max(0.0),
+                            (placement.height - thickness).max(0.0),
+                        );
+                        for (from, to) in [
+                            ((bx, by), (bx + bw, by)),
+                            ((bx, by + bh), (bx + bw, by + bh)),
+                            ((bx, by), (bx, by + bh)),
+                            ((bx + bw, by), (bx + bw, by + bh)),
+                        ] {
+                            ops.push(Op::Rule {
+                                from,
+                                to,
+                                thickness,
+                                rgb,
+                            });
+                        }
                     }
                     let rgb = style.color.unwrap_or([0, 0, 0]);
                     ops.push(Op::Text {
-                        x,
+                        x: x + fragment.lead,
                         baseline: baseline - style.raise,
                         text: text.clone(),
                         advances: advances.clone(),
@@ -179,10 +257,14 @@ pub fn flatten(page: &Page) -> Vec<Op> {
                         rgb,
                     });
                     let base = baseline - style.raise;
+                    // A rule under or through the type follows the type, not
+                    // the box a run border draws around it.
+                    let ink = x + fragment.lead;
+                    let ink_end = ink + advances.iter().sum::<f64>();
                     if style.underline.draws() {
                         ops.push(Op::Rule {
-                            from: (x, base + 2.0),
-                            to: (x + fragment.width, base + 2.0),
+                            from: (ink, base + 2.0),
+                            to: (ink_end, base + 2.0),
                             thickness: 1.0,
                             rgb: style.underline_color.unwrap_or(rgb),
                         });
@@ -190,8 +272,8 @@ pub fn flatten(page: &Page) -> Vec<Op> {
                     if style.strike || style.double_strike {
                         let middle = base - style.font.size * 0.3;
                         ops.push(Op::Rule {
-                            from: (x, middle),
-                            to: (x + fragment.width, middle),
+                            from: (ink, middle),
+                            to: (ink_end, middle),
                             thickness: 1.0,
                             rgb,
                         });
@@ -228,7 +310,16 @@ pub fn flatten(page: &Page) -> Vec<Op> {
             // Resolved or dropped at pagination; never on a page. The screen
             // paints neither and neither does paper.
             Placed::BreakEdge { .. } => {}
-            Placed::FootnoteSeparator => {}
+            Placed::FootnoteSeparator => {
+                // Two inches of hairline against the left of the text column,
+                // which is what Word draws above a page's notes.
+                ops.push(Op::Rule {
+                    from: (placement.x, placement.y),
+                    to: (placement.x + SEPARATOR_WIDTH, placement.y),
+                    thickness: 1.0,
+                    rgb: [0, 0, 0],
+                });
+            }
         }
     }
     ops
@@ -469,6 +560,7 @@ mod tests {
             color: None,
             highlight: None,
             shading: None,
+            border: None,
             underline: wp_model::prop::UnderlineKind::None,
             underline_color: None,
             strike: false,
@@ -492,6 +584,7 @@ mod tests {
                     fragments: vec![Fragment {
                         x: 0.0,
                         width,
+                        lead: 0.0,
                         style,
                         content: Content::Text {
                             text: text.to_owned(),

@@ -7,7 +7,7 @@ use wp_model::style::{DocDefaults, Style, StyleKind};
 
 use crate::ctx::Ctx;
 use crate::props;
-use crate::xml::{attr, attr_i32, end_local_name, local_name, on_off, val};
+use crate::xml::{attr, attr_i32, attr_u32, end_local_name, local_name, on_off, val};
 
 /// Reads the whole part into `ctx.styles`.
 ///
@@ -108,12 +108,33 @@ fn read_style(reader: &mut Reader<&[u8]>, ctx: &mut Ctx<'_>, style: &mut Style, 
                     // The one slice of a table style's `tblPr` the layout
                     // resolves. The resume that found this keeps its cell
                     // margins here and nowhere else.
-                    b"tblPr" if !empty => style.cell_margins = read_style_margins(reader),
-                    // A conditional band (`firstRow`, `band1Horz`, …) holds its
-                    // own pPr and rPr; falling through would blend a band's
-                    // formatting into the base style.
+                    b"tblPr" if !empty => {
+                        let scheme = table_scheme(style);
+                        read_style_table(reader, b"tblPr", &mut scheme.whole);
+                        if let Some(size) = scheme.whole.row_band {
+                            scheme.row_band = size.max(1);
+                        }
+                        if let Some(size) = scheme.whole.column_band {
+                            scheme.column_band = size.max(1);
+                        }
+                        style.cell_margins = scheme.whole.cell_margins;
+                    }
+                    // A conditional band holds its own pPr, rPr, tblPr and
+                    // tcPr; falling through would blend the header row's white
+                    // bold into every cell of the table.
                     b"tblStylePr" if !empty => {
-                        let _ = crate::xml::skip_element(reader, b"tblStylePr");
+                        // `w:type`, not `w:val`: the one element in the style
+                        // part whose name is not in the usual attribute.
+                        let band = attr(&e, b"type")
+                            .as_deref()
+                            .and_then(wp_model::Band::from_val);
+                        let mut part = wp_model::TablePart::default();
+                        read_band(reader, ctx, &mut part);
+                        if let Some(band) = band {
+                            if !part.is_empty() {
+                                table_scheme(style).parts.insert(band, part);
+                            }
+                        }
                     }
                     _ => {}
                 }
@@ -125,20 +146,82 @@ fn read_style(reader: &mut Reader<&[u8]>, ctx: &mut Ctx<'_>, style: &mut Style, 
     }
 }
 
-/// The `<w:tblCellMar>` inside a style's `<w:tblPr>`, and nothing else of it.
-fn read_style_margins(reader: &mut Reader<&[u8]>) -> wp_model::table::CellMargins {
-    let mut margins = wp_model::table::CellMargins::default();
+/// The style's conditional scheme, made on first use.
+fn table_scheme(style: &mut Style) -> &mut wp_model::TableScheme {
+    style
+        .table
+        .get_or_insert_with(|| Box::new(wp_model::TableScheme::default()))
+}
+
+/// A `<w:tblPr>` as a *style* states it: the grid it draws, the padding inside
+/// every cell, and how many rows a stripe covers.
+fn read_style_table(reader: &mut Reader<&[u8]>, until: &[u8], part: &mut wp_model::TablePart) {
+    let mut band = (None, None);
     while let Ok(event) = reader.read_event() {
         match event {
-            Event::Start(e) if local_name(&e) == b"tblCellMar" => {
-                margins = crate::body::read_cell_margins(reader, b"tblCellMar");
-            }
-            Event::End(e) if end_local_name(&e) == b"tblPr" => break,
+            Event::Start(e) | Event::Empty(e) => match local_name(&e) {
+                b"tblCellMar" => {
+                    part.cell_margins = crate::body::read_cell_margins(reader, b"tblCellMar");
+                }
+                b"tblBorders" => {
+                    part.borders = crate::body::read_table_borders(reader, b"tblBorders").0;
+                }
+                b"tblInd" => part.indent = Some(crate::body::width(&e)),
+                b"shd" => part.cell_shading = Some(props::shading(&e)),
+                b"tblStyleRowBandSize" => band.0 = attr_u32(&e, b"val"),
+                b"tblStyleColBandSize" => band.1 = attr_u32(&e, b"val"),
+                _ => {}
+            },
+            Event::End(e) if end_local_name(&e) == until => break,
             Event::Eof => break,
             _ => {}
         }
     }
-    margins
+    part.row_band = band.0;
+    part.column_band = band.1;
+}
+
+/// One `<w:tblStylePr>`: what this band says about the text, the grid and the
+/// cells it covers.
+fn read_band(reader: &mut Reader<&[u8]>, ctx: &mut Ctx<'_>, part: &mut wp_model::TablePart) {
+    while let Ok(event) = reader.read_event() {
+        match event {
+            Event::Start(e) => match local_name(&e) {
+                b"pPr" => part.para = props::para_props(reader, ctx).props,
+                b"rPr" => part.run = props::run_props(reader, ctx).props,
+                b"tblPr" => read_style_table(reader, b"tblPr", part),
+                b"tcPr" => read_band_cell(reader, part),
+                _ => {}
+            },
+            Event::End(e) if end_local_name(&e) == b"tblStylePr" => break,
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+}
+
+/// The `<w:tcPr>` of a band — the edges and fill it gives every cell it covers.
+fn read_band_cell(reader: &mut Reader<&[u8]>, part: &mut wp_model::TablePart) {
+    while let Ok(event) = reader.read_event() {
+        match event {
+            Event::Start(e) | Event::Empty(e) => match local_name(&e) {
+                b"tcBorders" => {
+                    part.cell_borders = crate::body::read_table_borders(reader, b"tcBorders").0;
+                }
+                b"shd" => part.cell_shading = Some(props::shading(&e)),
+                b"vAlign" => {
+                    part.cell_v_align = val(&e)
+                        .as_deref()
+                        .and_then(wp_model::table::CellVAlign::from_val);
+                }
+                b"tcMar" => part.cell_margins = crate::body::read_cell_margins(reader, b"tcMar"),
+                _ => {}
+            },
+            Event::End(e) if end_local_name(&e) == b"tcPr" => break,
+            Event::Eof => break,
+            _ => {}
+        }
+    }
 }
 
 #[cfg(test)]

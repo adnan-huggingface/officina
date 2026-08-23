@@ -75,8 +75,13 @@ fn office_templates() -> Vec<(String, Document)> {
 
 fn lay(document: &Document) -> Vec<block::Page> {
     let theme = document.theme.clone();
+    let marks = wp_layout::NoteMarks::of(document);
     let ctx = Context {
         theme: &theme,
+        styles: &document.styles,
+        notes: &marks,
+        note_mark: None,
+        table_part: None,
         default_tab: document.settings.default_tab_stop,
         fallback_font: "test",
         has_face: |_| false,

@@ -85,6 +85,13 @@ impl TableBorders {
     }
 }
 
+impl TableProps {
+    /// The table's own `<w:tblInd>`, if it states one.
+    pub fn props_indent(&self) -> Option<Width> {
+        self.indent
+    }
+}
+
 /// `<w:tblCellMar>` — the padding inside every cell.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct CellMargins {
