@@ -98,6 +98,12 @@ pub struct TablePart {
     /// carries. Kept here so one reader serves the base and the bands.
     pub row_band: Option<u32>,
     pub column_band: Option<u32>,
+    /// Whether the table named a style of its own, rather than falling to the
+    /// document's default table style. Nothing about a cell's *appearance*
+    /// turns on it — it is here because the size Word's own Normal states
+    /// stops at the edge of such a table, and only such a table. See
+    /// [`crate::style::StyleTable::size_normal_does_not_carry_in`].
+    pub named: bool,
 }
 
 impl TablePart {

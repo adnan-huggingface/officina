@@ -2030,22 +2030,40 @@ still differs" below.
 
 ## Where the demonstration document still differs
 
-- **Word draws the text in every one of its tables a point smaller than the
-  resolution rules say.** The document's default paragraph style states 12pt and
-  Word reports the cells as carrying that style, yet renders them at the
-  document default of 11. It is reproducible in a four-style file and it is not
-  the table style's own `rPr`; beyond that the probes disagreed with each other,
-  and a rule that cannot be stated is not one to build. The cost is table
-  wrapping on pages 3 and 4 — "Highlighter" wraps where Word fits it — and a
-  paragraph's worth of drift at the page 3/4 boundary.
-- **Text does not wrap between the two arrows on page 7.** They are anchored to
-  the *margin*, so which text they displace is known only after pagination; the
-  obstacle machinery the floating table and the drop cap use is flow-relative.
-  Stated already in `wp_layout::block`'s limits.
+- **A table's columns are the grid's, not a fit to what is in them.** Word
+  autofits a table whose width is `auto` or a percentage: it measures the
+  content of each column and settles widths of its own, which is why the
+  calendar's day names break as `Su`/`n` in Word and `S`/`un` here. Where Word
+  wrote the grid out after laying the table — every table in this document but
+  the calendar — the grid *is* Word's answer and the columns now agree with it
+  to the twip. Content-measured autofit is a body of work of its own.
+- **A bulleted line is laid half a point tall.** Word pitches the lines of this
+  document's lists at 16.44pt where the bullet's own face, measured alone,
+  says 16.90. The face on a line and the line's pitch are not the simple
+  maximum they are everywhere else; the rule for a mixed line has not been
+  measured. It costs two and a half points down the length of page 8.
 - **Glyph advances drift about a third of a point across a line.** epaint
   measures on a pixel grid where Word measures in design units. It has never
   changed a line ending in this document; it is the whole of the residual on
   pages 1 and 2.
+
+Measured against Word's own printing of it, page by page: the share of Word's
+lines that Scriva puts within a point of where Word does was 41% when the
+work on pages 3, 4 and 7 began and is 82% now — pages 1, 5 and 6 exactly,
+page 7 at 95%, pages 3 and 4 at 81% and 85%, and page 8's 46% is mostly its
+list pitch and a bullet that this reader writes into the PDF's text layer as
+the private-use character the file actually holds rather than as Word's
+translated one. Page 2's 79% is the mono-face paragraph whose *text layer*
+Word itself misreports — the picture matches.
+
+Six rules of Word's came out of the document's tables and its two arrows, and
+each is written up in LEARNINGS.md: the size its own Normal declines to carry
+into a table cell, a table style's `pPr` being the base of its scheme rather
+than a paragraph's properties, a merged cell running down the rows it spans,
+the empty paragraph a cell must end a table with taking no height, the rule
+between two rows being paid for once by the row below, and a float at a margin
+narrowing whatever lands beside it rather than what it is anchored to. That
+last one made the layout run twice, the way a `{ PAGE }` field already did.
 
 The document opened in the window and took it straight down. A face the
 package carries is registered and asked for in the same breath, and

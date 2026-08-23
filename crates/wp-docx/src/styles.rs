@@ -144,6 +144,20 @@ fn read_style(reader: &mut Reader<&[u8]>, ctx: &mut Ctx<'_>, style: &mut Style, 
             _ => {}
         }
     }
+
+    // A table style's own `<w:pPr>` and `<w:rPr>` are the base of its
+    // conditional scheme — what it says about every cell — rather than the
+    // properties of a paragraph that names it, because no paragraph can name a
+    // table style. Every built-in table style states `<w:spacing
+    // w:line="240"/>` there, which is why a table in a document spaced at one
+    // and a sixth is spaced singly: reading only the bands left every row but
+    // the header two points too far apart.
+    if kind == StyleKind::Table {
+        let (para, run) = (style.para.clone(), style.run.clone());
+        let scheme = table_scheme(style);
+        scheme.whole.para = para;
+        scheme.whole.run = run;
+    }
 }
 
 /// The style's conditional scheme, made on first use.

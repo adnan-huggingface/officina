@@ -89,6 +89,7 @@ fn lay(document: &Document) -> Vec<block::Page> {
         show_hidden: false,
         fields: &wp_layout::FieldValues::new(),
         band: None,
+        wraps: &wp_layout::block::Wraps::default(),
     };
     let mut shaper = Fixed;
     block::layout(document, &ctx, &mut shaper)

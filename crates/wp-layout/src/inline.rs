@@ -216,6 +216,10 @@ pub struct Context<'a> {
     /// Which band is being laid out: `None` for the document body, `Some(page)`
     /// for the header or footer of that page. See [`FieldMark::band`].
     pub band: Option<u32>,
+    /// Which paragraphs a float anchored to the page or a margin narrows, and
+    /// by how much. Empty on the first pass, because where such a float sits
+    /// is not known until the pages exist — see [`crate::block::Wraps`].
+    pub wraps: &'a crate::block::Wraps,
 }
 
 impl Default for Context<'_> {
@@ -233,6 +237,7 @@ impl Default for Context<'_> {
             show_hidden: false,
             fields: Box::leak(Box::new(FieldValues::default())),
             band: None,
+            wraps: Box::leak(Box::new(crate::block::Wraps::default())),
         }
     }
 }
@@ -291,15 +296,19 @@ enum UnitKind {
 
 /// Something beside the paragraph that its lines have to make room for.
 ///
-/// A floating table with text running past it, which is the only thing that
-/// makes one today. The depth is measured from the top of the paragraph, so a
-/// paragraph that starts halfway down the table is told how much of it is left.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// A floating table, a drop cap, or a picture the text is set beside. The
+/// depth is measured from the top of the paragraph, so a paragraph that starts
+/// halfway down the float is told how much of it is left. Both sides at once,
+/// because a page may hold a picture at each margin and the text between them
+/// is narrowed from both.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Obstacle {
     /// How far down from the top of this paragraph the obstacle still reaches.
     pub depth: f64,
     /// How much measure it takes away, from the left.
     pub indent: f64,
+    /// How much it takes away from the right.
+    pub inset: f64,
 }
 
 /// Lays a paragraph out into lines of `width` points.
@@ -326,7 +335,7 @@ pub fn layout(
     // settled by going round: lay them, see which ones the float actually
     // reaches, lay them again. Two passes settle every real case; the bound is
     // there so a pathological one cannot spin.
-    let mut indents: Vec<f64> = Vec::new();
+    let mut indents: Vec<(f64, f64)> = Vec::new();
     let mut lines;
     for _ in 0..4 {
         lines = fill(&units, width, start, end, first, &tabs, ctx, &indents);
@@ -448,21 +457,23 @@ fn push_note_mark(
 /// A line is pushed aside when any part of it lies within the obstacle's depth,
 /// which is what makes the line that straddles the bottom of a floating table
 /// the last narrow one rather than the first wide one.
-fn beside(lines: &[Line], obstacle: Option<Obstacle>) -> Vec<f64> {
-    let Some(obstacle) = obstacle.filter(|o| o.depth > 0.0 && o.indent > 0.0) else {
+fn beside(lines: &[Line], obstacle: Option<Obstacle>) -> Vec<(f64, f64)> {
+    let clear = (0.0, 0.0);
+    let Some(obstacle) = obstacle.filter(|o| o.depth > 0.0 && (o.indent > 0.0 || o.inset > 0.0))
+    else {
         return Vec::new();
     };
     let mut out = Vec::new();
     let mut y = 0.0;
     for line in lines {
         out.push(if y < obstacle.depth - 0.01 {
-            obstacle.indent
+            (obstacle.indent, obstacle.inset)
         } else {
-            0.0
+            clear
         });
         y += line.height;
     }
-    while out.last() == Some(&0.0) {
+    while out.last() == Some(&clear) {
         out.pop();
     }
     out
@@ -1195,9 +1206,10 @@ fn fill(
     first: f64,
     tabs: &[TabStop],
     ctx: &Context<'_>,
-    // How far each line stands clear of something beside the paragraph. Short
-    // or empty means the rest of the lines are unobstructed.
-    beside: &[f64],
+    // How far each line stands clear of something beside the paragraph, on
+    // the left and on the right. Short or empty means the rest of the lines
+    // are unobstructed.
+    beside: &[(f64, f64)],
 ) -> Vec<Line> {
     let mut lines: Vec<Line> = Vec::new();
     let mut fragments: Vec<Fragment> = Vec::new();
@@ -1214,7 +1226,8 @@ fn fill(
     let mut used = 0.0f64;
     let available = |is_first: bool, line: usize| {
         let left = if is_first { start + first } else { start };
-        (width - end - left - beside.get(line).copied().unwrap_or(0.0)).max(1.0)
+        let (aside, inset) = beside.get(line).copied().unwrap_or((0.0, 0.0));
+        (width - end - left - aside - inset).max(1.0)
     };
 
     let mut index = 0usize;
@@ -1372,7 +1385,7 @@ fn continue_fill(
     end: f64,
     tabs: &[TabStop],
     ctx: &Context<'_>,
-    beside: &[f64],
+    beside: &[(f64, f64)],
 ) -> Vec<Line> {
     // Every line after the first uses the non-first-line indent, which is what
     // passing `0.0` for the first-line offset says.
@@ -1518,7 +1531,7 @@ fn finish(
     start: f64,
     end: f64,
     first: f64,
-    beside: &[f64],
+    beside: &[(f64, f64)],
     paragraph: &Paragraph,
     ctx: &Context<'_>,
     shaper: &mut dyn Shaper,
@@ -1636,9 +1649,9 @@ fn finish(
         y += line.height;
 
         let is_first = index == 0;
-        let aside = beside.get(index).copied().unwrap_or(0.0);
+        let (aside, inset) = beside.get(index).copied().unwrap_or((0.0, 0.0));
         let left = aside + if is_first { start + first } else { start };
-        let limit = (width - end - left).max(0.0);
+        let limit = (width - end - left - inset).max(0.0);
         let slack = (limit - line.width).max(0.0);
         // The last line of a justified paragraph is not stretched, and neither
         // is one ended by an explicit break. `distribute` stretches both, which
@@ -1729,6 +1742,7 @@ mod tests {
             show_hidden: false,
             fields: Box::leak(Box::new(crate::field::FieldValues::default())),
             band: None,
+            wraps: Box::leak(Box::new(crate::block::Wraps::default())),
         }
     }
 

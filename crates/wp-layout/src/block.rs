@@ -242,7 +242,24 @@ pub struct Frame<'a, 'b> {
 ///
 /// A document with no page fields in it pays for one pass, not two.
 pub fn layout(document: &Document, ctx: &Context<'_>, shaper: &mut dyn Shaper) -> Vec<Page> {
-    let first = layout_once(document, ctx, shaper);
+    let plain = layout_once(document, ctx, shaper);
+    // A float anchored to the page or a margin sits where only pagination
+    // knows, and the lines it narrows have to be broken before that. So the
+    // document is laid out once, the floats are read off the pages, and the
+    // paragraphs they stand beside are laid again — the same two-pass shape a
+    // `{ PAGE }` field needs, for the same reason. Once only: a wrap that
+    // moved the float that caused it would never settle.
+    let wraps = Wraps::of(&plain);
+    let beside = Context {
+        wraps: &wraps,
+        ..*ctx
+    };
+    let (ctx, first) = if wraps.is_empty() {
+        (ctx, plain)
+    } else {
+        let again = layout_once(document, &beside, shaper);
+        (&beside, again)
+    };
     let values = evaluate(&first, ctx.fields);
     if values.is_empty() {
         return first;
@@ -808,6 +825,7 @@ fn flow_drop_cap(
     into.obstacle = Some(inline::Obstacle {
         depth: height,
         indent: extent,
+        inset: 0.0,
     });
     into.floating_baseline = Some((baseline, lines.max(1)));
 }
@@ -873,6 +891,7 @@ fn flow_floating_table(
     into.obstacle = Some(inline::Obstacle {
         depth: height + below,
         indent: extent + gap,
+        inset: 0.0,
     });
 }
 
@@ -921,6 +940,19 @@ pub fn flow_paragraph(
         notes_referenced(paragraph, document, ctx, shaper, counters, width)
     };
     let index = into.paragraphs;
+    // A picture standing at a margin narrows this paragraph as much as a
+    // floating table would. Which paragraphs it reaches is knowledge from the
+    // pass before this one — see [`Wraps`].
+    if let Some(beside) = ctx.wraps.beside(index) {
+        into.obstacle = Some(match into.obstacle {
+            Some(already) => inline::Obstacle {
+                depth: already.depth.max(beside.depth),
+                indent: already.indent.max(beside.indent),
+                inset: already.inset.max(beside.inset),
+            },
+            None => beside,
+        });
+    }
     let laid = inline::layout(
         paragraph,
         index,
@@ -1626,32 +1658,6 @@ fn flow_table(
     available: f64,
     into: &mut Flow,
 ) {
-    let widths = column_widths(table, available);
-    // Not simply `w:tblInd`: an indent that is stated at all is measured to
-    // the text inside the first cell, so the table's edge hangs left of the
-    // margin by the cell's own padding. See `resolve_table_indent`.
-    let indent = document
-        .styles
-        .resolve_table_indent(&table.props, Twips::from_points(available));
-    // `<w:jc>` on a table moves the whole table within the text column rather
-    // than the text within its cells. A centred table is what the
-    // demonstration document's nested one is, and without this it sat against
-    // the left margin sixty-six points from where Word draws it.
-    // A table placed by its justification is measured from the text column and
-    // not from the indent: Word centres the demonstration document's nested
-    // table on 306, the middle of the column, with no sign of the hang that
-    // `w:tblInd` otherwise gives it.
-    let indent = match table.props.justify {
-        Some(wp_model::prop::Justify::Center) => {
-            let laid: f64 = column_widths(table, available).iter().sum();
-            ((available - laid) / 2.0).max(0.0)
-        }
-        Some(wp_model::prop::Justify::End) => {
-            let laid: f64 = column_widths(table, available).iter().sum();
-            (available - laid).max(0.0)
-        }
-        _ => indent,
-    };
     // The style chain is heard from: a table whose margins live in its style —
     // where Google Docs puts them — pads its cells all the same.
     let margins = document.styles.resolve_cell_margins(&table.props);
@@ -1665,6 +1671,40 @@ fn flow_table(
         .and_then(|w| w.resolve(Twips::from_points(available)))
         .map(|t| t.points())
         .unwrap_or(5.4);
+    // Not simply `w:tblInd`: an indent that is stated at all is measured to
+    // the text inside the first cell, so the table's edge hangs left of the
+    // margin by the cell's own padding. See `resolve_table_indent`.
+    let indent = document
+        .styles
+        .resolve_table_indent(&table.props, Twips::from_points(available));
+    // What a table has to lay its columns in, which is *not* the text column.
+    // Its cell text spans the column and its own edges hang outside it by the
+    // cells' padding, so a grid wider than the column by exactly that much
+    // fits and must not be squeezed into it. Measured: Word lays the
+    // demonstration document's widest table at its grid's 478.8pt in a 468pt
+    // column, and asked over COM for its columns answers with the grid to the
+    // twip.
+    let room = (available - indent + pad_end).max(1.0);
+    let widths = column_widths(table, room);
+    // `<w:jc>` on a table moves the whole table within the text column rather
+    // than the text within its cells. A centred table is what the
+    // demonstration document's nested one is, and without this it sat against
+    // the left margin sixty-six points from where Word draws it.
+    // A table placed by its justification is measured from the text column and
+    // not from the indent: Word centres the demonstration document's nested
+    // table on 306, the middle of the column, with no sign of the hang that
+    // `w:tblInd` otherwise gives it.
+    let indent = match table.props.justify {
+        Some(wp_model::prop::Justify::Center) => {
+            let laid: f64 = column_widths(table, room).iter().sum();
+            ((available - laid) / 2.0).max(0.0)
+        }
+        Some(wp_model::prop::Justify::End) => {
+            let laid: f64 = column_widths(table, room).iter().sum();
+            (available - laid).max(0.0)
+        }
+        _ => indent,
+    };
     let pad_top = margins
         .top
         .and_then(|w| w.resolve(Twips::from_points(available)))
@@ -1682,6 +1722,19 @@ fn flow_table(
     let mut still_header = true;
 
     let row_count = table.rows.len();
+    // What a vertically merged cell still has to be given room for.
+    //
+    // A cell that spans rows is not a reason for the *first* of them to be
+    // tall enough to hold all of it: Word gives each row the height its own
+    // cells need and lets the merged text run on down through them, and only
+    // the last row of the span grows to cover whatever is left. Measured
+    // against the two-by-two nested table of the demonstration document, whose
+    // merged cell holds two paragraphs: Word puts the second beside the second
+    // row's own text, where charging the first row for both put it a whole row
+    // lower and moved everything below the table with it.
+    let mut owed: Vec<Owed> = Vec::new();
+    // The bottom rule of the row before this one, which the two rows share.
+    let mut rule_from_above: f64 = 0.0;
     for (row_index, row) in table.rows.iter().enumerate() {
         let is_last_row = row_index + 1 == row_count;
         let mut cells: Vec<CellPlan> = Vec::new();
@@ -1743,7 +1796,17 @@ fn flow_table(
                     table_part: Some(&styled),
                     ..*ctx
                 };
-                for block in &cell.content {
+                for (at, block) in cell.content.iter().enumerate() {
+                    // The paragraph a cell must end with after a table is
+                    // punctuation, not a line: the format forbids a cell
+                    // ending in a table, so Word writes an empty paragraph
+                    // there and gives it no height whatever — measured, its
+                    // spacing before included. It is still a paragraph the
+                    // document counts, so the numbering steps over it.
+                    if closes_a_cell(&cell.content, at) {
+                        cell_flow.paragraphs += 1;
+                        continue;
+                    }
                     flow_block(
                         block,
                         document,
@@ -1875,6 +1938,7 @@ fn flow_table(
                         .map(|side| (side, pick(side).map(|b| themed(b, &document.theme))))
                 },
                 content: y,
+                spans: table.merge_height(row_index, column),
                 lines,
             });
 
@@ -1882,7 +1946,16 @@ fn flow_table(
             column += span;
         }
 
-        let tallest = cells.iter().map(|c| c.content).fold(0.0f64, f64::max);
+        let tallest = cells
+            .iter()
+            .filter(|cell| cell.spans <= 1)
+            .map(|c| c.content)
+            .fold(0.0f64, f64::max);
+        // A span that ends here is what this row must finally cover.
+        let tallest = owed
+            .iter()
+            .filter(|debt| debt.last == row_index)
+            .fold(tallest, |tallest, debt| tallest.max(debt.remaining));
         // The body's own accumulator is not advanced by the row — each cell
         // ran its own, from the quarter-point entry. Only the fact that a
         // half-point was paid somewhere matters to the page-reset pass.
@@ -1900,8 +1973,17 @@ fn flow_table(
                 .map(|border| border.size.map(|s| s.points()).unwrap_or(0.5))
                 .fold(0.0f64, f64::max)
         };
-        let rule_above = rule(Side::Top);
+        // The rule between two rows is one line and is paid for once, by the
+        // row below it, and it is as thick as the heavier of the two edges
+        // that meet there. A header row whose style rules three points under
+        // it and nothing above the row that follows is three points of height
+        // that belongs to nobody unless the row below claims it — measured on
+        // the demonstration document, where every row after the header sat
+        // three points too high. A calendar whose rows rule a hairline under
+        // one and over the next must not pay for it twice.
+        let rule_above = rule(Side::Top).max(rule_from_above);
         let rule_below = if is_last_row { rule(Side::Bottom) } else { 0.0 };
+        rule_from_above = rule(Side::Bottom);
         let mut height = tallest + pad_top + pad_bottom;
         // A stated row height is a floor or a ceiling depending on its rule.
         if let Some(rule) = row.props.height {
@@ -1912,6 +1994,16 @@ fn flow_table(
             };
         }
         let inner_height = (height - pad_top - pad_bottom).max(0.0);
+        for cell in cells.iter().filter(|cell| cell.spans > 1) {
+            owed.push(Owed {
+                remaining: cell.content,
+                last: row_index + cell.spans - 1,
+            });
+        }
+        for debt in &mut owed {
+            debt.remaining -= inner_height;
+        }
+        owed.retain(|debt| debt.last > row_index && debt.remaining > 0.0);
         // Vertical alignment is a shift of the cell's lines within the row's
         // final height, which is why it can only be applied once that is known.
         for cell in &mut cells {
@@ -1982,7 +2074,13 @@ fn flow_table(
                     }
                 }
                 for line in &cell.lines {
-                    if line.top < top - EPSILON || line.top >= bottom - EPSILON {
+                    // A cell that spans rows keeps its lines here, in the row
+                    // that starts the merge, and draws the ones past this
+                    // row's own height over the rows below — which is where
+                    // they belong, because between them there is no rule and
+                    // no cell edge, only the one tall cell a reader sees.
+                    let runs_on = is_last && cell.spans > 1;
+                    if line.top < top - EPSILON || (!runs_on && line.top >= bottom - EPSILON) {
                         continue;
                     }
                     let dy = above + (line.top - top);
@@ -2044,7 +2142,31 @@ struct CellPlan {
     borders: [(Side, Option<Border>); 4],
     /// How tall the cell's own content came out.
     content: f64,
+    /// How many rows this cell covers, a vertical merge counted from the cell
+    /// that starts it. One for every ordinary cell.
+    spans: usize,
     lines: Vec<CellLine>,
+}
+
+/// Whether this block is the empty paragraph a cell has to end a table with.
+///
+/// Word draws nothing for it — not the line, not the spacing before it — and
+/// a cell whose table is followed by one is exactly as tall as the table. Put
+/// a single letter in it and the row grows by a whole line, so it is emptiness
+/// and position together that make it disappear, not the paragraph itself.
+fn closes_a_cell(content: &[Block], at: usize) -> bool {
+    at > 0
+        && at + 1 == content.len()
+        && matches!(content[at - 1], Block::Table(_))
+        && matches!(&content[at], Block::Paragraph(p) if p.is_empty())
+}
+
+/// A vertically merged cell's content, and where it must have run out.
+struct Owed {
+    /// How much of the cell's height the rows so far have not covered.
+    remaining: f64,
+    /// The last row of the span, which is the one that has to make it up.
+    last: usize,
 }
 
 /// One line of a cell, and where it sits in the row.
@@ -2230,6 +2352,129 @@ fn pull_back(items: &[Item], start: usize, mut end: usize) -> usize {
 /// **Stated limit.** `inside` and `outside` are resolved as left and right: they
 /// mean "toward the binding", which is only decided once mirrored margins are
 /// implemented.
+/// Which paragraphs a float that does not travel with the text stands beside.
+///
+/// A picture anchored to the page or to a margin is placed by the page's own
+/// geometry, so where it sits — and therefore which lines it narrows — is not
+/// known until the document has been paginated once. This is what that first
+/// pass learned, keyed by the paragraph the float is anchored to; the flow
+/// carries the obstacle on from there into whatever follows, exactly as it
+/// does for a floating table.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Wraps {
+    beside: std::collections::HashMap<usize, inline::Obstacle>,
+}
+
+impl Wraps {
+    /// Reads the floats off a laid-out document.
+    ///
+    /// A float narrows whatever *lands beside it*, not whatever it is anchored
+    /// to. The demonstration document proves the difference: its two arrows
+    /// stand at the two margins of one page, and the right-hand one is
+    /// anchored to a paragraph five lines below the text it narrows. So the
+    /// float is taken as a rectangle on the page and every paragraph that
+    /// starts inside its band is told about it.
+    pub fn of(pages: &[Page]) -> Wraps {
+        let mut wraps = Wraps::default();
+        for page in pages {
+            let tops = paragraph_tops(page);
+            for placement in &page.content {
+                let Placed::Drawing {
+                    anchor: Some(drawing),
+                    ..
+                } = &placement.kind
+                else {
+                    continue;
+                };
+                if !stands_aside(drawing) {
+                    continue;
+                }
+                let (x, y) = anchor_position(drawing, &page.geometry, placement.y);
+                let (above, left, below, right) = drawing.distance;
+                let width = drawing.extent.0.points();
+                let top = y - above.points();
+                let bottom = y + drawing.extent.1.points() + below.points();
+                let start = page.geometry.start;
+                let end = page.geometry.width - page.geometry.end;
+                // Which margin it stands at, and so which side of the measure
+                // it takes. A float in the middle of the column would leave
+                // text on both sides of it, which is not modelled: the wider
+                // side keeps the text.
+                let (indent, inset) = if x - start <= end - (x + width) {
+                    ((x + width + right.points() - start).max(0.0), 0.0)
+                } else {
+                    (0.0, (end - x + left.points()).max(0.0))
+                };
+                for &(paragraph, paragraph_top) in &tops {
+                    // A paragraph that began above the float keeps its full
+                    // measure: the obstacle is depth from a paragraph's top,
+                    // and it has no way to say "from the fourth line down".
+                    // Stated rather than approximated.
+                    if paragraph_top < top - 0.01 || paragraph_top >= bottom - 0.01 {
+                        continue;
+                    }
+                    wraps.add(
+                        paragraph,
+                        inline::Obstacle {
+                            depth: bottom - paragraph_top,
+                            indent,
+                            inset,
+                        },
+                    );
+                }
+            }
+        }
+        wraps
+    }
+
+    /// What narrows this paragraph, if anything does.
+    pub fn beside(&self, paragraph: usize) -> Option<inline::Obstacle> {
+        self.beside.get(&paragraph).copied()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.beside.is_empty()
+    }
+
+    /// A page may hold one picture at each margin, and the text between them
+    /// is narrowed by both.
+    fn add(&mut self, paragraph: usize, beside: inline::Obstacle) {
+        let slot = self.beside.entry(paragraph).or_default();
+        slot.depth = slot.depth.max(beside.depth);
+        slot.indent = slot.indent.max(beside.indent);
+        slot.inset = slot.inset.max(beside.inset);
+    }
+}
+
+/// Whether text is set *beside* this drawing rather than below it.
+///
+/// A float that travels with the text reserves its height instead — see
+/// [`displaces`], which is the other half of this decision and the stated
+/// limit above. This is the other case: anchored to the page or to a margin,
+/// where it stays put and the text has to go round.
+fn stands_aside(drawing: &wp_model::Drawing) -> bool {
+    use wp_model::doc::Wrap;
+    if drawing.behind_text || displaces(drawing) {
+        return false;
+    }
+    matches!(drawing.wrap, Wrap::Square | Wrap::Tight)
+}
+
+/// Where each paragraph on the page starts, in the order they were placed.
+fn paragraph_tops(page: &Page) -> Vec<(usize, f64)> {
+    let mut tops: Vec<(usize, f64)> = Vec::new();
+    for placement in &page.content {
+        let Placed::Line { paragraph, .. } = &placement.kind else {
+            continue;
+        };
+        match tops.iter_mut().find(|(which, _)| which == paragraph) {
+            Some((_, top)) => *top = top.min(placement.y),
+            None => tops.push((*paragraph, placement.y)),
+        }
+    }
+    tops
+}
+
 pub fn anchor_position(drawing: &wp_model::Drawing, page: &PageBox, line_top: f64) -> (f64, f64) {
     use wp_model::doc::{Alignment, RelativeTo};
 
@@ -2426,6 +2671,7 @@ mod tests {
             show_hidden: false,
             fields: Box::leak(Box::new(crate::field::FieldValues::default())),
             band: None,
+            wraps: Box::leak(Box::new(Wraps::default())),
         }
     }
 
@@ -3147,6 +3393,170 @@ mod tests {
         assert_eq!(pages[1].content.len(), 4);
     }
 
+    /// Where the lines of every cell in a table sit, top first.
+    fn cell_lines(document: &Document) -> Vec<(f64, String)> {
+        let mut out = Vec::new();
+        for page in pages(document) {
+            for placement in &page.content {
+                if let Placed::Line { line, .. } = &placement.kind {
+                    let text: String = line
+                        .fragments
+                        .iter()
+                        .filter_map(|f| match &f.content {
+                            crate::inline::Content::Text { text, .. } => Some(text.as_str()),
+                            _ => None,
+                        })
+                        .collect();
+                    if !text.is_empty() {
+                        out.push((placement.y, text));
+                    }
+                }
+            }
+        }
+        out.sort_by(|a, b| a.0.total_cmp(&b.0));
+        out
+    }
+
+    #[test]
+    fn a_merged_cell_runs_down_the_rows_it_spans_rather_than_swelling_the_first() {
+        // Word gives each row the height its own cells need and lets the
+        // merged text run on down through them: the demonstration document's
+        // two-by-two nested table draws "Three" beside "Four", not a row
+        // below it. See the note on `Owed`.
+        let mut merged = Cell {
+            props: CellProps::new(),
+            content: vec![
+                Block::Paragraph(Paragraph::of("one")),
+                Block::Paragraph(Paragraph::of("three")),
+            ],
+        };
+        merged.props.v_merge = Some(VMerge::Restart);
+        let mut below = cell("");
+        below.props.v_merge = Some(VMerge::Continue);
+        let table = Table {
+            grid: vec![Twips(2880), Twips(2880)],
+            rows: vec![
+                Row {
+                    cells: vec![merged, cell("two")],
+                    ..Row::new()
+                },
+                Row {
+                    cells: vec![below, cell("four")],
+                    ..Row::new()
+                },
+            ],
+            ..Table::new()
+        };
+        let document = document(vec![Block::Table(table)]);
+        let lines = cell_lines(&document);
+        let at = |want: &str| {
+            lines
+                .iter()
+                .find(|(_, text)| text == want)
+                .map(|(y, _)| *y)
+                .unwrap_or_else(|| panic!("{want} was never drawn: {lines:?}"))
+        };
+        assert_eq!(at("one"), at("two"), "the first row holds both firsts");
+        assert_eq!(
+            at("three"),
+            at("four"),
+            "and the merged cell's second paragraph is beside the second row"
+        );
+        assert!(at("three") > at("one"));
+    }
+
+    #[test]
+    fn the_paragraph_a_cell_must_end_a_table_with_takes_no_height() {
+        // The format forbids a cell ending in a table, so Word writes an empty
+        // paragraph after it and gives it no height at all — spacing before
+        // included. Measured: put one letter in it and the row grows by a
+        // whole line.
+        let nested = Table {
+            grid: vec![Twips(1440)],
+            rows: vec![Row {
+                cells: vec![cell("inner")],
+                ..Row::new()
+            }],
+            ..Table::new()
+        };
+        let closing = |empty: bool| {
+            let mut mark = Paragraph::new();
+            if !empty {
+                mark = Paragraph::of("x");
+            }
+            let outer = Table {
+                grid: vec![Twips(2880)],
+                rows: vec![Row {
+                    cells: vec![Cell {
+                        props: CellProps::new(),
+                        content: vec![Block::Table(nested.clone()), Block::Paragraph(mark)],
+                    }],
+                    ..Row::new()
+                }],
+                ..Table::new()
+            };
+            let document = document(vec![
+                Block::Table(outer),
+                Block::Paragraph(Paragraph::of("after")),
+            ]);
+            let lines = cell_lines(&document);
+            lines
+                .iter()
+                .find(|(_, text)| text == "after")
+                .map(|(y, _)| *y)
+                .expect("the paragraph after the table")
+        };
+        assert!(
+            closing(false) > closing(true),
+            "an empty closing paragraph costs the cell nothing, a filled one a line"
+        );
+    }
+
+    #[test]
+    fn the_rule_between_two_rows_is_paid_for_once() {
+        // A header row that rules three points under it and a row below that
+        // rules nothing above it share one line, and the space it takes is
+        // charged to the row below. Without it every row after the header sat
+        // three points too high — measured on the demonstration document.
+        let ruled = |thickness: Option<i32>| {
+            let mut header = cell("head");
+            if let Some(eighths) = thickness {
+                header.props.borders.bottom = Some(Border {
+                    style: wp_model::prop::BorderStyle::Single,
+                    size: Some(wp_model::units::Eighth(eighths)),
+                    ..Border::default()
+                });
+            }
+            let table = Table {
+                grid: vec![Twips(2880)],
+                rows: vec![
+                    Row {
+                        cells: vec![header],
+                        ..Row::new()
+                    },
+                    Row {
+                        cells: vec![cell("body")],
+                        ..Row::new()
+                    },
+                ],
+                ..Table::new()
+            };
+            let document = document(vec![Block::Table(table)]);
+            let lines = cell_lines(&document);
+            lines
+                .iter()
+                .find(|(_, text)| text == "body")
+                .map(|(y, _)| *y)
+                .expect("the second row")
+        };
+        let bare = ruled(None);
+        assert_eq!(
+            ruled(Some(24)) - bare,
+            3.0,
+            "the header's three-point rule pushes the row below it down by three"
+        );
+    }
+
     #[test]
     fn a_vertically_merged_cell_holds_no_content_of_its_own() {
         let mut origin = cell("spans two");
@@ -3563,6 +3973,7 @@ mod tests {
                 show_hidden: false,
                 fields,
                 band: None,
+                wraps: Box::leak(Box::new(Wraps::default())),
             }
         }
 
@@ -3860,6 +4271,87 @@ mod tests {
         };
         let (_, y) = anchor_position(&drawing, &geometry, 400.0);
         assert_eq!(y, 400.0);
+    }
+
+    #[test]
+    fn a_picture_at_the_margin_narrows_the_text_that_lands_beside_it() {
+        // Both of the demonstration document's arrows stand at a margin, at
+        // the top of the page, and the text between them is narrowed from both
+        // sides — the right-hand one by a paragraph it is not anchored to at
+        // all. Where such a float sits is only known once the pages exist, so
+        // the layout runs twice; see `Wraps`.
+        let margin_arrow = |left: bool| wp_model::Drawing {
+            source: Vec::new().into(),
+            anchored: true,
+            extent: (
+                wp_model::Emu::from_points(80.0),
+                wp_model::Emu::from_points(60.0),
+            ),
+            rel: None,
+            chart: None,
+            name: None,
+            description: None,
+            wrap: wp_model::Wrap::Square,
+            distance: Default::default(),
+            position: Some(Box::new(wp_model::doc::DrawingPosition {
+                horizontal: wp_model::doc::Offset {
+                    relative_to: wp_model::doc::RelativeTo::Margin,
+                    offset: None,
+                    align: Some(if left {
+                        wp_model::doc::Alignment::Left
+                    } else {
+                        wp_model::doc::Alignment::Right
+                    }),
+                },
+                vertical: wp_model::doc::Offset {
+                    relative_to: wp_model::doc::RelativeTo::Margin,
+                    offset: None,
+                    align: Some(wp_model::doc::Alignment::Top),
+                },
+            })),
+            behind_text: false,
+        };
+        let words = "wrap ".repeat(300);
+        let holder = Paragraph {
+            content: vec![Inline::Run(Run {
+                content: vec![
+                    Piece::Drawing(Box::new(margin_arrow(true))),
+                    Piece::Drawing(Box::new(margin_arrow(false))),
+                    Piece::Text(words.into()),
+                ],
+                ..Run::new()
+            })],
+            ..Paragraph::new()
+        };
+        let document = document(vec![Block::Paragraph(holder)]);
+        let pages = pages(&document);
+        let lines: Vec<&Placement> = pages[0]
+            .content
+            .iter()
+            .filter(|p| matches!(p.kind, Placed::Line { .. }))
+            .collect();
+        // The first lines are set between the two pictures; the ones below
+        // them have the whole column again.
+        let narrow = lines.first().expect("a first line");
+        let wide = lines.last().expect("a last line");
+        assert!(
+            narrow.x >= pages[0].geometry.start + 80.0 - 0.01,
+            "the left picture pushed the first line clear of it: {}",
+            narrow.x
+        );
+        let column_end = pages[0].geometry.width - pages[0].geometry.end;
+        assert!(
+            narrow.x + narrow.width <= column_end - 80.0 + 0.01,
+            "and the right one took the other end: {} reaches {}",
+            narrow.width,
+            narrow.x + narrow.width
+        );
+        let widest = lines.iter().map(|line| line.width).fold(0.0f64, f64::max);
+        assert!(
+            widest > narrow.width + 100.0,
+            "the lines below the pictures have the whole column: {widest}"
+        );
+        assert!((wide.x - pages[0].geometry.start).abs() < 0.01);
     }
 
     #[test]

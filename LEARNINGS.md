@@ -645,3 +645,69 @@ font, in this case — Word writes the glyphs of the real face and the widths of
 substitute, so the text layer reports positions the page does not show. Two
 lines that matched Word exactly were reported as twenty points adrift. When the
 text layer and the picture disagree, the picture is the document.
+
+Word's own Normal does not hand its size to a table cell.
+
+The demonstration document sets its body at the twelve points its `Normal`
+style states and every one of its tables at the eleven the document defaults
+state — the same paragraphs, the same style, two sizes. The rule is narrow and
+was found by varying one file: a size stated by the style named `Normal`, and
+only when it is exactly the twelve points Word's own built-in Normal states,
+does not reach a run inside a table that names a style. Everything else Normal
+says reaches it — its face, its first-line indent, all of it. Rename the style
+and the size applies; state twelve points in a style of the document's own,
+even one based on Normal, and it applies. A document that states no default
+size has nothing to fall back to, so the twelve points stand. Twenty-three
+variants of one document, each opened in Word and asked over COM for the size
+it resolved a cell to; the table is in `wp_model::style`.
+
+A table style's own `pPr` is the base of its scheme, not the properties of a
+paragraph that names it.
+
+No paragraph can name a table style, so the `<w:pPr>` written directly inside
+one is not a paragraph style's properties — it is what the style says about
+every cell, the base that its `<w:tblStylePr>` bands are laid over. Every
+built-in table style writes `<w:spacing w:line="240"/>` there, which is how a
+table in a document spaced at one and a sixth comes out spaced singly. Reading
+only the bands left the header row right and every row after it two points
+too far apart.
+
+A vertically merged cell runs down the rows it spans.
+
+The obvious reading — the row is as tall as its tallest cell — makes the first
+row of a merge tall enough to hold all of the merged cell's text, which puts
+the rest of the table a row lower than Word does. Word gives each row the
+height its own cells need and lets the merged text run on through them; only
+the last row of the span grows, and only if what is left of the text needs it.
+The same document's nested table draws "Three" beside "Four" for exactly this
+reason.
+
+And the paragraph a cell must end a table with is not a line.
+
+A cell may not end with a table, so Word writes an empty paragraph after one
+and then gives it no height at all — not the line, not its spacing before.
+Put a single letter in it and the row grows by a whole line. It is emptiness
+and position together that make it disappear.
+
+The rule between two rows is paid for once, by the row below it.
+
+A row is taller by the rule that bounds it, but the rule between two rows is
+one line and both rows have an opinion about it: the row above states a
+`bottom` and the row below a `top`. The height it takes is the heavier of the
+two and it is charged to the row below. A header row that rules three points
+under it and nothing above the row that follows is three points nobody pays
+for otherwise — every row after it sat three points too high — and a calendar
+that rules a hairline under one row and over the next must not pay twice.
+
+A float that does not travel with the text narrows whatever lands beside it.
+
+An anchored drawing belongs to a paragraph, and it is tempting to let the
+paragraph it belongs to be the one that makes room. Word does not: the float
+is a rectangle on the page and every line that lands within it goes round.
+The demonstration document proves the difference — its two arrows stand at the
+two margins of one page, and the right-hand one is anchored to a paragraph five
+lines below the text it narrows. Where such a float sits is known only once the
+document has been paginated, so the layout is run, the floats are read off the
+pages, and the paragraphs beside them are laid again. One correction pass, not
+a loop: a wrap that moved the float that caused it would never settle.
+

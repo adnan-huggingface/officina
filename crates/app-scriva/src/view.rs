@@ -129,6 +129,7 @@ impl View {
                 false => &carried,
             },
             band: None,
+            wraps: &wp_layout::block::Wraps::default(),
         };
         self.pages = wp_layout::block::layout(document, &ctx, shaper);
         // Remember what the fields came out as, so the next layout starts from

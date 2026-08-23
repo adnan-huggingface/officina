@@ -132,6 +132,7 @@ fn document_of(count: usize) -> u128 {
         show_hidden: false,
         fields: &fields,
         band: None,
+        wraps: &wp_layout::block::Wraps::default(),
     };
     let start = Instant::now();
     let pages = wp_layout::block::layout(&document, &ctx, &mut wp_layout::shape::Fixed);
@@ -182,6 +183,7 @@ fn time(path: &Path, kind: Kind) -> Option<(u128, u128)> {
                 show_hidden: false,
                 fields: &fields,
                 band: None,
+                wraps: &wp_layout::block::Wraps::default(),
             };
             let mut shaper = wp_layout::shape::Fixed;
             let pages = wp_layout::block::layout(&document, &ctx, &mut shaper);

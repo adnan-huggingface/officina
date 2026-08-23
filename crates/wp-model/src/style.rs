@@ -32,6 +32,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::prop::{Layer, ParaProps, RunProps};
+use crate::units::HalfPoint;
 
 /// Index into [`StyleTable`].
 ///
@@ -336,6 +337,16 @@ impl StyleTable {
             self.layer_chain(&mut layers, style);
         }
 
+        // The one thing a table cell does not take from the style chain. What
+        // the table's own style says about the size still stands: it is only
+        // Normal's twelve points that stop at the cell, and what is left below
+        // them is the conditional part's size, then the document default's.
+        if let Some(part) = table.filter(|part| part.named) {
+            if let Some(size) = self.size_normal_does_not_carry_in(style) {
+                layers.run.size = part.run.size.or(Some(size));
+            }
+        }
+
         // The list level sits above the paragraph style and below the
         // paragraph's own properties. ECMA's §17.7.2 ordering puts numbering
         // *below* paragraph styles; Word plainly does not, or every bulleted
@@ -349,6 +360,58 @@ impl StyleTable {
 
         layers.para.layer(direct, Layer::Direct);
         layers
+    }
+
+    /// What a run in a styled table's cell is sized at instead of what the
+    /// default paragraph style says, when Word declines to carry that in.
+    ///
+    /// Word's own `Normal` does not hand its size to text inside a table that
+    /// names a style — but only when the size it states is exactly the twelve
+    /// points Word's built-in Normal states. Everything else Normal says
+    /// reaches the cell as usual: the demonstration document's cells are set
+    /// in Normal's Ubuntu, at Normal's first-line indent, at the *document
+    /// default's* eleven points. Nothing in ECMA-376 says so; it was measured,
+    /// by asking Word for the resolved size of one cell across twenty-three
+    /// variants of one document (2026-08-23):
+    ///
+    /// | document default | Normal | cell   |
+    /// |------------------|--------|--------|
+    /// | 11pt             | 12pt   | 11pt   |
+    /// | 11pt             | 11.5pt | 11.5pt |
+    /// | 11pt             | 12.5pt | 12.5pt |
+    /// | 8, 9, 13, 15pt   | 12pt   | the default |
+    /// | 10pt             | 12pt   | 12pt   |
+    /// | none             | 12pt   | 12pt   |
+    /// | 11pt             | none   | 11pt   |
+    ///
+    /// Three of those rows draw the boundaries. A size of twelve points
+    /// stated by a style of the document's *own* — even one based on Normal —
+    /// applies; the discount belongs to Normal, not to the number. A document
+    /// stating no default size has nothing to fall back to, so Normal's twelve
+    /// points stand. And a document default of exactly ten points — which is
+    /// what Word's own `docDefaults` states — behaves as though it too were
+    /// unstated, and the cell is twelve points after all. The last of those
+    /// has no explanation here beyond the measurement.
+    fn size_normal_does_not_carry_in(&self, style: Option<StyleId>) -> Option<HalfPoint> {
+        /// The size Word's built-in Normal states.
+        const NORMALS_OWN: HalfPoint = HalfPoint(24);
+        /// The size Word's built-in document defaults state.
+        const DEFAULTS_OWN: HalfPoint = HalfPoint(20);
+
+        let normal = self.default_style(StyleKind::Paragraph)?;
+        // Only when the size the cell would take is the one Normal itself
+        // states: the nearest style in the chain that speaks about size is
+        // the one being discounted, and it has to be Normal.
+        let stating = self
+            .chain(style?)
+            .into_iter()
+            .rev()
+            .find(|id| self.get(*id).is_some_and(|s| s.run.size.is_some()))?;
+        if stating != normal || self.get(normal)?.run.size != Some(NORMALS_OWN) {
+            return None;
+        }
+        let default = self.defaults.run.size?;
+        (default != DEFAULTS_OWN).then_some(default)
     }
 
     /// Resolves one run inside an already-resolved paragraph.
@@ -402,7 +465,10 @@ impl StyleTable {
         table: &crate::table::TableProps,
         at: crate::banding::CellAt,
     ) -> crate::banding::TablePart {
-        let mut out = crate::banding::TablePart::default();
+        let mut out = crate::banding::TablePart {
+            named: table.style.is_some(),
+            ..Default::default()
+        };
         // A table naming no style is still the default table style's table.
         let Some(id) = table.style.or_else(|| self.default_style(StyleKind::Table)) else {
             return out;
@@ -512,6 +578,136 @@ mod tests {
     use crate::color::Color;
     use crate::prop::{Indent, Toggle};
     use crate::units::{HalfPoint, Twips};
+
+    /// The three rows of the measured table in
+    /// [`StyleTable::size_normal_does_not_carry_in`] that draw its boundaries,
+    /// plus the two that state it.
+    #[test]
+    fn word_s_own_normal_does_not_hand_its_size_to_a_styled_tables_cell() {
+        use crate::banding::CellAt;
+        use crate::table::TableProps;
+
+        fn document(default: Option<i32>, normal: i32) -> (StyleTable, StyleId) {
+            let mut styles = StyleTable::default();
+            styles.set_doc_defaults(DocDefaults {
+                para: ParaProps::default(),
+                run: RunProps {
+                    size: default.map(HalfPoint),
+                    ..RunProps::default()
+                },
+            });
+            let mut plain = Style::new("Normal", StyleKind::Paragraph);
+            plain.default = true;
+            plain.run.size = Some(HalfPoint(normal));
+            styles.insert(plain);
+            let mut grid = Style::new("TableGrid", StyleKind::Table);
+            grid.table = Some(Box::default());
+            let grid = styles.insert(grid);
+            (styles, grid)
+        }
+
+        let cell = |styles: &StyleTable, table: &TableProps, direct: &ParaProps| {
+            let part = styles.resolve_table_cell(
+                table,
+                CellAt {
+                    row: 1,
+                    rows: 3,
+                    column: 1,
+                    columns: 3,
+                },
+            );
+            styles
+                .resolve_paragraph_in(direct, None, Some(&part))
+                .run
+                .size
+        };
+        let body = |styles: &StyleTable, direct: &ParaProps| {
+            styles.resolve_paragraph(direct, None).run.size
+        };
+
+        // Eleven points of document default under Normal's twelve, which is
+        // the demonstration document: the body is twelve and the cell eleven.
+        let (styles, grid) = document(Some(22), 24);
+        let styled = TableProps {
+            style: Some(grid),
+            ..TableProps::default()
+        };
+        let plain = ParaProps::default();
+        assert_eq!(body(&styles, &plain), Some(HalfPoint(24)));
+        assert_eq!(cell(&styles, &styled, &plain), Some(HalfPoint(22)));
+
+        // A table naming no style of its own keeps Normal's size.
+        assert_eq!(
+            cell(&styles, &TableProps::default(), &plain),
+            Some(HalfPoint(24)),
+            "the discount belongs to a table that named a style"
+        );
+
+        // Any other size Normal states is carried in as it says.
+        let (other, grid) = document(Some(22), 26);
+        let styled_other = TableProps {
+            style: Some(grid),
+            ..TableProps::default()
+        };
+        assert_eq!(cell(&other, &styled_other, &plain), Some(HalfPoint(26)));
+
+        // A style of the document's own may state twelve points and be obeyed,
+        // even based on Normal: it is Normal that is discounted, not the number.
+        let (mut mine, grid) = document(Some(22), 24);
+        let normal = mine.lookup("Normal").expect("the default style");
+        let mut own = Style::new("Plain", StyleKind::Paragraph);
+        own.based_on = Some(normal);
+        own.run.size = Some(HalfPoint(24));
+        let own = mine.insert(own);
+        let styled_mine = TableProps {
+            style: Some(grid),
+            ..TableProps::default()
+        };
+        let names_own = ParaProps {
+            style: Some(own),
+            ..ParaProps::default()
+        };
+        assert_eq!(cell(&mine, &styled_mine, &names_own), Some(HalfPoint(24)));
+        // The same style stating nothing falls back to the discount.
+        mine.get_mut(own).unwrap().run.size = None;
+        assert_eq!(cell(&mine, &styled_mine, &names_own), Some(HalfPoint(22)));
+
+        // A document stating no default size has nothing to fall back to, and
+        // one stating Word's own ten points behaves as though it stated none.
+        for default in [None, Some(20)] {
+            let (styles, grid) = document(default, 24);
+            let styled = TableProps {
+                style: Some(grid),
+                ..TableProps::default()
+            };
+            assert_eq!(
+                cell(&styles, &styled, &plain),
+                Some(HalfPoint(24)),
+                "with a default of {default:?} Normal's twelve points stand"
+            );
+        }
+
+        // Nothing else Normal says stops at the cell: only the size does.
+        let (mut faced, grid) = document(Some(22), 24);
+        let normal = faced.lookup("Normal").expect("the default style");
+        faced.get_mut(normal).unwrap().run.fonts.ascii = Some("Ubuntu".into());
+        let styled = TableProps {
+            style: Some(grid),
+            ..TableProps::default()
+        };
+        let part = faced.resolve_table_cell(
+            &styled,
+            CellAt {
+                row: 1,
+                rows: 3,
+                column: 1,
+                columns: 3,
+            },
+        );
+        let resolved = faced.resolve_paragraph_in(&plain, None, Some(&part));
+        assert_eq!(resolved.run.fonts.ascii.as_deref(), Some("Ubuntu"));
+        assert_eq!(resolved.run.size, Some(HalfPoint(22)));
+    }
 
     #[test]
     fn a_tables_cell_margins_come_through_its_style_chain() {
