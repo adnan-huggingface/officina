@@ -332,8 +332,12 @@ impl StyleTable {
     /// The padding inside a table's cells, with the style chain heard from.
     ///
     /// The table's own `<w:tblCellMar>` wins over its style, the style over
-    /// what it is based on, and Word's default — nothing above or below,
-    /// 0.08in either side — is the floor. Every side of the answer is `Some`.
+    /// what it is based on, and over the *default* table style — Word's Table
+    /// Normal — which is where Word's familiar 0.08in side padding actually
+    /// lives. A document that never defines Table Normal has no such padding,
+    /// and its tables meet the cell edge exactly as Word draws them; the floor
+    /// is therefore [`CellMargins::zero`], not Word's default. Every side of
+    /// the answer is `Some`.
     pub fn resolve_cell_margins(
         &self,
         table: &crate::table::TableProps,
@@ -344,8 +348,12 @@ impl StyleTable {
             out.bottom = layer.bottom.or(out.bottom);
             out.end = layer.end.or(out.end);
         }
-        let mut out = crate::table::CellMargins::word_default();
-        if let Some(id) = table.style {
+        let mut out = crate::table::CellMargins::zero();
+        // A table names no style of its own is still the default table style's
+        // table — that is where Word keeps the margins it pads every ordinary
+        // table with.
+        let styled = table.style.or_else(|| self.default_style(StyleKind::Table));
+        if let Some(id) = styled {
             for id in self.chain(id) {
                 if let Some(style) = self.get(id) {
                     overlay(&mut out, &style.cell_margins);
@@ -425,10 +433,27 @@ mod tests {
         let resolved = styles.resolve_cell_margins(&props);
         assert_eq!(resolved.top, Some(Width::Fixed(Twips(0))));
 
-        // And a table with no style still gets Word's floor.
+        // A table that names no style is still the *default* table style's
+        // table. Here the default is that TableNormal, so its 0.08in side
+        // padding pads a bare table too — the way Word pads every table it
+        // makes, because Word always writes Table Normal.
+        styles.get_mut(base_id).unwrap().default = true;
         let bare = styles.resolve_cell_margins(&TableProps::default());
-        assert_eq!(bare.top, Some(Width::Fixed(Twips(0))));
-        assert_eq!(bare.start, Some(Width::Fixed(Twips(108))));
+        assert_eq!(bare.top, Some(Width::Fixed(Twips(100))));
+        assert_eq!(bare.start, Some(Width::Fixed(Twips(115))));
+    }
+
+    #[test]
+    fn a_table_in_a_document_without_table_normal_has_no_cell_padding() {
+        use crate::table::TableProps;
+        // No table style anywhere — as in a document Word never touched, and
+        // as Scriva writes one. Word draws such a table's text hard against
+        // the cell edge, so the resolved margins are nothing at all.
+        let styles = StyleTable::default();
+        let bare = styles.resolve_cell_margins(&TableProps::default());
+        assert_eq!(bare.top, Some(crate::table::Width::Fixed(Twips(0))));
+        assert_eq!(bare.start, Some(crate::table::Width::Fixed(Twips(0))));
+        assert_eq!(bare.end, Some(crate::table::Width::Fixed(Twips(0))));
     }
 
     /// Normal (11pt, Calibri) with Heading1 based on it (16pt, bold), plus a

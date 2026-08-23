@@ -1821,6 +1821,81 @@ as its own and cleared the selection. The grid now asks before the panel
 draws as well as after
 (`enter_in_the_title_box_sets_the_title_and_leaves_the_chart_selected`).
 
+## The resume, recreated the third time (2026-08-23)
+
+The resume redone in August was a `.docx` in structure but not in look: its
+first page stood taller than the original's, every paragraph loosened by the
+8-point-after, 1.08-line default a new Scriva document inherits from Word,
+where the resume's own Google-Docs default is nought and single. A page
+built on empty spacer paragraphs for its gaps — which this one is — doubles
+those gaps when the default adds its own. Selecting the whole document, one
+line spacing and nought before and after, brought the page back to the
+original's height, word for word and grid for grid, header and footer in real
+parts (`RESUME / CV`; `ADNAN KHAN`, then `Page [PAGE] of [NUMPAGES]` after a
+centre tab). Verified by exporting both through Word to PDF and setting page
+one beside page one: the same lines break at the same words.
+
+Closing it needed the three things a keyboard still could not reach, named as
+gaps the evening the recreations were first done:
+
+- **Merge Cells** (Table menu): the cells a selection crosses in one row become
+  one, spanning their columns, holding their paragraphs in order, a blank cell
+  contributing no blank line — which is how the resume's banner row (name,
+  title, an empty third) sits above a single merged cell of prose.
+- **Border Colour** (Table menu): every rule of the caret's table in a chosen
+  colour, cells' own rules included, and Word's half-point lines drawn where a
+  table states none — a colour on no line being a menu choice that did nothing.
+  The resume's grids are its `#C0C0C0`.
+- **Paragraph…** (Paragraph menu): spacing before and after in points, the four
+  indents in inches, a blank field leaving the value to the style and a typed
+  one stating it — applied to a selection, only the fields that changed since
+  the box opened, so a box opened on one paragraph and applied to many states
+  one thing and leaves the rest of each alone.
+
+And the header/footer box grew a voice: a font, a size, a hex colour, an
+alignment, and a "Page N of M" tick that lays `PAGE` and `NUMPAGES` fields
+after a centre tab at the middle of the text column — Word's own way of
+putting a name on the left and a number in the middle of one line.
+
+Driving it taught the harness two things worth keeping. The window's client
+came back 982×703 on a fresh launch but 1182×853 once `-Place` was passed a
+second time mid-session, so a run that re-placed between stages missed every
+dialog it had calibrated; place once, then drive without `-Place`. And a
+common Save dialog's "replace?" confirm is a separate top window the
+process-matched driver will not touch — the surer path was to remove the file
+the recreation was replacing (its own output) so no confirm is raised.
+
+## The resume renders as Word renders it (2026-08-23)
+
+Opening the recreated resume in Word beside Scriva showed the same words on
+the same lines but Word's page an eighth of an inch shorter, and the user
+named it: the cell padding. Measured, both were true and one caused the
+other. Scriva inset every cell's text 5.4pt from the left; Word set it hard
+against the cell edge. That is because **Word's familiar 0.08in side padding
+lives in the built-in Table Normal style, not in the table** — and this file,
+authored by Scriva, has no Table Normal at all, so Word pads its cells with
+nothing. Scriva was resolving a bare table's margins to Word's default 108
+twips regardless; it now starts from nothing and takes its padding from the
+document's *default table style* when there is one, matching Word whether the
+style is present (the corpus, where Table Normal always is) or absent (a file
+Scriva wrote). `resolve_cell_margins` reads the default table style;
+`CellMargins::zero` is the new floor.
+
+The 5.4pt inset was not cosmetic: it narrowed every cell's text column by
+10.8pt, which tipped one Accomplishments bullet — "Designed Wi-Tronix's… unit
+and functional tests." — from two lines onto three, and that one extra line
+pushed everything below it down by a line, the whole of the height the user
+saw. With the padding corrected the bullet wraps in two lines as Word wraps
+it, and the two renderings now agree the length of the page: exported through
+Word to PDF and set line for line against Scriva's own PDF of the same file,
+every baseline lands within a point and a half, drifting to that only by the
+foot of the page from a hair of line-height rounding.
+
+Verified headlessly along the way by laying the real file out with the screen
+shaper and reading the line boxes, then confirmed by the two PDFs — the same
+method the chart work used, and the reason the diagnosis landed on one bullet
+rather than on "padding, roughly."
+
 ## Deferred
 
 - [x] **PDF** — was dropped per Q3; built after ship as `wp-print`. See above.

@@ -2284,10 +2284,11 @@ mod tests {
         document.section = page_of(20);
         let page = &pages(&document)[0];
         let xs: Vec<f64> = page.content.iter().map(|p| p.x).collect();
-        // The first cell starts at the margin plus Word's own 0.08in padding;
-        // the second an inch further across.
-        assert_eq!(xs[0], page.geometry.start + 5.4);
-        assert_eq!(xs[1], page.geometry.start + 72.0 + 5.4);
+        // With no table style to carry Word's own cell margins, a bare table
+        // has none — the text meets the cell edge, as Word draws it. The
+        // second column follows an inch across.
+        assert_eq!(xs[0], page.geometry.start);
+        assert_eq!(xs[1], page.geometry.start + 72.0);
     }
 
     #[test]

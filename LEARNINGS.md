@@ -545,3 +545,16 @@ layout: a stack's legend reads top down (the series on top first) and a bar
 laid on its side reads bottom up, and one that is both is back in order; a
 doughnut draws its first series as the innermost ring and shares the band
 between hole and rim equally among the rest.
+
+**Word's default cell padding lives in the Table Normal style, not in the
+table.** Word pads a cell 0.08in on each side — but only because its built-in
+Table Normal style says so, and Word writes that style into every document.
+A document with no Table Normal — one Scriva authored, or some second
+producers — has no such padding, and Word draws its tables' text hard against
+the cell edge. A layout that hard-codes the 0.08in as *the* default insets
+text a producer never asked for, narrows every cell's text column by a tenth
+of an inch, and rewraps paragraphs that were a word from the edge — which is
+how one resume's page came out a line taller in Scriva than in Word off a
+single bullet. Cell-margin resolution now starts from nothing and takes its
+padding from the document's default table style when one exists, so the
+padding is Word's wherever Word's style is and absent wherever it is not.

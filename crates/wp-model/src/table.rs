@@ -95,13 +95,29 @@ pub struct CellMargins {
 }
 
 impl CellMargins {
-    /// Word's own default: no padding above or below, and 0.08in either side.
+    /// Word's own default, and the margins its built-in Table Normal style
+    /// carries: no padding above or below, and 0.08in either side. It lives in
+    /// the *style*, not in the table — a document that never defines Table
+    /// Normal has no such padding at all, which is why [`Self::zero`], not this,
+    /// is where cell-margin resolution starts.
     pub fn word_default() -> CellMargins {
         CellMargins {
             top: Some(Width::Fixed(Twips(0))),
             start: Some(Width::Fixed(Twips(108))),
             bottom: Some(Width::Fixed(Twips(0))),
             end: Some(Width::Fixed(Twips(108))),
+        }
+    }
+
+    /// No padding on any side — the floor a table sits on when nothing, not
+    /// even a default table style, states otherwise. Word draws such a table's
+    /// text hard against the cell edge; matching that is the point.
+    pub fn zero() -> CellMargins {
+        CellMargins {
+            top: Some(Width::Fixed(Twips(0))),
+            start: Some(Width::Fixed(Twips(0))),
+            bottom: Some(Width::Fixed(Twips(0))),
+            end: Some(Width::Fixed(Twips(0))),
         }
     }
 }
