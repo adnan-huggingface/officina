@@ -794,9 +794,22 @@ pub fn format_runs(
         } else {
             text::len(target)
         };
+        let end_of_paragraph = to == text::len(target);
         split_runs_at(target, from);
         split_runs_at(target, to);
         apply_to_range(target, from..to, change);
+        // Word counts the paragraph mark as selected once the selection
+        // reaches the end of the paragraph, and sets it with the rest. The mark
+        // is what gives an empty paragraph its height and what a caret typing
+        // there inherits, so a pass that puts a whole document into one face
+        // would otherwise leave every blank line standing at the size the
+        // document was started in — taller than its neighbours, and enough of
+        // them to push the last of the text onto another page.
+        if end_of_paragraph {
+            let mut mark = target.props.mark.as_deref().cloned().unwrap_or_default();
+            change(&mut mark);
+            target.props.mark = Some(Box::new(mark));
+        }
     }
 }
 
@@ -1353,6 +1366,41 @@ mod tests {
         assert!(runs[0].props.bold());
         assert!(!runs[1].props.bold());
         assert_eq!(document.text(), "boldplain", "and nothing moved");
+    }
+
+    #[test]
+    fn a_selection_that_reaches_the_end_of_a_paragraph_sets_its_mark_too() {
+        // The blank line between two paragraphs has no run to carry a face:
+        // its height, and what the caret inherits when it types there, come
+        // from the mark alone. Setting the whole document in one face has to
+        // reach it.
+        let mut document = document(&["one", "", "two"]);
+        let mut history = History::new();
+        let end = text::len(document.paragraphs()[2]);
+        format_runs(
+            &mut document,
+            &mut history,
+            span((0, 0), (2, end)),
+            |props| props.toggles.set(Toggle::Bold, true),
+        );
+        let paragraphs = document.paragraphs();
+        for (index, paragraph) in paragraphs.iter().enumerate() {
+            let mark = paragraph.props.mark.as_deref().expect("a mark was set");
+            assert!(mark.bold(), "paragraph {index}'s mark");
+        }
+    }
+
+    #[test]
+    fn a_selection_stopping_short_of_the_end_leaves_the_mark_alone() {
+        let mut document = document(&["boldplain"]);
+        let mut history = History::new();
+        format_runs(&mut document, &mut history, span((0, 0), (0, 4)), |props| {
+            props.toggles.set(Toggle::Bold, true)
+        });
+        assert!(
+            document.paragraphs()[0].props.mark.is_none(),
+            "the mark is past the selection"
+        );
     }
 
     #[test]

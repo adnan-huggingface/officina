@@ -1913,6 +1913,51 @@ same rule the line's own width already follows. Measured headlessly against
 Word's PDF the number's left edge now lands at 283.3pt where Word's is 283.25,
 its centre on 306 where Word's is 306.1 — the same page, to a fifth of a point.
 
+## The resume, recreated the fourth time (2026-08-23)
+
+The third recreation rendered the same in Scriva and in Word, which proved only
+that it agreed with itself: set against the *original* it was a different page.
+Measuring the two — both laid out by Scriva, so the comparison is of the files
+and not of two renderers — named four causes, and three of them were things the
+app could not say.
+
+The original's tables are padded 5.75pt either side and not at all above or
+below, from a table style based on a Table Normal it carries. Scriva could read
+that and never state it, so a table it wrote had no padding: every line began
+5.4pt to the left and every cell's text column ran 11.5pt wider, which wrapped
+the long Accomplishments bullet in two lines where the original wraps it in
+three. **Table ▸ Cell Margins** states it now — four sides in points, blank
+leaving a side to the style.
+
+A header Scriva wrote took its paragraph spacing from the *body's* defaults,
+because a bare paragraph inherits `docDefaults`. Word's Header and Footer
+styles hold the line to single and take the space off both ends, so a one-line
+header in a document spaced 8pt after every paragraph pushed the whole page
+down by nearly ten. `apply_chrome` writes that spacing itself.
+
+Setting a whole document in one face left every blank line in the face the
+document had started in, because a selection formatted runs and never the
+paragraph mark — and a blank line has no run, only a mark. Word counts the mark
+as selected once the selection reaches the end of the paragraph; `format_runs`
+does too now, which is worth 1.3pt on each of the empty lines between blocks.
+
+The fourth recreation was then driven through the menus in eight stages — and
+the fourth cause was one of those: the third attempt had set the per-paragraph
+spacing *before* a global pass that set every paragraph to none, which wiped it.
+Order, not capability. Laid against the original, page one now agrees: every
+line breaks where the original breaks it, every x within 0.35pt (the table
+indent of -7 twips, which no box states), and y exact for the first third of the
+page, 1.3pt through the middle and 3.2pt at the foot. Word's own PDFs of the two
+files carry 41 lines each and match line for line.
+
+What is left is deliberate. The original's bullet is a black circle from a font
+it embeds and Scriva's is Word's own Symbol dot — worth a third of a point of
+height, and Word's bullet is the one a new document should have. Its footer is a
+three-column table, which the footer box cannot make, so the page number centres
+on the text column rather than in a middle cell, 13pt to the right. And it reads
+"Page 1 of 5" against a page 1 of 1, which is what NUMPAGES says about a
+recreation of one page.
+
 ## Deferred
 
 - [x] **PDF** — was dropped per Q3; built after ship as `wp-print`. See above.

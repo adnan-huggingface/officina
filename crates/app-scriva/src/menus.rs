@@ -501,6 +501,9 @@ impl Scriva {
                 if menu::item(ui, "Column &Width…", "").clicked() {
                     chosen = Some(Command::ColumnWidth);
                 }
+                if menu::item(ui, "Cell &Margins…", "").clicked() {
+                    chosen = Some(Command::CellMargins);
+                }
                 if menu::item(ui, "&Merge Cells", "").clicked() {
                     chosen = Some(Command::MergeCells);
                 }

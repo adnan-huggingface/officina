@@ -570,3 +570,20 @@ layout that treats every tab as a left tab draws the number half its width to
 the right of centre. The run's width for this is its advance, spaces between the
 pieces included; only the final piece's trailing space hangs, exactly as it does
 when the line measures its own width.
+
+**A paragraph mark is formatting with no text to hang it on.** A blank line has
+no run: its height, and the face a caret typing there inherits, come from the
+paragraph mark alone. So a pass that sets a whole document in one face has to
+reach the mark, and Word's rule for when it does is that the mark counts as
+selected once the selection reaches the end of its paragraph. A reader that
+formats only runs leaves every blank line standing at whatever size the document
+was started in — invisible on screen until the blank lines between blocks add up
+and push the last of the text onto a page of its own.
+
+**A header inherits from the body unless something stops it.** Word's built-in
+Header and Footer styles hold the line to single and take the space off both
+ends, and its galleries write header paragraphs in those styles. A bare
+paragraph in a header takes the document's own `docDefaults` instead, so a
+document spaced 8pt after every paragraph grows its header by 8pt and pushes its
+own text down the page to make room. Whatever writes a header has to state the
+spacing, because the thing it would otherwise inherit is about the body.

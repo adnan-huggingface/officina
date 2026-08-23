@@ -104,6 +104,8 @@ pub enum Command {
     TableShading(Option<[u8; 3]>),
     /// The dialog for the width of the caret's column.
     ColumnWidth,
+    /// The dialog for the padding inside the caret's table's cells.
+    CellMargins,
     Align(Justify),
     LineSpacing(Line240),
     Indent(i32),
@@ -240,6 +242,8 @@ pub struct Scriva {
     color_draft: Option<(ColorTarget, String)>,
     /// The column-width dialog: inches, like the margins box.
     column_draft: Option<String>,
+    /// Table ▸ Cell Margins, in points: top, left, bottom, right.
+    cell_margin_draft: Option<[String; 4]>,
     /// The header or footer dialog. Blank text takes the header away.
     chrome_draft: Option<ChromeDraft>,
     /// The paragraph dialog: what it opened with, and what has been typed
@@ -366,6 +370,7 @@ impl Scriva {
             table_draft: None,
             color_draft: None,
             column_draft: None,
+            cell_margin_draft: None,
             chrome_draft: None,
             paragraph_draft: None,
             size_draft: None,
@@ -1105,6 +1110,7 @@ impl Scriva {
                 }
             }),
             Command::ColumnWidth => self.open_column_dialog(),
+            Command::CellMargins => self.open_cell_margin_dialog(),
             Command::Align(justify) => {
                 self.format_paragraphs(move |props| props.justify = Some(justify))
             }
@@ -3149,6 +3155,10 @@ impl DocumentApp for Scriva {
             self.column_dialog(ctx);
             return;
         }
+        if self.cell_margin_draft.is_some() {
+            self.cell_margin_dialog(ctx);
+            return;
+        }
         if self.chrome_draft.is_some() {
             self.chrome_dialog(ctx);
             return;
@@ -3273,6 +3283,7 @@ impl DocumentApp for Scriva {
             || self.table_draft.is_some()
             || self.color_draft.is_some()
             || self.column_draft.is_some()
+            || self.cell_margin_draft.is_some()
             || self.chrome_draft.is_some()
             || self.paragraph_draft.is_some()
             || self.size_draft.is_some()
@@ -4016,6 +4027,16 @@ impl Scriva {
                     let mut paragraph = Paragraph::new();
                     paragraph.props.justify = Some(draft.justify);
                     paragraph.props.mark = Some(Box::new(props.clone()));
+                    // Word's built-in Header and Footer styles hold the line to
+                    // single and take the space off both ends of it, and the
+                    // galleries write their paragraphs in those styles. A bare
+                    // paragraph here would inherit the *body's* defaults
+                    // instead — a document set an inch of space after every
+                    // paragraph would push its own text down the page to make
+                    // room under a one-line header.
+                    paragraph.props.spacing.before = Some(Twips(0));
+                    paragraph.props.spacing.after = Some(Twips(0));
+                    paragraph.props.spacing.line = Some(LineSpacing::Multiple(Line240::SINGLE));
                     let mut pieces = Vec::new();
                     if !line.is_empty() {
                         pieces.push(Piece::Text((*line).into()));
@@ -4107,6 +4128,106 @@ impl Scriva {
             change(table, row, cell);
         }
         self.changed();
+    }
+
+    /// Opens the cell-padding box on the caret's table, prefilled with what
+    /// the table states itself — blank where it says nothing and takes the
+    /// padding from its style, which is where Word keeps its own 0.08in.
+    fn open_cell_margin_dialog(&mut self) {
+        let caret = self.caret();
+        let Some((index, _, _)) = edit::table_cell_at(&self.document, caret) else {
+            self.message = Some((
+                "Not in a table".to_owned(),
+                "Put the caret in a table cell first, then try again.".to_owned(),
+            ));
+            return;
+        };
+        let Block::Table(table) = &self.document.body[index] else {
+            return;
+        };
+        let points = |w: Option<wp_model::table::Width>| match w {
+            Some(wp_model::table::Width::Fixed(t)) => trim_number(t.0 as f64 / 20.0),
+            _ => String::new(),
+        };
+        let margins = table.props.cell_margins;
+        self.cell_margin_draft = Some([
+            points(margins.top),
+            points(margins.start),
+            points(margins.bottom),
+            points(margins.end),
+        ]);
+    }
+
+    fn cell_margin_dialog(&mut self, ctx: &egui::Context) {
+        let Some(mut draft) = self.cell_margin_draft.clone() else {
+            return;
+        };
+        let mut done: Option<bool> = None;
+        egui::Modal::new(egui::Id::new("scriva-cell-margins"))
+            .frame(dialog::frame(ctx))
+            .show(ctx, |ui| {
+                dialog::form_style(ui.style_mut());
+                dialog::body(ui, |ui| {
+                    ui.set_width(280.0);
+                    ui.label(egui::RichText::new("Cell Margins").font(dialog::heading_font(16.0)));
+                    ui.add_space(8.0);
+                    for (label, field) in ["Top:", "Left:", "Bottom:", "Right:"]
+                        .into_iter()
+                        .zip(draft.iter_mut())
+                    {
+                        ui.horizontal(|ui| {
+                            ui.add_sized([64.0, 20.0], egui::Label::new(label));
+                            ui.add(egui::TextEdit::singleline(field).desired_width(64.0));
+                            ui.label("pt");
+                        });
+                    }
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new("Blank leaves it to the table's style.")
+                            .small()
+                            .weak(),
+                    );
+                    ui.add_space(12.0);
+                    if let Some(answer) = dialog::confirm(ui, "Apply") {
+                        done = Some(answer);
+                    }
+                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                        done = Some(false);
+                    }
+                });
+            });
+        self.cell_margin_draft = Some(draft.clone());
+        match done {
+            Some(true) => {
+                self.cell_margin_draft = None;
+                self.apply_cell_margins(&draft);
+            }
+            Some(false) => self.cell_margin_draft = None,
+            None => {}
+        }
+    }
+
+    /// States the caret's table's cell padding. A blank field states nothing,
+    /// which is not the same as nothing at all: it puts the side back in the
+    /// hands of the table's style.
+    fn apply_cell_margins(&mut self, draft: &[String; 4]) {
+        let side = |text: &str| {
+            let text = text.trim();
+            if text.is_empty() {
+                return None;
+            }
+            text.parse::<f64>()
+                .ok()
+                .filter(|v| (0.0..=100.0).contains(v))
+                .map(|v| wp_model::table::Width::Fixed(Twips((v * 20.0).round() as i32)))
+        };
+        let margins = wp_model::table::CellMargins {
+            top: side(&draft[0]),
+            start: side(&draft[1]),
+            bottom: side(&draft[2]),
+            end: side(&draft[3]),
+        };
+        self.edit_table(move |table, _, _| table.props.cell_margins = margins);
     }
 
     /// Opens the width box on the caret's column, prefilled in inches.
@@ -5513,6 +5634,59 @@ mod tests {
                 "every cell in it restates the width"
             );
         }
+    }
+
+    #[test]
+    fn cell_margins_state_the_sides_given_and_leave_a_blank_one_to_the_style() {
+        use wp_model::table::Width;
+        let mut app = app_with(&["text"]);
+        app.insert_table(2, 2);
+        // The resume's own padding: none above or below, 5.75pt either side.
+        app.apply_cell_margins(&[
+            "0".to_owned(),
+            "5.75".to_owned(),
+            "0".to_owned(),
+            String::new(),
+        ]);
+        let Block::Table(table) = &app.document.body[0] else {
+            panic!("the table is the first block");
+        };
+        let margins = table.props.cell_margins;
+        assert_eq!(margins.top, Some(Width::Fixed(Twips(0))));
+        assert_eq!(margins.start, Some(Width::Fixed(Twips(115))));
+        assert_eq!(margins.bottom, Some(Width::Fixed(Twips(0))));
+        assert_eq!(margins.end, None, "a blank side states nothing at all");
+    }
+
+    #[test]
+    fn a_header_holds_its_line_to_single_whatever_the_body_spaces_itself_by() {
+        let mut app = app_with(&["text"]);
+        app.apply_chrome(&ChromeDraft {
+            footer: false,
+            text: "RESUME / CV".into(),
+            font: "Bookman Old Style".into(),
+            size: "16".into(),
+            color: String::new(),
+            justify: Justify::Center,
+            page_number: false,
+        });
+        let header = app
+            .document
+            .headers
+            .iter()
+            .find(|h| !h.footer)
+            .expect("a header was made");
+        let Block::Paragraph(paragraph) = &header.content[0] else {
+            panic!("a paragraph");
+        };
+        // Word's Header style, which is what a bare paragraph here would miss:
+        // the body's space-after would otherwise push the page's text down.
+        assert_eq!(paragraph.props.spacing.before, Some(Twips(0)));
+        assert_eq!(paragraph.props.spacing.after, Some(Twips(0)));
+        assert_eq!(
+            paragraph.props.spacing.line,
+            Some(LineSpacing::Multiple(Line240::SINGLE))
+        );
     }
 
     #[test]
