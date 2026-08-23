@@ -969,13 +969,36 @@ fn fill(
                 // lines a bullet's first line up with the wrapped lines under
                 // it; sending it to the next default stop instead leaves half
                 // an inch of white between every bullet and its text.
-                let (stop, stop_leader) = if *after_label && start > here + 0.01 {
-                    (start, TabLeader::None)
+                let (stop, kind, stop_leader) = if *after_label && start > here + 0.01 {
+                    (start, TabKind::Start, TabLeader::None)
                 } else {
-                    let (at, _, leader) = next_tab(here, tabs, ctx.default_tab);
-                    (at, leader)
+                    next_tab(here, tabs, ctx.default_tab)
                 };
-                let target = (stop - left).min(limit);
+                // A centre or right tab does not land the text on the stop: it
+                // lays the text so its middle, or its right edge, sits there.
+                // That needs the advance of the run the tab introduces — the
+                // units up to the next tab or the line's end — which a left tab,
+                // which simply advances, never has to look at. The advance counts
+                // the spaces *between* those units, which are drawn; only the
+                // last unit's trailing space hangs and is left out.
+                let following = |from: usize| -> f64 {
+                    let seg: Vec<&Unit> = units[from..]
+                        .iter()
+                        .take_while(|u| {
+                            !matches!(u.kind, UnitKind::Tab { .. } | UnitKind::Break(_))
+                        })
+                        .collect();
+                    seg.iter()
+                        .enumerate()
+                        .map(|(i, u)| u.width + if i + 1 < seg.len() { u.trailing } else { 0.0 })
+                        .sum()
+                };
+                let seg_left = match kind {
+                    TabKind::Center => stop - following(index + 1) / 2.0,
+                    TabKind::End => stop - following(index + 1),
+                    _ => stop,
+                };
+                let target = (seg_left - left).min(limit);
                 let advance = (target - pen).max(0.0);
                 fragments.push(Fragment {
                     x: pen,
@@ -1604,6 +1627,61 @@ mod tests {
                 leader: TabLeader::Dot
             }
         ));
+    }
+
+    #[test]
+    fn a_centre_tab_lays_the_text_that_follows_it_around_the_stop() {
+        // The footer's page number: a name on the left, the number centred on a
+        // stop. A left tab would begin the number at the stop; a centre tab puts
+        // the stop through its middle.
+        let mut layers = layers();
+        layers.para.tabs = Some(vec![TabStop {
+            position: Twips(1440),
+            kind: TabKind::Center,
+            leader: TabLeader::None,
+        }]);
+        let paragraph = Paragraph {
+            content: vec![Inline::Run(Run {
+                content: vec![
+                    Piece::Text("a".into()),
+                    Piece::Tab,
+                    Piece::Text("bbbb".into()),
+                ],
+                ..Run::new()
+            })],
+            ..Paragraph::new()
+        };
+        let laid = lay_with(paragraph, layers, 500.0);
+        let text = &laid.lines[0].fragments[2];
+        // "bbbb" is twenty points; centred on the inch its left edge is ten to
+        // the left of it and its middle is on it.
+        assert_eq!(text.x, 62.0);
+        assert_eq!(text.x + text.width / 2.0, 72.0);
+    }
+
+    #[test]
+    fn a_right_tab_lays_the_text_that_follows_it_up_to_the_stop() {
+        let mut layers = layers();
+        layers.para.tabs = Some(vec![TabStop {
+            position: Twips(1440),
+            kind: TabKind::End,
+            leader: TabLeader::None,
+        }]);
+        let paragraph = Paragraph {
+            content: vec![Inline::Run(Run {
+                content: vec![
+                    Piece::Text("a".into()),
+                    Piece::Tab,
+                    Piece::Text("bbbb".into()),
+                ],
+                ..Run::new()
+            })],
+            ..Paragraph::new()
+        };
+        let laid = lay_with(paragraph, layers, 500.0);
+        let text = &laid.lines[0].fragments[2];
+        // Its right edge lands on the stop, so it begins its own width before it.
+        assert_eq!(text.x + text.width, 72.0);
     }
 
     #[test]

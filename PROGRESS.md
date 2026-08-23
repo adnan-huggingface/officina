@@ -1896,6 +1896,23 @@ shaper and reading the line boxes, then confirmed by the two PDFs — the same
 method the chart work used, and the reason the diagnosis landed on one bullet
 rather than on "padding, roughly."
 
+## The footer's page number sits where Word sits it (2026-08-23)
+
+The same recreated resume carries a footer of the kind Word's galleries write:
+a name on the left, "Page N of M" in the middle of the line, the two parted by
+a centre tab at the middle of the text column. Word drew the number centred on
+that tab; Scriva drew it *beginning* there, a half-width to the right — because
+layout honoured a tab's position but not its kind, advancing the pen to every
+stop as though it were a left tab. A centre or right tab is different in that it
+positions the text that *follows* it, so it has to look ahead: the fix measures
+the run from the tab to the next tab or the line's end and lays it so its middle
+(centre) or its right edge (right) falls on the stop. The look-ahead counts the
+spaces *between* those pieces — "Page ", the page field, " of ", the count —
+which are drawn; only a run's last trailing space hangs and is left out, the
+same rule the line's own width already follows. Measured headlessly against
+Word's PDF the number's left edge now lands at 283.3pt where Word's is 283.25,
+its centre on 306 where Word's is 306.1 — the same page, to a fifth of a point.
+
 ## Deferred
 
 - [x] **PDF** — was dropped per Q3; built after ship as `wp-print`. See above.

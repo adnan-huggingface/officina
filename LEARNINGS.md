@@ -558,3 +558,15 @@ how one resume's page came out a line taller in Scriva than in Word off a
 single bullet. Cell-margin resolution now starts from nothing and takes its
 padding from the document's default table style when one exists, so the
 padding is Word's wherever Word's style is and absent wherever it is not.
+
+**A centre or right tab positions the text after it, not the pen before it.**
+A left tab only advances: it moves the pen to the stop and the next character
+starts there, so a reader can lay it out knowing nothing of what follows. A
+centre tab and a right tab cannot — they place the run *between this tab and the
+next stop* so that its middle, or its right edge, sits on the stop, which means
+measuring that run before deciding where the tab ends. This is how a footer sets
+a name at the margin and a page number in the middle of the same line, and a
+layout that treats every tab as a left tab draws the number half its width to
+the right of centre. The run's width for this is its advance, spaces between the
+pieces included; only the final piece's trailing space hangs, exactly as it does
+when the line measures its own width.
