@@ -145,6 +145,76 @@ impl Paragraph {
         self.content.is_empty()
     }
 
+    /// The hyperlink covering `offset`, if a caret there stands inside one.
+    ///
+    /// Offsets are into [`Paragraph::text`], which is what a click on the page
+    /// resolves to. The end of the link is not inside it, the same way a caret
+    /// after the last letter of a word is not in the word: a link's last
+    /// character is the last place following it can mean anything.
+    pub fn link_at(&self, offset: usize) -> Option<&Hyperlink> {
+        fn walk<'a>(content: &'a [Inline], at: &mut usize, offset: usize) -> Option<&'a Hyperlink> {
+            for inline in content {
+                match inline {
+                    Inline::Hyperlink(link) => {
+                        let start = *at;
+                        let mut text = String::new();
+                        inline.write_text(&mut text, true);
+                        *at += text.len();
+                        if (start..*at).contains(&offset) {
+                            return Some(link);
+                        }
+                    }
+                    Inline::Revised { revision, content } => {
+                        // A deleted stretch is not in the text the offset is
+                        // measured against, so it is not stepped over either.
+                        if revision.is_present() {
+                            if let Some(found) = walk(content, at, offset) {
+                                return Some(found);
+                            }
+                        }
+                    }
+                    Inline::Structured(sdt) => {
+                        if let Some(found) = walk(&sdt.content, at, offset) {
+                            return Some(found);
+                        }
+                    }
+                    Inline::Wrapper { content, .. } | Inline::SimpleField { content, .. } => {
+                        if let Some(found) = walk(content, at, offset) {
+                            return Some(found);
+                        }
+                    }
+                    Inline::Run(_) | Inline::Math(_) | Inline::Anchor(_) => {
+                        let mut text = String::new();
+                        inline.write_text(&mut text, true);
+                        *at += text.len();
+                    }
+                }
+            }
+            None
+        }
+        let mut at = 0;
+        walk(&self.content, &mut at, offset)
+    }
+
+    /// Whether a bookmark of this name starts in this paragraph.
+    ///
+    /// An internal link names a bookmark and nothing finer, so where the mark
+    /// sits within the paragraph does not matter — only which paragraph.
+    pub fn starts_bookmark(&self, name: &str) -> bool {
+        fn walk(content: &[Inline], name: &str) -> bool {
+            content.iter().any(|inline| match inline {
+                Inline::Anchor(Anchor::BookmarkStart { name: found, .. }) => &**found == name,
+                Inline::Hyperlink(link) => walk(&link.content, name),
+                Inline::Structured(sdt) => walk(&sdt.content, name),
+                Inline::Revised { content, .. }
+                | Inline::Wrapper { content, .. }
+                | Inline::SimpleField { content, .. } => walk(content, name),
+                Inline::Run(_) | Inline::Math(_) | Inline::Anchor(_) => false,
+            })
+        }
+        walk(&self.content, name)
+    }
+
     /// Every run in the paragraph, however deeply wrapped, in document order.
     ///
     /// The layout engine wants runs and does not care whether one arrived inside
@@ -912,6 +982,44 @@ impl Document {
         out
     }
 
+    /// One paragraph by its place in that walk, without gathering the rest.
+    ///
+    /// [`Document::paragraphs`] allocates a vector of every paragraph in the
+    /// document, which is the wrong shape for anything asked once a frame —
+    /// what is under the pointer, what the caret is standing in.
+    pub fn paragraph(&self, index: usize) -> Option<&Paragraph> {
+        fn walk<'a>(blocks: &'a [Block], at: &mut usize, want: usize) -> Option<&'a Paragraph> {
+            for block in blocks {
+                match block {
+                    Block::Paragraph(paragraph) => {
+                        if *at == want {
+                            return Some(paragraph);
+                        }
+                        *at += 1;
+                    }
+                    Block::Table(table) => {
+                        for row in &table.rows {
+                            for cell in &row.cells {
+                                if let Some(found) = walk(&cell.content, at, want) {
+                                    return Some(found);
+                                }
+                            }
+                        }
+                    }
+                    Block::Structured(sdt) => {
+                        if let Some(found) = walk(&sdt.content, at, want) {
+                            return Some(found);
+                        }
+                    }
+                    Block::Anchor(_) | Block::AltChunk { .. } => {}
+                }
+            }
+            None
+        }
+        let mut at = 0;
+        walk(&self.body, &mut at, index)
+    }
+
     /// Every paragraph, mutably, in the same document order as
     /// [`Document::paragraphs`].
     ///
@@ -922,6 +1030,51 @@ impl Document {
         let mut out = Vec::new();
         walk_paragraphs_mut(&mut self.body, &mut out);
         out
+    }
+
+    /// Where the bookmark of this name starts, as an index into
+    /// [`Document::paragraphs`].
+    ///
+    /// An internal hyperlink and a cross-reference both name their destination
+    /// this way. `<w:bookmarkStart>` may sit between paragraphs as well as
+    /// inside one, and a mark between them belongs to the paragraph after it —
+    /// which is where Word puts the caret when the link is followed.
+    pub fn bookmark(&self, name: &str) -> Option<usize> {
+        fn walk(blocks: &[Block], name: &str, at: &mut usize) -> Option<usize> {
+            for block in blocks {
+                match block {
+                    Block::Paragraph(paragraph) => {
+                        if paragraph.starts_bookmark(name) {
+                            return Some(*at);
+                        }
+                        *at += 1;
+                    }
+                    Block::Table(table) => {
+                        for row in &table.rows {
+                            for cell in &row.cells {
+                                if let Some(found) = walk(&cell.content, name, at) {
+                                    return Some(found);
+                                }
+                            }
+                        }
+                    }
+                    Block::Structured(sdt) => {
+                        if let Some(found) = walk(&sdt.content, name, at) {
+                            return Some(found);
+                        }
+                    }
+                    Block::Anchor(Anchor::BookmarkStart { name: found, .. })
+                        if &**found == name =>
+                    {
+                        return Some(*at);
+                    }
+                    Block::Anchor(_) | Block::AltChunk { .. } => {}
+                }
+            }
+            None
+        }
+        let mut at = 0;
+        walk(&self.body, name, &mut at)
     }
 
     /// The sections, in order, each with the range of body blocks it governs.
@@ -1119,6 +1272,91 @@ mod tests {
         };
         assert_eq!(paragraph.text(), "added");
         assert_eq!(paragraph.shown_text(), "added");
+    }
+
+    #[test]
+    fn a_click_inside_a_link_finds_it_and_one_past_its_last_letter_does_not() {
+        let paragraph = Paragraph {
+            content: vec![
+                Inline::Run(Run::of("go to the ")),
+                Inline::Hyperlink(Box::new(Hyperlink {
+                    rel: Some("rId9".into()),
+                    anchor: None,
+                    tooltip: None,
+                    history: true,
+                    content: vec![Inline::Run(Run::of("download page"))],
+                })),
+                Inline::Run(Run::of(".")),
+            ],
+            ..Paragraph::new()
+        };
+        assert_eq!(paragraph.text(), "go to the download page.");
+        assert!(paragraph.link_at(0).is_none(), "before it");
+        assert!(paragraph.link_at(9).is_none(), "the space in front of it");
+        for offset in 10..23 {
+            assert!(
+                paragraph.link_at(offset).is_some(),
+                "{offset} is one of the link's own letters"
+            );
+        }
+        assert!(paragraph.link_at(23).is_none(), "the full stop after it");
+        assert_eq!(
+            paragraph.link_at(10).and_then(|link| link.rel.clone()),
+            Some("rId9".into())
+        );
+    }
+
+    #[test]
+    fn one_paragraph_by_index_is_the_one_the_whole_walk_puts_there() {
+        let document = Document {
+            body: vec![
+                Block::Paragraph(Paragraph::of("before")),
+                Block::Table(crate::table::Table {
+                    grid: vec![crate::units::Twips(1440)],
+                    rows: vec![crate::table::Row {
+                        cells: vec![crate::table::Cell {
+                            props: crate::table::CellProps::new(),
+                            content: vec![Block::Paragraph(Paragraph::of("inside"))],
+                        }],
+                        ..crate::table::Row::new()
+                    }],
+                    ..crate::table::Table::new()
+                }),
+                Block::Paragraph(Paragraph::of("after")),
+            ],
+            ..Document::new()
+        };
+        let all = document.paragraphs();
+        for (index, paragraph) in all.iter().enumerate() {
+            assert_eq!(
+                document.paragraph(index).map(|found| found.text()),
+                Some(paragraph.text()),
+                "paragraph {index}"
+            );
+        }
+        assert!(document.paragraph(all.len()).is_none());
+    }
+
+    #[test]
+    fn a_bookmark_names_the_paragraph_a_link_to_it_lands_on() {
+        let mut heading = Paragraph::of("Paragraph level formatting");
+        heading.content.insert(
+            0,
+            Inline::Anchor(Anchor::BookmarkStart {
+                id: 3,
+                name: "_Paragraph_level_formatting".into(),
+            }),
+        );
+        let document = Document {
+            body: vec![
+                Block::Paragraph(Paragraph::of("first")),
+                Block::Paragraph(heading),
+                Block::Paragraph(Paragraph::of("last")),
+            ],
+            ..Document::new()
+        };
+        assert_eq!(document.bookmark("_Paragraph_level_formatting"), Some(1));
+        assert_eq!(document.bookmark("_no_such_mark"), None);
     }
 
     #[test]

@@ -1934,8 +1934,27 @@ fn flow_table(
                         };
                         direct_cell.or(direct_table).or(style_cell).or(style_table)
                     };
-                    [Side::Top, Side::Start, Side::Bottom, Side::End]
-                        .map(|side| (side, pick(side).map(|b| themed(b, &document.theme))))
+                    // Between the rows of a vertical merge there is no edge:
+                    // the reader sees one tall cell, and Word draws neither
+                    // the rule below the cell whose merge carries on nor the
+                    // one above the cell that carries it. The demonstration
+                    // document's nested table ruled a line straight through
+                    // the cell holding "One" and "Three" until this was here.
+                    // The rest of the row still rules — the height a row pays
+                    // for its rules is the widest cell's, not this one's.
+                    let merges_down = table.merge_height(row_index, column) > 1;
+                    [Side::Top, Side::Start, Side::Bottom, Side::End].map(|side| {
+                        let hidden = match side {
+                            Side::Top => is_continuation,
+                            Side::Bottom => merges_down,
+                            _ => false,
+                        };
+                        let border = (!hidden)
+                            .then(|| pick(side))
+                            .flatten()
+                            .map(|b| themed(b, &document.theme));
+                        (side, border)
+                    })
                 },
                 content: y,
                 spans: table.merge_height(row_index, column),
@@ -3463,6 +3482,72 @@ mod tests {
             "and the merged cell's second paragraph is beside the second row"
         );
         assert!(at("three") > at("one"));
+    }
+
+    #[test]
+    fn no_rule_is_drawn_between_the_rows_of_a_vertical_merge() {
+        // A merged cell is one tall cell to the reader, so the edge where its
+        // rows meet is not drawn at either end of it — while the column beside
+        // it is ruled as usual. The demonstration document says so in words:
+        // "To the left is a table inside a table, with some cells merged",
+        // beside a cell whose "One" and "Three" had a line between them.
+        let border = Border {
+            style: wp_model::prop::BorderStyle::Single,
+            size: Some(wp_model::units::Eighth(4)),
+            color: None,
+            space: None,
+            shadow: false,
+        };
+        let mut merged = cell("one");
+        merged.props.v_merge = Some(VMerge::Restart);
+        let mut below = cell("");
+        below.props.v_merge = Some(VMerge::Continue);
+        let mut table = Table {
+            grid: vec![Twips(2880), Twips(2880)],
+            rows: vec![
+                Row {
+                    cells: vec![merged, cell("two")],
+                    ..Row::new()
+                },
+                Row {
+                    cells: vec![below, cell("four")],
+                    ..Row::new()
+                },
+            ],
+            ..Table::new()
+        };
+        table.props.borders.top = Some(border);
+        table.props.borders.bottom = Some(border);
+        table.props.borders.inside_h = Some(border);
+        let document = document(vec![Block::Table(table)]);
+        let mut across: std::collections::BTreeMap<i64, usize> = std::collections::BTreeMap::new();
+        for page in pages(&document) {
+            for placement in &page.content {
+                if matches!(
+                    placement.kind,
+                    Placed::Edge {
+                        side: Side::Top | Side::Bottom,
+                        ..
+                    }
+                ) {
+                    *across.entry(placement.x.round() as i64).or_default() += 1;
+                }
+            }
+        }
+        let counts: Vec<usize> = across.values().copied().collect();
+        assert_eq!(
+            counts.len(),
+            2,
+            "one column of horizontal rules each: {across:?}"
+        );
+        assert_eq!(
+            counts[0], 2,
+            "the merged column is closed above and below and nowhere between"
+        );
+        assert!(
+            counts[1] > counts[0],
+            "while the column beside it keeps the rule between its rows"
+        );
     }
 
     #[test]

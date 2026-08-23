@@ -265,6 +265,9 @@ pub struct Scriva {
     ending: wp_text::LineEnding,
     /// Where the view should scroll to, once it knows where that is.
     reveal: Option<Caret>,
+    /// The link the last right-click landed on, for the menu it opened: the
+    /// menu is drawn on later frames, when the click is long gone.
+    menu_link: Option<crate::links::Destination>,
     /// The find bar, when it is open.
     finder: Option<Finder>,
     /// Whether one of the find bar's fields held the keyboard last frame —
@@ -394,6 +397,7 @@ impl Scriva {
             encoding: wp_text::Encoding::Utf8,
             ending: wp_text::LineEnding::Crlf,
             reveal: None,
+            menu_link: None,
             finder: None,
             finder_focused: false,
             find_matches: Vec::new(),
@@ -442,6 +446,53 @@ impl Scriva {
             self.selection.head = caret;
         } else {
             self.selection = Selection::at(caret);
+        }
+    }
+
+    /// Where the link under `caret` points, if the caret stands in one.
+    ///
+    /// An external target lives in the package's relationships and not in the
+    /// document, which is why this is the app's job and not the model's: only
+    /// the app knows which file the paragraphs came out of.
+    fn link_at(&self, caret: Caret) -> Option<crate::links::Destination> {
+        let link = self
+            .document
+            .paragraph(caret.paragraph)?
+            .link_at(caret.offset)?;
+        if let Some(anchor) = &link.anchor {
+            return Some(crate::links::Destination::Here(anchor.to_string()));
+        }
+        let target = self.parts.as_ref()?.external_target(link.rel.as_deref()?)?;
+        Some(crate::links::Destination::Away(target.to_owned()))
+    }
+
+    /// Follows a link: out to the desktop, or to the bookmark it names.
+    fn follow_link(&mut self, destination: crate::links::Destination) {
+        const TITLE: &str = "Cannot follow this link";
+        match destination {
+            crate::links::Destination::Here(name) => match self.document.bookmark(&name) {
+                Some(paragraph) => {
+                    let caret = Caret {
+                        paragraph,
+                        offset: 0,
+                    };
+                    self.set_caret(caret, false);
+                    self.reveal = Some(caret);
+                }
+                // A link to a bookmark that is not there is a dangling link,
+                // which is worth saying rather than doing nothing about.
+                None => {
+                    self.message = Some((
+                        TITLE.to_owned(),
+                        format!("This document has no bookmark named \u{201c}{name}\u{201d}."),
+                    ))
+                }
+            },
+            crate::links::Destination::Away(url) => {
+                if let Err(why) = crate::links::open(&url) {
+                    self.message = Some((TITLE.to_owned(), why));
+                }
+            }
         }
     }
 
@@ -4882,7 +4933,40 @@ impl Scriva {
                         .ctx()
                         .pointer_hover_pos()
                         .and_then(|pointer| self.spot_at(pointer, origin, zoom));
-                    ui.ctx().set_cursor_icon(self.pointer_icon(over, reach));
+                    // A link is announced the two ways Word announces one: a
+                    // tooltip saying where it goes and how to go there, and,
+                    // while the key that follows it is held, the hand. Without
+                    // either, a link is text that happens to be blue and the
+                    // only way to find out it can be followed is to guess.
+                    let link = over
+                        .and_then(|spot| view::character_over(&self.view, spot))
+                        .and_then(|caret| self.link_at(caret));
+                    match (&link, ui.input(|i| i.modifiers.command)) {
+                        (Some(_), true) => ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand),
+                        _ => ui.ctx().set_cursor_icon(self.pointer_icon(over, reach)),
+                    }
+                    // Not while the right-click menu is up: the menu is the
+                    // answer to the same question and the tooltip only sits
+                    // under it repeating itself.
+                    let menu_up = egui::Popup::is_any_open(ui.ctx());
+                    if let Some(destination) = link.as_ref().filter(|_| !menu_up) {
+                        let where_to = match destination {
+                            crate::links::Destination::Away(url) => url.clone(),
+                            crate::links::Destination::Here(name) => {
+                                format!("{name} (in this document)")
+                            }
+                        };
+                        egui::Tooltip::always_open(
+                            ui.ctx().clone(),
+                            ui.layer_id(),
+                            egui::Id::new("scriva-link"),
+                            egui::PopupAnchor::Pointer,
+                        )
+                        .show(|ui| {
+                            ui.label(where_to);
+                            ui.label("Ctrl+click to follow link");
+                        });
+                    }
                 }
 
                 // A click on the desk gives keyboard focus to the surface itself
@@ -4964,6 +5048,20 @@ impl Scriva {
                             }
                         }
                     }
+                    // Ctrl+click follows the link under the pointer, which is
+                    // Word's gesture and Word's reason for it: the letters of
+                    // a link are still text to put a caret in and edit, so a
+                    // bare click cannot mean "go there".
+                    if response.clicked() && ui.input(|i| i.modifiers.command) {
+                        if let Some(destination) = response
+                            .interact_pointer_pos()
+                            .and_then(|pointer| self.spot_at(pointer, origin, zoom))
+                            .and_then(|spot| view::character_over(&self.view, spot))
+                            .and_then(|caret| self.link_at(caret))
+                        {
+                            self.follow_link(destination);
+                        }
+                    }
                     // A second click takes the word and a third takes the
                     // paragraph, the way every word processor since has.
                     if response.double_clicked() {
@@ -5023,10 +5121,20 @@ impl Scriva {
                     {
                         self.picked = Some(found.0);
                     }
+                    // The menu outlives the click that opened it, so what was
+                    // under that click has to be remembered rather than asked
+                    // for again when the menu is drawn.
+                    let clicked = response
+                        .interact_pointer_pos()
+                        .and_then(|pointer| self.spot_at(pointer, origin, zoom))
+                        .and_then(|spot| view::character_over(&self.view, spot))
+                        .and_then(|caret| self.link_at(caret));
+                    self.menu_link = clicked;
                 }
                 let has_selection = !self.selection.is_empty();
                 let picture = self.picked.is_some();
                 let mut chosen: Option<Command> = None;
+                let mut follow: Option<crate::links::Destination> = None;
                 response.context_menu(|ui| {
                     ui.set_min_width(160.0);
                     // A picked picture has its own menu: Cut and Copy are the
@@ -5051,6 +5159,15 @@ impl Scriva {
                             ui.close();
                         }
                         return;
+                    }
+                    // Word offers this too, and it is how a reader who never
+                    // hears about the modifier follows a link.
+                    if let Some(destination) = &self.menu_link {
+                        if ui.button("Open Hyperlink").clicked() {
+                            follow = Some(destination.clone());
+                            ui.close();
+                        }
+                        ui.separator();
                     }
                     if ui
                         .add_enabled(has_selection, egui::Button::new("Cut"))
@@ -5078,6 +5195,9 @@ impl Scriva {
                 });
                 if let Some(command) = chosen {
                     self.run(command);
+                }
+                if let Some(destination) = follow {
+                    self.follow_link(destination);
                 }
                 if response.drag_started() {
                     self.sweeping = false;
@@ -5409,6 +5529,60 @@ mod tests {
     /// stack to test a paste.
     fn ss_xlsx_free_chart() -> Vec<u8> {
         br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><c:chart><c:autoTitleDeleted val="1"/><c:plotArea><c:layout/><c:barChart><c:barDir val="col"/><c:grouping val="clustered"/><c:ser><c:idx val="0"/><c:order val="0"/><c:val><c:numRef><c:f>Sheet1!$A$1:$A$2</c:f><c:numCache><c:formatCode>General</c:formatCode><c:ptCount val="2"/><c:pt idx="0"><c:v>5</c:v></c:pt><c:pt idx="1"><c:v>7</c:v></c:pt></c:numCache></c:numRef></c:val></c:ser><c:axId val="1"/><c:axId val="2"/></c:barChart><c:catAx><c:axId val="1"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="b"/><c:crossAx val="2"/></c:catAx><c:valAx><c:axId val="2"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="l"/><c:crossAx val="1"/></c:valAx></c:plotArea><c:plotVisOnly val="1"/><c:dispBlanksAs val="gap"/></c:chart></c:chartSpace>"#.to_vec()
+    }
+
+    #[test]
+    fn a_link_to_a_bookmark_takes_the_caret_there() {
+        // The demonstration document's "paragraph level formatting" points at
+        // a heading further up. Following it is a caret move and a scroll —
+        // there is nothing to open and nowhere to go.
+        let mut app = Scriva::new();
+        let mut heading = Paragraph::of("Paragraph level formatting");
+        heading.content.insert(
+            0,
+            wp_model::doc::Inline::Anchor(wp_model::revision::Anchor::BookmarkStart {
+                id: 1,
+                name: "_Paragraph_level_formatting".into(),
+            }),
+        );
+        let mut linking = Paragraph::of("back to ");
+        linking
+            .content
+            .push(wp_model::doc::Inline::Hyperlink(Box::new(
+                wp_model::doc::Hyperlink {
+                    rel: None,
+                    anchor: Some("_Paragraph_level_formatting".into()),
+                    tooltip: None,
+                    history: true,
+                    content: vec![wp_model::doc::Inline::Run(wp_model::doc::Run::of(
+                        "that section",
+                    ))],
+                },
+            )));
+        app.document.body = vec![
+            Block::Paragraph(heading),
+            Block::Paragraph(Paragraph::of("in between")),
+            Block::Paragraph(linking),
+        ];
+
+        let inside = Caret {
+            paragraph: 2,
+            offset: 10,
+        };
+        let found = app.link_at(inside).expect("the caret stands in the link");
+        assert_eq!(
+            found,
+            crate::links::Destination::Here("_Paragraph_level_formatting".to_owned())
+        );
+        app.follow_link(found);
+        assert_eq!(app.caret().paragraph, 0, "the caret went to the bookmark");
+        assert!(app.reveal.is_some(), "and the view was asked to follow");
+        assert!(app.message.is_none(), "with nothing to report");
+
+        // A link to a mark that is not in the document says so rather than
+        // appearing to do nothing.
+        app.follow_link(crate::links::Destination::Here("_gone".to_owned()));
+        assert!(app.message.is_some(), "a dangling link is reported");
     }
 
     fn app_with(texts: &[&str]) -> Scriva {

@@ -229,6 +229,61 @@ pub fn caret_at(view: &View, spot: Spot) -> Option<Caret> {
     Some(Caret { paragraph, offset })
 }
 
+/// The character `spot` is on, named by the offset it starts at.
+///
+/// Two things separate this from [`caret_at`], and both of them are the
+/// difference between "where would a caret go" and "what is the pointer on".
+/// A click anywhere on the page has to land somewhere, so `caret_at` takes the
+/// nearest line and the nearest place between two letters; a pointer out in
+/// the margin is on nothing, and the right-hand half of a letter is still on
+/// that letter. Asking the first question of a hyperlink answers that the
+/// pointer is past the end of the link whenever it is on the second half of
+/// the link's last letter.
+pub fn character_over(view: &View, spot: Spot) -> Option<Caret> {
+    let page = view.pages.get(spot.page)?;
+    let found = page.content.iter().find(|placement| {
+        matches!(placement.kind, Placed::Line { .. })
+            && (placement.x..=placement.x + placement.width).contains(&spot.x)
+            && (placement.y..=placement.y + placement.height).contains(&spot.y)
+    })?;
+    let Placed::Line { line, paragraph } = &found.kind else {
+        return None;
+    };
+    Some(Caret {
+        paragraph: *paragraph,
+        offset: character_in(line, spot.x - found.x),
+    })
+}
+
+/// Where the character drawn at `x` starts, without rounding to the nearer
+/// side of it. See [`character_over`].
+fn character_in(line: &wp_layout::inline::Line, x: f64) -> usize {
+    for fragment in &line.fragments {
+        let Some(source) = fragment.source else {
+            continue;
+        };
+        if x < fragment.x {
+            return source.start;
+        }
+        if x <= fragment.x + fragment.width {
+            let Content::Text { text, advances, .. } = &fragment.content else {
+                // A tab or a drawing is one thing and the whole of it is what
+                // the pointer is on.
+                return source.start;
+            };
+            let mut at = fragment.x;
+            for (index, (byte, _)) in text.char_indices().enumerate() {
+                at += advances.get(index).copied().unwrap_or(0.0);
+                if x < at {
+                    return source.start + byte;
+                }
+            }
+            return source.end;
+        }
+    }
+    line_range(line).1
+}
+
 /// Whether another line of the same paragraph carries on from `end`.
 fn wraps_after(view: &View, paragraph: usize, end: usize) -> bool {
     view.pages.iter().any(|page| {
@@ -1256,6 +1311,46 @@ mod tests {
         )
         .expect("a caret");
         assert_eq!(caret.offset, "short".len());
+    }
+
+    #[test]
+    fn the_pointer_is_on_the_last_letter_of_a_line_rather_than_past_it() {
+        // The difference that makes a hyperlink followable at its far end: a
+        // caret snaps to the nearer side of a letter, and on the right-hand
+        // half of the last one that is the offset after the link, where there
+        // is no link at all.
+        let (view, _) = laid(&["short"]);
+        let page = &view.pages()[0];
+        let line = page
+            .content
+            .iter()
+            .find(|p| matches!(p.kind, Placed::Line { .. }))
+            .expect("a line");
+        let spot = Spot {
+            page: 0,
+            // Just inside the right edge of the last letter.
+            x: line.x + line.width - 0.5,
+            y: line.y + line.height / 2.0,
+        };
+        assert_eq!(
+            caret_at(&view, spot).expect("a caret").offset,
+            "short".len(),
+            "the caret goes after the letter"
+        );
+        assert_eq!(
+            character_over(&view, spot).expect("a letter").offset,
+            "shor".len(),
+            "but the pointer is on it"
+        );
+        // And off the line there is no letter at all.
+        assert!(character_over(
+            &view,
+            Spot {
+                x: line.x + line.width + 40.0,
+                ..spot
+            }
+        )
+        .is_none());
     }
 
     #[test]

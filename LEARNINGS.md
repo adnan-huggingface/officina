@@ -682,6 +682,16 @@ the last row of the span grows, and only if what is left of the text needs it.
 The same document's nested table draws "Three" beside "Four" for exactly this
 reason.
 
+And where its rows meet, nothing is drawn.
+
+Between the rows of a vertical merge there is no edge: the reader sees one
+tall cell, so Word suppresses both the rule below the cell whose merge carries
+on and the rule above the cell that carries it. Only that column goes unruled
+— the rest of the row is ruled as usual, and the height the row pays for its
+rules is the widest cell's and not this one's. The nested table in the
+demonstration document says so in words, beside a cell whose "One" and "Three"
+had a line straight through them.
+
 And the paragraph a cell must end a table with is not a line.
 
 A cell may not end with a table, so Word writes an empty paragraph after one

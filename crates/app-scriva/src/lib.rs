@@ -12,6 +12,7 @@ pub mod drawings;
 pub mod edit;
 pub mod find;
 mod icons;
+pub mod links;
 mod menus;
 pub mod pictures;
 pub mod publish;

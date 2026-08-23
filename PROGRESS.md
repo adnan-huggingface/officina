@@ -2056,14 +2056,27 @@ the private-use character the file actually holds rather than as Word's
 translated one. Page 2's 79% is the mono-face paragraph whose *text layer*
 Word itself misreports — the picture matches.
 
-Six rules of Word's came out of the document's tables and its two arrows, and
-each is written up in LEARNINGS.md: the size its own Normal declines to carry
-into a table cell, a table style's `pPr` being the base of its scheme rather
-than a paragraph's properties, a merged cell running down the rows it spans,
-the empty paragraph a cell must end a table with taking no height, the rule
-between two rows being paid for once by the row below, and a float at a margin
-narrowing whatever lands beside it rather than what it is anchored to. That
-last one made the layout run twice, the way a `{ PAGE }` field already did.
+Seven rules of Word's came out of the document's tables and its two arrows,
+and each is written up in LEARNINGS.md: the size its own Normal declines to
+carry into a table cell, a table style's `pPr` being the base of its scheme
+rather than a paragraph's properties, a merged cell running down the rows it
+spans and drawing no rule where those rows meet, the empty paragraph a cell
+must end a table with taking no height, the rule between two rows being paid
+for once by the row below, and a float at a margin narrowing whatever lands
+beside it rather than what it is anchored to. That last one made the layout
+run twice, the way a `{ PAGE }` field already did.
+
+The document's links are followed rather than drawn. A `<w:hyperlink>` says
+either `r:id`, whose relationship target is a URL, or `w:anchor`, naming a
+bookmark; the first hands the URL to the desktop and the second is a caret
+move and a scroll to the paragraph the mark starts in. Word's gesture, because
+the letters of a link are still text to put a caret in: Ctrl+click, with the
+hand cursor while the key is down, a tooltip saying where the link goes and
+how to go there, and *Open Hyperlink* on the right-click menu for a reader who
+never learns the modifier. Only `http`, `https`, `mailto` and `ftp` are handed
+over unasked — asking the shell to open a string means asking the registry
+what runs it, and a document is not a trustworthy author. Anything else is
+reported to the user instead of run.
 
 The document opened in the window and took it straight down. A face the
 package carries is registered and asked for in the same breath, and
