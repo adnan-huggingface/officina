@@ -271,6 +271,29 @@ impl Paragraph {
     }
 }
 
+/// Every drawing of a tree of inlines, to change.
+fn collect_drawings_mut<'a>(content: &'a mut [Inline], into: &mut Vec<&'a mut Drawing>) {
+    for inline in content {
+        let nested: &mut Vec<Inline> = match inline {
+            Inline::Run(run) => {
+                for piece in &mut run.content {
+                    if let Piece::Drawing(drawing) = piece {
+                        into.push(drawing);
+                    }
+                }
+                continue;
+            }
+            Inline::Hyperlink(link) => &mut link.content,
+            Inline::Revised { content, .. } => content,
+            Inline::Structured(sdt) => &mut sdt.content,
+            Inline::Wrapper { content, .. } => content,
+            Inline::SimpleField { content, .. } => content,
+            Inline::Math(_) | Inline::Anchor(_) => continue,
+        };
+        collect_drawings_mut(nested, into);
+    }
+}
+
 /// The `nth` drawing of a tree of inlines, to change.
 ///
 /// Written as a walk rather than as `runs_mut`, because handing out every run
@@ -715,6 +738,50 @@ pub struct Drawing {
     pub position: Option<Box<DrawingPosition>>,
     /// `<wp:anchor w:behindDoc="1">`.
     pub behind_text: bool,
+    /// The words *inside* the shape, when the shape is words rather than a
+    /// picture of them. See [`ShapeText`].
+    pub text: Option<Box<ShapeText>>,
+    /// The shape drawn as itself — a rectangle with a line, a fill, or both.
+    /// See [`ShapeOutline`].
+    pub outline: Option<ShapeOutline>,
+}
+
+/// A shape drawn as itself rather than as a picture or as words.
+///
+/// **Only the rectangle.** It is the one autoshape documents use as furniture
+/// — the heavy frame an engineering specification draws round every page is
+/// one, and it is a shape in the header, not a page border — and a shape whose
+/// geometry is not understood is better left undrawn than drawn as the wrong
+/// outline.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ShapeOutline {
+    pub fill: Option<crate::Color>,
+    /// The line round it. `None` for a shape that states it has none, which is
+    /// not the same as a black one.
+    pub line: Option<crate::Color>,
+    pub line_width: crate::Emu,
+}
+
+/// The text a shape draws itself, with no bytes anywhere.
+///
+/// **A watermark is this and nothing else.** Word writes one as a piece of
+/// WordArt in the header — a shape carrying a string, a face, a colour and an
+/// angle — and neither DrawingML nor a `.doc`'s drawing layer ever turns it
+/// into an image. A renderer that only knows how to put bytes in a rectangle
+/// draws a watermarked page as a blank one, and the document quietly loses the
+/// word that was the point of stamping it.
+///
+/// The glyphs are stretched to fill the shape rather than set at a point size:
+/// that is what makes WordArt WordArt, and it is why there is no size here.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShapeText {
+    pub text: Arc<str>,
+    pub font: Option<Arc<str>>,
+    pub color: Option<crate::Color>,
+    pub bold: bool,
+    pub italic: bool,
+    /// Degrees clockwise from upright. Word's own diagonal watermark is 315.
+    pub rotation: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -1029,6 +1096,24 @@ impl Document {
     pub fn paragraphs_mut(&mut self) -> Vec<&mut Paragraph> {
         let mut out = Vec::new();
         walk_paragraphs_mut(&mut self.body, &mut out);
+        out
+    }
+
+    /// Every drawing the document holds, to change — the headers and footers
+    /// included, unlike [`Document::paragraphs`], which is the body's own walk.
+    ///
+    /// For the one job that has to touch all of them at once: re-pointing what
+    /// they name when a document is put into a package it did not come from.
+    pub fn drawings_mut(&mut self) -> Vec<&mut Drawing> {
+        let mut paragraphs = Vec::new();
+        walk_paragraphs_mut(&mut self.body, &mut paragraphs);
+        for header in &mut self.headers {
+            walk_paragraphs_mut(&mut header.content, &mut paragraphs);
+        }
+        let mut out = Vec::new();
+        for paragraph in paragraphs {
+            collect_drawings_mut(&mut paragraph.content, &mut out);
+        }
         out
     }
 

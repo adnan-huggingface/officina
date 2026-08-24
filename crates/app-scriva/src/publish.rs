@@ -80,17 +80,18 @@ pub fn plots(
 pub fn rasters(
     package: Option<&ooxml::Package>,
     parts: Option<&wp_docx::DocumentParts>,
+    loose: &HashMap<String, Vec<u8>>,
     pages: &[wp_layout::block::Page],
 ) -> HashMap<String, Raster> {
     let mut out = HashMap::new();
-    let (Some(package), Some(parts)) = (package, parts) else {
-        return out;
-    };
     for rel in wp_print::ops::image_rels(pages.iter()) {
-        let Some(name) = parts.target(&rel) else {
-            continue;
+        // A `.doc`'s pictures came with the document rather than in a package;
+        // a `.docx`'s are a relationship away from a part.
+        let from_package = || {
+            let name = parts?.target(&rel)?;
+            Some(package?.part(name)?.data())
         };
-        let Some(bytes) = package.part(name).map(|part| part.data()) else {
+        let Some(bytes) = loose.get(&rel).map(Vec::as_slice).or_else(from_package) else {
             continue;
         };
         let Ok(image) = image::load_from_memory(bytes) else {
@@ -120,7 +121,7 @@ mod tests {
 
     #[test]
     fn a_document_with_no_package_has_no_rasters_rather_than_a_panic() {
-        assert!(rasters(None, None, &[]).is_empty());
+        assert!(rasters(None, None, &HashMap::new(), &[]).is_empty());
     }
 
     #[test]

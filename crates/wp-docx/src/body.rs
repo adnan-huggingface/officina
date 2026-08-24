@@ -491,6 +491,8 @@ fn read_drawing(reader: &mut Reader<&[u8]>) -> Option<Drawing> {
         distance: (Emu(0), Emu(0), Emu(0), Emu(0)),
         position: None,
         behind_text: false,
+        text: None,
+        outline: None,
     };
     let mut horizontal: Option<Offset> = None;
     let mut vertical: Option<Offset> = None;

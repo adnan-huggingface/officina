@@ -709,12 +709,16 @@ impl Scriva {
     /// Ctrl+S must not offer to write back over a file this cannot write.
     fn open_doc(&mut self, path: &Path) {
         match wp_doc::open(path) {
-            Ok(document) => {
+            Ok((document, media)) => {
                 self.document = document;
                 self.package = None;
                 self.parts = None;
                 self.adopt_document_fonts();
                 self.pictures.clear();
+                // The old format keeps its pictures in a stream of its own, so
+                // they arrive as bytes rather than as parts to fetch later.
+                self.pictures
+                    .adopt(media.into_iter().map(|picture| (picture.rel, picture.data)));
                 // Named after the original, but with the modern extension, so
                 // the save dialog opens on the right name in the right folder.
                 self.path = Some(path.with_extension("docx"));
@@ -731,8 +735,10 @@ impl Scriva {
                 self.message = Some((
                     "Opened as a copy".to_owned(),
                     "Word 97-2003 documents are read but not written, so this \
-                     one will be saved as a .docx. Pictures, drawings, fields \
-                     and revision marks are not read from the old format."
+                     one will be saved as a .docx. Its pictures come with it; \
+                     its shapes and watermarks are shown but are not written \
+                     into the copy, and pictures the old format stored as \
+                     metafiles are not drawn."
                         .to_owned(),
                 ));
             }
@@ -803,7 +809,10 @@ impl Scriva {
             // once; from here on it is edited by the same splice writer that
             // edits a document Word wrote.
             match wp_docx::write::blank::package_for(&self.document) {
-                Ok(package) => self.package = Some(package),
+                Ok(mut package) => {
+                    self.carry_loose_pictures(&mut package);
+                    self.package = Some(package);
+                }
                 Err(error) => {
                     self.message = Some(("Cannot save".to_owned(), error.to_string()));
                     return false;
@@ -832,6 +841,40 @@ impl Scriva {
                 ));
                 false
             }
+        }
+    }
+
+    /// Puts the pictures a `.doc` brought with it into the package being
+    /// authored, and re-points the document's drawings at them.
+    ///
+    /// **A relationship that names no part is not a missing picture to Word,
+    /// it is a damaged file.** So this happens before the document part is
+    /// written, and a picture that cannot be embedded takes its drawing's
+    /// relationship with it rather than leaving one dangling.
+    fn carry_loose_pictures(&mut self, package: &mut ooxml::Package) {
+        let mut renamed: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        for (rel, bytes) in self.pictures.loose() {
+            let Some(content_type) = image_content_type(bytes) else {
+                continue;
+            };
+            if let Ok(id) = wp_docx::media::embed(package, bytes, content_type) {
+                renamed.insert(rel.clone(), id);
+            }
+        }
+        if self.pictures.loose().is_empty() {
+            return;
+        }
+        for drawing in self.document.drawings_mut() {
+            let Some(rel) = drawing.rel.as_deref() else {
+                continue;
+            };
+            // Only the names this document minted for itself are re-pointed;
+            // anything else is a relationship the package already knows.
+            if !rel.starts_with("doc-picture-") {
+                continue;
+            }
+            drawing.rel = renamed.get(rel).map(|id| id.as_str().into());
         }
     }
 
@@ -872,6 +915,7 @@ impl Scriva {
         crate::publish::rasters(
             self.package.as_ref(),
             self.parts.as_ref(),
+            self.pictures.loose(),
             self.view.pages(),
         )
     }
@@ -1974,6 +2018,8 @@ impl Scriva {
             ),
             position: None,
             behind_text: false,
+            text: None,
+            outline: None,
         };
         let clip = vec![drawing_paragraph(drawing)];
         let caret =
@@ -2986,6 +3032,19 @@ fn inches(points: f64) -> String {
 /// re-encoded as PNG is several times the size. Anything else is decoded and
 /// written out as PNG, which is the answer for a BMP above all: Word would take
 /// it, and nobody wants a twelve-megabyte bitmap inside a document.
+/// What a picture's own bytes say they are, for a part that has to declare a
+/// content type. `None` for anything the package should not be given.
+fn image_content_type(data: &[u8]) -> Option<&'static str> {
+    Some(match image::guess_format(data).ok()? {
+        image::ImageFormat::Png => "image/png",
+        image::ImageFormat::Jpeg => "image/jpeg",
+        image::ImageFormat::Gif => "image/gif",
+        image::ImageFormat::Tiff => "image/tiff",
+        image::ImageFormat::Bmp => "image/bmp",
+        _ => return None,
+    })
+}
+
 fn picture_bytes(data: Vec<u8>) -> Option<(Vec<u8>, &'static str, u32, u32)> {
     use image::ImageFormat;
     let format = image::guess_format(&data).ok()?;
@@ -3046,6 +3105,8 @@ fn picture_paragraph(
         ),
         position: None,
         behind_text: false,
+        text: None,
+        outline: None,
     };
     Paragraph {
         content: vec![wp_model::doc::Inline::Run(wp_model::doc::Run {
@@ -6695,6 +6756,8 @@ mod tests {
                 distance: Default::default(),
                 position: None,
                 behind_text: false,
+                text: None,
+                outline: None,
             },
             bytes: None,
             png: None,

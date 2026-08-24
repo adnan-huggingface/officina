@@ -85,7 +85,12 @@ fn the_chart_a_document_carries_is_drawn_on_its_page() {
 
     // And the whole page still exports — the ops a chart adds are ones both
     // backends already knew.
-    let images = scriva::publish::rasters(Some(&package), Some(&parts), view.pages());
+    let images = scriva::publish::rasters(
+        Some(&package),
+        Some(&parts),
+        &Default::default(),
+        view.pages(),
+    );
     let mut faces = scriva::publish::SystemFaces::new();
     let pdf = wp_print::pdf::export(
         std::slice::from_ref(charted),

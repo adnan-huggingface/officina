@@ -26,6 +26,10 @@ pub struct Pictures {
     loaded: HashMap<String, Option<egui::TextureHandle>>,
     /// The same, for the `<c:chart r:id>` of a chart drawing.
     charts: HashMap<String, Option<chart::Plot>>,
+    /// Pictures that came without a package: a `.doc` keeps its own in a
+    /// stream of its own, and there is no part for a relationship to name.
+    /// Consulted first, because a document is either one or the other.
+    loose: HashMap<String, Vec<u8>>,
 }
 
 impl Pictures {
@@ -37,6 +41,18 @@ impl Pictures {
     pub fn clear(&mut self) {
         self.loaded.clear();
         self.charts.clear();
+        self.loose.clear();
+    }
+
+    /// Takes up the pictures of a document that arrived without a package.
+    pub fn adopt(&mut self, media: impl IntoIterator<Item = (String, Vec<u8>)>) {
+        self.loose.extend(media);
+    }
+
+    /// The pictures of a document that arrived without a package, for a
+    /// renderer that decodes its own.
+    pub fn loose(&self) -> &HashMap<String, Vec<u8>> {
+        &self.loose
     }
 
     /// The texture for a relationship, decoding it the first time.
@@ -51,7 +67,7 @@ impl Pictures {
         rel: &str,
     ) -> Option<&egui::TextureHandle> {
         if !self.loaded.contains_key(rel) {
-            let decoded = decode(ctx, package, parts, rel);
+            let decoded = decode(ctx, package, parts, &self.loose, rel);
             self.loaded.insert(rel.to_owned(), decoded);
         }
         self.loaded.get(rel).and_then(|slot| slot.as_ref())
@@ -70,10 +86,11 @@ impl Pictures {
         rels: impl Iterator<Item = String>,
     ) {
         for rel in rels {
-            if let std::collections::hash_map::Entry::Vacant(slot) = self.loaded.entry(rel) {
-                let decoded = decode(ctx, package, parts, slot.key());
-                slot.insert(decoded);
+            if self.loaded.contains_key(&rel) {
+                continue;
             }
+            let decoded = decode(ctx, package, parts, &self.loose, &rel);
+            self.loaded.insert(rel, decoded);
         }
     }
 
@@ -118,10 +135,13 @@ fn decode(
     ctx: &egui::Context,
     package: Option<&ooxml::Package>,
     parts: Option<&wp_docx::DocumentParts>,
+    loose: &HashMap<String, Vec<u8>>,
     rel: &str,
 ) -> Option<egui::TextureHandle> {
-    let name = parts?.target(rel)?;
-    let bytes = package?.part(name)?.data();
+    let bytes = match loose.get(rel) {
+        Some(bytes) => bytes.as_slice(),
+        None => package?.part(parts?.target(rel)?)?.data(),
+    };
     let image = image::load_from_memory(bytes).ok()?;
     let rgba = image.to_rgba8();
     let size = [rgba.width() as usize, rgba.height() as usize];
@@ -179,6 +199,8 @@ mod tests {
             distance: Default::default(),
             position: position.map(Box::new),
             behind_text: false,
+            text: None,
+            outline: None,
         }
     }
 

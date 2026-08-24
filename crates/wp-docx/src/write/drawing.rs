@@ -271,6 +271,8 @@ mod tests {
             distance: Default::default(),
             position: None,
             behind_text: false,
+            text: None,
+            outline: None,
         }
     }
 

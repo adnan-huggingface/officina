@@ -106,6 +106,12 @@ pub mod field {
     /// Document properties: the one flag this reads is `fFacingPages`, bit 0
     /// of the first byte, for even-and-odd headers.
     pub const DOP: usize = 31;
+    /// Where the floating shapes of the main document are anchored.
+    pub const PLC_SPA_MOM: usize = 40;
+    /// The same for the header document, which is where a watermark lives.
+    pub const PLC_SPA_HDR: usize = 41;
+    /// The whole drawing layer: the picture store, and every shape.
+    pub const DGG_INFO: usize = 50;
 }
 
 impl Fib {

@@ -276,6 +276,7 @@ fn content_stream(
                 advances,
                 font,
                 rgb,
+                rotation,
             } => {
                 let index = fonts.slot(faces, &font);
                 out.push_str(&text_op(
@@ -287,6 +288,7 @@ fn content_stream(
                     &advances,
                     &font,
                     rgb,
+                    rotation,
                 ));
             }
             Op::Image {
@@ -347,6 +349,7 @@ fn text_op(
     advances: &[f64],
     font: &FontRequest,
     rgb: [u8; 3],
+    rotation: f64,
 ) -> String {
     let size = font.size.max(0.1);
     let mut glyphs = String::new();
@@ -385,12 +388,27 @@ fn text_op(
             }
         }
     }
+    // A PDF's y runs up the page, so the turn that looks clockwise on the
+    // screen is the negative one here.
+    let place = match rotation == 0.0 {
+        true => format!("{} {} Td", number(x), number(baseline)),
+        false => {
+            let (sin, cos) = rotation.to_radians().sin_cos();
+            format!(
+                "{} {} {} {} {} {} Tm",
+                number(cos),
+                number(-sin),
+                number(sin),
+                number(cos),
+                number(x),
+                number(baseline),
+            )
+        }
+    };
     format!(
-        "BT /F{index} {} Tf {} rg {} {} Td [{glyphs}] TJ ET\n",
+        "BT /F{index} {} Tf {} rg {place} [{glyphs}] TJ ET\n",
         number(size),
         color(rgb),
-        number(x),
-        number(baseline),
     )
 }
 
@@ -977,6 +995,7 @@ mod tests {
                 anchor: None,
                 paragraph: 0,
                 nth: 0,
+                words: None,
             },
         });
         let pdf = export(&[with_image], &mut NoFaces, &images, None, None);

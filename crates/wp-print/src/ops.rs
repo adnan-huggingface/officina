@@ -46,6 +46,10 @@ pub enum Op {
         advances: Vec<f64>,
         font: FontRequest,
         rgb: [u8; 3],
+        /// Degrees clockwise about `(x, baseline)`. Zero for every line of a
+        /// paragraph; a shape's words — WordArt, and Word's watermark — are
+        /// the one thing on a page that is set at an angle.
+        rotation: f64,
     },
     /// An image in a box, by the relationship that names its bytes.
     Image {
@@ -255,6 +259,7 @@ pub fn flatten(page: &Page) -> Vec<Op> {
                         advances: advances.clone(),
                         font: style.font.clone(),
                         rgb,
+                        rotation: 0.0,
                     });
                     let base = baseline - style.raise;
                     // A rule under or through the type follows the type, not
@@ -280,14 +285,55 @@ pub fn flatten(page: &Page) -> Vec<Op> {
                     }
                 }
             }
-            Placed::Drawing { rel, anchor, .. } => {
+            Placed::Drawing {
+                rel, anchor, words, ..
+            } => {
                 let (x, y) = match anchor {
                     Some(drawing) => anchor_position(drawing, &page.geometry, placement.y),
                     None => (placement.x, placement.y),
                 };
                 let width = placement.width;
                 let height = placement.height;
-                if let Some(rel) = rel {
+                if let Some(outline) = anchor.as_ref().and_then(|d| d.outline) {
+                    if let Some(wp_model::Color::Rgb(rgb)) = outline.fill {
+                        ops.push(Op::Fill {
+                            x,
+                            y,
+                            width,
+                            height,
+                            rgb,
+                        });
+                    }
+                    if let Some(wp_model::Color::Rgb(rgb)) = outline.line {
+                        let thickness = outline.line_width.points().max(0.5);
+                        let corners = [
+                            ((x, y), (x + width, y)),
+                            ((x + width, y), (x + width, y + height)),
+                            ((x + width, y + height), (x, y + height)),
+                            ((x, y + height), (x, y)),
+                        ];
+                        for (from, to) in corners {
+                            ops.push(Op::Rule {
+                                from,
+                                to,
+                                thickness,
+                                rgb,
+                            });
+                        }
+                    }
+                }
+                if let Some(words) = words {
+                    let (x, baseline) = words.origin(x, y, width, height);
+                    ops.push(Op::Text {
+                        x,
+                        baseline,
+                        text: words.text.clone(),
+                        advances: words.advances.clone(),
+                        font: words.font.clone(),
+                        rgb: words.rgb,
+                        rotation: words.rotation,
+                    });
+                } else if let Some(rel) = rel {
                     ops.push(Op::Image {
                         x,
                         y,
@@ -522,6 +568,7 @@ fn ink(out: &mut Vec<Op>, prim: chart::draw::Prim, shaper: &mut dyn Shaper) {
                 advances: measured.iter().map(|a| a.width).collect(),
                 font,
                 rgb,
+                rotation: 0.0,
             });
         }
     }
@@ -775,6 +822,7 @@ mod tests {
                 anchor: None,
                 paragraph: 0,
                 nth: 0,
+                words: None,
             },
         };
         let pages = [page_with(vec![drawing.clone()]), page_with(vec![drawing])];

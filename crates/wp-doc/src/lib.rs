@@ -15,21 +15,28 @@
 //! paragraphs, from the paragraph marks. Direct character formatting — bold,
 //! italic, underline, size, font, colour — and paragraph formatting —
 //! alignment, indents, spacing, the style it is in — from the bin tables of
-//! property exceptions. Tables, from the cell and row marks. And the page setup
-//! of the first section, so that a document written on A4 does not open as US
-//! Letter and reflow from its first line.
+//! property exceptions. Tables, from the cell and row marks, with the grid,
+//! the borders and both kinds of merged cell. The headers and footers. The
+//! drawing layer: pictures, whether they sit in a line or float on the page,
+//! and the shapes Word writes a watermark and a page frame with. And the page
+//! setup of the first section, so that a document written on A4 does not open
+//! as US Letter and reflow from its first line.
 //!
-//! **What is not.** Pictures, drawings, fields, footnote *references* (the notes
-//! themselves are read, but not which character they hang off), revision marks,
-//! the stylesheet's own definitions, table geometry (column widths, borders and
-//! cell shading), and the second and later sections' page setup. A document
-//! opened here shows its words and its shape; it does not claim to be the same
-//! document, and it is opened as a copy rather than as itself.
+//! **What is not.** Pictures stored as metafiles — a Word 97 document keeps a
+//! pasted chart or diagram as a deflated EMF, and nothing here plays one, so
+//! it takes its right place on the page and draws as a frame. Fields beyond
+//! their marks, footnote *references* (the notes themselves are read, but not
+//! which character they hang off), revision marks, cell shading, every shape
+//! geometry but the rectangle, and the second and later sections' page setup.
+//! A document opened here shows its words and its shape; it does not claim to
+//! be the same document, and it is opened as a copy rather than as itself.
 
 use std::path::Path;
 
+pub mod art;
 pub mod fib;
 pub mod fkp;
+pub mod picture;
 pub mod piece;
 pub mod section;
 pub mod sprm;
@@ -88,6 +95,9 @@ pub struct Doc {
     pub stream: Vec<u8>,
     /// The table stream the FIB chose.
     pub table: Vec<u8>,
+    /// The `Data` stream, where an inline picture's bytes are. Empty when the
+    /// document has none, which is not an error.
+    pub data: Vec<u8>,
 }
 
 impl Doc {
@@ -125,16 +135,36 @@ pub fn read(path: impl AsRef<Path>) -> Result<Doc> {
             "the table stream the FIB names is missing",
         ))?;
     let pieces = Pieces::read(&fib, &table)?;
+    // A document with no pictures has no `Data` stream at all, and that is
+    // ordinary rather than damage.
+    let data = container.stream("Data").ok().flatten().unwrap_or_default();
     Ok(Doc {
         fib,
         pieces,
         stream,
         table,
+        data,
     })
 }
 
-/// Opens a `.doc` as a document the rest of the application can lay out.
-pub fn open(path: impl AsRef<Path>) -> Result<wp_model::Document> {
+/// A picture read out of a `.doc`, and the name the document's drawings call
+/// it by.
+///
+/// A `.doc` has no package, so there is nothing for a `<a:blip r:embed>` to
+/// point into and no part to hold the bytes. The model still names its
+/// pictures by relationship — that is how every other reader here hands one
+/// over — so the names are minted while reading and the bytes come out
+/// alongside the document for the caller to put somewhere.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Media {
+    pub rel: String,
+    pub data: Vec<u8>,
+    pub content_type: &'static str,
+}
+
+/// Opens a `.doc` as a document the rest of the application can lay out, with
+/// the pictures it draws.
+pub fn open(path: impl AsRef<Path>) -> Result<(wp_model::Document, Vec<Media>)> {
     let doc = read(path)?;
     Ok(text::document(&doc))
 }

@@ -17,7 +17,7 @@ use wp_model::prop::{
     Border, BorderStyle, Justify, ParaProps, RunProps, TabKind, TabLeader, TabStop, Toggle,
     Underline, UnderlineKind,
 };
-use wp_model::table::TableBorders;
+use wp_model::table::{CellMargins, CellVAlign, RowHeight, TableBorders, VMerge, Width};
 use wp_model::units::{Eighth, HalfPoint, Twips};
 
 /// One property, as it appears in a `grpprl`.
@@ -391,13 +391,44 @@ fn brc_type(value: u8) -> BorderStyle {
 #[derive(Debug, Default, Clone)]
 pub struct TableRow {
     /// Column boundaries from `sprmTDefTable`'s `rgdxaCenter`, left edge
-    /// first: `Table.grid` is the differences between consecutive entries.
-    pub grid: Option<Vec<Twips>>,
-    /// One set of borders per column, from `sprmTDefTable`'s `rgTc80`.
-    pub cells: Vec<TableBorders>,
+    /// first, as the file states them: positions measured from the text
+    /// margin rather than widths. **Rows of one table need not share them** —
+    /// that is one of the two ways a `.doc` spells a horizontal merge — so the
+    /// table's grid is the union of every row's, and a cell spans however many
+    /// of the union's columns its own two boundaries enclose.
+    pub boundaries: Option<Vec<i32>>,
+    /// One entry per column, from `sprmTDefTable`'s `rgTc80`.
+    pub cells: Vec<CellDef>,
     /// The row's own uniform border, from `sprmTTableBorders80` — table
     /// level, not per cell (see `wp-layout`'s cell-then-table precedence).
     pub borders: Option<TableBorders>,
+    /// Half the gap between two columns, from `sprmTDxaGapHalf`. It is both
+    /// the padding inside every cell and the amount the first boundary sits
+    /// to the left of where the table's text begins, which is why a table
+    /// whose `rgdxaCenter` starts at -108 is nonetheless flush with the margin.
+    pub gap_half: Option<Twips>,
+    /// `sprmTDyaRowHeight`: positive is "at least", negative is "exactly", and
+    /// zero is "whatever the content needs".
+    pub height: Option<RowHeight>,
+    /// `sprmTCellPaddingDefault` — the table's own cell margins, which a `.doc`
+    /// states per row alongside everything else about the row.
+    pub padding: Option<CellMargins>,
+}
+
+/// One cell's definition, out of `sprmTDefTable`'s `rgTc80`.
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+pub struct CellDef {
+    pub borders: TableBorders,
+    /// `TC80.tcgrf`'s `fVertMerge` and `fVertRestart`. A cell that continues
+    /// the one above holds no content of its own, and drawing it as an ordinary
+    /// empty cell is what puts a white box under a letterhead.
+    pub v_merge: Option<VMerge>,
+    /// `fMerged` — Word 97's horizontal merge, where the cells stay in the row
+    /// and a flag says to draw them as one. Word 2000 and later spell the same
+    /// thing by giving the row fewer and wider columns instead, so a reader
+    /// that wants both has to understand both.
+    pub merged_left: bool,
+    pub v_align: CellVAlign,
 }
 
 /// Table-domain sprms (`sgc` 5) mixed into a row-mark paragraph's `grpprl`
@@ -412,10 +443,53 @@ pub fn table_row(data: &[u8]) -> TableRow {
         match sprm.opcode {
             0xD608 => def_table(&mut row, sprm.operand),
             0xD605 => row.borders = Some(table_borders_80(sprm.operand)),
+            0x9602 => row.gap_half = sprm.i16().map(|half| Twips(half as i32)),
+            0x9407 => row.height = sprm.i16().map(row_height),
+            0xD634 => cell_padding_default(&mut row, sprm.operand),
             _ => {}
         }
     }
     row
+}
+
+/// `sprmTDyaRowHeight`, whose sign carries the rule that `<w:trHeight>` spells
+/// out in an attribute of its own.
+fn row_height(value: i16) -> RowHeight {
+    match value {
+        0 => RowHeight::Auto,
+        exact if exact < 0 => RowHeight::Exact(Twips(-(exact as i32))),
+        at_least => RowHeight::AtLeast(Twips(at_least as i32)),
+    }
+}
+
+/// `sprmTCellPaddingDefault`'s operand: `cb`(1) + the range of cells it covers
+/// (2, ignored — the *default* is the table's) + `grfbrc`(1, which sides this
+/// one states) + `ftsWidth`(1) + `wWidth`(2). Word writes it twice over, once
+/// for the pair of sides it leaves at nothing and once for the pair it pads.
+fn cell_padding_default(row: &mut TableRow, op: &[u8]) {
+    let Some(sides) = op.get(3).copied() else {
+        return;
+    };
+    // `ftsWidth` 3 is twips. Auto, percent and nil are not paddings this can
+    // honour, and guessing one moves the text in every cell of the table.
+    if op.get(4).copied() != Some(3) {
+        return;
+    }
+    let Some(bytes) = op.get(5..7) else {
+        return;
+    };
+    let width = Width::Fixed(Twips(i16::from_le_bytes([bytes[0], bytes[1]]) as i32));
+    let margins = row.padding.get_or_insert_with(CellMargins::default);
+    for (bit, side) in [
+        (0x01, &mut margins.top),
+        (0x02, &mut margins.start),
+        (0x04, &mut margins.bottom),
+        (0x08, &mut margins.end),
+    ] {
+        if sides & bit != 0 {
+            *side = Some(width);
+        }
+    }
 }
 
 /// `TDefTableOperand`: `cb`(2) + `NumberOfColumns`(1) + `rgdxaCenter`
@@ -432,31 +506,42 @@ fn def_table(row: &mut TableRow, op: &[u8]) {
     let Some(centers) = op.get(3..3 + (columns + 1) * 2) else {
         return;
     };
-    let boundaries: Vec<i32> = centers
-        .chunks_exact(2)
-        .map(|c| i16::from_le_bytes([c[0], c[1]]) as i32)
-        .collect();
-    // `rgdxaCenter` is boundary *positions* — the left edge, then each
-    // column's right edge in turn — but `Table.grid` wants each column's
-    // *width*, the same as `<w:tblGrid>`'s `w:gridCol` states it. A column's
-    // width is the gap to the next boundary.
-    row.grid = Some(
-        boundaries
-            .windows(2)
-            .map(|pair| Twips(pair[1] - pair[0]))
+    row.boundaries = Some(
+        centers
+            .chunks_exact(2)
+            .map(|c| i16::from_le_bytes([c[0], c[1]]) as i32)
             .collect(),
     );
     let tc80s = op.get(3 + (columns + 1) * 2..).unwrap_or_default();
     row.cells = tc80s
         .chunks(20)
         .filter(|chunk| chunk.len() == 20)
-        .map(|tc80| TableBorders {
-            top: brc80(&tc80[4..8]),
-            start: brc80(&tc80[8..12]),
-            bottom: brc80(&tc80[12..16]),
-            end: brc80(&tc80[16..20]),
-            inside_h: None,
-            inside_v: None,
+        .map(|tc80| {
+            let tcgrf = u16::from_le_bytes([tc80[0], tc80[1]]);
+            CellDef {
+                borders: TableBorders {
+                    top: brc80(&tc80[4..8]),
+                    start: brc80(&tc80[8..12]),
+                    bottom: brc80(&tc80[12..16]),
+                    end: brc80(&tc80[16..20]),
+                    inside_h: None,
+                    inside_v: None,
+                },
+                // `fVertMerge` with `fVertRestart` starts a merge; `fVertMerge`
+                // alone continues the one above. The model spells it the same
+                // way, so nothing downstream has to invert it.
+                v_merge: match (tcgrf & 0x0020 != 0, tcgrf & 0x0040 != 0) {
+                    (false, _) => None,
+                    (true, true) => Some(VMerge::Restart),
+                    (true, false) => Some(VMerge::Continue),
+                },
+                merged_left: tcgrf & 0x0002 != 0,
+                v_align: match (tcgrf >> 7) & 0x03 {
+                    1 => CellVAlign::Center,
+                    2 => CellVAlign::Bottom,
+                    _ => CellVAlign::Top,
+                },
+            }
         })
         .collect();
 }
@@ -746,9 +831,9 @@ mod tests {
 
         let row = table_row(&data);
         assert_eq!(
-            row.grid,
-            Some(vec![Twips(2000)]),
-            "boundaries become widths"
+            row.boundaries,
+            Some(vec![0, 2000]),
+            "the boundaries are kept as the file states them"
         );
         assert_eq!(row.cells.len(), 1);
         let border = Border {
@@ -758,8 +843,8 @@ mod tests {
             color: Some(wp_model::Color::Rgb([0xFF, 0x00, 0x00])),
             shadow: false,
         };
-        assert_eq!(row.cells[0].top, Some(border));
-        assert_eq!(row.cells[0].end, Some(border));
+        assert_eq!(row.cells[0].borders.top, Some(border));
+        assert_eq!(row.cells[0].borders.end, Some(border));
     }
 
     #[test]

@@ -608,14 +608,41 @@ pub fn chart_rels(view: &View) -> Vec<String> {
 /// A missing picture draws a frame rather than nothing, because a hole in the
 /// page is a fact the reader should be able to see — silence would look like a
 /// document that never had the picture.
+struct Shown<'a> {
+    /// The part holding a picture's bytes.
+    rel: Option<&'a str>,
+    /// The part holding a chart's numbers.
+    chart: Option<&'a str>,
+    /// The shape's own words, when the shape is words. See [`paint_shape_words`].
+    words: Option<&'a wp_layout::block::ShapeWords>,
+    /// The shape drawn as itself: the frame round a page of a specification.
+    outline: Option<&'a wp_model::doc::ShapeOutline>,
+}
+
 fn paint_drawing(
     painter: &egui::Painter,
     pictures: &crate::pictures::Pictures,
-    rel: Option<&str>,
-    chart: Option<&str>,
+    shaper: &mut crate::shaper::Egui,
+    shown: Shown<'_>,
     rect: egui::Rect,
     zoom: f32,
 ) {
+    let Shown {
+        rel,
+        chart,
+        words,
+        outline,
+    } = shown;
+    if let Some(outline) = outline {
+        paint_shape_outline(painter, outline, rect, zoom);
+    }
+    if let Some(words) = words {
+        paint_shape_words(painter, shaper, words, rect, zoom);
+        return;
+    }
+    if outline.is_some() && rel.is_none() && chart.is_none() {
+        return;
+    }
     if let Some(plot) = chart.and_then(|rel| pictures.chart(rel)) {
         ui_kit::chart::draw(
             painter,
@@ -636,6 +663,62 @@ fn paint_drawing(
         return;
     }
     paint_image(painter, pictures, rel, rect);
+}
+
+/// Draws a shape that *is* its words: a piece of WordArt, and the watermark
+/// Word writes with one.
+///
+/// The face, the size and the angle were all decided by the layout — see
+/// [`wp_layout::block::ShapeWords`] — so that the page on paper is the page on
+/// the screen. What is left here is turning epaint's own galley about the same
+/// point, which it does around the galley's top-left corner and not its middle.
+fn paint_shape_words(
+    painter: &egui::Painter,
+    shaper: &mut crate::shaper::Egui,
+    words: &wp_layout::block::ShapeWords,
+    rect: egui::Rect,
+    zoom: f32,
+) {
+    let colour = egui::Color32::from_rgb(words.rgb[0], words.rgb[1], words.rgb[2]);
+    let mut font = shaper.font_id(&words.font);
+    font.size *= zoom;
+    let galley = painter.layout_no_wrap(words.text.clone(), font, colour);
+    let angle = words.rotation.to_radians() as f32;
+    let (sin, cos) = angle.sin_cos();
+    let half = galley.rect.size() / 2.0;
+    // The glyphs turn about `pos`, the galley's own top-left corner, so the
+    // corner goes where turning it lands the galley's middle on the shape's.
+    let turned = egui::vec2(-half.x * cos + half.y * sin, -half.x * sin - half.y * cos);
+    let mut shape = egui::epaint::TextShape::new(rect.center() + turned, galley, colour);
+    shape.angle = angle;
+    painter.add(shape);
+}
+
+/// Draws a shape that is a rectangle: its fill, then its line.
+fn paint_shape_outline(
+    painter: &egui::Painter,
+    outline: &wp_model::doc::ShapeOutline,
+    rect: egui::Rect,
+    zoom: f32,
+) {
+    let colour = |colour: wp_model::Color| match colour {
+        wp_model::Color::Rgb(rgb) => egui::Color32::from_rgb(rgb[0], rgb[1], rgb[2]),
+        _ => egui::Color32::BLACK,
+    };
+    if let Some(fill) = outline.fill {
+        painter.rect_filled(rect, 0.0, colour(fill));
+    }
+    if let Some(line) = outline.line {
+        // Never thinner than a device pixel: a hairline that rounds to zero is
+        // a frame that is not there.
+        let thickness = (outline.line_width.points() * zoom as f64).max(1.0) as f32;
+        painter.rect_stroke(
+            rect,
+            0.0,
+            egui::Stroke::new(thickness, colour(line)),
+            egui::StrokeKind::Middle,
+        );
+    }
 }
 
 fn paint_image(
@@ -926,7 +1009,9 @@ fn paint_placement(
                 pictures,
             );
         }
-        Placed::Drawing { rel, anchor, .. } => {
+        Placed::Drawing {
+            rel, anchor, words, ..
+        } => {
             // The placement's y is where the paragraph's first line landed,
             // which is the one thing pagination knows and the anchor needs.
             let (x, y) = match anchor {
@@ -943,8 +1028,13 @@ fn paint_placement(
             paint_drawing(
                 painter,
                 pictures,
-                rel.as_deref(),
-                anchor.as_ref().and_then(|d| d.chart.as_deref()),
+                shaper,
+                Shown {
+                    rel: rel.as_deref(),
+                    chart: anchor.as_ref().and_then(|d| d.chart.as_deref()),
+                    words: words.as_deref(),
+                    outline: anchor.as_ref().and_then(|d| d.outline.as_ref()),
+                },
                 rect,
                 zoom,
             );
@@ -1052,8 +1142,13 @@ fn paint_line(
             paint_drawing(
                 painter,
                 pictures,
-                rel.as_deref(),
-                chart.as_deref(),
+                shaper,
+                Shown {
+                    rel: rel.as_deref(),
+                    chart: chart.as_deref(),
+                    words: None,
+                    outline: None,
+                },
                 rect,
                 zoom,
             );
@@ -1799,6 +1894,8 @@ mod tests {
             distance: Default::default(),
             position: None,
             behind_text: false,
+            text: None,
+            outline: None,
         };
         document.body = vec![Block::Paragraph(Paragraph {
             content: vec![Inline::Run(Run {
@@ -1860,6 +1957,8 @@ mod tests {
             distance: Default::default(),
             position: None,
             behind_text: false,
+            text: None,
+            outline: None,
         };
         document.body = vec![Block::Paragraph(Paragraph {
             content: vec![Inline::Run(Run {

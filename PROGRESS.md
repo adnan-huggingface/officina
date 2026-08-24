@@ -2161,6 +2161,75 @@ now and the unused stories simply sit in the model unreferenced, the same
 shape an OOXML document takes when it defines a first-page header it does
 not currently turn on.
 
+The header that arrived was still not the header Word draws, because half of
+it is merged cells and `wp-doc` was reading a table's grid off its first row
+and stopping there. A `.doc` states the grid once *per row*, in
+`sprmTDefTable`'s `rgdxaCenter`, and the rows of one table do not have to
+agree: a row whose last cell covers two of the table's columns simply states
+one boundary fewer. That is one of the two ways the format spells a
+horizontal merge, and the commoner one — Word 97's other way, the
+`fFirstMerged`/`fMerged` flags in each cell's `TC80`, keeps the cells in the
+row and asks for them to be drawn as one. So the grid is now the union of
+every row's boundaries, worked out once the last row is in, and a cell spans
+however many of the union's columns its own two boundaries enclose; a row
+that starts part way across states `grid_before` instead of empty cells, the
+same shape `<w:tblGrid>` and `<w:gridSpan>` give an OOXML table, so
+`wp-layout` needed no changes at all. Vertical merges come from the same
+`TC80`: `fVertMerge` with `fVertRestart` begins one, `fVertMerge` alone
+continues it, and a continuing cell holds no content — reading it as an
+ordinary empty cell is what put a white box under the letterhead. The cell
+padding came with them, from `sprmTCellPaddingDefault` when the file states
+it and from `sprmTDxaGapHalf` when it only states the old half-gap, which is
+also the reason a table flush with the margin says its first boundary is at
+-108 twips rather than at zero.
+
+Then the watermark, which is not text and not a picture: Word writes one as
+a piece of WordArt in the header, a shape carrying a string, a face, a
+colour and an angle, with no bitmap anywhere. It lives in the drawing layer
+— OfficeArt, a tree of records in the table stream that a `.doc` shares
+between every picture, shape and text effect in the document — and the whole
+tree is uniform, every record a version-and-instance word, a type and a
+length, which is what makes it safe to look for the four record types that
+matter and step over the several dozen that do not. Two things about it are
+easy to get wrong. The first is that a property table says how many
+properties it holds *in its record header and nowhere else*: the overflow
+where the long values live follows the fixed-width entries with nothing
+between, so a reader that walks to the end of the record reads the first six
+bytes of somebody's string as a property. The second is that the anchor's
+rectangle is not the last word on where a shape sits — `posh` and `posv`,
+which Word keeps in the *tertiary* property table, override it, and reading
+only the rectangle puts a watermark meant for the middle of the page at the
+top of it, where the paragraph that anchors it happens to be. Word's own
+export of the same document has the glyph outlines centred on (305.5, 396.0)
+of a 612 by 792 page, which is the middle to within half a point.
+
+Drawing a shape that *is* its words needed the model to be able to say so,
+so a drawing now carries either a picture, a chart, its own words, or a
+rectangle's fill and line. The words are measured in `wp-layout` rather than
+in each renderer: WordArt has no point size — the glyphs are stretched until
+they fill the shape — so somebody has to decide what size that is, and if
+the screen decides one thing and the PDF another the two disagree by
+whatever their measuring differs by. The header and footer also became a
+*layer* rather than a band beside the body: Word draws every shape anchored
+in one before the page's own words, which is what stops a watermark from
+striking out the page it stamps.
+
+Inline pictures came with the same work, through `sprmCPicLocation` into the
+`Data` stream, where a `PICF` header is followed by the shape and usually by
+the picture's own bytes. The trap there is that the same property points at
+something else entirely when the character's `sprmCFData` is set — a form
+field's binary data, not a picture — and this document has ninety-one of
+those against eleven real pictures, so reading them all as pictures turns a
+document of checkboxes into a document of broken image frames. What a `.doc`
+hands over is bytes rather than parts, so they travel beside the document
+and are put into the package at the first save, before the document part is
+written: a relationship that names no part is not a missing picture to Word,
+it is a damaged file. **Metafiles are still not drawn.** A `.doc` written by
+Word 97 stores a pasted chart or diagram as a deflated EMF, and this
+document's eleven pictures are all of them; their size and their place on
+the page are right, and the frame that stands in for them is the honest
+answer until there is something here that can play a metafile's records.
+
 ## Deferred
 
 - [x] **PDF** — was dropped per Q3; built after ship as `wp-print`. See above.

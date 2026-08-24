@@ -260,21 +260,23 @@ fn set_orientation(hdc: HDC, devmode: HGLOBAL, landscape: bool) {
 /// Fonts GDI created for this job, one per face and device size.
 #[derive(Default)]
 struct FontCache {
-    fonts: HashMap<(String, i32, bool, bool), HGDIOBJ>,
+    fonts: HashMap<(String, i32, bool, bool, i32), HGDIOBJ>,
 }
 
 impl FontCache {
-    fn get(&mut self, family: &str, height: i32, bold: bool, italic: bool) -> HGDIOBJ {
+    /// `tenths` is GDI's escapement: tenths of a degree *anticlockwise*, and
+    /// part of the key because a turned face is a different face to GDI.
+    fn get(&mut self, family: &str, height: i32, bold: bool, italic: bool, tenths: i32) -> HGDIOBJ {
         *self
             .fonts
-            .entry((family.to_owned(), height, bold, italic))
+            .entry((family.to_owned(), height, bold, italic, tenths))
             .or_insert_with(|| unsafe {
                 let name = wide(family);
                 CreateFontW(
                     -height,
                     0,
-                    0,
-                    0,
+                    tenths,
+                    tenths,
                     if bold {
                         FW_BOLD as i32
                     } else {
@@ -371,10 +373,13 @@ fn render_page(
                 advances,
                 font,
                 rgb,
+                rotation,
             } => {
                 let height = (font.size * sy).round() as i32;
                 let family = gdi_family(&font.family);
-                let handle = fonts.get(&family, height, font.bold, font.italic);
+                // GDI turns anticlockwise and counts in tenths of a degree.
+                let tenths = (-rotation * 10.0).round() as i32 % 3600;
+                let handle = fonts.get(&family, height, font.bold, font.italic, tenths);
                 let (units, dx) = pin_advances(&text, &advances, x, sx);
                 if units.is_empty() {
                     continue;

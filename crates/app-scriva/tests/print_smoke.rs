@@ -29,7 +29,12 @@ fn a_corpus_document_prints_through_the_pdf_driver() {
     view.refresh(&document, &wp_layout::FieldValues::new(), 1, &mut shaper);
     assert!(view.pages().len() >= 2, "a document that spans pages");
 
-    let images = scriva::publish::rasters(Some(&package), Some(&parts), view.pages());
+    let images = scriva::publish::rasters(
+        Some(&package),
+        Some(&parts),
+        &Default::default(),
+        view.pages(),
+    );
     let plots = scriva::publish::plots(Some(&package), Some(&parts), view.pages());
     let output = std::env::temp_dir().join("scriva-print-smoke.pdf");
     let _ = std::fs::remove_file(&output);

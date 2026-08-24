@@ -41,6 +41,7 @@ use wp_model::units::Twips;
 
 use crate::inline::{self, Context, LaidParagraph, Line, ListLabel};
 use crate::shape::Shaper;
+use crate::FontRequest;
 
 /// Something drawn at a place on a page.
 #[derive(Debug, Clone, PartialEq)]
@@ -87,9 +88,100 @@ pub enum Placed {
         /// is — the pair that turns a click on a picture into an edit.
         paragraph: usize,
         nth: usize,
+        /// A shape that *is* its words, already measured. See [`ShapeWords`].
+        words: Option<Box<ShapeWords>>,
     },
     /// The rule Word draws above the footnote area.
     FootnoteSeparator,
+}
+
+/// A shape's own words, sized to the shape and measured here.
+///
+/// **The size comes from the shape, not from the text.** WordArt has no point
+/// size — Word stretches the glyphs until they fill the box — so the face is
+/// measured once and scaled to the width it has to cover, capped so a short
+/// word in a tall box does not grow past the box's height.
+///
+/// Measured in the layout rather than in each renderer because the screen, the
+/// PDF and the printer must put the same glyphs in the same places, and the
+/// only way three renderers agree is for one of them to decide.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShapeWords {
+    pub text: String,
+    /// The face, at the size that fills the shape.
+    pub font: FontRequest,
+    /// Per character, as every other measured run states it.
+    pub advances: Vec<f64>,
+    pub rgb: [u8; 3],
+    /// Degrees clockwise, turned about the middle of the shape's box.
+    pub rotation: f64,
+    /// The measured line, before it is turned.
+    pub width: f64,
+    pub height: f64,
+    /// Baseline below the line's own top.
+    pub ascent: f64,
+}
+
+impl ShapeWords {
+    /// Where the baseline starts once the line is turned about the middle of
+    /// `rect`, which is the point every renderer draws from and turns about.
+    pub fn origin(&self, x: f64, y: f64, width: f64, height: f64) -> (f64, f64) {
+        let (sin, cos) = self.rotation.to_radians().sin_cos();
+        let (vx, vy) = (-self.width / 2.0, -self.height / 2.0 + self.ascent);
+        (
+            x + width / 2.0 + vx * cos - vy * sin,
+            y + height / 2.0 + vx * sin + vy * cos,
+        )
+    }
+}
+
+/// Measures a shape's words at the size that fills it.
+pub fn shape_words(
+    drawing: &wp_model::Drawing,
+    shaper: &mut dyn Shaper,
+) -> Option<Box<ShapeWords>> {
+    /// The size the face is measured at before it is scaled to the box. Large
+    /// enough that the answer is not dominated by hinting.
+    const MEASURED_AT: f64 = 100.0;
+
+    let shape = drawing.text.as_deref()?;
+    let text = shape.text.trim();
+    if text.is_empty() {
+        return None;
+    }
+    let mut request = FontRequest {
+        family: shape.font.clone().unwrap_or_else(|| "Arial".into()),
+        size: MEASURED_AT,
+        bold: shape.bold,
+        italic: shape.italic,
+    };
+    let natural = shaper.width(text, &request);
+    let metrics = shaper.metrics(&request);
+    let tall = metrics.ascent + metrics.descent;
+    if natural <= 0.0 || tall <= 0.0 {
+        return None;
+    }
+    let box_width = drawing.extent.0.points();
+    let box_height = drawing.extent.1.points();
+    request.size = MEASURED_AT * (box_width / natural).min(box_height / tall).max(0.01);
+
+    let mut measured = Vec::new();
+    shaper.advances(text, &request, &mut measured);
+    let metrics = shaper.metrics(&request);
+    Some(Box::new(ShapeWords {
+        text: text.to_owned(),
+        advances: measured.iter().map(|advance| advance.width).collect(),
+        width: measured.iter().map(|advance| advance.width).sum(),
+        height: metrics.ascent + metrics.descent,
+        ascent: metrics.ascent,
+        rgb: match shape.color {
+            Some(wp_model::Color::Rgb(rgb)) => rgb,
+            // Word's own watermark grey, for a shape that states no fill.
+            _ => [0xC0, 0xC0, 0xC0],
+        },
+        rotation: shape.rotation,
+        font: request,
+    }))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -125,8 +217,8 @@ impl Page {
             .chain(&self.footnotes)
     }
 
-    /// Everything on the page, in the order a renderer must draw it: border
-    /// edges after all else.
+    /// Everything on the page, in the order a renderer must draw it: shapes
+    /// that belong under the words first, border edges after all else.
     ///
     /// Word paints shading below borders, always. In document order the two
     /// meet exactly on a table's row and column boundaries — the next row's
@@ -134,11 +226,38 @@ impl Page {
     /// and whichever the rasterizer rounds wider wins. On the screen that ate
     /// the borders under three white-shaded rows; in the PDF it ate a column
     /// rule. Putting every edge after every fill ends the coin-toss.
+    ///
+    /// **The header and footer are a layer under the body, not a band beside
+    /// it.** Every shape anchored in one is drawn before the page's own words,
+    /// whatever the shape itself says about being behind the text — which is
+    /// what stops a watermark from striking out the page it stamps.
     pub fn painted(&self) -> impl Iterator<Item = &Placement> {
-        let edge = |p: &&Placement| matches!(p.kind, Placed::Edge { .. });
-        self.everything()
-            .filter(move |p| !edge(p))
-            .chain(self.everything().filter(edge))
+        fn layer(placement: &Placement, in_band: bool) -> u8 {
+            match &placement.kind {
+                Placed::Edge { .. } => 2,
+                Placed::Drawing {
+                    anchor: Some(drawing),
+                    ..
+                } if in_band || drawing.behind_text => 0,
+                _ => 1,
+            }
+        }
+        let bands = self.header.iter().chain(&self.footer);
+        let mut out: Vec<(u8, &Placement)> = self
+            .content
+            .iter()
+            .map(|placement| (layer(placement, false), placement))
+            .chain(bands.map(|placement| (layer(placement, true), placement)))
+            .chain(
+                self.footnotes
+                    .iter()
+                    .map(|placement| (layer(placement, false), placement)),
+            )
+            .collect();
+        // Stable, so within a layer the page is still drawn in the order it
+        // was laid out: content, header, footer, notes.
+        out.sort_by_key(|(layer, _)| *layer);
+        out.into_iter().map(|(_, placement)| placement)
     }
 }
 
@@ -971,7 +1090,9 @@ pub fn flow_paragraph(
         shaper,
     );
     let first = into.items.len();
-    push_paragraph(paragraph, &layers, laid, left, width, ctx.theme, into);
+    push_paragraph(
+        paragraph, &layers, laid, left, width, ctx.theme, shaper, into,
+    );
     // Attached to the paragraph's first item. Word attaches a note to the
     // *line* its mark sits on, so a paragraph split across a page break can
     // leave its note behind; matching that needs the mark's line, and this
@@ -1230,6 +1351,7 @@ fn border_depth(border: Option<&Border>) -> f64 {
         .unwrap_or(0.0)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn push_paragraph(
     paragraph: &Paragraph,
     layers: &Layers,
@@ -1237,6 +1359,7 @@ fn push_paragraph(
     left: f64,
     width: f64,
     theme: &wp_model::color::Theme,
+    shaper: &mut dyn Shaper,
     into: &mut Flow,
 ) {
     // Named apart from the line loop's own `index` below, which shadowed this
@@ -1283,6 +1406,7 @@ fn push_paragraph(
                     anchor: Some(Box::new(drawing.clone())),
                     paragraph: paragraph_index,
                     nth,
+                    words: shape_words(drawing, shaper),
                 },
             }],
             // Counted from the top so it cannot collide with a group already
@@ -1350,6 +1474,7 @@ fn push_paragraph(
                 anchor: Some(Box::new(drawing.clone())),
                 paragraph: paragraph_index,
                 nth,
+                words: shape_words(drawing, shaper),
             },
         })
         .collect();
@@ -4179,6 +4304,8 @@ mod tests {
             distance: Default::default(),
             position: None,
             behind_text: false,
+            text: None,
+            outline: None,
         };
         let paragraph = Paragraph {
             content: vec![Inline::Run(Run {
@@ -4232,6 +4359,8 @@ mod tests {
             distance: Default::default(),
             position: None,
             behind_text: false,
+            text: None,
+            outline: None,
         };
         let paragraph = Paragraph {
             content: vec![Inline::Run(Run {
@@ -4290,6 +4419,8 @@ mod tests {
             distance: Default::default(),
             position: None,
             behind_text: false,
+            text: None,
+            outline: None,
         };
         let paragraph = Paragraph {
             content: vec![Inline::Run(Run {
@@ -4360,6 +4491,8 @@ mod tests {
                 },
             })),
             behind_text: false,
+            text: None,
+            outline: None,
         };
         let (_, y) = anchor_position(&drawing, &geometry, 400.0);
         assert_eq!(y, 400.0);
@@ -4402,6 +4535,8 @@ mod tests {
                 },
             })),
             behind_text: false,
+            text: None,
+            outline: None,
         };
         let words = "wrap ".repeat(300);
         let holder = Paragraph {
@@ -4482,6 +4617,8 @@ mod tests {
                 },
             })),
             behind_text: false,
+            text: None,
+            outline: None,
         };
         // The column is 72..540, so its middle is 306 and a 100pt picture
         // starts at 256; the vertical offset is from where the text is.

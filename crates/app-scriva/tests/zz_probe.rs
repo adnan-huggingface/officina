@@ -69,6 +69,7 @@ fn probe() {
                     advances,
                     font,
                     rgb,
+                    ..
                 } => {
                     let width: f64 = advances.iter().sum();
                     let _ = writeln!(
@@ -148,7 +149,12 @@ fn probe() {
     }
 
     if let Ok(target) = std::env::var("PROBE_PDF") {
-        let images = scriva::publish::rasters(Some(&package), Some(&parts), view.pages());
+        let images = scriva::publish::rasters(
+            Some(&package),
+            Some(&parts),
+            &Default::default(),
+            view.pages(),
+        );
         let plots = scriva::publish::plots(Some(&package), Some(&parts), view.pages());
         let mut faces = scriva::publish::SystemFaces::new();
         let mut charts = wp_print::ops::Charts {

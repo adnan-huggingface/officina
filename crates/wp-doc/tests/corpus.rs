@@ -22,7 +22,9 @@ fn text_of(document: &wp_model::Document) -> String {
 }
 
 fn open(name: &str) -> wp_model::Document {
-    wp_doc::open(corpus().join(name)).unwrap_or_else(|error| panic!("{name}: {error}"))
+    let (document, _) =
+        wp_doc::open(corpus().join(name)).unwrap_or_else(|error| panic!("{name}: {error}"));
+    document
 }
 
 #[test]
@@ -151,7 +153,7 @@ fn the_two_legacy_documents_office_ships_open() {
         if !path.exists() {
             continue;
         }
-        let document = wp_doc::open(&path).unwrap_or_else(|error| panic!("{name}: {error}"));
+        let (document, _) = wp_doc::open(&path).unwrap_or_else(|error| panic!("{name}: {error}"));
         assert!(!document.paragraphs().is_empty(), "{name} has paragraphs");
         opened += 1;
     }
