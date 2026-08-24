@@ -1073,6 +1073,33 @@ fn paint_line(
             continue;
         }
         let style = &fragment.style;
+        // A run's own `<w:bdr>` box, stroked down the middle of the room
+        // `border_pad` reserved for it — the same box `wp_print::ops` draws
+        // on paper, drawn here so the screen shows it before printing does.
+        if let Some(border) = style.border {
+            let thickness = border.size.map(|s| s.points()).unwrap_or(0.5);
+            let rgb = border
+                .color
+                .and_then(|c| c.resolve(&wp_model::Theme::default()))
+                .unwrap_or([0, 0, 0]);
+            let half = thickness / 2.0;
+            let rect = egui::Rect::from_min_size(
+                page + egui::vec2((x + half) as f32 * zoom, (placement.y + half) as f32 * zoom),
+                egui::vec2(
+                    (fragment.width - thickness).max(0.0) as f32 * zoom,
+                    (placement.height - thickness).max(0.0) as f32 * zoom,
+                ),
+            );
+            painter.rect_stroke(
+                rect,
+                0.0,
+                egui::Stroke::new(
+                    (thickness * zoom as f64).max(0.5) as f32,
+                    egui::Color32::from_rgb(rgb[0], rgb[1], rgb[2]),
+                ),
+                egui::StrokeKind::Inside,
+            );
+        }
         let color = style
             .color
             .map(|rgb| egui::Color32::from_rgb(rgb[0], rgb[1], rgb[2]))
