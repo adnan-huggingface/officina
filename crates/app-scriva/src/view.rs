@@ -215,8 +215,14 @@ pub fn caret_at(view: &View, spot: Spot) -> Option<Caret> {
     let Placed::Line { line, .. } = &placement.kind else {
         return None;
     };
-    let offset = offset_in(line, spot.x - placement.x);
-    // A click past the end of a line that *wrapped* belongs before the space the
+    Some(caret_in(view, line, paragraph, spot.x - placement.x))
+}
+
+/// Where along `line` a caret goes for a point `x` measured from the line's
+/// own left edge.
+fn caret_in(view: &View, line: &wp_layout::inline::Line, paragraph: usize, x: f64) -> Caret {
+    let offset = offset_in(line, x);
+    // A point past the end of a line that *wrapped* belongs before the space the
     // wrap ate: its byte is on this line and its caret would draw at the start of
     // the next, so the click would look like it did nothing. The last line of a
     // paragraph has no next line and its trailing space is real text the caret
@@ -226,7 +232,7 @@ pub fn caret_at(view: &View, spot: Spot) -> Option<Caret> {
         true => before_wrap_space(line, offset),
         false => offset,
     };
-    Some(Caret { paragraph, offset })
+    Caret { paragraph, offset }
 }
 
 /// The character `spot` is on, named by the offset it starts at.
@@ -445,30 +451,55 @@ pub fn line_span(view: &View, caret: Caret) -> Option<(usize, usize)> {
 /// drawn — measured down the whole stack of pages, so a step can cross from the
 /// last line of one page onto the first line of the next.
 ///
+/// A line is only weighed if it is past the one the caret is on, in the
+/// direction of travel. Nearest on its own trapped the caret on any page whose
+/// text stopped short of the bottom: the point one line below the last line of
+/// such a page is nearer to that line than to anything on the page after it, so
+/// every further press of Down chose the line it had just come from. The first
+/// page of the demonstration document is half empty and the caret could not
+/// leave it.
+///
 /// Arrow keys and Page Up/Down both come here: the only difference is the size
 /// of the step.
 pub fn step_from(view: &View, caret: Caret, dy: f64) -> Option<Caret> {
     let (page, rect) = caret_rect(view, caret)?;
     let (page_x, page_y) = view.page_origin(page);
     let x = page_x + rect.min.x as f64;
-    let y = page_y + rect.center().y as f64 + dy;
-    let mut chosen = view.pages.len().checked_sub(1)?;
-    for index in 0..view.pages.len() {
-        let (_, top) = view.page_origin(index);
-        if y < top + view.pages[index].geometry.height {
-            chosen = index;
-            break;
+    let from = page_y + rect.center().y as f64;
+    let want = from + dy;
+    let down = dy > 0.0;
+    let mut best: Option<((f64, f64), &Placement, usize, f64)> = None;
+    for (index, page) in view.pages.iter().enumerate() {
+        let (origin_x, origin_y) = view.page_origin(index);
+        for placement in &page.content {
+            let Placed::Line { paragraph, .. } = &placement.kind else {
+                continue;
+            };
+            let top = origin_y + placement.y;
+            let middle = top + placement.height / 2.0;
+            // Half a point of slack, because two cells of one row are level
+            // with each other whether or not their lines are exactly so: a
+            // step down out of one of them wants the row below, not its
+            // neighbour.
+            if (middle - from).abs() < 0.5 || down != (middle > from) {
+                continue;
+            }
+            // Vertically first, then horizontally — the same ordering a click
+            // is judged by, and for the same reason.
+            let score = (
+                distance_to(want, top, placement.height),
+                distance_to(x, origin_x + placement.x, placement.width),
+            );
+            if best.as_ref().is_none_or(|(best, ..)| score < *best) {
+                best = Some((score, placement, *paragraph, origin_x));
+            }
         }
     }
-    let (chosen_x, chosen_y) = view.page_origin(chosen);
-    caret_at(
-        view,
-        Spot {
-            page: chosen,
-            x: x - chosen_x,
-            y: y - chosen_y,
-        },
-    )
+    let (_, placement, paragraph, origin_x) = best?;
+    let Placed::Line { line, .. } = &placement.kind else {
+        return None;
+    };
+    Some(caret_in(view, line, paragraph, x - origin_x - placement.x))
 }
 
 /// The byte range of the paragraph text a line covers.
@@ -1260,6 +1291,36 @@ mod tests {
         assert!(!view.pages().is_empty());
         let (width, height) = view.extent();
         assert!(width > 0.0 && height > 0.0);
+    }
+
+    #[test]
+    fn a_step_off_the_last_line_of_a_half_empty_page_lands_on_the_next_page() {
+        // The demonstration document's first page holds five short paragraphs
+        // and half a page of nothing, and the caret could not be arrowed off
+        // it: the point one line below the last line was nearer to that line
+        // than to the top of page two, so Down chose where it already was.
+        let ctx = context();
+        let mut shaper = Egui::new(&ctx);
+        let mut document = document(&["first", "second"]);
+        let Block::Paragraph(second) = &mut document.body[1] else {
+            unreachable!("the document is two paragraphs")
+        };
+        second.props.page_break_before = Some(true);
+        let mut view = View::default();
+        view.refresh(&document, &wp_layout::FieldValues::new(), 1, &mut shaper);
+        assert_eq!(view.pages().len(), 2);
+
+        let caret = Caret {
+            paragraph: 0,
+            offset: 0,
+        };
+        let (_, rect) = caret_rect(&view, caret).expect("the caret is drawn somewhere");
+        let step = rect.height() as f64;
+        let down = step_from(&view, caret, step).expect("a line below");
+        assert_eq!(down.paragraph, 1, "the page below, not the line it left");
+
+        let up = step_from(&view, down, -step).expect("a line above");
+        assert_eq!(up.paragraph, 0, "and back again");
     }
 
     #[test]

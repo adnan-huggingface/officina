@@ -2101,6 +2101,19 @@ really has a name before drawing with it, so no ordering mistake can take
 the window down again.
 
 
+The arrow keys leave the page they are on. A step up or down is a point one
+line away and the caret nearest it, and the nearest was measured against every
+line on whichever page that point fell on — so on a page whose text stops
+halfway down, the point below the last line was nearer to that line than to
+anything on the page after it, and Down chose the line it had just come from.
+The demonstration document opens on such a page and the caret could not be
+walked off it. A line is now weighed only if it is past the one the caret is
+on, in the direction of travel, and the whole stack of pages is weighed at
+once. Where a column is too narrow for a word, the piece of it on the first
+line used to claim the whole word's bytes as well, so an offset at the end of
+the word was on two lines at once and the caret bounced between them; each
+piece now carries only its own.
+
 ## Deferred
 
 - [x] **PDF** — was dropped per Q3; built after ship as `wp-print`. See above.

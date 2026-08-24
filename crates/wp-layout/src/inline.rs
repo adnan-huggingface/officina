@@ -1506,7 +1506,13 @@ fn split_to_fit(unit: &Unit, limit: f64) -> Option<(Unit, Unit)> {
         .unwrap_or(text.len());
     let head = Unit {
         style: unit.style.clone(),
-        source: unit.source,
+        // The head ends where the split fell, not where the whole word did:
+        // a caret asking which line offset three is on must not be told both
+        // of them. Clamped for the same reason the tail is.
+        source: unit.source.map(|s| Source {
+            end: (s.start + split).min(s.end),
+            ..s
+        }),
         field: unit.field,
         kind: UnitKind::Text {
             text: text[..split].to_string(),
@@ -2585,6 +2591,31 @@ mod tests {
         assert_eq!(sources[0].start, 0);
         assert_eq!(sources[0].end, 6, "the word and its trailing space");
         assert_eq!(sources[1].start, 6);
+    }
+
+    #[test]
+    fn a_word_too_wide_for_its_column_gives_each_piece_its_own_bytes() {
+        // Which line is offset three on? While the head of a broken word kept
+        // the whole word's range the answer was "both of them", and the arrow
+        // keys walked into the narrow cells of the demonstration document's
+        // weekday table and could not walk out again.
+        let laid = lay("Wednesday", 20.0);
+        assert!(
+            laid.lines.len() > 1,
+            "the column is too narrow for the word"
+        );
+        let mut at = 0;
+        for line in &laid.lines {
+            for fragment in &line.fragments {
+                let Some(source) = fragment.source else {
+                    continue;
+                };
+                assert_eq!(source.start, at, "a piece starts where the last ended");
+                assert!(source.end > source.start, "and is not empty");
+                at = source.end;
+            }
+        }
+        assert_eq!(at, "Wednesday".len(), "and between them they cover it once");
     }
 
     #[test]
