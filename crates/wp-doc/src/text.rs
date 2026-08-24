@@ -12,8 +12,10 @@
 //! paragraph is cut where either changes. That is why bold in the middle of a
 //! sentence survives.
 
-use wp_model::doc::{Block, Inline, Paragraph, Piece as ModelPiece, Run};
-use wp_model::table::{Cell, Row, Table};
+use wp_model::doc::{Block, HeaderFooter, Inline, Paragraph, Piece as ModelPiece, Run};
+use wp_model::section::{HeaderId, HeaderKind, HeaderRef};
+use wp_model::table::{Cell, Row, Table, TableBorders};
+use wp_model::units::Twips;
 
 use crate::{fkp, sprm, Doc, Part};
 
@@ -58,7 +60,50 @@ pub fn document(doc: &Doc) -> wp_model::Document {
     if let Some(section) = crate::section::read(&doc.fib, &doc.table, &doc.stream) {
         document.section = section;
     }
+    let headers = ranges
+        .iter()
+        .find(|(part, _, _)| *part == Part::Headers)
+        .map(|(_, from, to)| (*from, *to))
+        .unwrap_or((0, 0));
+    let (bodies, section_headers, section_footers) = read.header_footers(headers.0);
+    document.settings.even_and_odd_headers = facing_pages(&doc.fib, &doc.table);
+    document.headers = bodies;
+    document.section.headers = section_headers;
+    document.section.footers = section_footers;
     document
+}
+
+/// `DopBase.fFacingPages`, bit 0 of the document properties' first byte: a
+/// *document*-wide setting, unlike `sprmSFTitlePage`'s per-section one, that
+/// decides whether any section's even-page header is ever drawn.
+fn facing_pages(fib: &crate::Fib, table: &[u8]) -> bool {
+    fib.slice(table, crate::fib::field::DOP)
+        .and_then(|dop| dop.first())
+        .is_some_and(|byte| byte & 0x01 != 0)
+}
+
+/// The six story kinds a section's header document holds, in the order
+/// [`Plcfhdd`](https://learn.microsoft.com/en-us/openspecs/office_file_formats/ms-doc/8f336b7e-66cb-4346-9fd4-88ede9a4a9db)
+/// states them, following the six fixed footnote/endnote separator stories.
+const STORY_KINDS: [(HeaderKind, bool); 6] = [
+    (HeaderKind::Even, false),
+    (HeaderKind::Default, false),
+    (HeaderKind::Even, true),
+    (HeaderKind::Default, true),
+    (HeaderKind::First, false),
+    (HeaderKind::First, true),
+];
+
+/// The header document's story boundaries: a `Plc` of bare CPs, relative to the
+/// header document's own start, with a final undefined CP that is ignored.
+fn plcfhdd(fib: &crate::Fib, table: &[u8]) -> Vec<u32> {
+    let Some(bytes) = fib.slice(table, crate::fib::field::PLCFHDD) else {
+        return Vec::new();
+    };
+    bytes
+        .chunks_exact(4)
+        .map(|chunk| u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+        .collect()
 }
 
 struct Reader<'a> {
@@ -78,6 +123,10 @@ struct Read {
     row_end: bool,
     /// It ended with a cell mark, so it is the last paragraph of a cell.
     cell_end: bool,
+    /// The row's geometry, read from the row mark's own `grpprl` — only ever
+    /// set when `row_end` is, since that is the one paragraph a `.doc` states
+    /// `sprmTDefTable`/`sprmTTableBorders80` on.
+    row_props: Option<sprm::TableRow>,
 }
 
 impl Reader<'_> {
@@ -123,12 +172,14 @@ impl Reader<'_> {
             .offset_of(mark)
             .and_then(|(offset, _)| fkp::at(&self.paragraphs, offset));
         let (istd, props) = fkp::para_props(exception);
-        let (in_table, row_end) = exception
+        let (in_table, row_end, row_props) = exception
             .map(|exception| {
                 let (_, rest) = fkp::split_istd(&exception.grpprl);
-                sprm::table_flags(rest)
+                let (in_table, row_end) = sprm::table_flags(rest);
+                let row_props = row_end.then(|| sprm::table_row(rest));
+                (in_table, row_end, row_props)
             })
-            .unwrap_or((false, false));
+            .unwrap_or((false, false, None));
 
         let mut paragraph = Paragraph::new();
         paragraph.props = props;
@@ -139,7 +190,62 @@ impl Reader<'_> {
             in_table,
             row_end,
             cell_end,
+            row_props,
         }
+    }
+
+    /// The first section's headers and footers: the bodies to add to the
+    /// document, and the references that name them.
+    ///
+    /// Only the first section's — the rest of this reader only models the
+    /// first section's page setup too (see the crate's own doc comment), and a
+    /// header document's per-section groups of six stories are laid out end to
+    /// end, so a later section's would simply start right after this one's.
+    fn header_footers(
+        &self,
+        header_doc_from: u32,
+    ) -> (Vec<HeaderFooter>, Vec<HeaderRef>, Vec<HeaderRef>) {
+        let acp = plcfhdd(&self.doc.fib, &self.doc.table);
+        // Six fixed footnote/endnote separator stories, then this section's six
+        // header/footer stories: seven boundary CPs, indices 6 through 12.
+        if acp.len() < 13 {
+            return (Vec::new(), Vec::new(), Vec::new());
+        }
+        let mut bodies = Vec::new();
+        let mut headers = Vec::new();
+        let mut footers = Vec::new();
+        for (index, (kind, is_footer)) in STORY_KINDS.iter().enumerate() {
+            let start = acp[6 + index];
+            let end = acp[7 + index];
+            if end <= start {
+                continue; // An empty story: no header/footer of this kind.
+            }
+            // The story's own trailing paragraph mark is content; the guard
+            // mark right after it, which separates it from the next story, is
+            // not (see the header-document overview) — so the last character
+            // of the span is dropped.
+            let from = header_doc_from + start;
+            let to = header_doc_from + end - 1;
+            let id = HeaderId(bodies.len() as u32);
+            bodies.push(HeaderFooter {
+                id,
+                part: None,
+                rel: None,
+                footer: *is_footer,
+                content: self.blocks(from, to),
+            });
+            let reference = HeaderRef {
+                kind: *kind,
+                body: id,
+                rel: None,
+            };
+            if *is_footer {
+                footers.push(reference);
+            } else {
+                headers.push(reference);
+            }
+        }
+        (bodies, headers, footers)
     }
 
     /// The model's id for one of the file's style indices.
@@ -258,12 +364,25 @@ fn assemble(read: Vec<Read>) -> Vec<Block> {
     let mut rows: Vec<Row> = Vec::new();
     let mut cells: Vec<Cell> = Vec::new();
     let mut cell: Vec<Block> = Vec::new();
+    // A `.doc` states a table's grid and its row-level border once per row
+    // (see `sprm::table_row`'s doc comment); real tables keep both constant
+    // across rows, so the first row to state them wins and later rows are
+    // trusted to agree.
+    let mut grid: Option<Vec<Twips>> = None;
+    let mut borders: Option<TableBorders> = None;
 
     for item in read {
         if !item.in_table {
             // Whatever table was open ends here.
             if !rows.is_empty() || !cells.is_empty() {
-                flush_table(&mut out, &mut rows, &mut cells, &mut cell);
+                flush_table(
+                    &mut out,
+                    &mut rows,
+                    &mut cells,
+                    &mut cell,
+                    &mut grid,
+                    &mut borders,
+                );
             }
             out.push(Block::Paragraph(item.paragraph));
             continue;
@@ -272,6 +391,17 @@ fn assemble(read: Vec<Read>) -> Vec<Block> {
             // The row mark's own paragraph is not content.
             if !cell.is_empty() {
                 cells.push(cell_of(std::mem::take(&mut cell)));
+            }
+            if let Some(row_props) = item.row_props {
+                if grid.is_none() {
+                    grid = row_props.grid;
+                }
+                if row_props.borders.is_some() {
+                    borders = row_props.borders;
+                }
+                for (cell, cell_borders) in cells.iter_mut().zip(row_props.cells) {
+                    cell.props.borders = cell_borders;
+                }
             }
             let mut row = Row::new();
             row.cells = std::mem::take(&mut cells);
@@ -284,7 +414,14 @@ fn assemble(read: Vec<Read>) -> Vec<Block> {
         }
     }
     if !rows.is_empty() || !cells.is_empty() || !cell.is_empty() {
-        flush_table(&mut out, &mut rows, &mut cells, &mut cell);
+        flush_table(
+            &mut out,
+            &mut rows,
+            &mut cells,
+            &mut cell,
+            &mut grid,
+            &mut borders,
+        );
     }
     out
 }
@@ -294,6 +431,8 @@ fn flush_table(
     rows: &mut Vec<Row>,
     cells: &mut Vec<Cell>,
     cell: &mut Vec<Block>,
+    grid: &mut Option<Vec<Twips>>,
+    borders: &mut Option<TableBorders>,
 ) {
     if !cell.is_empty() {
         cells.push(cell_of(std::mem::take(cell)));
@@ -303,11 +442,19 @@ fn flush_table(
         row.cells = std::mem::take(cells);
         rows.push(row);
     }
+    let grid = grid.take();
+    let borders = borders.take();
     if rows.is_empty() {
         return;
     }
     let mut table = Table::new();
     table.rows = std::mem::take(rows);
+    if let Some(grid) = grid {
+        table.grid = grid;
+    }
+    if let Some(borders) = borders {
+        table.props.borders = borders;
+    }
     out.push(Block::Table(table));
 }
 
@@ -331,6 +478,7 @@ mod tests {
             in_table,
             row_end,
             cell_end,
+            row_props: None,
         }
     }
 

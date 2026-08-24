@@ -13,8 +13,12 @@
 //! says". Reading them as booleans makes every styled document wrong.
 
 use wp_model::color::Highlight;
-use wp_model::prop::{Justify, ParaProps, RunProps, Toggle, Underline, UnderlineKind};
-use wp_model::units::{HalfPoint, Twips};
+use wp_model::prop::{
+    Border, BorderStyle, Justify, ParaProps, RunProps, TabKind, TabLeader, TabStop, Toggle,
+    Underline, UnderlineKind,
+};
+use wp_model::table::TableBorders;
+use wp_model::units::{Eighth, HalfPoint, Twips};
 
 /// One property, as it appears in a `grpprl`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,14 +87,22 @@ pub fn walk(mut data: &[u8]) -> Vec<Sprm<'_>> {
 /// How many bytes of operand follow an opcode.
 ///
 /// The top three bits are the whole answer, except for the two variable-length
-/// forms where the first operand byte is a count — and for `sprmPChgTabs`, whose
-/// count can be 255, meaning "work it out from the two arrays inside".
+/// forms where the first operand byte is a count — and for `sprmTDefTable` and
+/// `sprmPChgTabs`, the two named exceptions to that rule: the former's count is
+/// two bytes, not one, and the latter's count can be 255, meaning "work it out
+/// from the two arrays inside".
 fn operand_length(opcode: u16, rest: &[u8]) -> Option<usize> {
     match opcode >> 13 {
         0 | 1 => Some(1),
         2 | 4 | 5 => Some(2),
         3 => Some(4),
         7 => Some(3),
+        // sprmTDefTable's `cb` is two bytes and already counts itself (it is
+        // "the remainder, incremented by one"), so the total span is `cb + 1`.
+        _ if opcode == 0xD608 => {
+            let cb = u16::from_le_bytes([*rest.first()?, *rest.get(1)?]) as usize;
+            Some(cb + 1)
+        }
         // Variable: a length byte, then that many bytes.
         _ => {
             let count = rest.first().copied()? as usize;
@@ -99,7 +111,9 @@ fn operand_length(opcode: u16, rest: &[u8]) -> Option<usize> {
                 (0xC615, 255) => {
                     let deleted = *rest.get(1)? as usize;
                     let added = *rest.get(2 + deleted * 4)? as usize;
-                    Some(2 + deleted * 4 + 1 + added * 6)
+                    // PChgTabsAdd is cTabs, then 2 bytes/entry of positions and
+                    // 1 byte/entry of tab descriptors — 3 bytes each, not 6.
+                    Some(2 + deleted * 4 + 1 + added * 3)
                 }
                 _ => Some(1 + count),
             }
@@ -201,8 +215,263 @@ pub fn apply_para(props: &mut ParaProps, data: &[u8]) {
             0x2406 => props.keep_lines = sprm.toggle(),
             0x2405 => props.page_break_before = sprm.toggle(),
             0x2404 => props.widow_control = sprm.toggle(),
+            // Direct tab stops (PChgTabsOperand) and a style's own tab stops
+            // (PChgTabsPapxOperand, found only inside a style's UpxPapx) are
+            // different operand shapes for the same idea — the former has a
+            // close-distance array the latter doesn't — so both are handled
+            // by the one shared parser, distinguished by `has_close`.
+            0xC615 => add_tabs(&mut props.tabs, tab_stops(sprm.operand, true)),
+            0xC60D => add_tabs(&mut props.tabs, tab_stops(sprm.operand, false)),
             _ => {}
         }
+    }
+}
+
+/// Appends freshly parsed stops rather than replacing the list: a paragraph
+/// (or a style) can state more than one `PChgTabs`-family sprm, and each one
+/// adds to what came before it in the same `grpprl`. Merging a direct
+/// paragraph's stops with its *style's* stops is a separate, later step
+/// ([`ParaProps::layer`]), not this one.
+fn add_tabs(tabs: &mut Option<Vec<TabStop>>, mut new: Vec<TabStop>) {
+    if new.is_empty() {
+        return;
+    }
+    match tabs {
+        Some(existing) => existing.append(&mut new),
+        None => *tabs = Some(new),
+    }
+}
+
+/// A tab stop's alignment and leader, packed into one byte — the `TBD`
+/// structure. Bits 0-2 are `jc`, bits 3-5 are `tlc`, the top two are unused.
+fn tab_descriptor(byte: u8) -> (TabKind, TabLeader) {
+    let kind = match byte & 0x07 {
+        1 => TabKind::Center,
+        2 => TabKind::End,
+        3 => TabKind::Decimal,
+        4 => TabKind::Bar,
+        _ => TabKind::Start,
+    };
+    let leader = match (byte >> 3) & 0x07 {
+        1 => TabLeader::Dot,
+        2 => TabLeader::Hyphen,
+        3 | 4 => TabLeader::Underscore,
+        5 => TabLeader::MiddleDot,
+        _ => TabLeader::None,
+    };
+    (kind, leader)
+}
+
+/// Reads a `PChgTabsAdd` (`cTabs`, then that many `XAS` positions, then that
+/// many `TBD` descriptor bytes) starting at `data`, returning the stops and
+/// how many bytes were consumed.
+fn tabs_add(data: &[u8]) -> (Vec<TabStop>, usize) {
+    let Some(&count) = data.first() else {
+        return (Vec::new(), 0);
+    };
+    let count = count as usize;
+    let positions = data.get(1..1 + count * 2).unwrap_or_default();
+    let descriptors = data
+        .get(1 + count * 2..1 + count * 2 + count)
+        .unwrap_or_default();
+    let stops = positions
+        .chunks_exact(2)
+        .zip(descriptors)
+        .map(|(pos, &tbd)| {
+            let position = Twips(i16::from_le_bytes([pos[0], pos[1]]) as i32);
+            let (kind, leader) = tab_descriptor(tbd);
+            TabStop {
+                position,
+                kind,
+                leader,
+            }
+        })
+        .collect();
+    (stops, 1 + count * 2 + count)
+}
+
+/// Reads a `cTabs`-then-`rgdxaDel` array (an XAS per entry) starting at
+/// `data`, returning cleared stops and how many bytes were consumed. Used by
+/// both `PChgTabsDelClose` (which has a trailing close-distance array this
+/// does not read — the caller skips it separately) and the simpler
+/// `PChgTabsDel` a style's own tab sprm uses.
+fn tabs_del(data: &[u8]) -> (Vec<TabStop>, usize) {
+    let Some(&count) = data.first() else {
+        return (Vec::new(), 0);
+    };
+    let count = count as usize;
+    let positions = data.get(1..1 + count * 2).unwrap_or_default();
+    let stops = positions
+        .chunks_exact(2)
+        .map(|pos| TabStop {
+            position: Twips(i16::from_le_bytes([pos[0], pos[1]]) as i32),
+            kind: TabKind::Clear,
+            leader: TabLeader::None,
+        })
+        .collect();
+    (stops, 1 + count * 2)
+}
+
+/// Parses a `PChgTabs(Papx)?Operand`: a 1-byte `cb` (already consumed by the
+/// sprm walk into `op`), a delete list, then an add list. `has_close` tells
+/// the deletes apart — direct paragraph formatting's `PChgTabsDelClose` adds
+/// a same-length close-distance array after `rgdxaDel` that a style's own
+/// `PChgTabsDel` does not have.
+///
+/// Deleted positions come back as [`TabKind::Clear`] stops, which
+/// `ParaProps`'s own merge already knows removes an inherited stop at that
+/// position — so a delete here does not need special handling.
+fn tab_stops(op: &[u8], has_close: bool) -> Vec<TabStop> {
+    // `op` is the whole sprm operand, `cb` included as its first byte —
+    // `operand_length` only sizes the span, it does not strip anything —
+    // so the delete list starts one byte in, for the ordinary (`cb` < 255)
+    // form and the rare `cb == 255` extended one alike (the latter's second
+    // byte is where `cTabsDel` starts either way).
+    let payload = op.get(1..).unwrap_or_default();
+    let (mut dels, mut at) = tabs_del(payload);
+    if has_close {
+        // Skip the close-distance array (same length as rgdxaDel): it says
+        // how wide a net each delete casts, which this reader does not need
+        // — an exact-position delete is close enough for a legacy format.
+        let count = payload.first().copied().unwrap_or(0) as usize;
+        at += count * 2;
+    }
+    let (adds, _) = tabs_add(payload.get(at..).unwrap_or_default());
+    dels.extend(adds);
+    dels
+}
+
+/// Decodes a `Brc80`/`Brc80MayBeNil`: 4 bytes shared by paragraph, table and
+/// cell borders alike. All bits set means "no border" by convention.
+fn brc80(bytes: &[u8]) -> Option<Border> {
+    let bytes: [u8; 4] = bytes.get(..4)?.try_into().ok()?;
+    if bytes == [0xFF, 0xFF, 0xFF, 0xFF] {
+        return None;
+    }
+    let width = bytes[0];
+    let style = brc_type(bytes[1]);
+    if style == BorderStyle::None {
+        return None;
+    }
+    let color = ico(bytes[2]);
+    let space = bytes[3] & 0x1F;
+    Some(Border {
+        style,
+        size: Some(Eighth(width.max(2) as i32)),
+        space: Some(space),
+        color,
+        shadow: bytes[3] & 0x20 != 0,
+    })
+}
+
+/// `BrcType` — the border line style, matched against the handful this
+/// project's `BorderStyle` names directly. Everything else (including the
+/// ~180 Word 97 clip-art borders) draws as a plain line, the same fallback
+/// `BorderStyle::from_val` already uses for OOXML's unrecognised names.
+fn brc_type(value: u8) -> BorderStyle {
+    match value {
+        0x00 => BorderStyle::None,
+        0x01 | 0x05 => BorderStyle::Single,
+        0x03 => BorderStyle::Double,
+        0x06 => BorderStyle::Dotted,
+        0x07 | 0x16 => BorderStyle::Dashed,
+        0x08 => BorderStyle::DotDash,
+        0x09 => BorderStyle::DotDotDash,
+        0x0A => BorderStyle::Triple,
+        0x14 => BorderStyle::Wave,
+        0x15 => BorderStyle::DoubleWave,
+        _ => BorderStyle::Art,
+    }
+}
+
+/// One table row's geometry, read from the row mark's own `grpprl` — that is
+/// where a `.doc` states `sprmTDefTable` and `sprmTTableBorders80`, per
+/// [MS-DOC] Overview of Tables: "The properties of each row mark MUST define
+/// the cells for that table row."
+#[derive(Debug, Default, Clone)]
+pub struct TableRow {
+    /// Column boundaries from `sprmTDefTable`'s `rgdxaCenter`, left edge
+    /// first: `Table.grid` is the differences between consecutive entries.
+    pub grid: Option<Vec<Twips>>,
+    /// One set of borders per column, from `sprmTDefTable`'s `rgTc80`.
+    pub cells: Vec<TableBorders>,
+    /// The row's own uniform border, from `sprmTTableBorders80` — table
+    /// level, not per cell (see `wp-layout`'s cell-then-table precedence).
+    pub borders: Option<TableBorders>,
+}
+
+/// Table-domain sprms (`sgc` 5) mixed into a row-mark paragraph's `grpprl`
+/// alongside its paragraph-domain ones. `sprm::walk` is domain-agnostic —
+/// length comes from `spra` alone — so these survive intact regardless of
+/// what else is in the list; only `sprmTDefTable` and `sprmTTableBorders80`
+/// are read here (see `crates/wp-doc/src/lib.rs`'s scope note on table
+/// geometry for what is deliberately left out).
+pub fn table_row(data: &[u8]) -> TableRow {
+    let mut row = TableRow::default();
+    for sprm in walk(data) {
+        match sprm.opcode {
+            0xD608 => def_table(&mut row, sprm.operand),
+            0xD605 => row.borders = Some(table_borders_80(sprm.operand)),
+            _ => {}
+        }
+    }
+    row
+}
+
+/// `TDefTableOperand`: `cb`(2) + `NumberOfColumns`(1) + `rgdxaCenter`
+/// (columns+1 `XAS` positions) + `rgTc80` (one 20-byte `TC80` per column,
+/// short columns left borderless). `op` is the whole sprm operand, `cb`
+/// included — unlike the generic variable-length sprms, `operand_length`
+/// does not strip anything for this one either, so `NumberOfColumns` starts
+/// two bytes in.
+fn def_table(row: &mut TableRow, op: &[u8]) {
+    let Some(&columns) = op.get(2) else {
+        return;
+    };
+    let columns = columns as usize;
+    let Some(centers) = op.get(3..3 + (columns + 1) * 2) else {
+        return;
+    };
+    let boundaries: Vec<i32> = centers
+        .chunks_exact(2)
+        .map(|c| i16::from_le_bytes([c[0], c[1]]) as i32)
+        .collect();
+    // `rgdxaCenter` is boundary *positions* — the left edge, then each
+    // column's right edge in turn — but `Table.grid` wants each column's
+    // *width*, the same as `<w:tblGrid>`'s `w:gridCol` states it. A column's
+    // width is the gap to the next boundary.
+    row.grid = Some(
+        boundaries
+            .windows(2)
+            .map(|pair| Twips(pair[1] - pair[0]))
+            .collect(),
+    );
+    let tc80s = op.get(3 + (columns + 1) * 2..).unwrap_or_default();
+    row.cells = tc80s
+        .chunks(20)
+        .filter(|chunk| chunk.len() == 20)
+        .map(|tc80| TableBorders {
+            top: brc80(&tc80[4..8]),
+            start: brc80(&tc80[8..12]),
+            bottom: brc80(&tc80[12..16]),
+            end: brc80(&tc80[16..20]),
+            inside_h: None,
+            inside_v: None,
+        })
+        .collect();
+}
+
+/// `TableBordersOperand80`: `cb`(1, always 0x18) + 6 `Brc80MayBeNil` in the
+/// fixed order top/left/bottom/right/insideH/insideV. `op` is the whole sprm
+/// operand, `cb` included, so the borders start one byte in.
+fn table_borders_80(op: &[u8]) -> TableBorders {
+    TableBorders {
+        top: op.get(1..5).and_then(brc80),
+        start: op.get(5..9).and_then(brc80),
+        bottom: op.get(9..13).and_then(brc80),
+        end: op.get(13..17).and_then(brc80),
+        inside_h: op.get(17..21).and_then(brc80),
+        inside_v: op.get(21..25).and_then(brc80),
     }
 }
 
@@ -386,5 +655,135 @@ mod tests {
         assert_eq!(props.color, None, "auto is not a colour");
         apply_run(&mut props, &[0x42, 0x2A, 0x06]);
         assert_eq!(props.color, Some(wp_model::Color::Rgb([0xFF, 0x00, 0x00])));
+    }
+
+    #[test]
+    fn a_direct_tab_stop_lands_at_its_stated_position() {
+        // sprmPChgTabs: cb=5, zero deletes, one add — End-aligned, dot leader,
+        // at 5000 twips (0x1388 LE).
+        let mut props = ParaProps::default();
+        apply_para(
+            &mut props,
+            &[0x15, 0xC6, 0x05, 0x00, 0x01, 0x88, 0x13, 0x0A],
+        );
+        assert_eq!(
+            props.tabs,
+            Some(vec![TabStop {
+                position: Twips(5000),
+                kind: TabKind::End,
+                leader: TabLeader::Dot,
+            }])
+        );
+    }
+
+    #[test]
+    fn a_styles_own_tab_stop_uses_the_papx_shaped_operand() {
+        // sprmPChgTabsPapx: cb=4, one delete at 1440 twips (0x05A0 LE), no
+        // adds. The Papx form has no close-distance array, unlike the direct
+        // sprmPChgTabs — a delete here still comes back as a Clear stop.
+        let mut props = ParaProps::default();
+        apply_para(&mut props, &[0x0D, 0xC6, 0x04, 0x01, 0xA0, 0x05, 0x00]);
+        assert_eq!(
+            props.tabs,
+            Some(vec![TabStop {
+                position: Twips(1440),
+                kind: TabKind::Clear,
+                leader: TabLeader::None,
+            }])
+        );
+    }
+
+    #[test]
+    fn brc80_reads_width_type_colour_and_space() {
+        // 8 eighths of a point (1pt), single line, red, no space.
+        assert_eq!(
+            brc80(&[8, 0x01, 0x06, 0x00]),
+            Some(Border {
+                style: BorderStyle::Single,
+                size: Some(Eighth(8)),
+                space: Some(0),
+                color: Some(wp_model::Color::Rgb([0xFF, 0x00, 0x00])),
+                shadow: false,
+            })
+        );
+    }
+
+    #[test]
+    fn brc80_all_bits_set_means_no_border() {
+        assert_eq!(brc80(&[0xFF, 0xFF, 0xFF, 0xFF]), None);
+    }
+
+    #[test]
+    fn brc80_type_zero_means_no_border_too() {
+        assert_eq!(brc80(&[8, 0x00, 0x06, 0x00]), None);
+    }
+
+    #[test]
+    fn sprm_t_def_table_gives_the_grid_and_each_columns_border() {
+        // One column, 0..2000 twips, every side a single 1pt red border —
+        // followed by an unrelated sprm, to prove the two-byte `cb` (the one
+        // exception besides sprmPChgTabs) steps the walk correctly rather
+        // than corrupting everything after it.
+        let brc = [8u8, 0x01, 0x06, 0x00];
+        let mut tc80 = vec![0u8, 0, 0xD0, 0x07]; // tcgrf, wWidth
+        tc80.extend(brc.repeat(4)); // brcTop, brcLeft, brcBottom, brcRight
+        let mut operand = vec![0x01]; // NumberOfColumns
+        operand.extend([0x00, 0x00, 0xD0, 0x07]); // rgdxaCenter: 0, 2000
+        operand.extend(&tc80);
+        let cb = (operand.len() + 1) as u16;
+        let mut data = vec![0x08, 0xD6]; // sprmTDefTable
+        data.extend(cb.to_le_bytes());
+        data.extend(&operand);
+        data.extend([0x17, 0x24, 0x01]); // sprmPFTtp, unrelated, must survive
+
+        let sprms = walk(&data);
+        assert_eq!(
+            sprms.len(),
+            2,
+            "the def-table sprm must not eat its neighbour"
+        );
+        assert_eq!(sprms[1].opcode, 0x2417);
+
+        let row = table_row(&data);
+        assert_eq!(
+            row.grid,
+            Some(vec![Twips(2000)]),
+            "boundaries become widths"
+        );
+        assert_eq!(row.cells.len(), 1);
+        let border = Border {
+            style: BorderStyle::Single,
+            size: Some(Eighth(8)),
+            space: Some(0),
+            color: Some(wp_model::Color::Rgb([0xFF, 0x00, 0x00])),
+            shadow: false,
+        };
+        assert_eq!(row.cells[0].top, Some(border));
+        assert_eq!(row.cells[0].end, Some(border));
+    }
+
+    #[test]
+    fn sprm_t_table_borders_80_is_the_rows_own_border() {
+        let brc = [8u8, 0x01, 0x06, 0x00];
+        let nil = [0xFFu8, 0xFF, 0xFF, 0xFF];
+        let mut data = vec![0x05, 0xD6, 0x18]; // sprmTTableBorders80, cb=0x18
+        data.extend(brc); // top
+        data.extend(nil); // left, bottom, right, insideH, insideV
+        data.extend(nil);
+        data.extend(nil);
+        data.extend(nil);
+        data.extend(nil);
+
+        let row = table_row(&data);
+        assert_eq!(
+            row.borders.unwrap().top,
+            Some(Border {
+                style: BorderStyle::Single,
+                size: Some(Eighth(8)),
+                space: Some(0),
+                color: Some(wp_model::Color::Rgb([0xFF, 0x00, 0x00])),
+                shadow: false,
+            })
+        );
     }
 }

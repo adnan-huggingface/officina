@@ -101,6 +101,11 @@ pub mod field {
     pub const STSHF: usize = 1;
     /// The section table.
     pub const PLCFSED: usize = 6;
+    /// The header document's story boundaries.
+    pub const PLCFHDD: usize = 11;
+    /// Document properties: the one flag this reads is `fFacingPages`, bit 0
+    /// of the first byte, for even-and-odd headers.
+    pub const DOP: usize = 31;
 }
 
 impl Fib {

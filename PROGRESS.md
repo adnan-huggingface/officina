@@ -2114,6 +2114,53 @@ line used to claim the whole word's bytes as well, so an offset at the end of
 the word was on two lines at once and the caret bounced between them; each
 piece now carries only its own.
 
+
+A legacy `.doc` table showed no borders and its table of contents ran page
+numbers straight into the entry text, because `wp-doc` read a paragraph's
+own formatting and a table's cell and row marks but neither a table's
+geometry nor a style's own formatting — two gaps the crate's own doc
+comments admitted to. Both close from the same handful of sprms: a table
+row states its column widths and each column's default border in
+`sprmTDefTable`, and a uniform row border in `sprmTTableBorders80`, on the
+row-mark paragraph the whole row's cells trail; a style states its own tab
+stops the same way a direct paragraph does, just under a different opcode
+(`sprmPChgTabsPapx` rather than `sprmPChgTabs`) and reached by walking past
+a style's name into the stylesheet's own `UpxPapx`, a record this reader
+had never opened before. Two length bugs came with the territory and would
+have corrupted every sprm after them, not just these: `sprmTDefTable` is
+one of exactly two sprms in the whole format whose length is not "one byte
+then that many more" — its `cb` is two bytes, not one, a rule the walker
+did not know — and the existing extended-form handling for `sprmPChgTabs`
+sized its add-list at six bytes per tab stop instead of three. The TOC's
+tab stops turned out to live entirely in its paragraph styles rather than
+on the paragraphs themselves, so the border fix alone would not have
+reached them.
+
+
+The same legacy `.doc` showed no header or footer at all, because `wp-doc`
+never read the header document — a fourth text range the FIB already
+counted (alongside the body, the footnotes and the rest) but that nothing
+ever turned into paragraphs. A `Plcfhdd` splits that range into stories:
+six fixed footnote/endnote separators, then six per section in a fixed
+order (even header, odd header, even footer, odd footer, first-page
+header, first-page footer), each ending in a guard paragraph mark that is
+not part of its own content. Reading it needed nothing new — the same
+`Reader::blocks` that already turns a character range into paragraphs and
+tables handles a header's own title-block table exactly as it handles one
+in the body — only the range to hand it and the trailing guard mark to
+trim. The trap was trusting the stories' presence as the sign of what to
+show: this file's leftover first-page and even-page stories still carry
+bytes from whenever "different first page" was last turned on, long after
+it was turned back off, and Word does not clear them. Showing whichever
+story merely has bytes would have put stale letterhead on page one instead
+of the real header. What decides which stories are live is a flag, not a
+byte count — `sprmSFTitlePage` on the section for the first page, and
+`DopBase.fFacingPages` for even-and-odd, the latter a document-wide
+setting `wp-doc` had never read at all — so both are read from the file
+now and the unused stories simply sit in the model unreferenced, the same
+shape an OOXML document takes when it defines a first-page header it does
+not currently turn on.
+
 ## Deferred
 
 - [x] **PDF** — was dropped per Q3; built after ship as `wp-print`. See above.

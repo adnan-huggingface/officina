@@ -80,6 +80,14 @@ fn apply(grpprl: &[u8], props: &mut SectionProps) -> bool {
                 };
                 stated = true;
             }
+            // Whether the section has its own first-page header and footer —
+            // needed to know it, rather than infer it from which header
+            // stories a `.doc` happens to still carry bytes for, since Word
+            // leaves a disabled title page's story bytes in the file uncleared.
+            0x300A => {
+                props.title_page = found.operand.first().copied().unwrap_or(0) != 0;
+                stated = true;
+            }
             _ => {}
         }
     }
@@ -121,5 +129,23 @@ mod tests {
         let mut props = SectionProps::default();
         apply(&[0x23, 0x90, 0x9C, 0xFF], &mut props);
         assert_eq!(props.margins.top, Twips(-100));
+    }
+
+    #[test]
+    fn a_title_page_flag_of_one_turns_on_the_sections_own_first_page() {
+        let mut props = SectionProps::default();
+        assert!(apply(&[0x0A, 0x30, 0x01], &mut props));
+        assert!(props.title_page);
+    }
+
+    #[test]
+    fn a_title_page_flag_of_zero_is_read_rather_than_left_as_the_default() {
+        // as if a wrapping style said otherwise
+        let mut props = SectionProps {
+            title_page: true,
+            ..Default::default()
+        };
+        assert!(apply(&[0x0A, 0x30, 0x00], &mut props));
+        assert!(!props.title_page);
     }
 }
