@@ -663,7 +663,7 @@ mod tests {
                 height: 200.0,
                 rel: None,
                 chart: Some(rel.into()),
-                nth: 0,
+                nth: Some(0),
             };
         }
         placement

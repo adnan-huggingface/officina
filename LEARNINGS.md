@@ -682,6 +682,22 @@ the last row of the span grows, and only if what is left of the text needs it.
 The same document's nested table draws "Three" beside "Four" for exactly this
 reason.
 
+A bullet may be a picture, and the character beside it is a decoy.
+
+`<w:lvlPicBulletId>` points at a `<w:numPicBullet>` in the numbering part's own
+list, written as VML: a `<v:shape>` whose CSS `style` states the size and whose
+`<v:imagedata>` names the image. The level *also* carries an ordinary
+`<w:lvlText>` — a Symbol dot — for a reader that cannot fetch the picture, so a
+reader that takes the text and ignores the id draws something plausible and
+wrong. The demonstration document says so in words: "This bullet uses an image
+as the bullet item", beside a dot.
+
+Two things about it are easy to get wrong. The size is the shape's and not the
+image's: the icons Word ships are hundreds of pixels across and go on a line
+nine points tall. And the relationship is the *numbering part's*, which numbers
+from `rId1` exactly as `document.xml` does — resolving it against the document's
+relationships fetches whatever that file's first image happens to be.
+
 And where its rows meet, nothing is drawn.
 
 Between the rows of a vertical merge there is no edge: the reader sees one

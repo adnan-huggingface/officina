@@ -2037,15 +2037,28 @@ still differs" below.
   wrote the grid out after laying the table — every table in this document but
   the calendar — the grid *is* Word's answer and the columns now agree with it
   to the twip. Content-measured autofit is a body of work of its own.
-- **A bulleted line is laid half a point tall.** Word pitches the lines of this
-  document's lists at 16.44pt where the bullet's own face, measured alone,
-  says 16.90. The face on a line and the line's pitch are not the simple
-  maximum they are everywhere else; the rule for a mixed line has not been
-  measured. It costs two and a half points down the length of page 8.
+- **A bulleted line is laid half a point tall.** Word pitches a line carrying a
+  Symbol bullet at 16.44pt where we lay it at 16.90; a Wingdings one at 15.96
+  where we lay 15.86, and a Courier `o` at 15.84 where we lay 16.03. Numbered
+  lines are exact. The height of a line that mixes faces is not the maximum of
+  the faces' own heights — Word's answers sit between the two, and Courier's
+  descent, half again the text's, does not lengthen its line at all. The rule
+  wants the treatment the size-in-a-cell rule got: a matrix of documents Word
+  is asked to resolve over COM. It costs two and a half points down the length
+  of page 8.
 - **Glyph advances drift about a third of a point across a line.** epaint
   measures on a pixel grid where Word measures in design units. It has never
   changed a line ending in this document; it is the whole of the residual on
   pages 1 and 2.
+
+A bullet may be a picture rather than a character. `<w:lvlPicBulletId>` names
+one of the numbering part's `<w:numPicBullet>` entries, and the level keeps an
+ordinary `<w:lvlText>` beside it as a fallback — so a reader that takes the text
+draws a Symbol dot where the author put an icon, which is what the demonstration
+document's "This bullet uses an image as the bullet item" was sitting next to.
+The picture is now read, fetched through the *numbering* part's relationships
+and drawn at the size the shape states. See LEARNINGS.md for why both of those
+qualifications matter.
 
 Measured against Word's own printing of it, page by page: the share of Word's
 lines that Scriva puts within a point of where Word does was 41% when the

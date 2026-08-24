@@ -491,11 +491,37 @@ impl Num {
     }
 }
 
+/// `<w:numPicBullet>` — a picture drawn in place of a bullet glyph.
+///
+/// The level points at one of these by id, and Word draws the image at the
+/// size the shape states rather than at the image's own. A reader that only
+/// takes the level's `<w:lvlText>` draws the character Word left there as a
+/// fallback, which is a Symbol dot where the author put a picture.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PictureBullet {
+    /// The relationship naming the image, *qualified with the part it belongs
+    /// to* — `numbering:rId1`.
+    ///
+    /// `numbering.xml` numbers its relationships from `rId1` exactly as
+    /// `document.xml` does, and they are different relationships of different
+    /// parts: a bullet asking for a bare `rId1` would be handed whatever the
+    /// document's first relationship points at. This is a handle for fetching
+    /// the bytes and nothing else — the numbering part is written back byte
+    /// for byte, so it never travels the other way.
+    pub rel: Arc<str>,
+    /// What the shape says to draw it at, in points. Word obeys this and not
+    /// the image's natural size, which for the icons Word ships is many times
+    /// larger than the line it sits on.
+    pub width: f64,
+    pub height: f64,
+}
+
 /// The whole of `numbering.xml`.
 #[derive(Debug, Clone, Default)]
 pub struct Numbering {
     abstracts: HashMap<u32, AbstractNum>,
     instances: HashMap<u32, Num>,
+    picture_bullets: HashMap<u32, PictureBullet>,
 }
 
 impl Numbering {
@@ -509,6 +535,18 @@ impl Numbering {
 
     pub fn insert_num(&mut self, instance: Num) {
         self.instances.insert(instance.id, instance);
+    }
+
+    pub fn insert_picture_bullet(&mut self, id: u32, bullet: PictureBullet) {
+        self.picture_bullets.insert(id, bullet);
+    }
+
+    /// The picture a level draws instead of a bullet, if it names one and the
+    /// part actually holds it. A level may point at an id that is not there —
+    /// an edit that removed the picture and left the reference — and then the
+    /// bullet is the character the level states.
+    pub fn picture_bullet(&self, id: u32) -> Option<&PictureBullet> {
+        self.picture_bullets.get(&id)
     }
 
     pub fn abstract_num(&self, id: u32) -> Option<&AbstractNum> {

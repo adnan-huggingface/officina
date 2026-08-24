@@ -86,8 +86,11 @@ pub enum Content {
         rel: Option<std::sync::Arc<str>>,
         /// The chart part, when the drawing is a chart rather than a picture.
         chart: Option<std::sync::Arc<str>>,
-        /// Which of the paragraph's drawings this is.
-        nth: usize,
+        /// Which of the paragraph's drawings this is, and `None` for an
+        /// object that is not one of them: a list's picture bullet is drawn
+        /// like a drawing but cannot be clicked, moved or deleted, because
+        /// there is nothing in the paragraph to delete.
+        nth: Option<usize>,
     },
     /// The bullet or number of a list paragraph.
     ///
@@ -172,6 +175,10 @@ pub struct ListLabel {
     /// A bullet keeps only its size from the paragraph; a *number* takes the
     /// paragraph mark's bold and italic too. Measured against Word.
     pub bullet: bool,
+    /// `<w:numPicBullet>` — a picture drawn in place of the glyph. The text
+    /// stays: it is the character Word leaves in `<w:lvlText>` for a reader
+    /// that cannot fetch the image, and it is what the label reads as.
+    pub picture: Option<wp_model::numbering::PictureBullet>,
 }
 
 /// What the layout needs beyond the paragraph itself.
@@ -286,7 +293,7 @@ enum UnitKind {
         height: f64,
         rel: Option<std::sync::Arc<str>>,
         chart: Option<std::sync::Arc<str>>,
-        nth: usize,
+        nth: Option<usize>,
     },
     Label {
         text: String,
@@ -574,14 +581,39 @@ fn units(
         style.double_strike = false;
         let mut advances = Vec::new();
         let width = measure(&label.text, &style, shaper, &mut advances);
+        // A picture bullet is drawn instead of the glyph, at the size the
+        // numbering states and not at the image's own — the icons Word ships
+        // are hundreds of pixels across. A shape that states no size gets the
+        // type's, which is the one measurement always to hand.
+        let (kind, width) = match &label.picture {
+            Some(picture) => {
+                let side = |stated: f64| match stated > 0.0 {
+                    true => stated,
+                    false => style.font.size,
+                };
+                (
+                    UnitKind::Object {
+                        height: side(picture.height),
+                        rel: Some(picture.rel.clone()),
+                        chart: None,
+                        nth: None,
+                    },
+                    side(picture.width),
+                )
+            }
+            None => (
+                UnitKind::Label {
+                    text: label.text.clone(),
+                    advances,
+                },
+                width,
+            ),
+        };
         out.push(Unit {
             style,
             source: None,
             field: None,
-            kind: UnitKind::Label {
-                text: label.text.clone(),
-                advances,
-            },
+            kind,
             width,
             trailing: 0.0,
             joined: false,
@@ -797,7 +829,10 @@ fn number_drawings(paragraph: &Paragraph, out: &mut [Unit]) {
         .collect();
     let mut next = inline.iter();
     for unit in out.iter_mut() {
-        if let UnitKind::Object { nth, .. } = &mut unit.kind {
+        // A picture bullet is an object too, and it is not one of these:
+        // numbering it would hand a click on the bullet the paragraph's
+        // first real drawing.
+        if let UnitKind::Object { nth: Some(nth), .. } = &mut unit.kind {
             *nth = next.next().copied().unwrap_or(0);
         }
     }
@@ -1054,7 +1089,7 @@ fn push_run(
                         chart: drawing.chart.clone(),
                         // Filled in once the whole paragraph is walked: a unit
                         // does not know how many drawings came before it.
-                        nth: 0,
+                        nth: Some(0),
                     },
                     width: drawing.extent.0.points(),
                     trailing: 0.0,
@@ -2147,6 +2182,52 @@ mod tests {
     }
 
     #[test]
+    fn a_level_that_names_a_picture_draws_it_where_the_bullet_would_go() {
+        // Word leaves a Symbol dot in `<w:lvlText>` for a reader that cannot
+        // fetch the image; drawing that dot is what left the demonstration
+        // document saying "this bullet uses an image" beside a bullet that
+        // plainly was not one. The picture goes at the size the numbering
+        // states, not the image's own.
+        let label = ListLabel {
+            text: "\u{F0B7}".to_string(),
+            props: RunProps::default(),
+            suffix: Suffix::Tab,
+            bullet: true,
+            picture: Some(wp_model::numbering::PictureBullet {
+                rel: "numbering:rId1".into(),
+                width: 9.0,
+                height: 9.0,
+            }),
+        };
+        let theme = theme();
+        let mut shaper = crate::shape::Fixed;
+        let laid = layout(
+            &Paragraph::of("item"),
+            0,
+            &layers(),
+            Some(&label),
+            &ctx(&theme),
+            500.0,
+            None,
+            &mut shaper,
+        );
+        let first = &laid.lines[0].fragments[0];
+        let Content::Object {
+            height, rel, nth, ..
+        } = &first.content
+        else {
+            panic!("the first fragment is the picture, not {:?}", first.content);
+        };
+        assert_eq!(*height, 9.0);
+        assert_eq!(first.width, 9.0);
+        assert_eq!(rel.as_deref(), Some("numbering:rId1"));
+        assert_eq!(
+            *nth, None,
+            "a bullet is not one of the paragraph's drawings: nothing to pick"
+        );
+    }
+
+    #[test]
     fn a_list_label_is_laid_out_before_the_text_in_its_own_font() {
         let label = ListLabel {
             text: "\u{F0B7}".to_string(),
@@ -2159,6 +2240,7 @@ mod tests {
             },
             suffix: Suffix::Tab,
             bullet: true,
+            picture: None,
         };
         let theme = theme();
         let mut shaper = crate::shape::Fixed;
@@ -2202,6 +2284,7 @@ mod tests {
             props: RunProps::default(),
             suffix: Suffix::Tab,
             bullet: false,
+            picture: None,
         };
         let mut paragraph = Paragraph::of("item");
         let mut mark = RunProps::default();
@@ -2247,6 +2330,7 @@ mod tests {
             props: RunProps::default(),
             suffix: Suffix::Tab,
             bullet: true,
+            picture: None,
         };
         let laid = layout(
             &paragraph,
@@ -2276,6 +2360,7 @@ mod tests {
             props: RunProps::default(),
             suffix: Suffix::Tab,
             bullet: true,
+            picture: None,
         };
         let mut layers = layers();
         layers.para.indent = Indent {

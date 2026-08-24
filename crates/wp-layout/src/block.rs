@@ -928,6 +928,13 @@ pub fn flow_paragraph(
             props: level.run.clone(),
             suffix: level.suffix,
             bullet: level.format == wp_model::numbering::NumFormat::Bullet,
+            // A level that names a picture draws it in place of the glyph.
+            // The glyph stays in the label as the text it reads as — Word
+            // leaves one in `<w:lvlText>` for exactly that reason.
+            picture: level
+                .picture_bullet
+                .and_then(|id| document.numbering.picture_bullet(id))
+                .cloned(),
         })
     });
 

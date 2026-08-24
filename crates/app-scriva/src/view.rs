@@ -668,7 +668,15 @@ pub fn drawing_rects(view: &View, page: usize) -> Vec<(Picked, (f64, f64, f64, f
             }
             Placed::Line { line, paragraph } => {
                 for fragment in &line.fragments {
-                    let Content::Object { height, nth, .. } = &fragment.content else {
+                    // A picture bullet is an object with no `nth`: it is drawn
+                    // like a drawing but it is not one of the paragraph's, so
+                    // there is nothing for a click on it to pick.
+                    let Content::Object {
+                        height,
+                        nth: Some(nth),
+                        ..
+                    } = &fragment.content
+                    else {
                         continue;
                     };
                     out.push((

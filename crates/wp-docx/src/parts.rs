@@ -151,7 +151,37 @@ pub fn locate(package: &Package) -> Result<DocumentParts> {
         found.by_rel_id.insert(rel.id.clone(), (kind, target));
     }
 
+    // The numbering part has relationships of its own — a picture bullet's
+    // image is one — and it numbers them from `rId1` exactly as the document
+    // does. They cannot share a key, so the numbering part's go in under a
+    // qualified one. See [`qualified`].
+    if let Some(numbering) = found.numbering.clone() {
+        if let Ok(rels) = package.relationships(&numbering) {
+            for rel in rels.iter() {
+                let Some(Ok(target)) = rel.resolve(&numbering) else {
+                    continue;
+                };
+                let kind = rel_kind(rel).to_owned();
+                found
+                    .by_rel_id
+                    .insert(qualified(NUMBERING, &rel.id), (kind, target));
+            }
+        }
+    }
+
     Ok(found)
+}
+
+/// The part whose relationships a picture bullet's image belongs to.
+pub const NUMBERING: &str = "numbering";
+
+/// The key a relationship of some part other than the document goes under.
+///
+/// `rId1` of `numbering.xml` and `rId1` of `document.xml` are different
+/// relationships of different parts. A picture bullet asking for a bare
+/// `rId1` would be handed the document's first image instead of its own.
+pub fn qualified(part: &str, rel_id: &str) -> String {
+    format!("{part}:{rel_id}")
 }
 
 /// Accepts every word processing flavour: `.docx`, macro-enabled, and the two
