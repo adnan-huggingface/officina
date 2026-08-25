@@ -68,6 +68,7 @@ pub fn document(doc: &Doc) -> (wp_model::Document, Vec<Media>) {
     // runs.
     let fonts = crate::font::read(&doc.fib, &doc.table);
     let (styles, by_istd) = crate::style::read(&doc.fib, &doc.table, &fonts);
+    let numbering = crate::list::read(&doc.fib, &doc.table, &fonts);
     let read = Reader {
         doc,
         characters,
@@ -89,6 +90,7 @@ pub fn document(doc: &Doc) -> (wp_model::Document, Vec<Media>) {
     let (bodies, section_headers, section_footers) = read.header_footers(headers.0);
     document.settings.even_and_odd_headers = facing_pages(&doc.fib, &doc.table);
     document.settings.no_leading = no_leading(&doc.fib, &doc.table);
+    document.numbering = numbering;
     document.headers = bodies;
     document.section.headers = section_headers;
     document.section.footers = section_footers;

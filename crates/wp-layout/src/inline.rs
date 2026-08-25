@@ -653,6 +653,8 @@ fn units(
         }
     }
 
+    // Where the paragraph's own content begins, which is after the number.
+    let content = out.len();
     let runs = paragraph.runs();
     let deleted = deleted_runs(paragraph);
     // Field state runs *across* runs: a field's begin, its instruction, its
@@ -677,6 +679,19 @@ fn units(
             );
         }
         base += length;
+    }
+    // A page break with nothing in front of it is in front of the *number*
+    // too. The number is not in the document's runs — it is made here — and
+    // Word makes it at the head of the paragraph's first line of text, which a
+    // leading break has already moved to the next page. Emitted before the
+    // break, as it is written, the number stays behind on the page the
+    // paragraph came from and the paragraph arrives unnumbered.
+    if out
+        .get(content)
+        .is_some_and(|unit| matches!(unit.kind, UnitKind::Break(Break::Page | Break::Column)))
+    {
+        let broken = out.remove(content);
+        out.insert(0, broken);
     }
     number_drawings(paragraph, &mut out);
     join_unbreakable(&mut out);

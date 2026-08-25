@@ -842,3 +842,63 @@ carried separately and applied to the glyphs by each renderer — which a PDF
 does in its text matrix, GDI by naming the width the unstretched face settled
 on, and a screen only by tessellating the galley and moving its vertices,
 because epaint will turn a galley but not squash one.
+
+A rule between two cells is one line, and only one of them may draw it.
+
+Both cells name the rule that runs between them, and drawing it from both
+sides is invisible on paper — the second stroke lands exactly on the first.
+On a screen it is not: anti-aliasing gives the stroke soft edges, and laying
+one over another darkens them until a hairline reads as heavy as the frame
+around the table. The rule has to be given to one side of it, and the side has
+to be the one still at hand: a row's neighbour above has already been laid out
+and cannot be revisited, so the row below draws their shared rule, while the
+cell to the left draws the vertical because its neighbour is in the same row.
+
+A rule nobody draws still spaces the rows it separates.
+
+Word charges a row for the heaviest border on its top edge across every cell
+of the row, including a cell whose rule is not drawn because a vertical merge
+runs through it. A letterhead whose cells rule at a point and a half and whose
+table rules at a half, with the first column merged down the whole table, sets
+every row under the merge a point too high if the undrawn rule is dropped
+instead of counted. Height and drawing are separate questions about the same
+border.
+
+`sprmPFKeep` is keep-lines-together and `sprmPFKeepFollow` is keep-with-next.
+
+The names read the other way round, the two opcodes are adjacent, and widow
+control is nowhere near either of them. Nothing complains if they are swapped:
+a document merely paginates a little differently, which looks like a
+pagination bug rather than a reading one. The oracle is Word's own object
+model — `KeepTogether` and `KeepWithNext` on the paragraph — not the names.
+
+A page break the author typed is a decision the keep rules do not get to
+overrule.
+
+Lines before such a break and lines after it are on different pages whatever
+"keep these lines together" asks for, so treating the paragraph as one
+unbreakable group only wastes a page: the rules drag the lines above the break
+forward, and the break then pushes everything after it forward again. And a
+break with nothing in front of it takes the whole paragraph, its space above
+included — there is nothing left behind for that space to sit under, and an
+empty line left on the old page to hold it puts every line of the new page a
+space-before too high.
+
+A list number is made, not read, so a leading page break has to go in front of
+the making.
+
+The number beside a numbered paragraph is nowhere in the document's runs; it
+is generated during layout at the head of the paragraph's first line. If the
+paragraph opens with a page break and the number is emitted before it, the
+number is left on the page the paragraph came from and the paragraph arrives
+bare. Word makes the number at the head of the first line of *text*, which the
+break has already moved.
+
+`lcbPlfLst` does not cover the levels it points at.
+
+A `.doc` writes its list definitions as a count, an array of fixed-size
+records, and then — past the end of the length the file header states — the
+levels themselves, nine to a list or one if the list says it is simple. The
+length stops at the end of the record array. Reading only the slice the header
+describes finds every list and not one of their levels, and the failure is
+silent: the lists are all there, correctly identified, and number nothing.

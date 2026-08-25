@@ -2390,6 +2390,79 @@ border wholly inside the box rather than centred on its edge. The header says
 "1 of 18" where Word says "1 of 16", which is the two blank pages the
 undrawable metafile figures make and not a fault in the field.
 
+### The rules a table draws, the rules a row is spaced by, and the lists a `.doc` numbers from
+
+**A rule between two cells is one line.** Every internal rule of a table was
+being drawn twice — once by the cell above it and once by the cell below, once
+by the cell to its left and once by the cell to its right. On paper the second
+stroke lands exactly on the first and nothing shows; on a screen it darkens the
+first one's anti-aliased edges, and a 0.75pt hairline between columns laid down
+half again the ink it should until it read as heavy as the frame around the
+table. Page one of the demonstration document drew 68 strokes it did not need.
+The rule now belongs to one side of itself — the row above has already gone by
+when the row below is laid out, so the horizontal rule is drawn by the row
+below as the heavier of the two edges that meet, and the vertical by the cell
+to the left, which is still at hand.
+
+**A row is spaced by the rule above it even where nothing draws that rule.**
+Word charges a row for the heaviest border on its top edge across every cell of
+it, and a cell whose rule is hidden because a vertical merge runs through it is
+still one of them. The letterhead of the demonstration document rules its cells
+at a point and a half and its table between them at a half, and its first
+column is merged down all four rows: every row under that merge sat a point too
+high, because the point-and-a-half was dropped along with the line nobody
+draws. Counting it puts Word's own content tops within measurement error —
+46.80 against 46.86, 37.44 against 37.45 — and the four rows of that table now
+pitch 9.30, 14.91, 9.39 against Word's 9.39, 14.88, 9.36.
+
+**The four keep flags were rotated.** `sprmPFKeep` keeps a paragraph's *lines*
+together and `sprmPFKeepFollow` keeps it with the next one, which is the
+opposite of what the two names suggest; they sit next to each other, and widow
+control is nowhere near them. Read one place out, "keep these lines together"
+was set wherever Word had said "keep this with the next". The cost was a blank
+page: a heading that opens with a hand-written page break lays out as two lines
+— the empty one the break ends and the heading itself — and the keep rules,
+believing those two lines must not part, dragged the empty one onto the new
+page and left the heading for the page after that. Word says KeepWithNext true
+and KeepTogether false for those headings; measured through its own object
+model rather than argued from the names.
+
+**And a hand-written page break divides a paragraph.** Two things follow from
+the author having put the break there. The lines before it and the lines after
+it are on different pages whatever the keep rules ask for, so they are separate
+groups now and nothing reaches across. And a break with *nothing* in front of
+it takes the whole paragraph with it, the space above included — Word starts
+such a paragraph a clear twelve points below the header of the page it breaks
+to, which is the heading's own space before, and leaving an empty line behind
+spends that space where it does no good and puts every line of the new page
+twelve points high. The number is not in the document's runs either; it is made
+during layout, and a leading break now goes in front of it so that the
+paragraph arrives on its new page numbered.
+
+**Lists.** `wp-doc` reads `PlfLst` and `PlfLfo` now, so a legacy document's
+numbering is the same model a `.docx` builds and nothing downstream knows which
+kind of file it came from. The definitions and their levels, the instances that
+stand between a definition and a paragraph, the level overrides, the number
+text with its placeholders rewritten from the zero-based levels a `.doc` stores
+to the `%1`-through-`%9` the model reads, and `sprmPIlfo`/`sprmPIlvl` on both a
+paragraph and a style. The headings of the demonstration document are numbered
+by their styles — Heading 1, 2 and 3 are levels 0, 1 and 2 of one list — and
+they now read "1. Scope", "4. Evolution Radio Hardware", "4.1. Evolution Two
+Chip Solution" where before they read as their bare text, hanging into the
+margin where the number should have been.
+
+**Where page two stands.** Sixteen pages against Word's sixteen. Every line of
+page two agrees with Word's within four hundredths of a point across and
+six tenths down, headings and numbers included.
+
+**What still differs.** The metafile figures are still not drawn, and the
+frame that stands in for one is not the height Word's picture is, which is
+what moves the later pages' contents about relative to Word's. An empty
+paragraph between a heading and its text is six points shorter in Word than
+here. And Word still draws a table's outermost border wholly inside the box
+rather than centred on its edge, which is half a line width at each outer edge.
+
+
 ## Deferred
 
 - [x] **PDF** — was dropped per Q3; built after ship as `wp-print`. See above.

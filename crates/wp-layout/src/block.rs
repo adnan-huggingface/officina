@@ -1448,6 +1448,10 @@ fn push_paragraph(
     into.items.append(&mut displaced);
 
     let group = into.items.len();
+    // The group the lines being pushed belong to, which starts again after
+    // every hand-written page break. `group` itself stays where it was, as the
+    // mark for whether this paragraph put anything down at all.
+    let mut piece_group = group;
     into.paragraphs += 1;
     // The float stands beside this paragraph and whatever follows until its
     // depth is used up. What the paragraph consumes is taken off here, before
@@ -1467,11 +1471,30 @@ fn push_paragraph(
         .iter()
         .map(|line| (line.height, line.baseline))
         .collect();
-    let explicit_break = paragraph
-        .runs()
-        .iter()
-        .flat_map(|run| &run.content)
-        .any(|piece| matches!(piece, Piece::Break(Break::Page)));
+    // A page break the author put in by hand divides the paragraph for the
+    // keep rules. Whatever "keep lines together" asks for, the lines before
+    // the break and the lines after it are on different pages, so a group that
+    // reaches across it has nothing left to hold together — and pulling the
+    // lines above the break forward only spends a page on them. Measured on
+    // the demonstration document, whose headings keep their lines together and
+    // begin with a page break: the empty line the break ends took a whole page
+    // of its own, and the heading's own text landed on the page after that.
+    let pieces: Vec<(usize, usize)> = {
+        let mut out = Vec::with_capacity(count);
+        let mut from = 0;
+        for index in 0..count {
+            let breaks_here = laid
+                .lines
+                .get(index)
+                .is_some_and(|line| line.ended_by == Some(Break::Page));
+            if breaks_here || index + 1 == count {
+                let size = index + 1 - from;
+                out.extend((0..size).map(|within| (within, size)));
+                from = index + 1;
+            }
+        }
+        out
+    };
     // See [`Flow::last_after`]: the gap between paragraphs is the larger of
     // the two spacings, and the previous one's share is already placed.
     let before = (laid.space_before - into.last_after).max(0.0);
@@ -1528,7 +1551,26 @@ fn push_paragraph(
         .and_then(|s| s.background())
         .and_then(|c| c.resolve(theme));
 
+    // A page break with nothing in front of it takes the whole paragraph with
+    // it — the space above included, because there is nothing left behind for
+    // that space to sit under. Word starts such a paragraph a clear twelve
+    // points below the header of the page it breaks to, which is the heading's
+    // own space before; left on the page the break came from, under an empty
+    // line nobody can see, it is spent where it does no good and every line of
+    // the new page sits twelve points high.
+    //
+    // A paragraph that is *only* a break keeps its line: it has no second one
+    // to carry the break instead.
+    let opens_with_break = count > 1
+        && laid
+            .lines
+            .first()
+            .is_some_and(|line| line.fragments.is_empty() && line.ended_by == Some(Break::Page));
+
     for (index, line) in laid.lines.into_iter().enumerate() {
+        if opens_with_break && index == 0 {
+            continue;
+        }
         let mut line = line;
         // The half-point dance: lines are laid a hair off their exact height,
         // the debt accumulates, and the line that tips it half a point pays.
@@ -1551,7 +1593,9 @@ fn push_paragraph(
                 into.dumped = true;
             }
         }
-        let is_first = index == 0;
+        // The first line to be *placed*, which is the one after the break when
+        // the break opened the paragraph: it carries the space above.
+        let is_first = index == usize::from(opens_with_break);
         let is_last = index + 1 == count;
         let mut height = line.height;
         let mut top = 0.0;
@@ -1681,17 +1725,17 @@ fn push_paragraph(
         into.items.push(Item {
             height,
             parts,
-            group,
-            index_in_group: index,
-            items_in_group: count,
+            group: piece_group,
+            index_in_group: pieces[index].0,
+            items_in_group: pieces[index].1,
             keep_with_next: is_last && layers.para.keep_next.unwrap_or(false),
             keep_lines: layers.para.keep_lines.unwrap_or(false),
             // Word's default is on. A document that says nothing gets widow and
             // orphan control, which is why a single line of a paragraph almost
             // never sits alone at the top of a page in a Word document.
             widow_control: layers.para.widow_control.unwrap_or(true),
-            break_before: (is_first && layers.para.page_break_before.unwrap_or(false))
-                || (is_first && explicit_break && false),
+            break_before: is_first
+                && (layers.para.page_break_before.unwrap_or(false) || opens_with_break),
             repeat: false,
             table: None,
             footnotes: Vec::new(),
@@ -1708,9 +1752,9 @@ fn push_paragraph(
             into.items.push(Item {
                 height: 0.0,
                 parts: Vec::new(),
-                group,
-                index_in_group: index,
-                items_in_group: count,
+                group: piece_group,
+                index_in_group: pieces[index].0,
+                items_in_group: pieces[index].1,
                 keep_with_next: false,
                 keep_lines: false,
                 widow_control: false,
@@ -1720,6 +1764,8 @@ fn push_paragraph(
                 footnotes: Vec::new(),
                 slack: 0.0,
             });
+            // Everything after the break is a group of its own.
+            piece_group = into.items.len();
         }
     }
     if into.items.len() == group {
@@ -1886,6 +1932,12 @@ fn flow_table(
     let mut owed: Vec<Owed> = Vec::new();
     // The bottom rule of the row before this one, which the two rows share.
     let mut rule_from_above: f64 = 0.0;
+    // And what that rule was, column by column, because the row below is the
+    // one that draws it. Kept per column rather than per row: a row whose
+    // cells rule differently leaves a boundary that changes weight along its
+    // length, and the columns are the only place that difference survives.
+    let grid_columns = widths.len() as u32;
+    let mut above_bottom: Vec<Option<Border>> = vec![None; widths.len()];
     for (row_index, row) in table.rows.iter().enumerate() {
         let is_last_row = row_index + 1 == row_count;
         let mut cells: Vec<CellPlan> = Vec::new();
@@ -2015,7 +2067,7 @@ fn flow_table(
                     .or(styled.cell_shading)
                     .and_then(|s| s.background())
                     .and_then(|c| c.resolve(&document.theme)),
-                borders: {
+                edges: {
                     // A cell on the outside of the table takes the outer rule;
                     // one inside takes the rule that runs between. Most
                     // specific first, and direct formatting ahead of the style
@@ -2092,19 +2144,45 @@ fn flow_table(
                     // document's nested table ruled a line straight through
                     // the cell holding "One" and "Three" until this was here.
                     // The rest of the row still rules — the height a row pays
-                    // for its rules is the widest cell's, not this one's.
+                    // for its rules is the widest cell's, not this one's, and
+                    // that is why the undrawn rule survives into `rules`.
                     let merges_down = table.merge_height(row_index, column) > 1;
+                    // What the row above left at this cell's top edge. The
+                    // heaviest of the columns it covers, because a rule the
+                    // row above drew in pieces of different weights arrives
+                    // here as one line and Word gives a contested edge to the
+                    // heavier of the two.
+                    let from_above = above_bottom
+                        .get(column as usize..(column + span).min(grid_columns) as usize)
+                        .unwrap_or_default()
+                        .iter()
+                        .copied()
+                        .fold(None, heavier);
                     [Side::Top, Side::Start, Side::Bottom, Side::End].map(|side| {
                         let hidden = match side {
                             Side::Top => is_continuation,
                             Side::Bottom => merges_down,
                             _ => false,
                         };
-                        let border = (!hidden)
-                            .then(|| pick(side))
-                            .flatten()
-                            .map(|b| themed(b, &document.theme));
-                        (side, border)
+                        let rules = pick(side).map(|b| themed(b, &document.theme));
+                        let cuts = (!hidden).then_some(rules).flatten();
+                        // The row above owns nothing: it has already gone by
+                        // when this row is laid out, so the shared rule is
+                        // drawn here, once, as the heavier of the two edges
+                        // that meet. The cell to the left is still at hand, so
+                        // that pair is settled below instead, after the whole
+                        // row is built.
+                        let draws = match side {
+                            Side::Top if row_index > 0 => heavier(cuts, from_above),
+                            Side::Bottom if !is_last_row => None,
+                            _ => cuts,
+                        };
+                        CellEdge {
+                            side,
+                            rules,
+                            draws,
+                            cuts,
+                        }
                     })
                 },
                 content: y,
@@ -2130,6 +2208,38 @@ fn flow_table(
         // ran its own, from the quarter-point entry. Only the fact that a
         // half-point was paid somewhere matters to the page-reset pass.
         into.dumped |= exits.iter().any(|(_, dumped)| *dumped);
+        // The rule down a column is one line, and the two cells it separates
+        // both name it. The left one draws it, as the heavier of the two, and
+        // the right one stands down — drawn twice it is the same stroke laid
+        // over itself, which paper hides and a screen does not: the second
+        // pass darkens the first one's soft edges until a hairline between
+        // columns reads as heavy as the table's own frame.
+        //
+        // Only cells that actually touch: a row that begins late or ends
+        // early leaves a gap the grid still counts, and the rule on either
+        // side of it belongs to nobody but the cell that states it.
+        for i in 1..cells.len() {
+            let (left, right) = cells.split_at_mut(i);
+            let (left, right) = (&mut left[i - 1], &mut right[0]);
+            if (left.x + left.width - right.x).abs() > EPSILON {
+                continue;
+            }
+            let shared = right
+                .edges
+                .iter()
+                .find(|edge| edge.side == Side::Start)
+                .and_then(|edge| edge.draws);
+            for edge in &mut right.edges {
+                if edge.side == Side::Start {
+                    edge.draws = None;
+                }
+            }
+            for edge in &mut left.edges {
+                if edge.side == Side::End {
+                    edge.draws = heavier(edge.draws, shared);
+                }
+            }
+        }
         // Word's horizontal rules occupy their thickness: a row is taller by
         // the rule above it and its content starts below the rule. Measured:
         // a 2pt-bordered table starts its text 2pt lower and pitches every
@@ -2137,9 +2247,9 @@ fn flow_table(
         let rule = |side: Side| -> f64 {
             cells
                 .iter()
-                .flat_map(|cell| &cell.borders)
-                .filter(|(s, _)| *s == side)
-                .filter_map(|(_, border)| border.filter(|b| b.style.draws()))
+                .flat_map(|cell| &cell.edges)
+                .filter(|edge| edge.side == side)
+                .filter_map(|edge| edge.rules.filter(|b| b.style.draws()))
                 .map(|border| border.size.map(|s| s.points()).unwrap_or(0.5))
                 .fold(0.0f64, f64::max)
         };
@@ -2154,6 +2264,28 @@ fn flow_table(
         let rule_above = rule(Side::Top).max(rule_from_above);
         let rule_below = if is_last_row { rule(Side::Bottom) } else { 0.0 };
         rule_from_above = rule(Side::Bottom);
+        // And what the row below will have to draw, column by column. What
+        // this row would have drawn, not what merely rules here: a merge runs
+        // through its own rule and the row under it must not put back the
+        // line the merge exists to remove.
+        above_bottom.iter_mut().for_each(|slot| *slot = None);
+        let mut at = row.props.grid_before;
+        for (cell, plan) in row.cells.iter().zip(&cells) {
+            let bottom = plan
+                .edges
+                .iter()
+                .find(|edge| edge.side == Side::Bottom)
+                .and_then(|edge| edge.cuts);
+            let span = cell.props.span();
+            for slot in above_bottom
+                .iter_mut()
+                .skip(at as usize)
+                .take(span as usize)
+            {
+                *slot = bottom;
+            }
+            at += span;
+        }
         let mut height = tallest + pad_top + pad_bottom;
         // A stated row height is a floor or a ceiling depending on its rule.
         if let Some(rule) = row.props.height {
@@ -2212,7 +2344,10 @@ fn flow_table(
                         kind: Placed::Fill(fill),
                     });
                 }
-                for (side, border) in cell.borders {
+                for CellEdge {
+                    side, draws, cuts, ..
+                } in cell.edges
+                {
                     // The row's top edge is drawn once, above the first band,
                     // and its bottom edge once, below the last. Drawing either
                     // on every band would rule a line across the middle of a
@@ -2222,7 +2357,7 @@ fn flow_table(
                         // Word closes the fragment with the cell's border.
                         // Pagination knows where the cuts land; the edge goes
                         // along as a maybe.
-                        if let Some(border) = border.filter(|b| b.style.draws()) {
+                        if let Some(border) = cuts.filter(|b| b.style.draws()) {
                             parts.push(Placement {
                                 x: cell.x,
                                 y: 0.0,
@@ -2233,7 +2368,7 @@ fn flow_table(
                         }
                         continue;
                     }
-                    if let Some(border) = border.filter(|b| b.style.draws()) {
+                    if let Some(border) = draws.filter(|b| b.style.draws()) {
                         parts.push(Placement {
                             x: cell.x,
                             y: 0.0,
@@ -2303,13 +2438,59 @@ fn count_paragraphs_in(blocks: &[Block]) -> usize {
 /// Half a thousandth of a point: what split points are compared at.
 const EPSILON: f64 = 0.0005;
 
+/// One edge of a cell, and the three different questions asked of it.
+///
+/// They come apart because a rule is not the property of one cell. It runs
+/// between two of them, both of which have an opinion about it, and Word
+/// answers each question from a different one.
+#[derive(Clone, Copy)]
+struct CellEdge {
+    side: Side,
+    /// What rules here, drawn or not — which is what the row's height is paid
+    /// against. A vertical merge draws no line between its own rows and Word
+    /// still spaces them as though it did: the letterhead of the demonstration
+    /// document rules its cells at a point and a half and its table between
+    /// them at a half, and every row under the merged first column sat a point
+    /// too high until the undrawn rule was counted here.
+    rules: Option<Border>,
+    /// What this cell puts down. Nothing where a merge runs through the edge,
+    /// and nothing on an edge the row above or the cell to the left has
+    /// already drawn: one line is one stroke. Drawn from both sides it is the
+    /// same line twice, which on paper is invisible and on a screen darkens
+    /// its own anti-aliased edges into a visibly heavier rule.
+    draws: Option<Border>,
+    /// What closes the edge when a page cut lands on it rather than the row
+    /// below. A fragment left on a page has no neighbour to share with, so it
+    /// rules itself shut.
+    cuts: Option<Border>,
+}
+
+/// Of the two borders that meet on one rule, the one Word draws.
+///
+/// Weight decides it, and a border that draws at all beats one that does not
+/// however thick it claims to be — `<w:sz>` survives on a border of style
+/// `none`, and a cell that states "no rule here" against a neighbour's hairline
+/// is asking for the hairline, not for six points of nothing.
+fn heavier(a: Option<Border>, b: Option<Border>) -> Option<Border> {
+    let weight = |border: &Option<Border>| match border {
+        Some(border) if border.style.draws() => {
+            border.size.map(|s| s.points()).unwrap_or(0.5).max(0.0)
+        }
+        _ => -1.0,
+    };
+    match weight(&b) > weight(&a) {
+        true => b,
+        false => a,
+    }
+}
+
 /// One cell of a row, flowed but not yet placed.
 struct CellPlan {
     x: f64,
     width: f64,
     align: CellVAlign,
     fill: Option<[u8; 3]>,
-    borders: [(Side, Option<Border>); 4],
+    edges: [CellEdge; 4],
     /// How tall the cell's own content came out.
     content: f64,
     /// How many rows this cell covers, a vertical merge counted from the cell
@@ -3160,6 +3341,64 @@ mod tests {
     }
 
     #[test]
+    fn a_page_break_before_anything_else_takes_the_whole_paragraph_with_it() {
+        // There is nothing in front of the break to leave behind, so Word does
+        // not leave an empty line on the page it came from — and the space
+        // above the paragraph is spent where the paragraph now is. Measured on
+        // the demonstration document: its headings begin with a page break and
+        // keep their lines together, and every line of the page after one sat
+        // twelve points high, under a page of its own holding one blank line.
+        let broken = |space: f64| {
+            let mut paragraph = Paragraph {
+                content: vec![Inline::Run(Run {
+                    content: vec![Piece::Break(Break::Page), Piece::Text("omega".into())],
+                    ..Run::new()
+                })],
+                ..Paragraph::new()
+            };
+            paragraph.props.spacing.before = Some(wp_model::units::Twips((space * 20.0) as i32));
+            paragraph.props.keep_lines = Some(true);
+            let mut document = document(vec![
+                Block::Paragraph(Paragraph::of("alpha")),
+                Block::Paragraph(paragraph),
+            ]);
+            document.section = page_of(400);
+            let pages = pages(&document);
+            let where_is = |want: &str| {
+                pages
+                    .iter()
+                    .enumerate()
+                    .flat_map(|(n, page)| page.content.iter().map(move |p| (n, p)))
+                    .find_map(|(n, placement)| match &placement.kind {
+                        Placed::Line { line, .. }
+                            if line.fragments.iter().any(|f| {
+                                matches!(&f.content,
+                                crate::inline::Content::Text { text, .. } if text.contains(want))
+                            }) =>
+                        {
+                            Some((n, placement.y))
+                        }
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| panic!("{want} was never drawn"))
+            };
+            (pages.len(), where_is("alpha"), where_is("omega"))
+        };
+        let (count, first, after) = broken(24.0);
+        assert_eq!(count, 2, "one break makes one new page, not two");
+        assert_eq!(first.0, 0, "and what came before it stays where it was");
+        assert_eq!(after.0, 1);
+        let (_, _, tight) = broken(0.0);
+        assert!(
+            (after.1 - tight.1 - 24.0).abs() < 0.01,
+            "the space above the paragraph is spent on the page it moved to, \
+             not under the empty line it would have left behind: {} against {}",
+            after.1,
+            tight.1
+        );
+    }
+
+    #[test]
     fn keep_with_next_moves_a_heading_to_join_its_paragraph() {
         // The rule that stops a heading sitting alone at the foot of a page.
         let mut heading = Paragraph::of("heading");
@@ -3718,6 +3957,140 @@ mod tests {
         assert!(
             counts[1] > counts[0],
             "while the column beside it keeps the rule between its rows"
+        );
+    }
+
+    #[test]
+    fn the_rule_between_two_cells_is_drawn_once_and_by_the_heavier_of_them() {
+        // Drawn from both sides it is the same line twice, which paper hides
+        // and a screen does not: the second stroke darkens the first one's
+        // anti-aliased edges until a hairline between columns reads as heavy
+        // as the frame around them. Word draws one line and gives a contested
+        // edge to the heavier border, so the point and a half the row above
+        // states beats the half point the table would have ruled.
+        let weight = |eighths| Border {
+            style: wp_model::prop::BorderStyle::Single,
+            size: Some(wp_model::units::Eighth(eighths)),
+            color: None,
+            space: None,
+            shadow: false,
+        };
+        let heavy = |text: &str| {
+            let mut cell = cell(text);
+            cell.props.borders.bottom = Some(weight(12));
+            cell.props.borders.end = Some(weight(12));
+            cell
+        };
+        let mut table = Table {
+            grid: vec![Twips(2880), Twips(2880)],
+            rows: vec![
+                Row {
+                    cells: vec![heavy("one"), heavy("two")],
+                    ..Row::new()
+                },
+                Row {
+                    cells: vec![cell("three"), cell("four")],
+                    ..Row::new()
+                },
+            ],
+            ..Table::new()
+        };
+        table.props.borders.inside_h = Some(weight(4));
+        table.props.borders.inside_v = Some(weight(4));
+        let document = document(vec![Block::Table(table)]);
+        // Where each stroke actually lands, at the eighth of a point, so that
+        // two laid on one another are one key with two weights against it.
+        let mut seen: std::collections::BTreeMap<(bool, i64, i64), Vec<f64>> = Default::default();
+        for page in pages(&document) {
+            for placement in &page.content {
+                let Placed::Edge { border, side } = &placement.kind else {
+                    continue;
+                };
+                let upright = matches!(side, Side::Start | Side::End);
+                let (x, y) = match side {
+                    Side::Start => (placement.x, placement.y),
+                    Side::End => (placement.x + placement.width, placement.y),
+                    Side::Top => (placement.x, placement.y),
+                    Side::Bottom => (placement.x, placement.y + placement.height),
+                };
+                let at = ((x * 8.0).round() as i64, (y * 8.0).round() as i64);
+                seen.entry((upright, at.0, at.1))
+                    .or_default()
+                    .push(border.size.map(|s| s.points()).unwrap_or(0.5));
+            }
+        }
+        assert!(
+            seen.values().all(|at| at.len() == 1),
+            "no two rules are laid on one another: {seen:?}"
+        );
+        assert!(
+            seen.iter()
+                .any(|((upright, ..), at)| *upright && at == &[1.5]),
+            "the column between the two cells is ruled at the heavier of the \
+             two edges that meet down it: {seen:?}"
+        );
+        assert!(
+            seen.iter()
+                .any(|((upright, ..), at)| !*upright && at == &[1.5]),
+            "and so is the edge between the two rows: {seen:?}"
+        );
+    }
+
+    #[test]
+    fn a_row_is_spaced_by_the_rule_above_it_even_where_a_merge_draws_none() {
+        // Word charges a row for the heaviest border on its top edge across
+        // every cell of it, including one whose rule is not drawn at all
+        // because a vertical merge runs through it. Measured on the letterhead
+        // of the demonstration document, which rules its cells at a point and
+        // a half and its table between them at a half: every row under the
+        // merged first column sat a point too high while the undrawn rule was
+        // going uncounted.
+        let weight = |eighths| Border {
+            style: wp_model::prop::BorderStyle::Single,
+            size: Some(wp_model::units::Eighth(eighths)),
+            color: None,
+            space: None,
+            shadow: false,
+        };
+        let laid_out = |merged_rules: Option<Border>| {
+            let mut merged = cell("");
+            merged.props.v_merge = Some(VMerge::Restart);
+            merged.props.borders.bottom = merged_rules;
+            let mut below = cell("");
+            below.props.v_merge = Some(VMerge::Continue);
+            below.props.borders.top = merged_rules;
+            let mut table = Table {
+                grid: vec![Twips(2880), Twips(2880)],
+                rows: vec![
+                    Row {
+                        cells: vec![merged, cell("above")],
+                        ..Row::new()
+                    },
+                    Row {
+                        cells: vec![below, cell("below")],
+                        ..Row::new()
+                    },
+                ],
+                ..Table::new()
+            };
+            table.props.borders.inside_h = Some(weight(4));
+            let document = document(vec![Block::Table(table)]);
+            let lines = cell_lines(&document);
+            let at = |want: &str| {
+                lines
+                    .iter()
+                    .find(|(_, text)| text == want)
+                    .map(|(y, _)| *y)
+                    .unwrap_or_else(|| panic!("{want} was never drawn: {lines:?}"))
+            };
+            at("below") - at("above")
+        };
+        let hairline = laid_out(None);
+        let heavy = laid_out(Some(weight(12)));
+        assert!(
+            (heavy - hairline - 1.0).abs() < 0.01,
+            "a point and a half where the merge hides it, against the half \
+             point the table rules, is a point further down: {hairline} then {heavy}"
         );
     }
 

@@ -226,10 +226,47 @@ pub fn apply_para(props: &mut ParaProps, data: &[u8]) {
                     (false, false) => wp_model::prop::LineSpacing::AtLeast(Twips(amount as i32)),
                 });
             }
-            0x2407 => props.keep_next = sprm.toggle(),
-            0x2406 => props.keep_lines = sprm.toggle(),
-            0x2405 => props.page_break_before = sprm.toggle(),
-            0x2404 => props.widow_control = sprm.toggle(),
+            // Which list a paragraph is in, and how deep. The two arrive
+            // separately and in either order, so each writes into whatever the
+            // other has already left behind — `sprmPIlvl` alone means "level n
+            // of the list the style puts me in", and the level survives the
+            // list being named afterwards.
+            //
+            // The index is one-based into `PlfLfo.rgLfo`, and a *negative* one
+            // names the same list while asking for the paragraph's own indents
+            // to be kept over the level's. Both are the same list; the model
+            // has nowhere to say the second thing, so it is read as the first
+            // and the indents the paragraph states win anyway, being nearer.
+            0x460B => {
+                /// `0xF801`, which is the one negative value that is a
+                /// sentinel rather than a negated index.
+                const NOT_IN_A_LIST: i16 = -2047;
+                let value = sprm.i16().unwrap_or(0);
+                let num_id = match value {
+                    0 | NOT_IN_A_LIST => 0,
+                    negated if negated < 0 => -(negated as i32) as u32,
+                    index => index as u32,
+                };
+                let level = props.numbering.map(|n| n.level).unwrap_or(0);
+                props.numbering = Some(wp_model::prop::NumRef { num_id, level });
+            }
+            0x260A => {
+                // 0x0C is Word's "the list skips this paragraph", which is not
+                // a level and must not be read as one.
+                if let Some(level) = sprm.u8().filter(|level| *level < 9) {
+                    let num_id = props.numbering.map(|n| n.num_id).unwrap_or(0);
+                    props.numbering = Some(wp_model::prop::NumRef { num_id, level });
+                }
+            }
+            // The four keep flags, in the order [MS-DOC] gives them: `sprmPFKeep`
+            // is *keep lines together* and `sprmPFKeepFollow` is *keep with the
+            // next*, which read the other way round if the names are trusted
+            // over the specification. Widow control is nowhere near them —
+            // 0x2404 is the side-by-side flag Word 6 wrote and nothing reads.
+            0x2405 => props.keep_lines = sprm.toggle(),
+            0x2406 => props.keep_next = sprm.toggle(),
+            0x2407 => props.page_break_before = sprm.toggle(),
+            0x2431 => props.widow_control = sprm.toggle(),
             // Direct tab stops (PChgTabsOperand) and a style's own tab stops
             // (PChgTabsPapxOperand, found only inside a style's UpxPapx) are
             // different operand shapes for the same idea — the former has a
@@ -742,6 +779,37 @@ mod tests {
         let mut props = RunProps::default();
         apply_run(&mut props, &[0x35, 0x08, 129], &[]);
         assert_eq!(props.toggles.get(Toggle::Bold), Some(true));
+    }
+
+    #[test]
+    fn the_keep_flags_are_told_apart_by_their_opcodes_not_by_their_names() {
+        // `sprmPFKeep` keeps a paragraph's *lines* together and
+        // `sprmPFKeepFollow` keeps it with the next one — the opposite of what
+        // the two names suggest, and the pair sit next to each other, so
+        // reading them the wrong way round is silent. Measured against Word on
+        // the demonstration document, whose headings report KeepWithNext true
+        // and KeepTogether false: read the other way, "keep these lines
+        // together" dragged the empty line a page break ends onto a page of
+        // its own and left the heading on the page after that.
+        let read = |opcode: u16| {
+            let mut props = ParaProps::default();
+            apply_para(&mut props, &[opcode as u8, (opcode >> 8) as u8, 0x01]);
+            props
+        };
+        assert_eq!(read(0x2405).keep_lines, Some(true), "sprmPFKeep");
+        assert_eq!(read(0x2405).keep_next, None);
+        assert_eq!(read(0x2406).keep_next, Some(true), "sprmPFKeepFollow");
+        assert_eq!(read(0x2406).keep_lines, None);
+        assert_eq!(
+            read(0x2407).page_break_before,
+            Some(true),
+            "sprmPFPageBreakBefore"
+        );
+        assert_eq!(
+            read(0x2431).widow_control,
+            Some(true),
+            "sprmPFWidowControl, which is nowhere near the other three"
+        );
     }
 
     #[test]

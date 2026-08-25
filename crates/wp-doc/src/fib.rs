@@ -114,6 +114,12 @@ pub mod field {
     pub const PLC_SPA_HDR: usize = 41;
     /// The whole drawing layer: the picture store, and every shape.
     pub const DGG_INFO: usize = 50;
+    /// The list definitions. **Its length stops at the end of the `LSTF` array
+    /// and the levels run on past it**, so this one is read from its offset
+    /// rather than through [`Fib::slice`].
+    pub const PLF_LST: usize = 73;
+    /// The list instances, which are what a paragraph's `sprmPIlfo` names.
+    pub const PLF_LFO: usize = 74;
 }
 
 impl Fib {

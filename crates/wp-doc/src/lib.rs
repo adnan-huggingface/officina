@@ -19,11 +19,13 @@
 //! a face at all — a run says an index and nothing more. The stylesheet's own
 //! definitions, paragraph and character both, and what each style is based on.
 //! Tables, from the cell and row marks, with the grid, the borders and both
-//! kinds of merged cell. The headers and footers. The drawing layer: pictures,
-//! whether they sit in a line or float on the page, and the shapes Word writes
-//! a watermark and a page frame with. And the page setup of the first section,
-//! so that a document written on A4 does not open as US Letter and reflow from
-//! its first line.
+//! kinds of merged cell. The headers and footers. The lists, both the
+//! definitions and the instances that stand between them and a paragraph, so
+//! that a numbered heading is numbered and an outline reads as one. The drawing
+//! layer: pictures, whether they sit in a line or float on the page, and the
+//! shapes Word writes a watermark and a page frame with. And the page setup of
+//! the first section, so that a document written on A4 does not open as US
+//! Letter and reflow from its first line.
 //!
 //! **What is not.** Pictures stored as metafiles — a Word 97 document keeps a
 //! pasted chart or diagram as a deflated EMF, and nothing here plays one, so
@@ -40,6 +42,7 @@ pub mod art;
 pub mod fib;
 pub mod fkp;
 pub mod font;
+pub mod list;
 pub mod picture;
 pub mod piece;
 pub mod section;
