@@ -19,6 +19,7 @@ brand.workspace = true
 
 [dependencies]
 chart.workspace = true
+metafile.workspace = true
 ui-kit.workspace = true
 wp-model.workspace = true
 wp-layout.workspace = true

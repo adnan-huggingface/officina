@@ -902,3 +902,53 @@ levels themselves, nine to a list or one if the list says it is simple. The
 length stops at the end of the record array. Reading only the slice the header
 describes finds every list and not one of their levels, and the failure is
 silent: the lists are all there, correctly identified, and number nothing.
+
+A metafile is a recording of the calls that drew a picture, and Word makes
+those calls in sixteenths.
+
+An EMF pasted into a Word document is not pixels: it is the GDI a drawing
+program issued, and playing it back means keeping the state a device context
+keeps. Two things about Word's own recordings are not obvious. It multiplies
+the world transform by one sixteenth, emits a shape in whole units of that
+finer grid, and multiplies by sixteen again — so a *geometric pen* five units
+wide draws five sixteenths of a unit, because a geometric pen is measured in
+the logical units in force when it strokes. Reading the width without the
+transform draws every line in the document sixteen times too thick. And the
+picture's size is not the bounding box of its ink: the header states the frame
+in hundredths of a millimetre and the recording machine's screen in pixels and
+millimetres both, and that ratio is what turns a coordinate into a length. A
+player that stretches the ink to fill the box it was given loses the drawing's
+own margins and draws every diagram at a slightly different scale.
+
+`ExtTextOutW` carries the advance of every character it wrote. Honouring them
+sets a label exactly as wide as the drawing program set it, which is what makes
+a played diagram line up with Word's to a third of a point rather than to
+whatever this machine's copy of Arial happens to measure.
+
+An inline picture's bytes are wrapped the same way the shared store's are.
+
+`PICFAndOfficeArtData` ends in an array of `OfficeArtBStoreContainerFileBlock`,
+and a block is either a BLIP or an `OfficeArtFBSE` with a BLIP inside it — the
+same choice the document's shared picture store offers. A reader that handles
+the wrapper in one place and not the other finds the pictures a document shares
+and misses every picture that came with its own text, and the miss is silent:
+the drawing is there, the size is right, and there is nothing in it.
+
+An empty paragraph is as tall as its mark, and the mark has its own size.
+
+The paragraph mark is a real character with real character properties, and a
+document that separates a heading from its text with an empty paragraph very
+often sets that paragraph's mark small on purpose. Spacing it at the body's
+size instead is half a line too tall at every heading, which by the foot of a
+page is a line and by the end of a document is a page. The properties are on
+the mark's own character position, not on the paragraph's first character —
+the same trap the paragraph properties set, one character further on.
+
+A page break typed at the head of a paragraph does not spend its first line.
+
+The break leaves an empty line in front of everything, and code that asks "is
+this line index zero?" to decide where the first-line indent goes gives the
+indent to that empty line and the paragraph's real first line the ordinary one.
+On a numbered heading with a hanging indent the effect is exact and visible:
+the number stands where the text should, a hanging indent to the right of where
+Word puts it.

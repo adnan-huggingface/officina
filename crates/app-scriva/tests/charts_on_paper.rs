@@ -96,6 +96,7 @@ fn the_chart_a_document_carries_is_drawn_on_its_page() {
         std::slice::from_ref(charted),
         &mut faces,
         &images,
+        &Default::default(),
         Some(&mut wp_print::ops::Charts {
             plots: &plots,
             shaper: &mut shaper,
@@ -108,6 +109,7 @@ fn the_chart_a_document_carries_is_drawn_on_its_page() {
         std::slice::from_ref(charted),
         &mut faces,
         &images,
+        &Default::default(),
         None,
         Some("chart"),
     );

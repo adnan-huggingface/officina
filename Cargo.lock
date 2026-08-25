@@ -1688,6 +1688,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "metafile"
+version = "0.1.0"
+
+[[package]]
 name = "miniz_oxide"
 version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2642,6 +2646,7 @@ dependencies = [
  "chart",
  "clipboard-win",
  "image",
+ "metafile",
  "ooxml",
  "rfd",
  "ui-kit",
@@ -4013,6 +4018,7 @@ name = "wp-doc"
 version = "0.1.0"
 dependencies = [
  "cfb-reader",
+ "flate2",
  "wp-docx",
  "wp-model",
 ]
@@ -4045,6 +4051,7 @@ version = "0.1.0"
 dependencies = [
  "chart",
  "flate2",
+ "metafile",
  "windows-sys 0.61.2",
  "wp-layout",
  "wp-model",

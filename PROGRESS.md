@@ -2455,12 +2455,58 @@ margin where the number should have been.
 page two agrees with Word's within four hundredths of a point across and
 six tenths down, headings and numbers included.
 
-**What still differs.** The metafile figures are still not drawn, and the
-frame that stands in for one is not the height Word's picture is, which is
-what moves the later pages' contents about relative to Word's. An empty
-paragraph between a heading and its text is six points shorter in Word than
-here. And Word still draws a table's outermost border wholly inside the box
-rather than centred on its edge, which is half a line width at each outer edge.
+**What still differs.** Word still draws a table's outermost border wholly
+inside the box rather than centred on its edge, which is half a line width at
+each outer edge.
+
+## Pages three and four: the diagrams
+
+**A pasted diagram is a recording, not a picture.** Every figure in the
+demonstration document is a deflated EMF in the drawing layer — the GDI calls
+the drawing program made, kept verbatim — and until now they were counted and
+dropped, so eleven diagrams over sixteen pages were reserved space and white
+paper. The new `metafile` crate plays one: it keeps the state a device context
+keeps and turns the drawing calls into filled outlines, stroked runs and words
+on a baseline, which is exactly the ink `wp_print::ops::Op` already carries.
+Nothing downstream had to learn what a metafile is — `draw_metafiles` expands a
+picture box the way `draw_charts` expands a chart's, and the screen painter
+does the same translation so the page on glass and the page on paper cannot
+disagree. Thirty-two record types, which is all eleven diagrams between them
+use: pens, brushes, fonts, the world transform, paths and their fills and
+strokes, the sixteen-bit point forms, and `ExtTextOutW` with the per-character
+advances the drawing recorded, so a label is set exactly as wide as it was
+drawn rather than as this machine's copy of Arial would set it.
+
+Reading them at all meant two other things. A metafile blip is compressed
+behind an `OfficeArtMetafileHeader` and has to be inflated; and an *inline*
+picture's bytes are wrapped in an `OfficeArtFBSE` just as the shared store's
+are, which `picture.rs` was walking past — so the pictures a `.doc` keeps with
+its text were never found even when their format was one that could be read. A
+metafile now travels into the saved `.docx` too, under its own content type,
+so the copy carries the diagrams the original had.
+
+**Two spacing faults fell out of measuring against the figures.** A paragraph
+mark is a real character with a real size, and `wp-doc` was not reading its
+character properties at all: this document separates every heading from its
+text with an empty five-point paragraph, and spacing those at the body's ten
+points cost half a line at each of them. And a page break typed at the head of
+a paragraph left an empty line in front of everything, which the line-filling
+code then counted as the paragraph's first — so a numbered heading that starts
+a page lost its hanging indent and stood eighteen points to the right of where
+Word puts it.
+
+**Where pages three and four stand.** The diagrams draw, and their words land
+within nine tenths of a point of Word's down the page and six tenths across —
+placement, type size, line weights and fill colours from the recording itself.
+Page four's heading and body agree with Word to a fifth of a point.
+
+**What still differs there.** An inline picture's line is a descent taller here
+than in Word, so each figure pushes what follows it about two and a quarter
+points down the page; the difference accumulates over a page with two figures
+on it and is the largest gap left. Word's own measurement of a `.docx` says the
+line *is* the picture plus the run's descent, and this document says it is the
+picture alone, so the rule that reconciles them has not been found yet and the
+measured one stands.
 
 
 ## Deferred

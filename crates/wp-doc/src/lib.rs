@@ -27,9 +27,14 @@
 //! the first section, so that a document written on A4 does not open as US
 //! Letter and reflow from its first line.
 //!
-//! **What is not.** Pictures stored as metafiles — a Word 97 document keeps a
-//! pasted chart or diagram as a deflated EMF, and nothing here plays one, so
-//! it takes its right place on the page and draws as a frame. Fields beyond
+//! And pictures stored as metafiles: a Word 97 document keeps a pasted chart
+//! or diagram as a deflated EMF, and the bytes are inflated here and handed on
+//! for the `metafile` crate to play, rather than counted and dropped as a
+//! decoder that would refuse them once forced.
+//!
+//! **What is not.** Metafiles in the older `WMF` and `PICT` forms: they are
+//! handed on as they are and nothing plays one, so the space is right and the
+//! box is empty. Fields beyond
 //! their marks, footnote *references* (the notes themselves are read, but not
 //! which character they hang off), revision marks, cell shading, every shape
 //! geometry but the rectangle, and the second and later sections' page setup.

@@ -19,7 +19,7 @@ use std::collections::HashMap;
 
 use wp_layout::block::Page;
 
-use crate::ops::{draw_charts, flatten, Charts, Op};
+use crate::ops::{draw_charts, draw_metafiles, flatten, Charts, Op};
 use crate::Raster;
 
 use windows_sys::Win32::Foundation::{GlobalFree, HGLOBAL, HWND, POINT};
@@ -50,6 +50,7 @@ use windows_sys::Win32::UI::Controls::Dialogs::{
 pub fn print(
     pages: &[Page],
     images: &HashMap<String, Raster>,
+    metafiles: &HashMap<String, metafile::Picture>,
     charts: Option<&mut Charts>,
     document_name: &str,
     gdi_family: &dyn Fn(&str) -> String,
@@ -94,6 +95,7 @@ pub fn print(
         &chosen,
         copies,
         images,
+        metafiles,
         charts,
         document_name,
         gdi_family,
@@ -108,11 +110,13 @@ pub fn print(
 /// This is the whole rendering path with the one interactive step removed —
 /// what a test drives through the *Microsoft Print to PDF* driver to hold the
 /// printed pages in its hands, and what a future `/print` switch would call.
+#[allow(clippy::too_many_arguments)]
 pub fn print_to_file(
     printer: &str,
     output: &std::path::Path,
     pages: &[Page],
     images: &HashMap<String, Raster>,
+    metafiles: &HashMap<String, metafile::Picture>,
     charts: Option<&mut Charts>,
     document_name: &str,
     gdi_family: &dyn Fn(&str) -> String,
@@ -138,6 +142,7 @@ pub fn print_to_file(
         &every,
         1,
         images,
+        metafiles,
         charts,
         document_name,
         gdi_family,
@@ -166,6 +171,7 @@ fn render_job(
     chosen: &[usize],
     copies: u16,
     images: &HashMap<String, Raster>,
+    metafiles: &HashMap<String, metafile::Picture>,
     charts: Option<&mut Charts>,
     document_name: &str,
     gdi_family: &dyn Fn(&str) -> String,
@@ -208,6 +214,7 @@ fn render_job(
                 hdc,
                 page,
                 images,
+                metafiles,
                 charts.as_deref_mut(),
                 &mut fonts,
                 gdi_family,
@@ -348,6 +355,7 @@ fn render_page(
     hdc: HDC,
     page: &Page,
     images: &HashMap<String, Raster>,
+    metafiles: &HashMap<String, metafile::Picture>,
     charts: Option<&mut Charts>,
     fonts: &mut FontCache,
     gdi_family: &dyn Fn(&str) -> String,
@@ -372,6 +380,7 @@ fn render_page(
         Some(charts) => draw_charts(flatten(page), charts),
         None => flatten(page),
     };
+    let ops = draw_metafiles(ops, metafiles);
     for op in ops {
         match op {
             Op::Fill {

@@ -73,7 +73,7 @@ pub fn at(data: &[u8], offset: usize) -> Option<Picture> {
             0xF004 => picture.shape = crate::art::shape_of(record.data),
             _ => {
                 if picture.blip.is_none() {
-                    picture.blip = crate::art::blip_of(record);
+                    picture.blip = crate::art::blip_block(record);
                 }
             }
         }

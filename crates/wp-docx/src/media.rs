@@ -184,6 +184,10 @@ fn extension_for(content_type: &str) -> &'static str {
         "image/gif" => "gif",
         "image/bmp" => "bmp",
         "image/tiff" => "tiff",
+        // A metafile is a picture as far as a package is concerned, and Word
+        // takes one under its own extension.
+        "image/x-emf" => "emf",
+        "image/x-wmf" => "wmf",
         _ => "png",
     }
 }

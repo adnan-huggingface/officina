@@ -171,6 +171,8 @@ fn probe() {
     if let Ok(target) = std::env::var("PROBE_PDF") {
         let images =
             scriva::publish::rasters(package.as_ref(), parts.as_ref(), &loose, view.pages());
+        let metafiles =
+            scriva::publish::metafiles(package.as_ref(), parts.as_ref(), &loose, view.pages());
         let plots = scriva::publish::plots(package.as_ref(), parts.as_ref(), view.pages());
         let mut faces = scriva::publish::SystemFaces::new();
         let mut charts = wp_print::ops::Charts {
@@ -181,6 +183,7 @@ fn probe() {
             view.pages(),
             &mut faces,
             &images,
+            &metafiles,
             Some(&mut charts),
             Some("probe"),
         );

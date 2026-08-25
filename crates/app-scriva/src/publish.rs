@@ -76,6 +76,33 @@ pub fn plots(
     out
 }
 
+/// Every metafile the pages draw, played once, by relationship id.
+///
+/// A picture is one thing or the other — pixels, or a recording of the calls
+/// that drew a diagram — so what this finds is exactly what [`rasters`] could
+/// not decode, and the two maps never name the same relationship.
+pub fn metafiles(
+    package: Option<&ooxml::Package>,
+    parts: Option<&wp_docx::DocumentParts>,
+    loose: &HashMap<String, Vec<u8>>,
+    pages: &[wp_layout::block::Page],
+) -> HashMap<String, metafile::Picture> {
+    let mut out = HashMap::new();
+    for rel in wp_print::ops::image_rels(pages.iter()) {
+        let from_package = || {
+            let name = parts?.target(&rel)?;
+            Some(package?.part(name)?.data())
+        };
+        let Some(bytes) = loose.get(&rel).map(Vec::as_slice).or_else(from_package) else {
+            continue;
+        };
+        if let Some(picture) = metafile::read(bytes) {
+            out.insert(rel, picture);
+        }
+    }
+    out
+}
+
 /// Every image the pages draw, decoded once, by relationship id.
 pub fn rasters(
     package: Option<&ooxml::Package>,
@@ -148,6 +175,7 @@ mod tests {
         let pdf = wp_print::pdf::export(
             view.pages(),
             &mut faces,
+            &HashMap::new(),
             &HashMap::new(),
             None,
             Some("proof"),

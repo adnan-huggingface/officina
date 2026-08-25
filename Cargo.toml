@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/brand",
     "crates/chart",
+    "crates/metafile",
     "crates/ooxml",
     "crates/ss-model",
     "crates/ss-formula",
@@ -33,6 +34,7 @@ repository = "https://github.com/adnan-huggingface/officina"
 [workspace.dependencies]
 brand = { path = "crates/brand" }
 chart = { path = "crates/chart" }
+metafile = { path = "crates/metafile" }
 ooxml = { path = "crates/ooxml" }
 ss-model = { path = "crates/ss-model" }
 ss-formula = { path = "crates/ss-formula" }

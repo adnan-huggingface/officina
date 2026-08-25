@@ -1335,10 +1335,17 @@ fn fill(
         match &unit.kind {
             UnitKind::Break(kind) => {
                 index += 1;
+                // A page break typed at the very head of a paragraph has not
+                // started it: the paragraph moves whole to the next page, and
+                // the line that lands there is still its first — hanging
+                // indent and all. Only a break with something in front of it,
+                // or a plain line break, which does begin a paragraph on an
+                // empty line, spends the first line.
+                let carried = fragments.is_empty() && matches!(kind, Break::Page | Break::Column);
                 lines.push(raw_line(std::mem::take(&mut fragments), used, Some(*kind)));
                 pen = 0.0;
                 used = 0.0;
-                is_first = false;
+                is_first = is_first && carried;
                 continue;
             }
             UnitKind::Tab {
@@ -1648,6 +1655,14 @@ fn finish(
     let spacing = layers.para.spacing.line.unwrap_or_default();
     let last = lines.len().saturating_sub(1);
     let mut y = 0.0;
+    // A page break typed at the head of a paragraph leaves an empty line in
+    // front of everything, and that line is not the paragraph's first: the
+    // paragraph moves whole to the next page and the line that lands there
+    // takes the first line's indent. Without this a numbered heading that
+    // starts a page loses its hanging indent and stands where its text does.
+    let opens_with_break = lines.first().is_some_and(|line| {
+        line.fragments.is_empty() && matches!(line.ended_by, Some(Break::Page | Break::Column))
+    });
 
     let mark_face = mark_font(paragraph, layers, ctx);
     for (index, line) in lines.iter_mut().enumerate() {
@@ -1771,7 +1786,7 @@ fn finish(
         line.y = y;
         y += line.height;
 
-        let is_first = index == 0;
+        let is_first = index == usize::from(opens_with_break);
         let (aside, inset) = beside.get(index).copied().unwrap_or((0.0, 0.0));
         let left = aside + if is_first { start + first } else { start };
         let limit = (width - end - left - inset).max(0.0);
@@ -2152,6 +2167,35 @@ mod tests {
             "the first line hangs out to the left"
         );
         assert_eq!(laid.lines[1].x, 36.0);
+    }
+
+    #[test]
+    fn a_page_break_at_the_head_of_a_paragraph_does_not_spend_its_first_line() {
+        // A numbered heading typed at the top of a new page: the break moves
+        // the whole paragraph, so the line that lands there is still the
+        // paragraph's first and still hangs out to the left. Reading the empty
+        // break line as the first one leaves the heading standing where its
+        // own text does, a hanging indent to the right of where Word puts it.
+        let mut layers = layers();
+        layers.para.indent = Indent {
+            start: Some(Twips(720)),
+            hanging: Some(Twips(360)),
+            ..Indent::default()
+        };
+        let paragraph = Paragraph {
+            content: vec![Inline::Run(Run {
+                content: vec![Piece::Break(Break::Page), Piece::Text("alpha".into())],
+                ..Run::new()
+            })],
+            ..Paragraph::new()
+        };
+        let laid = lay_with(paragraph, layers, 200.0);
+        assert_eq!(laid.lines.len(), 2);
+        assert!(laid.lines[0].fragments.is_empty());
+        assert_eq!(
+            laid.lines[1].x, 18.0,
+            "the line after the break is the paragraph's first"
+        );
     }
 
     #[test]

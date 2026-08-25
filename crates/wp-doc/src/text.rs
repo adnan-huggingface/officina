@@ -262,6 +262,7 @@ impl Reader<'_> {
         let mut paragraph = Paragraph::new();
         paragraph.props = props;
         paragraph.props.style = istd.and_then(|index| self.style_of(index));
+        paragraph.props.mark = self.mark_props(mark);
         paragraph.content = self.runs(from, to);
         Read {
             paragraph,
@@ -488,6 +489,29 @@ impl Reader<'_> {
             content_type: blip.content_type,
         });
         rel.into()
+    }
+
+    /// The character formatting of the paragraph mark itself.
+    ///
+    /// **A mark is a real character with a real size**, and an empty paragraph
+    /// is as tall as its mark and nothing else. A document that separates its
+    /// headings from the text under them with an empty five-point paragraph —
+    /// which is an ordinary way to write one — is half a line shorter at each
+    /// of them than a reader that spaces every empty paragraph at the body's
+    /// size, and by the end of the document that is a page.
+    ///
+    /// Nothing is kept for a mark that states nothing of its own: the model
+    /// reads an absent one as the paragraph's own formatting, which is what an
+    /// empty box would resolve to anyway.
+    fn mark_props(&self, cp: u32) -> Option<Box<wp_model::prop::RunProps>> {
+        let (offset, _) = self.doc.pieces.offset_of(cp)?;
+        let exception = fkp::at(&self.characters, offset)?;
+        let mut props = wp_model::prop::RunProps::default();
+        sprm::apply_run(&mut props, &exception.grpprl, &self.fonts);
+        if let Some(index) = sprm::run_style(&exception.grpprl) {
+            props.style = self.style_of(index);
+        }
+        (props != wp_model::prop::RunProps::default()).then(|| Box::new(props))
     }
 
     /// Cuts a paragraph's text where its character formatting changes.

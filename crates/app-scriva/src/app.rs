@@ -735,10 +735,10 @@ impl Scriva {
                 self.message = Some((
                     "Opened as a copy".to_owned(),
                     "Word 97-2003 documents are read but not written, so this \
-                     one will be saved as a .docx. Its pictures come with it; \
+                     one will be saved as a .docx. Its pictures come with it, \
+                     the diagrams the old format kept as metafiles included; \
                      its shapes and watermarks are shown but are not written \
-                     into the copy, and pictures the old format stored as \
-                     metafiles are not drawn."
+                     into the copy."
                         .to_owned(),
                 ));
             }
@@ -920,6 +920,16 @@ impl Scriva {
         )
     }
 
+    /// The metafiles the current pages draw, played for a paper renderer.
+    fn page_metafiles(&self) -> std::collections::HashMap<String, metafile::Picture> {
+        crate::publish::metafiles(
+            self.package.as_ref(),
+            self.parts.as_ref(),
+            self.pictures.loose(),
+            self.view.pages(),
+        )
+    }
+
     /// The charts the current pages draw, read for a paper renderer.
     fn page_plots(&self) -> std::collections::HashMap<String, chart::Plot> {
         crate::publish::plots(
@@ -959,6 +969,7 @@ impl Scriva {
             path
         };
         let images = self.page_images();
+        let metafiles = self.page_metafiles();
         let plots = self.page_plots();
         let mut faces = crate::publish::SystemFaces::new();
         // The shaper that measured the page measures the charts on it, so a
@@ -971,6 +982,7 @@ impl Scriva {
             self.view.pages(),
             &mut faces,
             &images,
+            &metafiles,
             charts.as_mut(),
             Some(&stem),
         );
@@ -985,6 +997,7 @@ impl Scriva {
     #[cfg(windows)]
     fn print(&mut self) {
         let images = self.page_images();
+        let metafiles = self.page_metafiles();
         let plots = self.page_plots();
         let name = self.published_name();
         let mut charts = self.shaper.as_mut().map(|shaper| wp_print::ops::Charts {
@@ -994,6 +1007,7 @@ impl Scriva {
         match wp_print::win::print(
             self.view.pages(),
             &images,
+            &metafiles,
             charts.as_mut(),
             &name,
             &ui_kit::fonts::gdi_family,
@@ -3035,6 +3049,11 @@ fn inches(points: f64) -> String {
 /// What a picture's own bytes say they are, for a part that has to declare a
 /// content type. `None` for anything the package should not be given.
 fn image_content_type(data: &[u8]) -> Option<&'static str> {
+    // A metafile is not a raster and no raster decoder recognises one, but it
+    // is a picture the package can carry and Word can draw.
+    if data.get(40..44) == Some(b" EMF") {
+        return Some("image/x-emf");
+    }
     Some(match image::guess_format(data).ok()? {
         image::ImageFormat::Png => "image/png",
         image::ImageFormat::Jpeg => "image/jpeg",

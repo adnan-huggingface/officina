@@ -474,6 +474,94 @@ pub fn draw_charts(ops: Vec<Op>, charts: &mut Charts) -> Vec<Op> {
     out
 }
 
+/// Turns every [`Op::Image`] that names a metafile into the ink that draws it.
+///
+/// A metafile is not pixels either: it is a recording of the calls that drew a
+/// diagram, and playing it gives the same fills, rules and words a chart is
+/// drawn with. Which pictures are metafiles is the caller's knowledge — it is
+/// the one holding the bytes — so an image this has never heard of is left
+/// alone for a backend to decode as the raster it is.
+pub fn draw_metafiles(ops: Vec<Op>, pictures: &HashMap<String, metafile::Picture>) -> Vec<Op> {
+    let mut out = Vec::with_capacity(ops.len());
+    for op in ops {
+        let Op::Image {
+            x,
+            y,
+            width,
+            height,
+            rel,
+        } = &op
+        else {
+            out.push(op);
+            continue;
+        };
+        let Some(picture) = pictures.get(rel) else {
+            out.push(op);
+            continue;
+        };
+        // The recording states its own natural size, so a diagram dragged
+        // smaller is drawn smaller rather than cropped.
+        let scale = (width / picture.size.0, height / picture.size.1);
+        for prim in &picture.prims {
+            played(&mut out, prim, (*x, *y), scale);
+        }
+    }
+    out
+}
+
+/// One primitive of a played metafile, placed in the box it was drawn for.
+fn played(out: &mut Vec<Op>, prim: &metafile::Prim, at: (f64, f64), scale: (f64, f64)) {
+    let place = |point: &(f64, f64)| (at.0 + point.0 * scale.0, at.1 + point.1 * scale.1);
+    // A line has one width however unevenly the box was scaled.
+    let along = (scale.0 + scale.1) / 2.0;
+    match prim {
+        metafile::Prim::Fill { points, rgb } => out.push(Op::Poly {
+            points: points.iter().map(place).collect(),
+            rgb: *rgb,
+        }),
+        metafile::Prim::Stroke { points, rgb, width } => {
+            let placed: Vec<(f64, f64)> = points.iter().map(place).collect();
+            for segment in placed.windows(2) {
+                out.push(Op::Rule {
+                    from: segment[0],
+                    to: segment[1],
+                    thickness: width * along,
+                    rgb: *rgb,
+                });
+            }
+        }
+        metafile::Prim::Text {
+            x,
+            baseline,
+            text,
+            advances,
+            family,
+            size,
+            bold,
+            italic,
+            rgb,
+            rotation,
+        } => {
+            let (x, baseline) = place(&(*x, *baseline));
+            out.push(Op::Text {
+                x,
+                baseline,
+                text: text.clone(),
+                advances: advances.iter().map(|width| width * scale.0).collect(),
+                font: FontRequest {
+                    family: family.as_str().into(),
+                    size: size * along,
+                    bold: *bold,
+                    italic: *italic,
+                },
+                rgb: *rgb,
+                rotation: *rotation,
+                stretch: 1.0,
+            });
+        }
+    }
+}
+
 /// Measures a chart's labels with the page's own shaper.
 struct Pen<'a>(&'a mut dyn Shaper);
 
@@ -838,5 +926,82 @@ mod tests {
         };
         let pages = [page_with(vec![drawing.clone()]), page_with(vec![drawing])];
         assert_eq!(image_rels(pages.iter()), vec!["rId7".to_owned()]);
+    }
+
+    #[test]
+    fn a_metafile_is_played_into_the_box_the_page_gave_it() {
+        // Half the recording's natural size on both axes: every coordinate,
+        // every line width and every type size halves with it, and the ink
+        // starts at the box's own corner rather than at the page's.
+        let picture = metafile::Picture {
+            size: (200.0, 100.0),
+            prims: vec![
+                metafile::Prim::Stroke {
+                    points: vec![(0.0, 0.0), (200.0, 100.0)],
+                    rgb: [1, 2, 3],
+                    width: 4.0,
+                },
+                metafile::Prim::Text {
+                    x: 100.0,
+                    baseline: 50.0,
+                    text: "hi".to_owned(),
+                    advances: vec![10.0, 6.0],
+                    family: "Arial".to_owned(),
+                    size: 20.0,
+                    bold: true,
+                    italic: false,
+                    rgb: [0, 0, 0],
+                    rotation: 0.0,
+                },
+            ],
+        };
+        let mut pictures = HashMap::new();
+        pictures.insert("rId7".to_owned(), picture);
+        let ops = draw_metafiles(
+            vec![
+                Op::Image {
+                    x: 30.0,
+                    y: 40.0,
+                    width: 100.0,
+                    height: 50.0,
+                    rel: "rId7".to_owned(),
+                },
+                Op::Image {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 10.0,
+                    height: 10.0,
+                    rel: "rId9".to_owned(),
+                },
+            ],
+            &pictures,
+        );
+        let Op::Rule {
+            from,
+            to,
+            thickness,
+            ..
+        } = &ops[0]
+        else {
+            panic!("{ops:?}");
+        };
+        assert_eq!((*from, *to), ((30.0, 40.0), (130.0, 90.0)));
+        assert_eq!(*thickness, 2.0);
+        let Op::Text {
+            x,
+            baseline,
+            advances,
+            font,
+            ..
+        } = &ops[1]
+        else {
+            panic!("{ops:?}");
+        };
+        assert_eq!((*x, *baseline), (80.0, 65.0));
+        assert_eq!(advances, &[5.0, 3.0]);
+        assert_eq!(font.size, 10.0);
+        assert!(font.bold);
+        // A picture this has never heard of is left for a backend to decode.
+        assert!(matches!(&ops[2], Op::Image { rel, .. } if rel == "rId9"));
     }
 }

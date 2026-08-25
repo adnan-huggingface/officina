@@ -665,7 +665,93 @@ fn paint_drawing(
         );
         return;
     }
+    if let Some(picture) = rel.and_then(|rel| pictures.played(rel)) {
+        paint_metafile(painter, shaper, picture, rect);
+        return;
+    }
     paint_image(painter, pictures, rel, rect);
+}
+
+/// Draws a played metafile: the diagram a document pasted in, as the calls
+/// that drew it.
+///
+/// The recording states its own natural size, so the box decides the scale and
+/// nothing here needs to know the zoom — a rectangle twice as wide is a
+/// drawing twice as large, type and line widths included. `wp_print::ops`
+/// makes the same translation for paper, which is what keeps the two agreeing
+/// about where every line and every label goes. They part company on one
+/// thing: paper sets a label at the advances the recording states, and the
+/// screen lets epaint set it, because a galley is laid as a galley. A label a
+/// hair wide on the screen is worth more than one drawn glyph by glyph.
+fn paint_metafile(
+    painter: &egui::Painter,
+    shaper: &mut crate::shaper::Egui,
+    picture: &metafile::Picture,
+    rect: egui::Rect,
+) {
+    let scale = (
+        f64::from(rect.width()) / picture.size.0,
+        f64::from(rect.height()) / picture.size.1,
+    );
+    let along = (scale.0 + scale.1) / 2.0;
+    let place = |point: &(f64, f64)| {
+        egui::pos2(
+            rect.left() + (point.0 * scale.0) as f32,
+            rect.top() + (point.1 * scale.1) as f32,
+        )
+    };
+    let ink = |rgb: [u8; 3]| egui::Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
+    for prim in &picture.prims {
+        match prim {
+            metafile::Prim::Fill { points, rgb } => {
+                painter.add(egui::Shape::convex_polygon(
+                    points.iter().map(place).collect(),
+                    ink(*rgb),
+                    egui::Stroke::NONE,
+                ));
+            }
+            metafile::Prim::Stroke { points, rgb, width } => {
+                // A hairline still has to be seen: a diagram whose lines are a
+                // fifth of a pixel wide would be a blank rectangle.
+                let thickness = ((width * along) as f32).max(0.5);
+                painter.add(egui::Shape::line(
+                    points.iter().map(place).collect(),
+                    egui::Stroke::new(thickness, ink(*rgb)),
+                ));
+            }
+            metafile::Prim::Text {
+                x,
+                baseline,
+                text,
+                family,
+                size,
+                bold,
+                italic,
+                rgb,
+                rotation,
+                ..
+            } => {
+                let request = wp_layout::FontRequest {
+                    family: family.as_str().into(),
+                    size: size * along,
+                    bold: *bold,
+                    italic: *italic,
+                };
+                let font = shaper.font_id(&request);
+                let galley = painter.layout_no_wrap(text.clone(), font, ink(*rgb));
+                // The metafile puts its reference point on the baseline and
+                // egui puts a galley by its top-left corner, so the face's own
+                // ascent is the difference — the same arithmetic the page's
+                // own lines are painted by.
+                let at = place(&(*x, *baseline));
+                let up = shaper.metrics(&request).ascent as f32;
+                let mut shape =
+                    egui::epaint::TextShape::new(egui::pos2(at.x, at.y - up), galley, ink(*rgb));
+                shape.angle = rotation.to_radians() as f32;
+                painter.add(shape);
+            }
+        }
+    }
 }
 
 /// Draws a shape that *is* its words: a piece of WordArt, and the watermark

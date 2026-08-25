@@ -235,14 +235,21 @@ fn blip_store(dgg: &[u8]) -> Vec<Option<Blip>> {
     else {
         return Vec::new();
     };
-    records(store.data)
-        .into_iter()
-        .map(|entry| match entry.kind {
-            kind::FBSE => fbse(entry.data),
-            kind::BLIP_FIRST..=kind::BLIP_LAST => blip_of(entry),
-            _ => None,
-        })
-        .collect()
+    records(store.data).into_iter().map(blip_block).collect()
+}
+
+/// One `OfficeArtBStoreContainerFileBlock`: either a picture, or a picture
+/// wrapped in the bookkeeping that lets several shapes share it.
+///
+/// Both shapes appear in both places — the document's shared store and the
+/// bytes an inline picture carries with it — so which one a caller is looking
+/// at is not a thing the caller should have to know.
+pub fn blip_block(record: Record<'_>) -> Option<Blip> {
+    match record.kind {
+        kind::FBSE => fbse(record.data),
+        kind::BLIP_FIRST..=kind::BLIP_LAST => blip_of(record),
+        _ => None,
+    }
 }
 
 /// `OfficeArtFBSE` — a BLIP wrapped in the bookkeeping that lets several
@@ -262,25 +269,61 @@ fn fbse(data: &[u8]) -> Option<Blip> {
 /// bytes are in and — by being odd — whether there are one or two digests in
 /// front of them.
 pub fn blip_of(record: Record<'_>) -> Option<Blip> {
-    let content_type = match record.kind {
-        0xF01D | 0xF02A => "image/jpeg",
-        0xF01E => "image/png",
-        0xF029 => "image/tiff",
-        // A metafile (EMF, WMF, PICT) or a device-independent bitmap. Their
-        // bytes are deflated and their formats are not ones a raster decoder
-        // takes, so they are counted and left alone rather than mangled.
-        _ => return None,
-    };
-    // Two digests when the instance is the odd one of the format's pair, then
-    // one byte of tag.
+    // Two digests when the instance is the odd one of the format's pair.
     let digests = match record.instance & 1 {
         1 => 32,
         _ => 16,
     };
+    let content_type = match record.kind {
+        0xF01D | 0xF02A => "image/jpeg",
+        0xF01E => "image/png",
+        0xF029 => "image/tiff",
+        // A metafile is not a picture but a recording of the calls that drew
+        // one, and it is kept compressed with a header of its own in front.
+        0xF01A => return metafile(record.data.get(digests..)?, "image/x-emf"),
+        0xF01B => return metafile(record.data.get(digests..)?, "image/x-wmf"),
+        // A `PICT` or a device-independent bitmap: counted, and left alone
+        // rather than mangled by a decoder that does not take them.
+        _ => return None,
+    };
+    // Then one byte of tag, and the picture.
     Some(Blip {
         data: record.data.get(digests + 1..)?.to_vec(),
         content_type,
     })
+}
+
+/// `OfficeArtMetafileHeader` and the metafile behind it.
+///
+/// The header is thirty-four bytes — the uncompressed size, the bounds, the
+/// size in EMUs, the saved size, and how the bytes were squeezed — and the
+/// recording itself is deflated far more often than not. A metafile that
+/// cannot be inflated is dropped rather than handed on: half a recording
+/// plays as a drawing that stops in the middle, which looks like a document
+/// that was written that way.
+fn metafile(data: &[u8], content_type: &'static str) -> Option<Blip> {
+    /// `MSOBLIPCOMPRESSION_DEFLATE`. The other value that appears is 0xFE,
+    /// which is no compression at all.
+    const DEFLATE: u8 = 0x00;
+
+    /// How much of the stated uncompressed size is believed in advance. The
+    /// decoder still grows past it; this only keeps a damaged header from
+    /// asking for four gigabytes before a single byte has been read.
+    const TRUSTED: usize = 64 << 20;
+
+    let header = data.get(..34)?;
+    let saved = read_u32(header, 28) as usize;
+    let bytes = data.get(34..34 + saved).unwrap_or(data.get(34..)?);
+    let data = match header[32] {
+        DEFLATE => {
+            let mut out = Vec::with_capacity((read_u32(header, 0) as usize).min(TRUSTED));
+            let mut reader = flate2::bufread::ZlibDecoder::new(bytes);
+            std::io::Read::read_to_end(&mut reader, &mut out).ok()?;
+            out
+        }
+        _ => bytes.to_vec(),
+    };
+    Some(Blip { data, content_type })
 }
 
 /// Walks a drawing for its shapes, through however many groups it nests them
@@ -514,6 +557,35 @@ mod tests {
         let found = blip_of(records(&data)[0]).expect("a decodable picture");
         assert_eq!(found.content_type, "image/png");
         assert_eq!(&found.data, b"\x89PNG");
+    }
+
+    #[test]
+    fn a_metafile_blip_is_inflated_rather_than_handed_over_compressed() {
+        // The bytes behind an `OfficeArtMetafileHeader` are deflated, and a
+        // reader that hands them on as they are gives a player a recording it
+        // cannot possibly play.
+        let recording = b"a metafile, or near enough for a test";
+        let mut body = vec![0xAAu8; 16]; // rgbUid1
+        body.extend((recording.len() as u32).to_le_bytes()); // cbSize
+        body.extend([0u8; 16]); // rcBounds
+        body.extend([0u8; 8]); // ptSize
+        let squeezed = {
+            let mut out = Vec::new();
+            let mut writer =
+                flate2::write::ZlibEncoder::new(&mut out, flate2::Compression::default());
+            std::io::Write::write_all(&mut writer, recording).expect("squeezed");
+            writer.finish().expect("finished");
+            out
+        };
+        body.extend((squeezed.len() as u32).to_le_bytes()); // cbSave
+        body.push(0x00); // deflate
+        body.push(0xFE); // no filter
+        body.extend(&squeezed);
+
+        let data = record(0x3D4, 0xF01A, &body);
+        let found = blip_of(records(&data)[0]).expect("a metafile");
+        assert_eq!(found.content_type, "image/x-emf");
+        assert_eq!(found.data, recording);
     }
 
     #[test]

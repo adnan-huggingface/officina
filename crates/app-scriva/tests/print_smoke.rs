@@ -44,6 +44,7 @@ fn a_corpus_document_prints_through_the_pdf_driver() {
         &output,
         view.pages(),
         &images,
+        &Default::default(),
         Some(&mut wp_print::ops::Charts {
             plots: &plots,
             shaper: &mut shaper,

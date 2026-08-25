@@ -11,6 +11,9 @@ path = "src/lib.rs"
 
 [dependencies]
 cfb-reader.workspace = true
+# A metafile picture arrives deflated inside the drawing layer, so a `.doc`
+# cannot hand one on without inflating it first.
+flate2 = "1"
 wp-model.workspace = true
 
 [dev-dependencies]

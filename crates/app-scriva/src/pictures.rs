@@ -26,6 +26,10 @@ pub struct Pictures {
     loaded: HashMap<String, Option<egui::TextureHandle>>,
     /// The same, for the `<c:chart r:id>` of a chart drawing.
     charts: HashMap<String, Option<chart::Plot>>,
+    /// And the same for a picture that is a metafile — a recording of the
+    /// calls that drew a diagram rather than pixels of one. Playing it costs
+    /// what parsing a chart costs and is held for the same reason.
+    played: HashMap<String, Option<metafile::Picture>>,
     /// Pictures that came without a package: a `.doc` keeps its own in a
     /// stream of its own, and there is no part for a relationship to name.
     /// Consulted first, because a document is either one or the other.
@@ -41,6 +45,7 @@ impl Pictures {
     pub fn clear(&mut self) {
         self.loaded.clear();
         self.charts.clear();
+        self.played.clear();
         self.loose.clear();
     }
 
@@ -89,9 +94,24 @@ impl Pictures {
             if self.loaded.contains_key(&rel) {
                 continue;
             }
+            // A metafile is played rather than decoded, and there is no
+            // texture behind it at all: the ink is drawn straight onto the
+            // page. Trying the raster decoder on one first would only fail.
+            let picture = raw(package, parts, &self.loose, &rel).and_then(metafile::read);
+            if picture.is_some() {
+                self.played.insert(rel.clone(), picture);
+                self.loaded.insert(rel, None);
+                continue;
+            }
             let decoded = decode(ctx, package, parts, &self.loose, &rel);
             self.loaded.insert(rel, decoded);
         }
+    }
+
+    /// The played metafile for a relationship that [`Pictures::prepare`] has
+    /// seen, for a painter that draws its ink instead of a texture.
+    pub fn played(&self, rel: &str) -> Option<&metafile::Picture> {
+        self.played.get(rel).and_then(|slot| slot.as_ref())
     }
 
     /// The texture for a relationship that [`Pictures::prepare`] has seen.
@@ -131,6 +151,19 @@ impl Pictures {
     }
 }
 
+/// The bytes behind one relationship, whichever way this document keeps them.
+fn raw<'a>(
+    package: Option<&'a ooxml::Package>,
+    parts: Option<&wp_docx::DocumentParts>,
+    loose: &'a HashMap<String, Vec<u8>>,
+    rel: &str,
+) -> Option<&'a [u8]> {
+    match loose.get(rel) {
+        Some(bytes) => Some(bytes.as_slice()),
+        None => Some(package?.part(parts?.target(rel)?)?.data()),
+    }
+}
+
 fn decode(
     ctx: &egui::Context,
     package: Option<&ooxml::Package>,
@@ -138,10 +171,7 @@ fn decode(
     loose: &HashMap<String, Vec<u8>>,
     rel: &str,
 ) -> Option<egui::TextureHandle> {
-    let bytes = match loose.get(rel) {
-        Some(bytes) => bytes.as_slice(),
-        None => package?.part(parts?.target(rel)?)?.data(),
-    };
+    let bytes = raw(package, parts, loose, rel)?;
     let image = image::load_from_memory(bytes).ok()?;
     let rgba = image.to_rgba8();
     let size = [rgba.width() as usize, rgba.height() as usize];
