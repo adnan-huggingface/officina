@@ -2341,6 +2341,55 @@ letters are as tall as the box and these are as tall as the width alone
 makes them. None of the three is a legacy-format question — a `.docx` says
 all three the same way and would be laid out the same.
 
+The blue underlined table of contents was Word's own doing and not ours. A
+contents built with `\h` is a column of hyperlinks and Word writes the
+`Hyperlink` character style onto every run of every entry — then draws them
+in the contents style's plain black. Four measurements pinned the rule down,
+because three plausible ones are wrong. Giving that style a loud colour and
+size changes every other run in the document wearing it and changes nothing
+in the contents, so Word is not applying it there. Swapping those same runs
+to `Emphasis` italicises them at once, so it is not that character styles go
+unread inside a field result. A link to a bookmark in the body of the same
+document is drawn in the link colour like any other, so it is not that Word
+declines to decorate an internal link. And a run given the `Hyperlink` style
+inside an ordinary `HYPERLINK` field result *is* drawn in it, so it is not
+hyperlink fields either. What is left is the one thing all four share: a run
+inside a **table of contents field's result** does not take that one style,
+and the layout now knows which paragraphs those are.
+
+Knowing that took a `.doc` reader change of its own. A field's instruction —
+` TOC \o "1-3" \h ` — was being read as the document's words and merely
+skipped at drawing time, which left nothing anywhere able to say what kind of
+field anything was. It is read as code now, which is what the model has
+always called it and what `wp-docx` has always produced. Two consequences
+beyond the contents: a contents field opens in one paragraph and closes forty
+later, so which paragraphs lie inside one is walked once over the document
+and carried on the layout context beside the note marks; and `{ PAGE }` and
+`{ NUMPAGES }` in a legacy document are recomputed now instead of showing
+whatever Word last cached, so the header of page two says two.
+
+Last, the watermark, which was the right face at the wrong proportion.
+WordArt is not type at a size: the words are stretched until they fill the
+shape they were drawn in, across *and* down, and the two need not agree.
+Word's watermark here is Courier New filling 609 points of width in a box 152
+points tall, so its letters stand a little over half again as tall as that
+width alone would make them — measured off Word's own glyph outlines, whose
+ink box comes to 475.8 points across the diagonal against the 475.7 that
+filling both directions predicts. A shape's words now carry a stretch beside
+their size, and each renderer applies it to the glyphs: the PDF in the second
+column of its text matrix, so the stretch happens in the glyphs' own space
+before the turn; GDI by naming the average character width the unstretched
+face settled on, which is the only way that interface has of saying "taller
+than wide"; and the screen by tessellating the galley once, unturned, and
+stretching and turning its vertices, because epaint will turn a galley but
+not squash one.
+
+**What still differs on that page.** The header table's rows are one to two
+and a half points shorter than Word's, and Word draws a table's outermost
+border wholly inside the box rather than centred on its edge. The header says
+"1 of 18" where Word says "1 of 16", which is the two blank pages the
+undrawable metafile figures make and not a fault in the field.
+
 ## Deferred
 
 - [x] **PDF** — was dropped per Q3; built after ship as `wp-print`. See above.

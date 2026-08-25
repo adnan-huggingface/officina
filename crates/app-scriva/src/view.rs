@@ -93,6 +93,7 @@ impl View {
         }
         let theme = document.theme.clone();
         let notes = wp_layout::NoteMarks::of(document);
+        let contents = wp_layout::field::Contents::of(document);
         // The application's own strings — file name, author, today's date — are
         // always the fresh ones; only the page numbers are carried over.
         let mut carried = self.settled.clone();
@@ -106,6 +107,7 @@ impl View {
             styles: &document.styles,
             notes: &notes,
             note_mark: None,
+            contents: &contents,
             table_part: None,
             default_tab: document.settings.default_tab_stop,
             no_leading: document.settings.no_leading,
@@ -669,10 +671,16 @@ fn paint_drawing(
 /// Draws a shape that *is* its words: a piece of WordArt, and the watermark
 /// Word writes with one.
 ///
-/// The face, the size and the angle were all decided by the layout — see
-/// [`wp_layout::block::ShapeWords`] — so that the page on paper is the page on
-/// the screen. What is left here is turning epaint's own galley about the same
-/// point, which it does around the galley's top-left corner and not its middle.
+/// The face, the size, the angle and the stretch were all decided by the layout
+/// — see [`wp_layout::block::ShapeWords`] — so that the page on paper is the
+/// page on the screen. What is left here is placing epaint's own galley about
+/// the middle of the shape, which is not where epaint turns text about.
+///
+/// **A stretched piece of WordArt cannot be an ordinary text shape**: epaint
+/// will turn a galley but not squash one, and WordArt is type squashed to fill
+/// its box. So the galley is tessellated once, unturned, and its vertices are
+/// stretched and turned here — which is what a stretch *is*, the glyph drawn at
+/// a different proportion rather than at a different size.
 fn paint_shape_words(
     painter: &egui::Painter,
     shaper: &mut crate::shaper::Egui,
@@ -686,13 +694,42 @@ fn paint_shape_words(
     let galley = painter.layout_no_wrap(words.text.clone(), font, colour);
     let angle = words.rotation.to_radians() as f32;
     let (sin, cos) = angle.sin_cos();
+    let stretch = words.stretch as f32;
+
+    // Where a point of the unturned, unstretched galley lands on the page: it
+    // is measured from the galley's own middle, stretched down its own axis,
+    // turned, and hung off the middle of the shape's box.
     let half = galley.rect.size() / 2.0;
-    // The glyphs turn about `pos`, the galley's own top-left corner, so the
-    // corner goes where turning it lands the galley's middle on the shape's.
-    let turned = egui::vec2(-half.x * cos + half.y * sin, -half.x * sin - half.y * cos);
-    let mut shape = egui::epaint::TextShape::new(rect.center() + turned, galley, colour);
-    shape.angle = angle;
-    painter.add(shape);
+    let centre = rect.center();
+    let place = |p: egui::Pos2| {
+        let (x, y) = (p.x - half.x, (p.y - half.y) * stretch);
+        egui::pos2(centre.x + x * cos - y * sin, centre.y + x * sin + y * cos)
+    };
+
+    if (stretch - 1.0).abs() < 1e-4 {
+        let turned = egui::vec2(-half.x * cos + half.y * sin, -half.x * sin - half.y * cos);
+        let mut shape = egui::epaint::TextShape::new(centre + turned, galley, colour);
+        shape.angle = angle;
+        painter.add(shape);
+        return;
+    }
+
+    let ctx = painter.ctx();
+    let mut tessellator = egui::epaint::Tessellator::new(
+        ctx.pixels_per_point(),
+        ctx.tessellation_options(|options| *options),
+        ctx.fonts(|fonts| fonts.font_image_size()),
+        Vec::new(),
+    );
+    let mut mesh = egui::epaint::Mesh::default();
+    tessellator.tessellate_text(
+        &egui::epaint::TextShape::new(egui::Pos2::ZERO, galley, colour),
+        &mut mesh,
+    );
+    for vertex in &mut mesh.vertices {
+        vertex.pos = place(vertex.pos);
+    }
+    painter.add(egui::Shape::Mesh(std::sync::Arc::new(mesh)));
 }
 
 /// Draws a shape that is a rectangle: its fill, then its line.

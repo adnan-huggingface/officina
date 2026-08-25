@@ -50,6 +50,12 @@ pub enum Op {
         /// paragraph; a shape's words — WordArt, and Word's watermark — are
         /// the one thing on a page that is set at an angle.
         rotation: f64,
+        /// How much taller than its own proportion the face is drawn, applied
+        /// before the turn. One for every line of a paragraph; a piece of
+        /// WordArt is stretched to fill the shape it was drawn in and is the
+        /// one thing on a page that is not set at its own proportion. See
+        /// [`wp_layout::block::ShapeWords::stretch`].
+        stretch: f64,
     },
     /// An image in a box, by the relationship that names its bytes.
     Image {
@@ -260,6 +266,7 @@ pub fn flatten(page: &Page) -> Vec<Op> {
                         font: style.font.clone(),
                         rgb,
                         rotation: 0.0,
+                        stretch: 1.0,
                     });
                     let base = baseline - style.raise;
                     // A rule under or through the type follows the type, not
@@ -334,6 +341,7 @@ pub fn flatten(page: &Page) -> Vec<Op> {
                         font: words.font.clone(),
                         rgb: words.rgb,
                         rotation: words.rotation,
+                        stretch: words.stretch,
                     });
                 } else if let Some(rel) = rel {
                     ops.push(Op::Image {
@@ -571,6 +579,7 @@ fn ink(out: &mut Vec<Op>, prim: chart::draw::Prim, shaper: &mut dyn Shaper) {
                 font,
                 rgb,
                 rotation: 0.0,
+                stretch: 1.0,
             });
         }
     }

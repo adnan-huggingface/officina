@@ -277,6 +277,7 @@ fn content_stream(
                 font,
                 rgb,
                 rotation,
+                stretch,
             } => {
                 let index = fonts.slot(faces, &font);
                 out.push_str(&text_op(
@@ -289,6 +290,7 @@ fn content_stream(
                     &font,
                     rgb,
                     rotation,
+                    stretch,
                 ));
             }
             Op::Image {
@@ -350,6 +352,7 @@ fn text_op(
     font: &FontRequest,
     rgb: [u8; 3],
     rotation: f64,
+    stretch: f64,
 ) -> String {
     let size = font.size.max(0.1);
     let mut glyphs = String::new();
@@ -389,8 +392,11 @@ fn text_op(
         }
     }
     // A PDF's y runs up the page, so the turn that looks clockwise on the
-    // screen is the negative one here.
-    let place = match rotation == 0.0 {
+    // screen is the negative one here. The stretch is a scale in the glyphs'
+    // own space, so it multiplies the matrix's second column — it happens
+    // *before* the turn, which is what makes a diagonal watermark's letters
+    // stand tall along their own baseline rather than up the page.
+    let place = match rotation == 0.0 && (stretch - 1.0).abs() < 1e-9 {
         true => format!("{} {} Td", number(x), number(baseline)),
         false => {
             let (sin, cos) = rotation.to_radians().sin_cos();
@@ -398,8 +404,8 @@ fn text_op(
                 "{} {} {} {} {} {} Tm",
                 number(cos),
                 number(-sin),
-                number(sin),
-                number(cos),
+                number(sin * stretch),
+                number(cos * stretch),
                 number(x),
                 number(baseline),
             )

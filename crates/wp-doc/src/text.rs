@@ -491,6 +491,11 @@ impl Reader<'_> {
     /// Cuts a paragraph's text where its character formatting changes.
     fn runs(&self, from: u32, to: u32) -> Vec<Inline> {
         let mut out: Vec<Inline> = Vec::new();
+        // A field's start, its instruction and its separator are very often in
+        // three different runs, so which of them is being read has to outlive
+        // one run. It does not have to outlive one paragraph: a field's code is
+        // always in the paragraph the field opens in.
+        let mut code: Vec<bool> = Vec::new();
         let mut at = from;
         while at < to {
             let Some((offset, compressed)) = self.doc.pieces.offset_of(at) else {
@@ -516,7 +521,7 @@ impl Reader<'_> {
             let text = self.doc.pieces.text(&self.doc.stream, at, end);
             let mut run = Run::new();
             run.props = props;
-            run.content = pieces(&text, at, &mut |character, cp| {
+            run.content = pieces(&text, at, &mut code, &mut |character, cp| {
                 self.drawing(character, cp, exception)
             });
             if !run.content.is_empty() {
@@ -538,61 +543,80 @@ impl Reader<'_> {
 fn pieces(
     text: &str,
     from: u32,
+    code: &mut Vec<bool>,
     drawing: &mut dyn FnMut(char, u32) -> Option<ModelPiece>,
 ) -> Vec<ModelPiece> {
     let mut out = Vec::new();
     let mut buffer = String::new();
-    let flush = |buffer: &mut String, out: &mut Vec<ModelPiece>| {
+    // Between a field's start and its separator the characters are the field's
+    // own code rather than the document's words, and a reader that keeps them
+    // as text has no idea what kind of field it is in: `TOC \o "1-3" \h` is
+    // what says this is a table of contents, and the kind is what decides
+    // whether a number is recomputed and how a result is drawn. Nested, because
+    // a table of contents' result is full of `HYPERLINK` fields with code of
+    // their own.
+    let flush = |buffer: &mut String, out: &mut Vec<ModelPiece>, in_code: bool| {
         if !buffer.is_empty() {
-            out.push(ModelPiece::Text(std::mem::take(buffer).into()));
+            let text: std::sync::Arc<str> = std::mem::take(buffer).into();
+            out.push(match in_code {
+                true => ModelPiece::Instruction(text),
+                false => ModelPiece::Text(text),
+            });
         }
     };
     for (cp, character) in (from..).zip(text.chars()) {
         match character {
             '\t' => {
-                flush(&mut buffer, &mut out);
+                flush(&mut buffer, &mut out, code.last().copied().unwrap_or(false));
                 out.push(ModelPiece::Tab);
             }
             mark::LINE => {
-                flush(&mut buffer, &mut out);
+                flush(&mut buffer, &mut out, code.last().copied().unwrap_or(false));
                 out.push(ModelPiece::Break(wp_model::doc::Break::Line));
             }
             mark::PAGE => {
-                flush(&mut buffer, &mut out);
+                flush(&mut buffer, &mut out, code.last().copied().unwrap_or(false));
                 out.push(ModelPiece::Break(wp_model::doc::Break::Page));
             }
             mark::COLUMN => {
-                flush(&mut buffer, &mut out);
+                flush(&mut buffer, &mut out, code.last().copied().unwrap_or(false));
                 out.push(ModelPiece::Break(wp_model::doc::Break::Column));
             }
             mark::FIELD_START => {
-                flush(&mut buffer, &mut out);
+                flush(&mut buffer, &mut out, code.last().copied().unwrap_or(false));
                 out.push(ModelPiece::FieldStart {
                     dirty: false,
                     lock: false,
                 });
+                code.push(true);
             }
             mark::FIELD_SEPARATOR => {
-                flush(&mut buffer, &mut out);
+                flush(&mut buffer, &mut out, code.last().copied().unwrap_or(false));
                 out.push(ModelPiece::FieldSeparate);
+                if let Some(open) = code.last_mut() {
+                    *open = false;
+                }
             }
             mark::FIELD_END => {
-                flush(&mut buffer, &mut out);
+                flush(&mut buffer, &mut out, code.last().copied().unwrap_or(false));
                 out.push(ModelPiece::FieldEnd);
+                code.pop();
             }
             // A picture, a shape's anchor, a note reference or the mark that
             // ends a cell. The first two stand for something the drawing layer
             // holds; the last two for something that is not in the text at all.
             mark::OBJECT | mark::SHAPE => {
-                flush(&mut buffer, &mut out);
+                flush(&mut buffer, &mut out, code.last().copied().unwrap_or(false));
                 out.extend(drawing(character, cp));
             }
-            mark::NOTE | mark::CELL => flush(&mut buffer, &mut out),
+            mark::NOTE | mark::CELL => {
+                flush(&mut buffer, &mut out, code.last().copied().unwrap_or(false))
+            }
             '\u{0}' => {}
             other => buffer.push(other),
         }
     }
-    flush(&mut buffer, &mut out);
+    flush(&mut buffer, &mut out, code.last().copied().unwrap_or(false));
     out
 }
 
@@ -1101,7 +1125,12 @@ mod tests {
     fn control_characters_become_pieces_rather_than_letters() {
         // Otherwise a field code's braces appear in the middle of a sentence and
         // a tab is a space.
-        let out = pieces("a\tb\u{b}c\u{13}d\u{15}", 0, &mut |_, _| None);
+        let out = pieces(
+            "a\tb\u{b}c\u{13}d\u{15}",
+            0,
+            &mut Vec::new(),
+            &mut |_, _| None,
+        );
         assert!(matches!(out[1], ModelPiece::Tab));
         assert!(matches!(
             out[3],
@@ -1109,5 +1138,51 @@ mod tests {
         ));
         assert!(matches!(out[5], ModelPiece::FieldStart { .. }));
         assert!(matches!(out.last(), Some(ModelPiece::FieldEnd)));
+    }
+
+    #[test]
+    fn a_fields_code_is_read_as_code_rather_than_as_the_documents_words() {
+        // Kept as text, a field's instruction is skipped by every renderer and
+        // still leaves nothing able to say what kind of field it is — and the
+        // kind is what decides whether a page number is recomputed and how a
+        // table of contents is drawn. The three markers are Word's own: 0x13
+        // begins, 0x14 separates, 0x15 ends.
+        let mut code = Vec::new();
+        let out = pieces(
+            "\u{13} TOC \\h \u{14}Scope\u{15}",
+            0,
+            &mut code,
+            &mut |_, _| None,
+        );
+        let kinds: Vec<&str> = out
+            .iter()
+            .map(|piece| match piece {
+                ModelPiece::FieldStart { .. } => "start",
+                ModelPiece::Instruction(_) => "code",
+                ModelPiece::FieldSeparate => "separate",
+                ModelPiece::Text(_) => "text",
+                ModelPiece::FieldEnd => "end",
+                _ => "other",
+            })
+            .collect();
+        assert_eq!(kinds, ["start", "code", "separate", "text", "end"]);
+        assert!(code.is_empty(), "the field closed, so nothing is left open");
+    }
+
+    #[test]
+    fn a_fields_code_survives_the_run_it_began_in() {
+        // A field's start, its instruction and its separator are very often in
+        // three different runs — Word writes the instruction in whatever
+        // formatting the field was inserted with. The stack is the caller's for
+        // exactly this reason.
+        let mut code = Vec::new();
+        let first = pieces("\u{13} PAGE", 0, &mut code, &mut |_, _| None);
+        let second = pieces(" \u{14}7\u{15}", 0, &mut code, &mut |_, _| None);
+        assert!(matches!(first[1], ModelPiece::Instruction(_)));
+        assert!(
+            matches!(second[0], ModelPiece::Instruction(_)),
+            "the second run is still the field's code, not the document's words"
+        );
+        assert!(matches!(second[2], ModelPiece::Text(_)));
     }
 }

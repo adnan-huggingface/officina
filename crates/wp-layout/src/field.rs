@@ -43,6 +43,76 @@ impl FieldMark {
     }
 }
 
+/// Which paragraphs lie inside the result of a table of contents.
+///
+/// **A contents field opens in one paragraph and closes forty paragraphs
+/// later**, so nothing looking at a paragraph on its own can tell that it is
+/// one of the entries. This is walked once over the document, the way the note
+/// marks are, and consulted while a paragraph is laid out.
+///
+/// The paragraph a contents field ends in is counted as inside it, which is
+/// generous by however much of that paragraph follows the field. Nothing
+/// follows it in practice: Word ends a contents field on a paragraph of its
+/// own.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Contents {
+    spans: Vec<std::ops::RangeInclusive<usize>>,
+}
+
+impl Contents {
+    pub fn of(document: &wp_model::Document) -> Contents {
+        use wp_model::doc::Piece;
+        let mut spans = Vec::new();
+        // One entry per open field, so a `HYPERLINK` inside the contents does
+        // not close the contents when it ends. The value is where a contents
+        // field's result began, and `None` for every other kind of field.
+        let mut open: Vec<Option<usize>> = Vec::new();
+        let mut instruction = String::new();
+        for (index, paragraph) in document.paragraphs().iter().enumerate() {
+            for piece in paragraph.runs().iter().flat_map(|run| run.content.iter()) {
+                match piece {
+                    Piece::FieldStart { .. } => {
+                        open.push(None);
+                        instruction.clear();
+                    }
+                    Piece::Instruction(text) => instruction.push_str(text),
+                    Piece::FieldSeparate => {
+                        let toc = wp_model::Field::parse(&instruction)
+                            .is_some_and(|field| field.kind() == Kind::Toc);
+                        if let Some(slot) = open.last_mut() {
+                            *slot = toc.then_some(index);
+                        }
+                        instruction.clear();
+                    }
+                    Piece::FieldEnd => {
+                        if let Some(Some(from)) = open.pop() {
+                            spans.push(from..=index);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        // A field left open at the end of the document runs to the end of it,
+        // which is what Word draws for a document whose contents field was
+        // damaged.
+        let last = document.paragraphs().len().saturating_sub(1);
+        for from in open.into_iter().flatten() {
+            spans.push(from..=last);
+        }
+        Contents { spans }
+    }
+
+    /// Whether this paragraph is one of a table of contents' entries.
+    pub fn holds(&self, paragraph: usize) -> bool {
+        self.spans.iter().any(|span| span.contains(&paragraph))
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.spans.is_empty()
+    }
+}
+
 /// What each field evaluates to.
 #[derive(Debug, Clone, Default)]
 pub struct FieldValues {
@@ -133,6 +203,99 @@ mod tests {
             band: None,
             kind,
         }
+    }
+
+    /// A paragraph of pieces, as a document's body.
+    fn body(pieces: Vec<Vec<wp_model::doc::Piece>>) -> wp_model::Document {
+        use wp_model::doc::{Block, Inline, Paragraph, Run};
+        let mut document = wp_model::Document::new();
+        document.body = pieces
+            .into_iter()
+            .map(|content| {
+                let mut run = Run::new();
+                run.content = content;
+                let mut paragraph = Paragraph::new();
+                paragraph.content = vec![Inline::Run(run)];
+                Block::Paragraph(paragraph)
+            })
+            .collect();
+        document
+    }
+
+    #[test]
+    fn a_contents_field_holds_every_paragraph_between_its_ends() {
+        use wp_model::doc::Piece;
+        // A contents field opens in one paragraph, sets its entries in the
+        // next forty, and closes in the last. Nothing looking at one paragraph
+        // can tell that the middle ones are inside it.
+        let document = body(vec![
+            vec![Piece::Text("before".into())],
+            vec![
+                Piece::FieldStart {
+                    dirty: false,
+                    lock: false,
+                },
+                Piece::Instruction(r#" TOC \o "1-3" \h "#.into()),
+                Piece::FieldSeparate,
+                Piece::Text("first entry".into()),
+            ],
+            vec![Piece::Text("second entry".into())],
+            vec![Piece::Text("third entry".into()), Piece::FieldEnd],
+            vec![Piece::Text("after".into())],
+        ]);
+        let contents = Contents::of(&document);
+        assert!(!contents.holds(0));
+        assert!(contents.holds(1));
+        assert!(contents.holds(2));
+        assert!(contents.holds(3));
+        assert!(!contents.holds(4));
+    }
+
+    #[test]
+    fn a_hyperlink_inside_the_contents_does_not_close_it() {
+        use wp_model::doc::Piece;
+        // Every entry is a `HYPERLINK` field of its own, and a reader that
+        // pops the stack on the first end it meets stops counting a paragraph
+        // in.
+        let document = body(vec![
+            vec![
+                Piece::FieldStart {
+                    dirty: false,
+                    lock: false,
+                },
+                Piece::Instruction(r" TOC \h ".into()),
+                Piece::FieldSeparate,
+                Piece::FieldStart {
+                    dirty: false,
+                    lock: false,
+                },
+                Piece::Instruction(r#"HYPERLINK \l "_Toc1""#.into()),
+                Piece::FieldSeparate,
+                Piece::Text("one".into()),
+                Piece::FieldEnd,
+            ],
+            vec![Piece::Text("two".into())],
+            vec![Piece::FieldEnd],
+        ]);
+        let contents = Contents::of(&document);
+        assert!(contents.holds(1), "the second entry is still inside");
+        assert!(contents.holds(2));
+    }
+
+    #[test]
+    fn an_ordinary_field_is_not_a_table_of_contents() {
+        use wp_model::doc::Piece;
+        let document = body(vec![vec![
+            Piece::FieldStart {
+                dirty: false,
+                lock: false,
+            },
+            Piece::Instruction(" PAGE ".into()),
+            Piece::FieldSeparate,
+            Piece::Text("1".into()),
+            Piece::FieldEnd,
+        ]]);
+        assert!(Contents::of(&document).is_empty());
     }
 
     #[test]

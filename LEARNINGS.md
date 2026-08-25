@@ -806,3 +806,39 @@ once and a page of difference over a document. It is a document-wide setting
 and it applies inside table cells as well as outside them, which is worth
 measuring rather than assuming, because a row that shrinks with its lines and
 one that does not are a page apart too.
+
+Word writes a style onto its table of contents and then declines to draw it.
+
+Every entry of a contents built with the hyperlink switch wears the
+`Hyperlink` character style, and Word draws the entries black and unlined. It
+takes four measurements to say why, because three plausible readings are
+wrong: the style is not being applied there (make it loud and the contents does
+not change), character styles *are* read inside a field result (swap those runs
+to Emphasis and they italicise), internal links *are* decorated elsewhere (one
+in the body draws in the link colour), and the hyperlink field is not the
+reason (a run given the style inside one draws in it). What is left is the
+table of contents field itself. A rule found by one measurement would have been
+any of the four.
+
+A field's instruction is not the document's words, and a reader that keeps it
+as text can never say what kind of field it is looking at.
+
+Skipping a field's code at drawing time looks like enough — nothing wrong
+appears on the page. But the kind of a field is only in its code, and the kind
+is what decides whether a page number is recomputed, whether a contents entry
+takes a character style, and which of forty paragraphs are inside one. A
+contents field opens in one paragraph and closes forty later, so the answer has
+to be walked once over the whole document; nothing looking at a paragraph on
+its own can tell.
+
+WordArt is not type at a size.
+
+The words of a piece of WordArt are stretched until they fill the shape they
+were drawn in, across and down, and the two need not agree: Word's watermark
+here is Courier New filling 609 points of width in a box 152 points tall, so
+its letters stand half again as tall as that width alone would make them. A
+size is the only thing a shaper can be asked for, so the difference has to be
+carried separately and applied to the glyphs by each renderer — which a PDF
+does in its text matrix, GDI by naming the width the unstretched face settled
+on, and a screen only by tessellating the galley and moving its vertices,
+because epaint will turn a galley but not squash one.

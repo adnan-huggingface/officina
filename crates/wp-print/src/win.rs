@@ -27,12 +27,12 @@ use windows_sys::Win32::Graphics::Gdi::ExtTextOutW;
 use windows_sys::Win32::Graphics::Gdi::Polygon;
 use windows_sys::Win32::Graphics::Gdi::{
     CreateDCW, CreateFontW, CreatePen, CreateSolidBrush, DeleteDC, DeleteObject, FillRect,
-    GetDeviceCaps, LineTo, MoveToEx, ResetDCW, SelectObject, SetBkMode, SetBrushOrgEx,
-    SetStretchBltMode, SetTextAlign, SetTextColor, StretchDIBits, BITMAPINFO, BITMAPINFOHEADER,
-    BI_RGB, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DEVMODEW, DIB_RGB_COLORS,
-    DMORIENT_LANDSCAPE, DMORIENT_PORTRAIT, DM_ORIENTATION, FW_BOLD, FW_NORMAL, HALFTONE, HDC,
-    HGDIOBJ, LOGPIXELSX, LOGPIXELSY, OUT_DEFAULT_PRECIS, PHYSICALOFFSETX, PHYSICALOFFSETY,
-    PS_SOLID, SRCCOPY, TA_BASELINE, TA_LEFT, TRANSPARENT,
+    GetDeviceCaps, GetTextMetricsW, LineTo, MoveToEx, ResetDCW, SelectObject, SetBkMode,
+    SetBrushOrgEx, SetStretchBltMode, SetTextAlign, SetTextColor, StretchDIBits, BITMAPINFO,
+    BITMAPINFOHEADER, BI_RGB, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DEVMODEW,
+    DIB_RGB_COLORS, DMORIENT_LANDSCAPE, DMORIENT_PORTRAIT, DM_ORIENTATION, FW_BOLD, FW_NORMAL,
+    HALFTONE, HDC, HGDIOBJ, LOGPIXELSX, LOGPIXELSY, OUT_DEFAULT_PRECIS, PHYSICALOFFSETX,
+    PHYSICALOFFSETY, PS_SOLID, SRCCOPY, TA_BASELINE, TA_LEFT, TEXTMETRICW, TRANSPARENT,
 };
 use windows_sys::Win32::Storage::Xps::{AbortDoc, EndDoc, EndPage, StartDocW, StartPage, DOCINFOW};
 use windows_sys::Win32::System::Memory::{GlobalLock, GlobalUnlock};
@@ -260,21 +260,35 @@ fn set_orientation(hdc: HDC, devmode: HGLOBAL, landscape: bool) {
 /// Fonts GDI created for this job, one per face and device size.
 #[derive(Default)]
 struct FontCache {
-    fonts: HashMap<(String, i32, bool, bool, i32), HGDIOBJ>,
+    fonts: HashMap<(String, i32, bool, bool, i32, i32), HGDIOBJ>,
 }
 
 impl FontCache {
     /// `tenths` is GDI's escapement: tenths of a degree *anticlockwise*, and
     /// part of the key because a turned face is a different face to GDI.
-    fn get(&mut self, family: &str, height: i32, bold: bool, italic: bool, tenths: i32) -> HGDIOBJ {
+    ///
+    /// `width` is the average character width to force, and zero means the
+    /// face's own — which is what every line of a paragraph asks for. Only a
+    /// piece of WordArt names one, because only WordArt is drawn taller than
+    /// its own proportion.
+    #[allow(clippy::too_many_arguments)]
+    fn get(
+        &mut self,
+        family: &str,
+        height: i32,
+        bold: bool,
+        italic: bool,
+        tenths: i32,
+        width: i32,
+    ) -> HGDIOBJ {
         *self
             .fonts
-            .entry((family.to_owned(), height, bold, italic, tenths))
+            .entry((family.to_owned(), height, bold, italic, tenths, width))
             .or_insert_with(|| unsafe {
                 let name = wide(family);
                 CreateFontW(
                     -height,
-                    0,
+                    width,
                     tenths,
                     tenths,
                     if bold {
@@ -293,6 +307,34 @@ impl FontCache {
                     name.as_ptr(),
                 ) as HGDIOBJ
             })
+    }
+
+    /// The average character width GDI gives this face at this height.
+    ///
+    /// **GDI has no way to say "taller than wide" but this one.** A font asked
+    /// for with a width of zero takes the face's own proportion, so a stretched
+    /// one is asked for at the taller height *and* at the width the unstretched
+    /// one settled on, which leaves the glyphs the width they had and makes
+    /// them the height they should be.
+    fn aspect_width(
+        &mut self,
+        hdc: HDC,
+        family: &str,
+        height: i32,
+        bold: bool,
+        italic: bool,
+    ) -> i32 {
+        let plain = self.get(family, height, bold, italic, 0, 0);
+        unsafe {
+            let old = SelectObject(hdc, plain);
+            let mut metrics: TEXTMETRICW = std::mem::zeroed();
+            let read = GetTextMetricsW(hdc, &mut metrics);
+            SelectObject(hdc, old);
+            match read != 0 {
+                true => metrics.tmAveCharWidth,
+                false => 0,
+            }
+        }
     }
 
     fn clear(&mut self) {
@@ -374,12 +416,24 @@ fn render_page(
                 font,
                 rgb,
                 rotation,
+                stretch,
             } => {
                 let height = (font.size * sy).round() as i32;
                 let family = gdi_family(&font.family);
                 // GDI turns anticlockwise and counts in tenths of a degree.
                 let tenths = (-rotation * 10.0).round() as i32 % 3600;
-                let handle = fonts.get(&family, height, font.bold, font.italic, tenths);
+                // A piece of WordArt is drawn taller than its own proportion,
+                // and nothing else on the page is.
+                let upright = (stretch - 1.0).abs() < 1e-9;
+                let width = match upright {
+                    true => 0,
+                    false => fonts.aspect_width(hdc, &family, height, font.bold, font.italic),
+                };
+                let tall = match upright {
+                    true => height,
+                    false => ((font.size * stretch) * sy).round() as i32,
+                };
+                let handle = fonts.get(&family, tall, font.bold, font.italic, tenths, width);
                 let (units, dx) = pin_advances(&text, &advances, x, sx);
                 if units.is_empty() {
                     continue;

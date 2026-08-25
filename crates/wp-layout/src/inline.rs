@@ -195,6 +195,9 @@ pub struct Context<'a> {
     /// one. Carried on the context because it changes per cell and every
     /// paragraph inside that cell needs it.
     pub table_part: Option<&'a wp_model::TablePart>,
+    /// Which paragraphs are entries of a table of contents. Built once per
+    /// document — see [`crate::field::Contents`].
+    pub contents: &'a crate::field::Contents,
     /// The document's styles, for the character style a *run* names.
     ///
     /// The paragraph's own chain is resolved before layout begins, but
@@ -240,6 +243,7 @@ impl Default for Context<'_> {
             notes: Box::leak(Box::new(crate::notes::NoteMarks::default())),
             note_mark: None,
             table_part: None,
+            contents: Box::leak(Box::new(crate::field::Contents::default())),
             styles: Box::leak(Box::new(wp_model::style::StyleTable::default())),
             default_tab: Twips(720),
             no_leading: false,
@@ -754,6 +758,37 @@ impl FieldWalk {
     }
 }
 
+/// Whether this run is a contents entry wearing the `Hyperlink` style, which
+/// Word does not draw.
+///
+/// A table of contents built with `\h` is a column of hyperlinks, and Word
+/// writes the `Hyperlink` character style onto every one of its runs — but it
+/// draws the entries in the contents style's own black, not in the style's blue
+/// and underline. Measured, in this document and in one built for the purpose:
+/// giving that style a loud colour and size changes nothing in the contents
+/// while it changes every other run wearing it, and swapping those same runs to
+/// a *different* character style italicises them at once. So it is this one
+/// style inside a contents result that Word passes over, not character styles
+/// in a field result generally, and not hyperlinks generally — a link to a
+/// bookmark in the body of the same document is drawn in the link colour like
+/// any other.
+fn unstyled_contents_link(run: &Run, ctx: &Context<'_>, fields: &FieldWalk) -> bool {
+    /// `w:styleId` of Word's built-in hyperlink style, which is the identity
+    /// rather than the name — a localised Word translates `<w:name>` and leaves
+    /// this alone.
+    const HYPERLINK: &str = "Hyperlink";
+    // A header has its own paragraph numbering, and a table of contents is
+    // never in one; asking there would be asking about somebody else's
+    // paragraph.
+    fields.band.is_none()
+        && ctx.contents.holds(fields.paragraph)
+        && run
+            .props
+            .style
+            .and_then(|id| ctx.styles.get(id))
+            .is_some_and(|style| style.id.eq_ignore_ascii_case(HYPERLINK))
+}
+
 fn tab_unit(style: &TextStyle, leader: TabLeader, after_label: bool) -> Unit {
     Unit {
         style: style.clone(),
@@ -880,8 +915,16 @@ fn push_run(
     out: &mut Vec<Unit>,
 ) {
     // The paragraph's run layer, then whatever character style this run names,
-    // then the run's own direct properties on top.
-    let props = ctx.styles.resolve_run(layers, &run.props);
+    // then the run's own direct properties on top — except for the one style a
+    // table of contents does not take. See [`unstyled_contents_link`].
+    let props = match unstyled_contents_link(run, ctx, fields) {
+        false => ctx.styles.resolve_run(layers, &run.props),
+        true => {
+            let mut plain = run.props.clone();
+            plain.style = None;
+            ctx.styles.resolve_run(layers, &plain)
+        }
+    };
     if props.hidden() && !ctx.show_hidden {
         return;
     }
@@ -1814,6 +1857,7 @@ mod tests {
             styles: Box::leak(Box::new(wp_model::style::StyleTable::default())),
             notes: Box::leak(Box::new(crate::notes::NoteMarks::default())),
             note_mark: None,
+            contents: Box::leak(Box::new(crate::field::Contents::default())),
             default_tab: Twips(720),
             no_leading: false,
             fallback_font: "test",
@@ -1903,6 +1947,89 @@ mod tests {
         let ctx = ctx(&theme);
         let mut shaper = crate::shape::Fixed;
         layout(&paragraph, 0, &layers, None, &ctx, width, None, &mut shaper)
+    }
+
+    /// One paragraph laid out with a `Hyperlink` character style on its words,
+    /// with the paragraph counted as a contents entry or not.
+    fn hyperlinked(in_contents: bool) -> Line {
+        use wp_model::style::{Style, StyleKind, StyleTable};
+        let mut styles = StyleTable::new();
+        let id = styles.intern("Hyperlink", StyleKind::Character);
+        let mut style = Style::new("Hyperlink", StyleKind::Character);
+        style.run.color = Some(wp_model::Color::Rgb([0, 0, 255]));
+        style.run.underline = Some(wp_model::prop::Underline {
+            kind: wp_model::prop::UnderlineKind::Single,
+            color: None,
+        });
+        styles.insert(style);
+
+        let mut contents = crate::field::Contents::default();
+        if in_contents {
+            let document = {
+                use wp_model::doc::{Block, Inline, Paragraph, Piece, Run};
+                let mut run = Run::new();
+                run.content = vec![
+                    Piece::FieldStart {
+                        dirty: false,
+                        lock: false,
+                    },
+                    Piece::Instruction(r" TOC \h ".into()),
+                    Piece::FieldSeparate,
+                    Piece::Text("entry".into()),
+                    Piece::FieldEnd,
+                ];
+                let mut paragraph = Paragraph::new();
+                paragraph.content = vec![Inline::Run(run)];
+                let mut document = wp_model::Document::new();
+                document.body = vec![Block::Paragraph(paragraph)];
+                document
+            };
+            contents = crate::field::Contents::of(&document);
+        }
+
+        let theme = theme();
+        let mut ctx = ctx(&theme);
+        ctx.styles = Box::leak(Box::new(styles));
+        ctx.contents = Box::leak(Box::new(contents));
+
+        let mut run = wp_model::doc::Run::of("entry");
+        run.props.style = Some(id);
+        let mut paragraph = Paragraph::new();
+        paragraph.content = vec![wp_model::doc::Inline::Run(run)];
+
+        let mut shaper = crate::shape::Fixed;
+        let laid = layout(
+            &paragraph,
+            0,
+            &layers(),
+            None,
+            &ctx,
+            400.0,
+            None,
+            &mut shaper,
+        );
+        laid.lines.into_iter().next().expect("one line")
+    }
+
+    #[test]
+    fn a_contents_entry_does_not_wear_the_hyperlink_style_word_writes_on_it() {
+        // A contents built with `\h` is a column of hyperlinks and Word puts
+        // the `Hyperlink` style on every run of it — then draws the entries in
+        // the contents style's own black. Measured against Word: giving that
+        // style a loud colour changes every other run wearing it and changes
+        // nothing in the contents, while swapping those same runs to another
+        // character style takes effect at once.
+        let plain = hyperlinked(false);
+        let entry = hyperlinked(true);
+        assert_eq!(plain.fragments[0].style.color, Some([0, 0, 255]));
+        assert_eq!(
+            entry.fragments[0].style.color, None,
+            "black, as Word draws it"
+        );
+        assert_eq!(
+            entry.fragments[0].style.underline,
+            wp_model::prop::UnderlineKind::None
+        );
     }
 
     fn texts(line: &Line) -> Vec<&str> {

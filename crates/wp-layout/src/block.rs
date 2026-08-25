@@ -115,11 +115,23 @@ pub struct ShapeWords {
     pub rgb: [u8; 3],
     /// Degrees clockwise, turned about the middle of the shape's box.
     pub rotation: f64,
-    /// The measured line, before it is turned.
+    /// The measured line, before it is turned. The height already carries
+    /// [`ShapeWords::stretch`].
     pub width: f64,
     pub height: f64,
     /// Baseline below the line's own top.
     pub ascent: f64,
+    /// How much taller than its own proportion the face is drawn.
+    ///
+    /// **WordArt is not type at a size.** The words are stretched until they
+    /// fill the shape they were drawn in, across *and* down, and the two need
+    /// not agree: Word's diagonal watermark on this page is Courier New set to
+    /// 609 points of width in a box 152 points tall, so its letters stand half
+    /// again as tall as that width would make them. One of the two is a size a
+    /// shaper can measure and the other is not, so it is stated apart and every
+    /// renderer applies it to the glyphs themselves — a PDF in its text matrix,
+    /// the screen in the mesh it builds from the galley.
+    pub stretch: f64,
 }
 
 impl ShapeWords {
@@ -163,7 +175,13 @@ pub fn shape_words(
     }
     let box_width = drawing.extent.0.points();
     let box_height = drawing.extent.1.points();
-    request.size = MEASURED_AT * (box_width / natural).min(box_height / tall).max(0.01);
+    // Across fills the box's width and down fills its height. The size is the
+    // first of them, because a size is the only thing a shaper can be asked
+    // for; what the two differ by is the stretch, which the renderers apply.
+    let across = (box_width / natural).max(0.01);
+    let down = (box_height / tall).max(0.01);
+    request.size = MEASURED_AT * across;
+    let stretch = down / across;
 
     let mut measured = Vec::new();
     shaper.advances(text, &request, &mut measured);
@@ -172,8 +190,9 @@ pub fn shape_words(
         text: text.to_owned(),
         advances: measured.iter().map(|advance| advance.width).collect(),
         width: measured.iter().map(|advance| advance.width).sum(),
-        height: metrics.ascent + metrics.descent,
-        ascent: metrics.ascent,
+        height: (metrics.ascent + metrics.descent) * stretch,
+        ascent: metrics.ascent * stretch,
+        stretch,
         rgb: match shape.color {
             Some(wp_model::Color::Rgb(rgb)) => rgb,
             // Word's own watermark grey, for a shape that states no fill.
@@ -2833,6 +2852,7 @@ mod tests {
             notes: Box::leak(Box::new(crate::notes::NoteMarks::default())),
             note_mark: None,
             table_part: None,
+            contents: Box::leak(Box::new(crate::field::Contents::default())),
             default_tab: Twips(720),
             no_leading: false,
             fallback_font: "test",
@@ -4195,12 +4215,14 @@ mod tests {
             document: &'a Document,
             fields: &'a crate::FieldValues,
             marks: &'a crate::notes::NoteMarks,
+            contents: &'a crate::field::Contents,
         ) -> Context<'a> {
             Context {
                 theme,
                 styles: &document.styles,
                 notes: marks,
                 note_mark: None,
+                contents,
                 table_part: None,
                 default_tab: document.settings.default_tab_stop,
                 no_leading: document.settings.no_leading,
@@ -4217,9 +4239,10 @@ mod tests {
         let empty = crate::FieldValues::default();
         let mut cold = Counting::default();
         let marks = crate::notes::NoteMarks::of(&document);
+        let contents = crate::field::Contents::of(&document);
         let pages = layout(
             &document,
-            &make(&theme, &document, &empty, &marks),
+            &make(&theme, &document, &empty, &marks, &contents),
             &mut cold,
         );
         let settled = evaluate(&pages, &empty);
@@ -4228,7 +4251,7 @@ mod tests {
         let mut warm = Counting::default();
         let again = layout(
             &document,
-            &make(&theme, &document, &settled, &marks),
+            &make(&theme, &document, &settled, &marks, &contents),
             &mut warm,
         );
         assert_eq!(again.len(), pages.len(), "and the same pages come out");
@@ -4471,6 +4494,48 @@ mod tests {
             line.y,
             drawn.y + drawn.height
         );
+    }
+
+    #[test]
+    fn word_art_is_stretched_to_fill_the_shape_it_was_drawn_in() {
+        // The fixed shaper's face is half its size wide and exactly its size
+        // tall, so "abcd" at 100 points measures 200 by 100. A box 200 wide
+        // and 300 tall therefore fits the width at its own size and is three
+        // times too short for its height — which is what WordArt does with the
+        // difference: it stretches. Word's own watermark on the document this
+        // was measured against is Courier New filling 609 points of width in a
+        // box 152 points tall, and its letters stand half again as tall as
+        // that width alone would make them.
+        let mut drawing = wp_model::Drawing {
+            source: Vec::new().into(),
+            anchored: true,
+            extent: (
+                wp_model::Emu::from_points(200.0),
+                wp_model::Emu::from_points(300.0),
+            ),
+            rel: None,
+            chart: None,
+            name: None,
+            description: None,
+            wrap: wp_model::Wrap::None,
+            distance: Default::default(),
+            position: None,
+            behind_text: true,
+            text: None,
+            outline: None,
+        };
+        drawing.text = Some(Box::new(wp_model::doc::ShapeText {
+            text: "abcd".into(),
+            font: Some("any".into()),
+            color: None,
+            bold: false,
+            italic: false,
+            rotation: 315.0,
+        }));
+        let words = shape_words(&drawing, &mut crate::shape::Fixed).expect("a shape of words");
+        assert_eq!(words.font.size, 100.0, "the size fills the width");
+        assert_eq!(words.stretch, 3.0, "and the stretch fills the height");
+        assert_eq!(words.height, 300.0, "so the words are as tall as the box");
     }
 
     #[test]

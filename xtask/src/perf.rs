@@ -119,11 +119,13 @@ fn document_of(count: usize) -> u128 {
     let theme = document.theme.clone();
     let marks = wp_layout::NoteMarks::of(&document);
     let fields = wp_layout::FieldValues::default();
+    let contents = wp_layout::field::Contents::of(&document);
     let ctx = wp_layout::inline::Context {
         theme: &theme,
         styles: &document.styles,
         notes: &marks,
         note_mark: None,
+        contents: &contents,
         table_part: None,
         default_tab: document.settings.default_tab_stop,
         no_leading: document.settings.no_leading,
@@ -171,11 +173,13 @@ fn time(path: &Path, kind: Kind) -> Option<(u128, u128)> {
             let theme = document.theme.clone();
             let marks = wp_layout::NoteMarks::of(&document);
             let fields = wp_layout::FieldValues::default();
+            let contents = wp_layout::field::Contents::of(&document);
             let ctx = wp_layout::inline::Context {
                 theme: &theme,
                 styles: &document.styles,
                 notes: &marks,
                 note_mark: None,
+                contents: &contents,
                 table_part: None,
                 default_tab: document.settings.default_tab_stop,
                 no_leading: document.settings.no_leading,
