@@ -2230,6 +2230,117 @@ document's eleven pictures are all of them; their size and their place on
 the page are right, and the frame that stands in for them is the honest
 answer until there is something here that can play a metafile's records.
 
+The header was right and still looked wrong, because the whole document was
+in the wrong face. A `.doc` names no font anywhere: a run says
+`sprmCRgFtc0 = 3` and means the fourth entry of `SttbfFfn`, and that table
+had never been read, so every word in the file fell back to the reader's own
+default. Word's export of page one is Arial throughout; the same page here
+was Times New Roman throughout, which is a different document rather than a
+plainer one. The names come out of an `FFN` at a fixed offset past a header
+this does not otherwise need, and they end at their own terminator — a face
+the author asked Word to substitute for keeps its alternate name in the same
+entry, and reading to the end of the entry glues the two into a font nobody
+has.
+
+The size was wrong for the same reason one level up. A style's own
+formatting is a variant record whose members depend on which kind of style
+it is, and only the paragraph half of it was being read; the table of
+contents therefore kept the document's ten points where the `TOC 1` style
+says eight, and thirteen pages of entries did not fit on the page Word fits
+them on. Each member is a counted `grpprl` **padded to an even length that
+its own count does not include**, so a reader that steps by the count alone
+lands a byte early and takes the last byte of one property list as the
+length of the next. Reading the character half also meant reading
+`istdBase`, which is an index into the same table and points forward as
+often as back, so the chain can only be joined once every entry is in — and
+it meant that `ico 0` had to stop meaning "nothing stated": automatic is a
+colour a run has chosen, and answering silence lets a style's own colour
+through where Word shows black.
+
+Then the lines the header had and Word's did not. Two came from reading a
+`.doc`'s cell borders as though there were one way to have none. There are
+two: a `TC80` side that is all zeroes has not spoken, and the table's own
+rule — `sprmTTableBorders80`, which is where an ordinary grid comes from —
+runs there; a side that is all *ones* is `Brc80MayBeNil` saying the cell has
+spoken and wants no rule at all. Answering `None` to both let the table's
+rule run straight through the middle of the letterhead's title block, which
+is exactly the line the file had struck out. The rest of the header was half
+a gap out of place: a `.doc` states `rgdxaCenter` half a gap to the left of
+the edge it rules, which is why a table flush with the margin says -108 and
+not zero, and Word puts every boundary back before it draws. `w:tblInd` then
+measures to the text *inside* the first cell rather than to its edge, so the
+padding is added a second time, to the same edge, for a different reason —
+and with both additions every rule and every column boundary of both header
+tables now lands within a rounding of Word's own.
+
+Last, the line height. Word's table of contents sets an eight-point entry on
+an eight-point line, though the tab between the number and the title carries
+the document's default eleven-point face — which is what a file written in
+one Word and opened in another leaves tabs in. Measured, in a document built
+for the purpose: a twenty-two point tab in the middle of an eight-point
+paragraph does not raise the line at all, while a twenty-two point *space*
+does. So a tab is now passed over when a line is measured, and a line with
+nothing but tabs on it falls back to the paragraph mark, the same as a line
+with nothing on it. Page one holds the whole table of contents now, as
+Word's does.
+
+**What still differs on that page.** The entries are blue and underlined
+where Word draws them black: the runs carry `rStyle="Hyperlink"` and Word
+does not apply it there, though it applies the same style to a plain run in
+the same document. Word's own `.docx` conversion of this file renders the
+same way in Word and the same way here, so this is one rule the layout does
+not know and not something the legacy reader invents. The page frame sits
+five and a half points left of Word's, because a shape whose anchor is
+measured from the column is measured here from the page's text margin rather
+than from the column of the paragraph it is anchored in — which for this
+frame is a paragraph inside a table cell.
+
+The frame really was five and a half points left, and the reason is that
+"the column" a shape measures from is not always the page's text column. A
+`.doc` states a floating shape's rectangle against one of three origins —
+the page's margin, the page's edge, or the text — and this document's page
+frame states the third with an offset of minus a hundred and eight twips.
+Read from the margin that puts it at thirty and a half points; Word puts it
+at thirty-six, because the paragraph the frame is anchored to is inside the
+letterhead table's first cell and Word measures from *that* cell's text,
+which begins a hundred and eight twips in. So `anchor_position` and
+`anchor_base` now take the place the anchoring paragraph begins — the left of
+its column and the top of its first line — instead of the line alone, and
+every caller already had it to hand in the placement pagination gave them.
+The frame is now the same rectangle Word draws, to the point, and it lines
+up with the tables it surrounds again.
+
+Then the thing that had been quietly wrong in every line of the document.
+Word's table of contents lays an eight-point Arial entry on an 8.94pt line
+where this laid it on a 9.20pt one, and thirty lines of that is a quarter of
+an inch and eventually a page. It is not the style and it is not the tab: it
+is `fNoLeading`, one of the compatibility options a document converted from
+an older word processor carries, which tells Word to drop the gap a face
+asks for between one line's descender and the next line's ascender. Arial
+asks for sixty-seven units of its two thousand and forty-eight, and eight
+points of that is the quarter point a line that was missing. The bit was
+found by saving one document twice out of Word with the option on and off
+and diffing the two `Dop`s — it is the fourth flag of the ones Word 97 added
+to `Copts80`, which begins at offset eighty-four — and confirmed against a
+document laid out both ways, in a table and out of one, because a table row
+follows the same rule. It is read from `settings.xml` for a `.docx` too, and
+carried through layout as a document-wide setting beside the default tab
+stop. Every table of contents entry on page one now sits within a point and
+a half of where Word sets it, against thirteen and a half at the foot of the
+page before.
+
+**What still differs on that page.** The entries are still blue and
+underlined; that is unchanged and untouched. The header table's rows are one
+to two and a half points shorter than Word's — Word gives a row a little
+more than the type on it needs, and dropping the leading took away what had
+been masking it. Word draws a table's outermost border wholly inside the box
+rather than centred on its edge, which is another three quarters of a point
+at the top. And the watermark is set in the right face at the wrong shape:
+WordArt stretches its words to fill the rectangle it was drawn in, so Word's
+letters are as tall as the box and these are as tall as the width alone
+makes them. None of the three is a legacy-format question — a `.docx` says
+all three the same way and would be laid out the same.
+
 ## Deferred
 
 - [x] **PDF** — was dropped per Q3; built after ship as `wp-print`. See above.

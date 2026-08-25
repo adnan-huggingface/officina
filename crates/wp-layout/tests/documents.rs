@@ -83,6 +83,7 @@ fn lay(document: &Document) -> Vec<block::Page> {
         note_mark: None,
         table_part: None,
         default_tab: document.settings.default_tab_stop,
+        no_leading: document.settings.no_leading,
         fallback_font: "test",
         has_face: |_| false,
         show_revisions: true,

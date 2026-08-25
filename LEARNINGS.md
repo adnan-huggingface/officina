@@ -737,3 +737,72 @@ document has been paginated, so the layout is run, the floats are read off the
 pages, and the paragraphs beside them are laid again. One correction pass, not
 a loop: a wrap that moved the float that caused it would never settle.
 
+And an old format names nothing it can name by number instead.
+
+A `.doc` has no font names in it anywhere a run can see. A run says
+`sprmCRgFtc0 = 3` and means the fourth entry of a string table on the other
+side of the file. Skip that table and nothing fails: every run simply says
+nothing about its face, the fallback answers, and a document that is Arial
+from top to bottom renders as Times New Roman from top to bottom. It is the
+worst kind of gap — no error, no missing text, no crash, and a rendering that
+is wrong in a way only a side-by-side shows.
+
+A counted list padded to an even length is not a list you can step through by
+its counts.
+
+A style's own formatting sits in a variant record whose members depend on
+which kind of style it is, and each member is a length followed by that many
+bytes — *and then a pad byte, when the length is odd, that the length does not
+include*. Stepping by the count alone lands one byte early on the next member
+and reads the tail of one property list as the length of the next. The
+paragraph half of every style parsed correctly for as long as it was the only
+half anybody asked for.
+
+Saying nothing and saying "none" are different answers, and a format that has
+two spellings for one of them has two for a reason.
+
+A cell's `TC80` states four borders whether the cell has an opinion or not. All
+zeroes means it has none, and the table's own rule runs there — which is where
+an ordinary grid comes from, since almost no cell states its own. All bits set
+is `Brc80MayBeNil` saying the cell *has* an opinion and it is "no rule". Map
+both to "unstated" and the table's rule runs straight through a border the file
+struck out; map both to "none" and the grid disappears. The two spellings exist
+because the format needs both answers.
+
+A tab is the gap between type, and Word does not let it decide how tall a line
+is.
+
+An entry in a table of contents is eight-point type with an eleven-point tab in
+the middle of it — the tab keeps the default face when a document written in
+one Word is opened in another — and Word sets it on an eight-point line.
+Measured in a document built to ask: a twenty-two point tab in an eight-point
+paragraph raises the line not at all, while a twenty-two point *space* raises it
+fully. A paragraph mark behaves the same way — it decides the height of a line
+that has nothing else on it and of no other. Thirteen pages of a document
+paginated wrongly because a tab was measured like a letter.
+
+The column a shape is measured from is the column it was anchored in, and a
+table cell is a column.
+
+A `.doc` states a floating shape's rectangle against the page's margin, the
+page's edge, or the text — and "the text" is not the page's text column when
+the paragraph holding the anchor is inside a table. Word measures from that
+cell's own text edge. The page frame of this document says minus a hundred and
+eight twips and means thirty-six points, because its cell begins a hundred and
+eight twips inside the margin; read from the margin it lands five and a half
+points left of everything it is meant to enclose, which is exactly wrong enough
+to look like the page is off centre rather than like the frame is.
+
+A document can be told not to breathe between its lines, and then every line in
+it is shorter.
+
+A face states its leading as three numbers — an ascent, a descent, and a gap to
+hold between one line's descender and the next line's ascender — and Word
+ordinarily honours all three. `fNoLeading`, one of the compatibility options a
+document converted from an older word processor carries, drops the third.
+Arial asks for sixty-seven units of its two thousand and forty-eight, so an
+eight-point line goes from 9.20pt to 8.94pt: a quarter of a point, invisible
+once and a page of difference over a document. It is a document-wide setting
+and it applies inside table cells as well as outside them, which is worth
+measuring rather than assuming, because a row that shrinks with its lines and
+one that does not are a page apart too.

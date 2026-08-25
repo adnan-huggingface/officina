@@ -981,6 +981,17 @@ pub struct Settings {
     /// meaningful to Word's own merge. Counted rather than kept, since the
     /// writer restores the element whole.
     pub has_rsids: bool,
+    /// `<w:noLeading/>` — "don't add leading between lines of text", one of the
+    /// compatibility options a document converted from an older word processor
+    /// carries and every Word 97 document written in this mode keeps.
+    ///
+    /// **It changes the height of every line in the document.** A face states
+    /// how far its lines should stand apart as an ascent, a descent and a gap
+    /// between one line's descender and the next line's ascender; with this
+    /// set, Word drops the gap. Eight-point Arial is laid on a 9.20pt line
+    /// ordinarily and on an 8.94pt one here — a quarter point a line, which is
+    /// half an inch down a page of fifty and eventually a page of difference.
+    pub no_leading: bool,
 }
 
 impl Default for Settings {
@@ -996,6 +1007,7 @@ impl Default for Settings {
             hyphen_limit: 0,
             zoom: None,
             has_rsids: false,
+            no_leading: false,
         }
     }
 }

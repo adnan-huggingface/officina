@@ -5335,9 +5335,9 @@ impl Scriva {
         };
         // Where the paragraph starts on the page, which is what an offset
         // relative to the paragraph is measured from.
-        let line_top = view::rect_of(&self.view, picked)
-            .map(|(_, rect)| rect.1)
-            .unwrap_or(geometry.top);
+        let origin = view::rect_of(&self.view, picked)
+            .map(|(_, rect)| (rect.0, rect.1))
+            .unwrap_or((geometry.start, geometry.top));
         let before = match self.document.paragraphs().get(picked.paragraph) {
             Some(paragraph) => (*paragraph).clone(),
             None => return,
@@ -5350,7 +5350,7 @@ impl Scriva {
             return;
         };
         let changed = match grip {
-            Grip::Body => moved(drawing, &geometry, line_top, dx, dy),
+            Grip::Body => moved(drawing, &geometry, origin, dx, dy),
             grip => resized(drawing, grip, dx, dy, keep),
         };
         drop(paragraphs);

@@ -33,6 +33,7 @@ pub(crate) fn settings(xml: &[u8]) -> Settings {
                 }
                 b"zoom" => settings.zoom = attr_u32(&e, b"percent"),
                 b"rsids" => settings.has_rsids = true,
+                b"noLeading" => settings.no_leading = on_off(&e),
                 _ => {}
             },
             Event::Eof => break,
@@ -210,6 +211,19 @@ mod tests {
         assert!(!settings.hyphenate);
         assert!(settings.has_rsids);
         assert!(!settings.protected);
+        assert!(!settings.no_leading);
+    }
+
+    #[test]
+    fn no_leading_is_read_because_it_changes_the_height_of_every_line() {
+        // A compatibility option, and the one compatibility option that is not
+        // cosmetic: without the gap a face asks for between its lines, a page
+        // of fifty lines is half an inch shorter and a document paginates
+        // differently.
+        let settings = settings(
+            br#"<w:settings><w:compat><w:noLeading/><w:useWord2002TableStyleRules/></w:compat></w:settings>"#,
+        );
+        assert!(settings.no_leading);
     }
 
     #[test]

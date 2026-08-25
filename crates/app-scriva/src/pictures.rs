@@ -233,7 +233,7 @@ mod tests {
             aligned(Alignment::Center, RelativeTo::Margin),
             aligned(Alignment::Top, RelativeTo::Margin),
         )));
-        let (x, y) = anchor_position(&drawing, &page(), 200.0);
+        let (x, y) = anchor_position(&drawing, &page(), (72.0, 200.0));
         // The column is 72..540, so its middle is 306 and a 100pt picture
         // starts at 256.
         assert_eq!(x, 256.0);
@@ -246,7 +246,7 @@ mod tests {
             aligned(Alignment::Left, RelativeTo::Page),
             aligned(Alignment::Bottom, RelativeTo::Page),
         )));
-        let (x, y) = anchor_position(&drawing, &page(), 200.0);
+        let (x, y) = anchor_position(&drawing, &page(), (72.0, 200.0));
         assert_eq!(x, 0.0);
         assert_eq!(y, 742.0, "the bottom of the paper, less its height");
     }
@@ -257,7 +257,7 @@ mod tests {
             offset(36.0, RelativeTo::Margin),
             offset(18.0, RelativeTo::Margin),
         )));
-        let (x, y) = anchor_position(&drawing, &page(), 200.0);
+        let (x, y) = anchor_position(&drawing, &page(), (72.0, 200.0));
         assert_eq!(x, 108.0);
         assert_eq!(y, 90.0);
     }
@@ -270,13 +270,28 @@ mod tests {
             offset(0.0, RelativeTo::Column),
             offset(10.0, RelativeTo::Paragraph),
         )));
-        let (_, y) = anchor_position(&drawing, &page(), 400.0);
+        let (_, y) = anchor_position(&drawing, &page(), (72.0, 400.0));
         assert_eq!(y, 410.0);
     }
 
     #[test]
+    fn a_column_offset_is_measured_from_the_column_the_paragraph_is_set_in() {
+        // A shape anchored inside a table cell measures from that cell's text,
+        // not from the page's margin. This is how Word draws the page frame of
+        // a document whose letterhead is a table: the frame states a negative
+        // offset from a cell that begins further in, and reading the offset
+        // from the margin instead puts the whole frame off centre.
+        let drawing = drawing(Some(at(
+            offset(-5.4, RelativeTo::Column),
+            offset(0.0, RelativeTo::Paragraph),
+        )));
+        let (x, _) = anchor_position(&drawing, &page(), (113.4, 200.0));
+        assert_eq!(x, 108.0);
+    }
+
+    #[test]
     fn a_drawing_that_states_no_position_goes_where_the_text_is() {
-        let (x, y) = anchor_position(&drawing(None), &page(), 300.0);
+        let (x, y) = anchor_position(&drawing(None), &page(), (72.0, 300.0));
         assert_eq!((x, y), (72.0, 300.0));
     }
 

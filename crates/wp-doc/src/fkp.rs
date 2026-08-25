@@ -200,7 +200,7 @@ mod tests {
         assert_eq!(exceptions.len(), 1);
         assert_eq!((exceptions[0].from, exceptions[0].to), (1000, 1100));
         let mut props = wp_model::prop::RunProps::default();
-        sprm::apply_run(&mut props, &exceptions[0].grpprl);
+        sprm::apply_run(&mut props, &exceptions[0].grpprl, &[]);
         assert_eq!(props.toggles.get(wp_model::prop::Toggle::Bold), Some(true));
     }
 

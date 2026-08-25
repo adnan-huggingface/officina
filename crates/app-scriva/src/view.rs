@@ -108,6 +108,7 @@ impl View {
             note_mark: None,
             table_part: None,
             default_tab: document.settings.default_tab_stop,
+            no_leading: document.settings.no_leading,
             // The font of last resort when nothing in the document names one.
             // Word's is Calibri only because every document it writes carries
             // docDefaults saying so; a file whose defaults are silent — the
@@ -767,9 +768,11 @@ pub fn drawing_rects(view: &View, page: usize) -> Vec<(Picked, (f64, f64, f64, f
                 ..
             } => {
                 let (x, y) = match anchor {
-                    Some(drawing) => {
-                        crate::pictures::anchor_position(drawing, &page.geometry, placement.y)
-                    }
+                    Some(drawing) => crate::pictures::anchor_position(
+                        drawing,
+                        &page.geometry,
+                        (placement.x, placement.y),
+                    ),
                     None => (placement.x, placement.y),
                 };
                 out.push((
@@ -1015,7 +1018,9 @@ fn paint_placement(
             // The placement's y is where the paragraph's first line landed,
             // which is the one thing pagination knows and the anchor needs.
             let (x, y) = match anchor {
-                Some(drawing) => crate::pictures::anchor_position(drawing, geometry, placement.y),
+                Some(drawing) => {
+                    crate::pictures::anchor_position(drawing, geometry, (placement.x, placement.y))
+                }
                 None => (placement.x, placement.y),
             };
             let rect = egui::Rect::from_min_size(

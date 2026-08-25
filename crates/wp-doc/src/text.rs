@@ -63,12 +63,17 @@ pub fn document(doc: &Doc) -> (wp_model::Document, Vec<Media>) {
     let body = part(Part::Body);
     let headers = part(Part::Headers);
 
-    let (styles, by_istd) = crate::style::read(&doc.fib, &doc.table);
+    // The font table is read first because everything that names a face names
+    // it by an index into this and by nothing else — the styles as much as the
+    // runs.
+    let fonts = crate::font::read(&doc.fib, &doc.table);
+    let (styles, by_istd) = crate::style::read(&doc.fib, &doc.table, &fonts);
     let read = Reader {
         doc,
         characters,
         paragraphs,
         by_istd,
+        fonts,
         art: art::read(&doc.fib, &doc.table),
         anchors: anchors(doc, headers.0),
         media: RefCell::new(Vec::new()),
@@ -83,6 +88,7 @@ pub fn document(doc: &Doc) -> (wp_model::Document, Vec<Media>) {
     }
     let (bodies, section_headers, section_footers) = read.header_footers(headers.0);
     document.settings.even_and_odd_headers = facing_pages(&doc.fib, &doc.table);
+    document.settings.no_leading = no_leading(&doc.fib, &doc.table);
     document.headers = bodies;
     document.section.headers = section_headers;
     document.section.footers = section_footers;
@@ -118,6 +124,30 @@ fn facing_pages(fib: &crate::Fib, table: &[u8]) -> bool {
         .is_some_and(|byte| byte & 0x01 != 0)
 }
 
+/// `Copts80.fNoLeading` — whether the document is laid out without the gap a
+/// face asks for between its lines.
+///
+/// The `Copts` that holds it begins at offset 84 of the `Dop`, and its first
+/// two bytes are the older `Copts60`; the flags added in Word 97 follow, and
+/// this is the fourth of them. Measured rather than counted off the spec's
+/// bit list: the same document saved by Word with the option on and off
+/// differs in this one bit, and Word then lays eight-point Arial on an 8.94pt
+/// line instead of a 9.20pt one.
+fn no_leading(fib: &crate::Fib, table: &[u8]) -> bool {
+    fib.slice(table, crate::fib::field::DOP)
+        .is_some_and(stated_without_leading)
+}
+
+/// Where `fNoLeading` sits in a `Dop`, apart from the reading of it so the
+/// offset can be stated in a test rather than only in a comment.
+fn stated_without_leading(dop: &[u8]) -> bool {
+    /// The fourth byte of the `Copts80` that begins at offset 84.
+    const AT: usize = 86;
+    /// `fNoLeading`, the fourth flag of the ones Word 97 added.
+    const BIT: u8 = 0x08;
+    dop.get(AT).is_some_and(|byte| byte & BIT != 0)
+}
+
 /// The six story kinds a section's header document holds, in the order
 /// [`Plcfhdd`](https://learn.microsoft.com/en-us/openspecs/office_file_formats/ms-doc/8f336b7e-66cb-4346-9fd4-88ede9a4a9db)
 /// states them, following the six fixed footnote/endnote separator stories.
@@ -147,8 +177,10 @@ struct Reader<'a> {
     characters: Vec<fkp::Exception>,
     paragraphs: Vec<fkp::Exception>,
     /// The file numbers its styles its own way; this maps its numbering onto
-    /// the model'''s.
+    /// the model's.
     by_istd: Vec<Option<wp_model::style::StyleId>>,
+    /// The faces, by the index a run names one with.
+    fonts: Vec<std::sync::Arc<str>>,
     /// Every shape and every shared picture in the document.
     art: art::Drawings,
     /// Where each floating shape is anchored, by character position.
@@ -476,7 +508,7 @@ impl Reader<'_> {
 
             let mut props = wp_model::prop::RunProps::default();
             if let Some(exception) = exception {
-                sprm::apply_run(&mut props, &exception.grpprl);
+                sprm::apply_run(&mut props, &exception.grpprl, &self.fonts);
                 if let Some(index) = sprm::run_style(&exception.grpprl) {
                     props.style = self.style_of(index);
                 }
@@ -800,12 +832,25 @@ impl Building {
                 ..Default::default()
             };
         }
-        // The first boundary is where the *gap* starts, half a gap to the left
-        // of where the first cell's text does, so a table flush with the margin
-        // states -108 and not zero.
+        // **The boundaries are not where Word draws them.** A `.doc` states
+        // them half a gap to the left of the edge it rules, which is why a
+        // table flush with the margin says -108 and not zero, and Word puts
+        // every one of them back before it draws. `w:tblInd` then measures to
+        // the text *inside* the first cell rather than to its edge — see
+        // `resolve_table_indent` — so the padding is added a second time, to
+        // the same edge, for a different reason.
         if let Some(left) = boundaries.first() {
             let half = self.gap_half.unwrap_or(Twips(0)).0;
-            table.props.indent = Some(Width::Fixed(Twips(left + half)));
+            let padding = table
+                .props
+                .cell_margins
+                .start
+                .and_then(|width| match width {
+                    Width::Fixed(twips) => Some(twips.0),
+                    _ => None,
+                })
+                .unwrap_or(0);
+            table.props.indent = Some(Width::Fixed(Twips(left + half + padding)));
         }
         table.rows = std::mem::take(&mut self.rows);
         table
@@ -867,6 +912,25 @@ mod tests {
             cell_end,
             row_props: None,
         }
+    }
+
+    #[test]
+    fn the_no_leading_flag_is_read_from_the_byte_word_writes_it_in() {
+        // Measured: the same document saved by Word with "don't add space
+        // between lines" on and off differs in this one bit, and with it set
+        // Word lays eight-point Arial on an 8.94pt line instead of a 9.20pt
+        // one — a quarter of a point a line, which is a page of difference
+        // down a document of this size.
+        let mut dop = vec![0u8; 694];
+        assert!(!stated_without_leading(&dop));
+        dop[86] = 0x10;
+        assert!(
+            !stated_without_leading(&dop),
+            "a neighbouring flag is not it"
+        );
+        dop[86] = 0x18;
+        assert!(stated_without_leading(&dop));
+        assert!(!stated_without_leading(&[]), "a short DOP is not a panic");
     }
 
     #[test]

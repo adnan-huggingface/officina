@@ -122,7 +122,11 @@ fn operand_length(opcode: u16, rest: &[u8]) -> Option<usize> {
 }
 
 /// Applies a character `grpprl` to run properties.
-pub fn apply_run(props: &mut RunProps, data: &[u8]) {
+///
+/// `fonts` is the document's font table, because a run names its face by index
+/// into that table and by nothing else; an empty table leaves every run saying
+/// nothing about its face, which is what the layout falls back from.
+pub fn apply_run(props: &mut RunProps, data: &[u8], fonts: &[std::sync::Arc<str>]) {
     for sprm in walk(data) {
         match sprm.opcode {
             // The toggles, in the order the format lists them.
@@ -144,9 +148,17 @@ pub fn apply_run(props: &mut RunProps, data: &[u8]) {
             }
             0x2A42 => props.color = sprm.u8().and_then(ico),
             0x2A0C => props.highlight = sprm.u8().and_then(highlight),
-            // A font is an index into the font table; the name is resolved by
-            // the caller, which is the only thing that has the table.
-            0x4A4F..=0x4A51 => {}
+            // The three faces a run can name, one per script. The first is the
+            // one Latin text is set in, and Word writes it for the other two as
+            // well whenever the document has never been anything but Latin.
+            0x4A4F => {
+                if let Some(name) = face(sprm.u16(), fonts) {
+                    props.fonts.ascii = Some(name.clone());
+                    props.fonts.high_ansi = Some(name);
+                }
+            }
+            0x4A50 => props.fonts.east_asian = face(sprm.u16(), fonts),
+            0x4A51 => props.fonts.complex = face(sprm.u16(), fonts),
             _ => {}
         }
     }
@@ -160,19 +172,22 @@ fn toggle(props: &mut RunProps, which: Toggle, value: Option<bool>) {
     }
 }
 
+/// The name an `ftc` stands for, or nothing when the table does not reach.
+///
+/// A font the table does not name is left unstated rather than guessed at: the
+/// style beneath has a better answer than any face picked here would be.
+fn face(index: Option<u16>, fonts: &[std::sync::Arc<str>]) -> Option<std::sync::Arc<str>> {
+    fonts
+        .get(index? as usize)
+        .filter(|name| !name.is_empty())
+        .cloned()
+}
+
 /// The style index a character `grpprl` names, if it names one.
 pub fn run_style(data: &[u8]) -> Option<u16> {
     walk(data)
         .into_iter()
         .find(|sprm| sprm.opcode == 0x4A30)
-        .and_then(|sprm| sprm.u16())
-}
-
-/// The font index a character `grpprl` names.
-pub fn run_font(data: &[u8]) -> Option<u16> {
-    walk(data)
-        .into_iter()
-        .find(|sprm| matches!(sprm.opcode, 0x4A4F..=0x4A51))
         .and_then(|sprm| sprm.u16())
 }
 
@@ -342,11 +357,25 @@ fn tab_stops(op: &[u8], has_close: bool) -> Vec<TabStop> {
 }
 
 /// Decodes a `Brc80`/`Brc80MayBeNil`: 4 bytes shared by paragraph, table and
-/// cell borders alike. All bits set means "no border" by convention.
+/// cell borders alike.
+///
+/// **Saying nothing and saying "none" are different answers.** A cell whose
+/// `TC80` is all zeroes on a side has not spoken, and the table's own rule —
+/// `sprmTTableBorders80`, which is where an ordinary grid comes from — runs
+/// there. All bits set is `Brc80MayBeNil`'s way of saying the cell *has*
+/// spoken and wants no rule, which is what stops the line under a letterhead's
+/// title from being drawn across the middle of it. Answering `None` to both
+/// leaves the table's rule showing through a border the file struck out.
 fn brc80(bytes: &[u8]) -> Option<Border> {
     let bytes: [u8; 4] = bytes.get(..4)?.try_into().ok()?;
     if bytes == [0xFF, 0xFF, 0xFF, 0xFF] {
-        return None;
+        return Some(Border {
+            style: BorderStyle::None,
+            size: None,
+            space: None,
+            color: None,
+            shadow: false,
+        });
     }
     let width = bytes[0];
     let style = brc_type(bytes[1]);
@@ -638,10 +667,14 @@ fn underline(value: u8) -> UnderlineKind {
 ///
 /// There is no palette to look them up in: the numbers *are* the colours, and
 /// they are the same sixteen every version of Word has had.
+///
+/// **Automatic is a colour and not a silence.** A run that says `auto` has
+/// overridden whatever its style asked for; answering "nothing stated" instead
+/// leaves a table of contents in the blue its hyperlink style wanted and Word
+/// does not draw.
 fn ico(index: u8) -> Option<wp_model::Color> {
     let rgb = match index {
-        // 0 is `auto`, which is not a colour but an instruction.
-        0 => return None,
+        0 => return Some(wp_model::Color::Auto),
         1 => [0x00, 0x00, 0x00],
         2 => [0x00, 0x00, 0xFF],
         3 => [0x00, 0xFF, 0xFF],
@@ -696,9 +729,9 @@ mod tests {
     fn a_toggle_of_128_means_whatever_the_style_says() {
         // Read as a boolean it means "off", and every styled run comes out wrong.
         let mut props = RunProps::default();
-        apply_run(&mut props, &[0x35, 0x08, 128]);
+        apply_run(&mut props, &[0x35, 0x08, 128], &[]);
         assert_eq!(props.toggles.get(Toggle::Bold), None);
-        apply_run(&mut props, &[0x35, 0x08, 1]);
+        apply_run(&mut props, &[0x35, 0x08, 1], &[]);
         assert_eq!(props.toggles.get(Toggle::Bold), Some(true));
     }
 
@@ -707,7 +740,7 @@ mod tests {
         // Every `.doc` this project has looked at spells direct bold as 129,
         // not 1. A reader that only understands 1 shows no formatting at all.
         let mut props = RunProps::default();
-        apply_run(&mut props, &[0x35, 0x08, 129]);
+        apply_run(&mut props, &[0x35, 0x08, 129], &[]);
         assert_eq!(props.toggles.get(Toggle::Bold), Some(true));
     }
 
@@ -734,11 +767,15 @@ mod tests {
     }
 
     #[test]
-    fn colour_index_zero_is_an_instruction_rather_than_a_colour() {
+    fn colour_index_zero_is_automatic_rather_than_unstated() {
         let mut props = RunProps::default();
-        apply_run(&mut props, &[0x42, 0x2A, 0x00]);
-        assert_eq!(props.color, None, "auto is not a colour");
-        apply_run(&mut props, &[0x42, 0x2A, 0x06]);
+        apply_run(&mut props, &[0x42, 0x2A, 0x00], &[]);
+        assert_eq!(
+            props.color,
+            Some(wp_model::Color::Auto),
+            "a run that says automatic has overridden its style, not kept quiet"
+        );
+        apply_run(&mut props, &[0x42, 0x2A, 0x06], &[]);
         assert_eq!(props.color, Some(wp_model::Color::Rgb([0xFF, 0x00, 0x00])));
     }
 
@@ -794,13 +831,25 @@ mod tests {
     }
 
     #[test]
-    fn brc80_all_bits_set_means_no_border() {
-        assert_eq!(brc80(&[0xFF, 0xFF, 0xFF, 0xFF]), None);
+    fn brc80_all_bits_set_is_a_border_that_says_it_is_not_there() {
+        // Not `None`: the cell has struck the rule out, and answering "nothing
+        // stated" lets the table's own rule run where the file said it must
+        // not.
+        assert_eq!(
+            brc80(&[0xFF, 0xFF, 0xFF, 0xFF]),
+            Some(Border {
+                style: BorderStyle::None,
+                size: None,
+                space: None,
+                color: None,
+                shadow: false,
+            })
+        );
     }
 
     #[test]
-    fn brc80_type_zero_means_no_border_too() {
-        assert_eq!(brc80(&[8, 0x00, 0x06, 0x00]), None);
+    fn brc80_all_zeroes_is_a_cell_that_has_not_spoken() {
+        assert_eq!(brc80(&[0, 0x00, 0x00, 0x00]), None);
     }
 
     #[test]

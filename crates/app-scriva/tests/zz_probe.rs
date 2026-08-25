@@ -12,7 +12,8 @@ fn probe() {
     use std::fmt::Write as _;
     use ui_kit::egui;
 
-    let Ok(source) = std::env::var("PROBE_DOCX") else {
+    let legacy = std::env::var("PROBE_DOC").ok();
+    let Some(source) = legacy.clone().or_else(|| std::env::var("PROBE_DOCX").ok()) else {
         return;
     };
 
@@ -23,12 +24,31 @@ fn probe() {
     let mut shaper = scriva::shaper::Egui::new(&ctx);
 
     let path = std::path::PathBuf::from(&source);
-    let (document, package) = wp_docx::open(&path).expect("the document opens");
-    let parts = wp_docx::DocumentParts::locate_in(&package).expect("its parts");
+    let mut loose = std::collections::HashMap::new();
+    let (document, package) = match &legacy {
+        Some(_) => {
+            let (document, media) = wp_doc::open(&path).expect("the document opens");
+            for picture in media {
+                loose.insert(picture.rel, picture.data);
+            }
+            (document, None)
+        }
+        None => {
+            let (document, package) = wp_docx::open(&path).expect("the document opens");
+            (document, Some(package))
+        }
+    };
+    let parts = package
+        .as_ref()
+        .map(|package| wp_docx::DocumentParts::locate_in(package).expect("its parts"));
 
     // The same order the window uses: the document's own faces are registered
     // before anything is measured, and the shaper is built after them.
-    let embedded: Vec<(String, bool, bool, Vec<u8>)> = wp_docx::embedded(&package, &parts)
+    let embedded: Vec<(String, bool, bool, Vec<u8>)> = package
+        .as_ref()
+        .zip(parts.as_ref())
+        .map(|(package, parts)| wp_docx::embedded(package, parts))
+        .unwrap_or_default()
         .into_iter()
         .map(|face| (face.family, face.bold, face.italic, face.bytes))
         .collect();
@@ -149,13 +169,9 @@ fn probe() {
     }
 
     if let Ok(target) = std::env::var("PROBE_PDF") {
-        let images = scriva::publish::rasters(
-            Some(&package),
-            Some(&parts),
-            &Default::default(),
-            view.pages(),
-        );
-        let plots = scriva::publish::plots(Some(&package), Some(&parts), view.pages());
+        let images =
+            scriva::publish::rasters(package.as_ref(), parts.as_ref(), &loose, view.pages());
+        let plots = scriva::publish::plots(package.as_ref(), parts.as_ref(), view.pages());
         let mut faces = scriva::publish::SystemFaces::new();
         let mut charts = wp_print::ops::Charts {
             plots: &plots,

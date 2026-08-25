@@ -4,13 +4,17 @@
 //! `istd`, an index into this table. Without it a document says "style 7" and
 //! nothing more, and a heading is indistinguishable from body text.
 //!
-//! **Only the names and the shape of the chain are read here.** A style's own
-//! formatting is a `grpprl` in a variant record whose layout depends on a count
-//! of "upxes" that differs between paragraph, character and table styles, and
-//! getting it wrong writes properties onto the wrong style. So the definitions
-//! are left out and said to be left out: a `.doc` opened here knows *which*
-//! style each paragraph is in, and takes its formatting from the direct
-//! properties the file states alongside.
+//! **A style's own formatting is a variant record.** What follows the name is a
+//! `grLPUpxSw` whose members depend on which kind of style it is: a paragraph
+//! style holds its paragraph properties and then its character ones, a
+//! character style holds only the second, and a table or numbering style holds
+//! a shape this does not read. Each member is a counted `grpprl` padded to an
+//! even length, and a reader that forgets the padding walks into the middle of
+//! the next one and writes a face onto a style that never asked for it.
+//!
+//! **A style stands on the one it is based on.** `istdBase` is another index
+//! into this same table, forward as often as back, so the chain can only be
+//! joined up once every entry has been read.
 
 use crate::fib::{u16 as read_u16, Fib};
 use crate::{fkp, sprm};
@@ -20,9 +24,16 @@ use wp_model::style::{Style, StyleKind, StyleTable};
 ///
 /// The returned vector maps `istd` to the interned id, because the two numbering
 /// schemes are not the same and confusing them silently mis-styles a document.
-pub fn read(fib: &Fib, table: &[u8]) -> (StyleTable, Vec<Option<wp_model::style::StyleId>>) {
+pub fn read(
+    fib: &Fib,
+    table: &[u8],
+    fonts: &[std::sync::Arc<str>],
+) -> (StyleTable, Vec<Option<wp_model::style::StyleId>>) {
     let mut styles = StyleTable::new();
     let mut by_istd = Vec::new();
+    // Where each style says it stands, kept until every index has a style to
+    // point at. `NIL` means the style stands on nothing.
+    let mut bases: Vec<u16> = Vec::new();
     let Some(stsh) = fib.slice(table, crate::fib::field::STSHF) else {
         return (styles, by_istd);
     };
@@ -44,6 +55,7 @@ pub fn read(fib: &Fib, table: &[u8]) -> (StyleTable, Vec<Option<wp_model::style:
         // style there, which is why this pushes `None` rather than skipping.
         if length == 0 || entry.len() < base + 2 {
             by_istd.push(None);
+            bases.push(NIL);
             continue;
         }
         // Bits 4..16 of the second word are the style group: paragraph,
@@ -57,21 +69,54 @@ pub fn read(fib: &Fib, table: &[u8]) -> (StyleTable, Vec<Option<wp_model::style:
         let name = name_at(entry, base);
         if name.is_empty() {
             by_istd.push(None);
+            bases.push(NIL);
             continue;
         }
         let id = styles.intern(&name, kind);
         let mut style = Style::new(name.as_str(), kind);
         style.name = Some(name.into());
-        if kind == StyleKind::Paragraph {
-            if let Some(grpprl) = para_upx(entry, base) {
-                sprm::apply_para(&mut style.para, grpprl);
+        // The paragraph half comes first for a paragraph style and is absent
+        // for a character one; the character half follows either way.
+        let (para, run) = match kind {
+            StyleKind::Paragraph => {
+                let para = upx(entry, base, 0);
+                (para, upx(entry, base, 1))
             }
+            StyleKind::Character => (None, upx(entry, base, 0)),
+            _ => (None, None),
+        };
+        if let Some(grpprl) = para {
+            // A `UpxPapx` begins with the style's own index, which is not a
+            // property; `split_istd` is the same reader a direct exception uses.
+            let (_, grpprl) = fkp::split_istd(grpprl);
+            sprm::apply_para(&mut style.para, grpprl);
+        }
+        if let Some(grpprl) = run {
+            sprm::apply_run(&mut style.run, grpprl, fonts);
         }
         styles.insert(style);
         by_istd.push(Some(id));
+        bases.push(read_u16(entry, 2) >> 4);
+    }
+
+    // Now that every index has a style, the chain can be joined up. A style
+    // based on itself, or on an index with no style, stands on nothing.
+    for (istd, base) in bases.iter().enumerate() {
+        let (Some(Some(id)), Some(Some(parent))) = (by_istd.get(istd), by_istd.get(*base as usize))
+        else {
+            continue;
+        };
+        if id != parent {
+            if let Some(style) = styles.get_mut(*id) {
+                style.based_on = Some(*parent);
+            }
+        }
     }
     (styles, by_istd)
 }
+
+/// `istdNil` — what a style that stands on nothing says its base is.
+const NIL: u16 = 0x0FFF;
 
 /// An `Xstz`: a count of characters, then that many UTF-16 units, then a
 /// terminating zero that is not counted.
@@ -88,24 +133,26 @@ fn name_at(entry: &[u8], at: usize) -> String {
     String::from_utf16_lossy(&units)
 }
 
-/// A paragraph style's own formatting: the `grpprlPapx` inside the first
-/// `LPUpxPapx` of its `grLPUpxSw`, the tail of the `STD` entry that follows
-/// the name. `StkParaGRLPUPX` guarantees `lpUpxPapx` is always the first
-/// member for a paragraph style, regardless of `cupx` (2, or 3 if the style
-/// is revision-marked) — so no branching on `cupx` is needed to find it.
+/// The `nth` counted `grpprl` of a style's `grLPUpxSw`, the tail of the `STD`
+/// entry that follows the name.
 ///
-/// `name_at` (used to build the style's name) deliberately does not count
-/// the name's own terminating zero, so `grLPUpxSw` starts two bytes further
-/// on than the name's counted length alone would suggest.
-fn para_upx(entry: &[u8], base: usize) -> Option<&[u8]> {
+/// **Each member is padded to an even length**, and the padding is not counted
+/// by the length in front of it. Stepping by the stated length alone lands one
+/// byte early on the next member, whose count is then read out of the middle of
+/// a property.
+///
+/// `name_at` (used to build the style's name) deliberately does not count the
+/// name's own terminating zero, so `grLPUpxSw` starts two bytes further on than
+/// the name's counted length alone would suggest.
+fn upx(entry: &[u8], base: usize, nth: usize) -> Option<&[u8]> {
     let count = read_u16(entry, base) as usize;
-    let start = base + 2 + count * 2 + 2;
-    let cb_upx = read_u16(entry, start) as usize;
-    // UpxPapx is `istd`(2) + `grpprlPapx` — the same shape `split_istd`
-    // already parses for a direct-formatting PAPX exception.
-    let papx = entry.get(start + 2..start + 2 + cb_upx)?;
-    let (_, grpprl) = fkp::split_istd(papx);
-    Some(grpprl)
+    let mut start = base + 2 + count * 2 + 2;
+    for _ in 0..nth {
+        let length = read_u16(entry, start) as usize;
+        start = start + 2 + length + length % 2;
+    }
+    let length = read_u16(entry, start) as usize;
+    entry.get(start + 2..start + 2 + length)
 }
 
 #[cfg(test)]
@@ -142,7 +189,8 @@ mod tests {
         entry.extend_from_slice(&(upx_papx.len() as u16).to_le_bytes());
         entry.extend_from_slice(&upx_papx);
 
-        let grpprl = para_upx(&entry, 10).expect("a papx follows the name");
+        let papx = upx(&entry, 10, 0).expect("a papx follows the name");
+        let (_, grpprl) = fkp::split_istd(papx);
         let mut props = wp_model::prop::ParaProps::default();
         sprm::apply_para(&mut props, grpprl);
         assert_eq!(
@@ -153,6 +201,32 @@ mod tests {
                 leader: wp_model::prop::TabLeader::None,
             }])
         );
+    }
+
+    #[test]
+    fn the_character_half_is_found_past_the_padding_the_first_half_does_not_count() {
+        // An odd-length UpxPapx is followed by a byte of padding that its own
+        // count does not include. Stepping by the count alone reads the last
+        // byte of the papx as the length of the chpx.
+        let mut entry = vec![0u8; 10];
+        entry.extend_from_slice(&1u16.to_le_bytes());
+        entry.extend_from_slice(&0x41u16.to_le_bytes()); // "A"
+        entry.extend_from_slice(&0u16.to_le_bytes()); // uncounted terminator
+
+        // istd(2) + sprmPJc (0x2403), which makes the whole thing odd.
+        let papx = [0x00u8, 0x00, 0x03, 0x24, 0x02];
+        entry.extend_from_slice(&(papx.len() as u16).to_le_bytes());
+        entry.extend_from_slice(&papx);
+        entry.push(0); // the padding
+
+        // sprmCHps (0x4A43): sixteen half-points.
+        let chpx = [0x43u8, 0x4A, 0x10, 0x00];
+        entry.extend_from_slice(&(chpx.len() as u16).to_le_bytes());
+        entry.extend_from_slice(&chpx);
+
+        let mut props = wp_model::prop::RunProps::default();
+        sprm::apply_run(&mut props, upx(&entry, 10, 1).expect("a chpx"), &[]);
+        assert_eq!(props.size, Some(wp_model::units::HalfPoint(16)));
     }
 
     #[test]

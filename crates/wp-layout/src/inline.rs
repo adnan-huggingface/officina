@@ -203,6 +203,10 @@ pub struct Context<'a> {
     pub styles: &'a wp_model::style::StyleTable,
     /// `<w:defaultTabStop>` — where tabs land when the paragraph defines none.
     pub default_tab: Twips,
+    /// `<w:noLeading/>` — the document is laid out without the gap its faces
+    /// ask for between lines. A document-wide setting rather than a paragraph
+    /// one, and it changes the height of every line in the document.
+    pub no_leading: bool,
     /// The face to use when neither the run nor the theme names one.
     pub fallback_font: &'a str,
     /// Whether the machine truly has a face of this name.
@@ -238,6 +242,7 @@ impl Default for Context<'_> {
             table_part: None,
             styles: Box::leak(Box::new(wp_model::style::StyleTable::default())),
             default_tab: Twips(720),
+            no_leading: false,
             fallback_font: "Calibri",
             has_face: |_| false,
             show_revisions: true,
@@ -1609,11 +1614,27 @@ fn finish(
         // Inline pictures apart from raised type: a spacing multiple scales
         // type but never a picture, so the two must be told apart below.
         let mut object: f64 = 0.0;
+        // Whether anything on the line decided its height. A line of nothing
+        // but tabs has not been measured by the loop below and falls back to
+        // the paragraph mark, the same as a line with nothing on it at all.
+        let mut measured = false;
         for fragment in &line.fragments {
+            // **A tab does not make a line taller.** Word measures a line by
+            // the type on it, and a tab is the gap between type: a table of
+            // contents whose tabs carry the document's default face — which is
+            // what a `.doc` written in one Word and opened in another leaves
+            // them in — is laid at the size of its words and not at the size of
+            // the spaces between them. Measured: Word draws an eight-point
+            // entry on an eight-point line with a twenty-two point tab in the
+            // middle of it.
+            if matches!(fragment.content, Content::Tab { .. }) {
+                continue;
+            }
+            measured = true;
             let metrics = fragment_metrics(fragment, shaper);
             ascent = ascent.max(metrics.ascent + fragment.style.raise);
             descent = descent.max(metrics.descent - fragment.style.raise);
-            gap = gap.max(metrics.line_gap);
+            gap = gap.max(leading(ctx, metrics.line_gap));
             // A run's border grows the line above and below by the same
             // amount it takes beside the type. Kept apart from the type's own
             // metrics because the line *pitch* is a property of the face and
@@ -1628,8 +1649,11 @@ fn finish(
                 descent = descent.max(shaper.metrics(&fragment.style.font).descent);
             } else {
                 let pitch = shaper.pitch(&fragment.style.font);
-                base = base.max(pitch.base);
-                ideal = ideal.max(pitch.ideal);
+                // The pitch a face states includes its line gap, so a document
+                // laid out without leading is short of it by exactly that.
+                let lead = metrics.line_gap - leading(ctx, metrics.line_gap);
+                base = base.max(pitch.base - lead);
+                ideal = ideal.max(pitch.ideal - lead);
                 if fragment.style.raise != 0.0 {
                     boost = boost.max(
                         metrics.ascent + fragment.style.raise + metrics.descent
@@ -1638,13 +1662,13 @@ fn finish(
                 }
             }
         }
-        if line.fragments.is_empty() {
+        if !measured {
             ascent = mark.ascent;
             descent = mark.descent;
-            gap = mark.line_gap;
+            gap = leading(ctx, mark.line_gap);
             let pitch = shaper.pitch(&mark_face);
-            base = pitch.base;
-            ideal = pitch.ideal;
+            base = pitch.base - (mark.line_gap - gap);
+            ideal = pitch.ideal - (mark.line_gap - gap);
         }
         // The gap counts toward the line's natural height, but not toward the
         // room above the baseline that the *type* occupies.
@@ -1722,6 +1746,20 @@ fn finish(
     }
 }
 
+/// The gap a face asks for between its lines, as this document lays them out.
+///
+/// A face states its leading as a gap between one line's descender and the
+/// next line's ascender, and Word ordinarily honours it. `<w:noLeading/>` —
+/// the compatibility option a Word 97 document converted from an older word
+/// processor carries — tells it not to, and then every line in the document is
+/// a fraction of its size shorter.
+fn leading(ctx: &Context<'_>, gap: f64) -> f64 {
+    match ctx.no_leading {
+        true => 0.0,
+        false => gap,
+    }
+}
+
 fn fragment_metrics(fragment: &Fragment, shaper: &mut dyn Shaper) -> Metrics {
     match &fragment.content {
         // An inline object's height is all above the baseline, which is what
@@ -1777,6 +1815,7 @@ mod tests {
             notes: Box::leak(Box::new(crate::notes::NoteMarks::default())),
             note_mark: None,
             default_tab: Twips(720),
+            no_leading: false,
             fallback_font: "test",
             has_face: |_| false,
             show_revisions: true,
@@ -1800,6 +1839,63 @@ mod tests {
 
     fn lay(text: &str, width: f64) -> LaidParagraph {
         lay_with(Paragraph::of(text), layers(), width)
+    }
+
+    /// The fixed shaper with a face that asks for leading: a tenth of its size
+    /// between one line's descender and the next line's ascender.
+    #[derive(Default)]
+    struct Leaded;
+
+    impl Shaper for Leaded {
+        fn metrics(&mut self, font: &FontRequest) -> Metrics {
+            Metrics {
+                ascent: font.size * 0.75,
+                descent: font.size * 0.25,
+                line_gap: font.size * 0.125,
+            }
+        }
+
+        fn advances(
+            &mut self,
+            text: &str,
+            font: &FontRequest,
+            into: &mut Vec<crate::shape::Advance>,
+        ) {
+            crate::shape::Fixed.advances(text, font, into)
+        }
+    }
+
+    fn leaded_line(no_leading: bool) -> Line {
+        let theme = theme();
+        let mut ctx = ctx(&theme);
+        ctx.no_leading = no_leading;
+        let mut shaper = Leaded;
+        let laid = layout(
+            &Paragraph::of("one line"),
+            0,
+            &layers(),
+            None,
+            &ctx,
+            400.0,
+            None,
+            &mut shaper,
+        );
+        laid.lines.into_iter().next().expect("one line")
+    }
+
+    #[test]
+    fn a_document_without_leading_drops_the_gap_its_faces_ask_for() {
+        // The compatibility option a Word 97 document carries: ten-point type
+        // whose face asks for a point and a quarter of leading is laid on a
+        // 10pt line rather than an 11.25pt one, and its baseline sits at the
+        // ascent instead of below the gap. A quarter of a point a line is half
+        // an inch down a page of fifty.
+        let with = leaded_line(false);
+        let without = leaded_line(true);
+        assert_eq!(with.height, 11.25);
+        assert_eq!(with.baseline, 8.75);
+        assert_eq!(without.height, 10.0);
+        assert_eq!(without.baseline, 7.5);
     }
 
     fn lay_with(paragraph: Paragraph, layers: Layers, width: f64) -> LaidParagraph {

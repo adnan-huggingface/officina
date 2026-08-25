@@ -78,12 +78,12 @@ pub fn grip_at(rect: (f64, f64, f64, f64), x: f64, y: f64, reach: f64) -> Option
 /// the drawing's own frame of reference, so the new position is resolved back
 /// through the base it is measured from. An alignment becomes an offset: once a
 /// user has put a picture somewhere by hand, "centred" is no longer true.
-pub fn moved(drawing: &mut Drawing, page: &PageBox, line_top: f64, dx: f64, dy: f64) -> bool {
+pub fn moved(drawing: &mut Drawing, page: &PageBox, origin: (f64, f64), dx: f64, dy: f64) -> bool {
     if !drawing.anchored {
         return false;
     }
-    let (x, y) = anchor_position(drawing, page, line_top);
-    let (base_x, base_y) = anchor_base(drawing, page, line_top);
+    let (x, y) = anchor_position(drawing, page, origin);
+    let (base_x, base_y) = anchor_base(drawing, page, origin);
     let position = drawing.position.get_or_insert_with(|| {
         Box::new(DrawingPosition {
             horizontal: axis(RelativeTo::Column),
@@ -285,7 +285,7 @@ mod tests {
     fn moving_a_drawing_states_the_new_place_in_the_files_own_terms() {
         let mut model = drawing(true);
         // No position at all: it sits at the column, at the line.
-        assert!(moved(&mut model, &page(), 300.0, 20.0, -10.0));
+        assert!(moved(&mut model, &page(), (72.0, 300.0), 20.0, -10.0));
         let position = model.position.as_ref().expect("a position now");
         assert_eq!(position.horizontal.offset, Some(Emu::from_points(20.0)));
         assert_eq!(position.vertical.offset, Some(Emu::from_points(-10.0)));
@@ -296,7 +296,7 @@ mod tests {
         // "Centred" was true until the user put it somewhere by hand.
         let mut model = drawing(true);
         align(&mut model, Some(Alignment::Center), None);
-        assert!(moved(&mut model, &page(), 300.0, 10.0, 0.0));
+        assert!(moved(&mut model, &page(), (72.0, 300.0), 10.0, 0.0));
         let position = model.position.as_ref().expect("a position");
         assert_eq!(position.horizontal.align, None);
         // Centred on a 72..540 column put it at 256; ten points on is 266, and
@@ -309,7 +309,7 @@ mod tests {
         // It sits in the text like a letter. Word converts it to a floating
         // drawing instead, which is a different element.
         let mut model = drawing(false);
-        assert!(!moved(&mut model, &page(), 300.0, 20.0, 20.0));
+        assert!(!moved(&mut model, &page(), (72.0, 300.0), 20.0, 20.0));
         assert!(model.position.is_none());
     }
 

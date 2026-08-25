@@ -289,7 +289,9 @@ pub fn flatten(page: &Page) -> Vec<Op> {
                 rel, anchor, words, ..
             } => {
                 let (x, y) = match anchor {
-                    Some(drawing) => anchor_position(drawing, &page.geometry, placement.y),
+                    Some(drawing) => {
+                        anchor_position(drawing, &page.geometry, (placement.x, placement.y))
+                    }
                     None => (placement.x, placement.y),
                 };
                 let width = placement.width;

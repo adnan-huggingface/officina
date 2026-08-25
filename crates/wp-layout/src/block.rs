@@ -2540,7 +2540,7 @@ impl Wraps {
                 if !stands_aside(drawing) {
                     continue;
                 }
-                let (x, y) = anchor_position(drawing, &page.geometry, placement.y);
+                let (x, y) = anchor_position(drawing, &page.geometry, (placement.x, placement.y));
                 let (above, left, below, right) = drawing.distance;
                 let width = drawing.extent.0.points();
                 let top = y - above.points();
@@ -2626,11 +2626,24 @@ fn paragraph_tops(page: &Page) -> Vec<(usize, f64)> {
     tops
 }
 
-pub fn anchor_position(drawing: &wp_model::Drawing, page: &PageBox, line_top: f64) -> (f64, f64) {
+/// Where an anchored drawing sits on the page.
+///
+/// `origin` is where the paragraph the drawing hangs off begins: the left of
+/// the column it is set in, and the top of its first line. **Both are needed
+/// because "the column" is not always the page's text column** — a shape
+/// anchored inside a table cell measures from that cell's text, which is how
+/// Word draws the page frame of a document whose letterhead is a table. The
+/// page's own margins answer for everything measured against the page.
+pub fn anchor_position(
+    drawing: &wp_model::Drawing,
+    page: &PageBox,
+    origin: (f64, f64),
+) -> (f64, f64) {
     use wp_model::doc::{Alignment, RelativeTo};
 
+    let (column, line_top) = origin;
     let Some(position) = &drawing.position else {
-        return (page.start, line_top);
+        return (column, line_top);
     };
     let width = drawing.extent.0.points();
     let height = drawing.extent.1.points();
@@ -2651,6 +2664,9 @@ pub fn anchor_position(drawing: &wp_model::Drawing, page: &PageBox, line_top: f6
             let base = match position.horizontal.relative_to {
                 RelativeTo::Page => 0.0,
                 RelativeTo::RightMargin => page.width - page.end,
+                // The column the anchoring paragraph is set in, which is the
+                // page's text column everywhere but inside a table.
+                RelativeTo::Column => column,
                 _ => page.start,
             };
             base + offset.points()
@@ -2702,15 +2718,17 @@ pub fn anchor_position(drawing: &wp_model::Drawing, page: &PageBox, line_top: f6
 /// Subtracting this from a position gives the offset that would put a drawing
 /// there, which is what dragging one needs: the user moves it on the page, and
 /// the file has to say the same thing in the drawing's own frame of reference.
-pub fn anchor_base(drawing: &wp_model::Drawing, page: &PageBox, line_top: f64) -> (f64, f64) {
+pub fn anchor_base(drawing: &wp_model::Drawing, page: &PageBox, origin: (f64, f64)) -> (f64, f64) {
     use wp_model::doc::RelativeTo;
 
+    let (column, line_top) = origin;
     let Some(position) = &drawing.position else {
-        return (page.start, line_top);
+        return (column, line_top);
     };
     let x = match position.horizontal.relative_to {
         RelativeTo::Page => 0.0,
         RelativeTo::RightMargin => page.width - page.end,
+        RelativeTo::Column => column,
         _ => page.start,
     };
     let y = match position.vertical.relative_to {
@@ -2816,6 +2834,7 @@ mod tests {
             note_mark: None,
             table_part: None,
             default_tab: Twips(720),
+            no_leading: false,
             fallback_font: "test",
             has_face: |_| false,
             show_revisions: true,
@@ -4184,6 +4203,7 @@ mod tests {
                 note_mark: None,
                 table_part: None,
                 default_tab: document.settings.default_tab_stop,
+                no_leading: document.settings.no_leading,
                 fallback_font: "Calibri",
                 has_face: |_| false,
                 show_revisions: true,
@@ -4494,7 +4514,7 @@ mod tests {
             text: None,
             outline: None,
         };
-        let (_, y) = anchor_position(&drawing, &geometry, 400.0);
+        let (_, y) = anchor_position(&drawing, &geometry, (72.0, 400.0));
         assert_eq!(y, 400.0);
     }
 
@@ -4622,7 +4642,10 @@ mod tests {
         };
         // The column is 72..540, so its middle is 306 and a 100pt picture
         // starts at 256; the vertical offset is from where the text is.
-        assert_eq!(anchor_position(&drawing, &geometry, 400.0), (256.0, 410.0));
+        assert_eq!(
+            anchor_position(&drawing, &geometry, (72.0, 400.0)),
+            (256.0, 410.0)
+        );
     }
 
     #[test]

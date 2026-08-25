@@ -101,6 +101,8 @@ pub mod field {
     pub const STSHF: usize = 1;
     /// The section table.
     pub const PLCFSED: usize = 6;
+    /// The font table: what every `ftc` in the file is the name of.
+    pub const STTBF_FFN: usize = 15;
     /// The header document's story boundaries.
     pub const PLCFHDD: usize = 11;
     /// Document properties: the one flag this reads is `fFacingPages`, bit 0
