@@ -873,16 +873,43 @@ fn paint_image(
     }
 }
 
-/// Every drawing on a page, and the rectangle it was drawn in.
+/// One drawing a click could pick.
+struct Pickable {
+    picked: Picked,
+    rect: (f64, f64, f64, f64),
+    /// Whether the drawing was put under the words, which decides whether a
+    /// click that lands on a letter is the letter's or its own.
+    behind_text: bool,
+}
+
+/// Every drawing on a page that a click may pick, and the rectangle it was
+/// drawn in, with whether it was drawn *under* the words.
+///
+/// **Only the body's own drawings are here.** A shape anchored in the header
+/// or the footer is drawn on every page — a watermark across the middle of it,
+/// the rectangle Word draws a page frame with around the whole of it — and a
+/// click on the words would otherwise land on that shape instead of in the
+/// text, because the shape covers the page. Word does not let one be picked
+/// from the body either: a watermark "is usually part of the header, even
+/// though it appears in the middle of the page", and reaching it means opening
+/// the header first. Scriva has no header layer to open, so those shapes are
+/// simply not selectable.
+///
+/// That is also the only honest answer here, because [`Picked`] cannot name
+/// one. It says *which paragraph*, counted through the body's own walk, and a
+/// header is flowed separately and starts its count again at nought — so the
+/// page frame of a 440-paragraph document reported itself as a drawing of body
+/// paragraph 0, and resizing it would have resized whatever picture that
+/// paragraph really holds.
 ///
 /// In painting order, so the last one that contains a point is the one on top —
 /// which is the one a click means.
-pub fn drawing_rects(view: &View, page: usize) -> Vec<(Picked, (f64, f64, f64, f64))> {
+fn pickable(view: &View, page: usize) -> Vec<Pickable> {
     let mut out = Vec::new();
     let Some(page) = view.pages.get(page) else {
         return out;
     };
-    for placement in page.everything() {
+    for placement in &page.content {
         match &placement.kind {
             Placed::Drawing {
                 anchor,
@@ -898,13 +925,14 @@ pub fn drawing_rects(view: &View, page: usize) -> Vec<(Picked, (f64, f64, f64, f
                     ),
                     None => (placement.x, placement.y),
                 };
-                out.push((
-                    Picked {
+                out.push(Pickable {
+                    picked: Picked {
                         paragraph: *paragraph,
                         nth: *nth,
                     },
-                    (x, y, placement.width, placement.height),
-                ));
+                    rect: (x, y, placement.width, placement.height),
+                    behind_text: anchor.as_ref().is_some_and(|drawing| drawing.behind_text),
+                });
             }
             Placed::Line { line, paragraph } => {
                 for fragment in &line.fragments {
@@ -919,18 +947,21 @@ pub fn drawing_rects(view: &View, page: usize) -> Vec<(Picked, (f64, f64, f64, f
                     else {
                         continue;
                     };
-                    out.push((
-                        Picked {
+                    out.push(Pickable {
+                        picked: Picked {
                             paragraph: *paragraph,
                             nth: *nth,
                         },
-                        (
+                        rect: (
                             placement.x + fragment.x,
                             placement.y + line.baseline - height,
                             fragment.width,
                             *height,
                         ),
-                    ));
+                        // A drawing in a line is never under the words: it is
+                        // one of them.
+                        behind_text: false,
+                    });
                 }
             }
             _ => {}
@@ -939,20 +970,43 @@ pub fn drawing_rects(view: &View, page: usize) -> Vec<(Picked, (f64, f64, f64, f
     out
 }
 
+/// Every drawing on a page a click may pick, and the rectangle it was drawn in.
+pub fn drawing_rects(view: &View, page: usize) -> Vec<(Picked, (f64, f64, f64, f64))> {
+    pickable(view, page)
+        .into_iter()
+        .map(|found| (found.picked, found.rect))
+        .collect()
+}
+
 /// The drawing a point is on, and the rectangle it occupies.
 ///
 /// `reach` widens the rectangle by the handles' grab zone, so the outer half
 /// of a handle is still the drawing and not the paper behind it.
+///
+/// **Words win over a drawing that was put behind them.** A shape set to sit
+/// under the text is a background, and a click on a letter drawn over it means
+/// the letter — which is Word's own rule: picking a graphic through the text
+/// covering it needs the Select Objects tool, and a plain click does not do
+/// it. The shape is still reachable everywhere it is not covered, so nothing
+/// becomes unselectable by being large.
 pub fn drawing_at(view: &View, spot: Spot, reach: f64) -> Option<(Picked, (f64, f64, f64, f64))> {
-    drawing_rects(view, spot.page)
+    let found = pickable(view, spot.page);
+    // Asked once, and only by a page that has something behind its words to
+    // ask about: this runs for every frame the pointer moves over the paper.
+    let on_a_letter =
+        found.iter().any(|found| found.behind_text) && character_over(view, spot).is_some();
+    found
         .into_iter()
         .rev()
-        .find(|(_, (x, y, w, h))| {
-            spot.x >= *x - reach
+        .find(|found| {
+            let (x, y, w, h) = found.rect;
+            !(found.behind_text && on_a_letter)
+                && spot.x >= x - reach
                 && spot.x <= x + w + reach
-                && spot.y >= *y - reach
+                && spot.y >= y - reach
                 && spot.y <= y + h + reach
         })
+        .map(|found| (found.picked, found.rect))
 }
 
 /// The rectangle a picked drawing was drawn in, wherever it is.
@@ -2061,6 +2115,115 @@ mod tests {
                 bottom: true
             })
         );
+    }
+
+    /// A shape as wide and as tall as the page, the shape a page frame and a
+    /// watermark are both drawn with.
+    fn page_sized(behind_text: bool) -> wp_model::Drawing {
+        wp_model::Drawing {
+            source: Vec::new().into(),
+            anchored: true,
+            extent: (
+                wp_model::Emu::from_points(540.0),
+                wp_model::Emu::from_points(720.0),
+            ),
+            rel: Some("rId4".into()),
+            chart: None,
+            name: None,
+            description: None,
+            wrap: wp_model::Wrap::None,
+            distance: Default::default(),
+            position: None,
+            behind_text,
+            text: None,
+            outline: None,
+        }
+    }
+
+    fn holding(drawing: wp_model::Drawing) -> Block {
+        use wp_model::doc::{Inline, Piece, Run};
+        Block::Paragraph(Paragraph {
+            content: vec![Inline::Run(Run {
+                content: vec![Piece::Drawing(Box::new(drawing))],
+                ..Run::default()
+            })],
+            ..Paragraph::new()
+        })
+    }
+
+    #[test]
+    fn a_shape_in_the_header_is_not_what_a_click_on_the_body_means() {
+        // The page frame of a real `.doc`: a rectangle anchored in the header,
+        // covering the whole text area of every page. It is drawn, and a click
+        // goes straight through it to the words underneath — as it does in
+        // Word, where reaching a header's own shapes means opening the header.
+        let ctx = context();
+        let mut shaper = Egui::new(&ctx);
+        let mut view = View::default();
+        let mut document = document(&["the body of the document"]);
+        document.section.headers.push(wp_model::HeaderRef {
+            kind: wp_model::HeaderKind::Default,
+            body: wp_model::HeaderId(0),
+            rel: None,
+        });
+        document.headers.push(wp_model::HeaderFooter {
+            id: wp_model::HeaderId(0),
+            part: None,
+            rel: None,
+            footer: false,
+            content: vec![holding(page_sized(true))],
+        });
+        view.refresh(&document, &wp_layout::FieldValues::new(), 1, &mut shaper);
+
+        let page = view.pages().first().expect("a page");
+        assert!(
+            page.header
+                .iter()
+                .any(|placement| matches!(placement.kind, Placed::Drawing { .. })),
+            "the frame is still drawn"
+        );
+        let spot = Spot {
+            page: 0,
+            x: page.geometry.width / 2.0,
+            y: page.geometry.height / 2.0,
+        };
+        assert_eq!(drawing_at(&view, spot, crate::drawings::GRIP), None);
+        assert!(caret_at(&view, spot).is_some(), "and the caret can be put");
+    }
+
+    #[test]
+    fn a_drawing_put_behind_the_words_gives_up_a_click_that_lands_on_one() {
+        let ctx = context();
+        let mut shaper = Egui::new(&ctx);
+        let mut view = View::default();
+        let mut document = document(&[]);
+        document.body = vec![
+            holding(page_sized(true)),
+            Block::Paragraph(Paragraph::of("words over the top of it")),
+        ];
+        view.refresh(&document, &wp_layout::FieldValues::new(), 1, &mut shaper);
+
+        // The line of text is inside the shape, and a click on a letter of it
+        // is a click on the letter.
+        let line = view.pages()[0]
+            .content
+            .iter()
+            .find(|placement| matches!(&placement.kind, Placed::Line { paragraph, .. } if *paragraph == 1))
+            .expect("the words were laid");
+        let on_a_letter = Spot {
+            page: 0,
+            x: line.x + 1.0,
+            y: line.y + line.height / 2.0,
+        };
+        assert_eq!(drawing_at(&view, on_a_letter, 0.0), None);
+
+        // Below the words the shape is bare, and there it is still the shape.
+        let bare = Spot {
+            page: 0,
+            x: line.x + 1.0,
+            y: line.y + line.height + 200.0,
+        };
+        assert!(drawing_at(&view, bare, 0.0).is_some());
     }
 
     #[test]

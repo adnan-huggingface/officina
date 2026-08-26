@@ -2508,6 +2508,39 @@ line *is* the picture plus the run's descent, and this document says it is the
 picture alone, so the rule that reconciles them has not been found yet and the
 measured one stands.
 
+### A click on the body is a click on the body
+
+**The document could not be typed in.** Every click anywhere on a page put the
+handles round the page frame instead of a caret in the text, and with a picture
+picked there is nothing for a keystroke to do. The frame is a rectangle five
+hundred and forty points by seven hundred and twenty anchored in the header,
+and the watermark is another shape beside it; both are painted on every page
+and the pick walked everything painted, so the frame — painted last — took
+every click on the paper.
+
+Word does not arbitrate between the two, it separates them. A watermark and a
+page frame belong to the header layer, and the body cannot select one at all:
+opening the header is the way to reach them, which is also how one is changed
+or removed. So the pick now walks the page's own content and nothing else.
+
+That is the honest answer as well as the matching one, because a header's
+shapes cannot be named here. A selection says which paragraph and which drawing
+of it, counted through the body's walk, and a header is flowed on its own with
+its count starting again — so the frame of this four-hundred-and-forty
+paragraph document called itself a drawing of paragraph zero, and a drag on its
+corner would have resized whatever picture that paragraph really holds.
+
+**And a shape put behind the words gives up a click that lands on one.** Word's
+second rule, on the same page and inside the body this time: a graphic under
+the text is reached with the Select Objects tool, not with an ordinary click,
+because the letters drawn over it are still text to edit. The shape is still
+picked everywhere it is not covered, so nothing becomes unreachable by being
+large.
+
+**What is not here.** There is no header layer to open, so a `.docx`
+watermark can be seen but not changed. For a `.doc` that costs nothing — the
+reader is read-only and its shapes were never written into the copy anyway.
+
 
 ## Deferred
 

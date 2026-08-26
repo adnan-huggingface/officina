@@ -952,3 +952,25 @@ indent to that empty line and the paragraph's real first line the ordinary one.
 On a numbered heading with a hanging indent the effect is exact and visible:
 the number stands where the text should, a hanging indent to the right of where
 Word puts it.
+
+A watermark and a page frame are shapes in the header, and Word will not let
+the body pick one.
+
+Both are drawn across the whole page, so an editor that hit-tests every shape
+it painted hands every click on the words to whichever of them was painted
+last, and the document cannot be typed in at all. Word's rule is not a
+tie-break, it is a layer: a watermark "is usually part of the header, even
+though it appears in the middle of the page", and reaching it means opening the
+header first. The same rule holds a second time inside the body — a shape put
+*behind* the text does not take a click that lands on a letter, and Word gives
+it the Select Objects tool as the deliberate way in rather than letting an
+ordinary click find it.
+
+The index a placement carries is only meaningful in the band it was flowed in.
+
+A header is laid out on its own and its paragraph counter starts again at
+nought, so a shape anchored in one reports itself as a drawing of paragraph
+zero. Read against the body's walk that names a real paragraph, which is a
+worse failure than not finding one: the click selects something, the handles
+are drawn round the shape, and a drag resizes a picture elsewhere in the
+document.
