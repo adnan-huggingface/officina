@@ -91,6 +91,7 @@ pub enum Command {
     CustomBorderColor,
     /// Insert ▸ Header… — the dialog for the text on top of every page.
     EditHeader,
+    Watermark,
     /// Insert ▸ Footer… — the same, underneath.
     EditFooter,
     /// Paragraph ▸ Bullets — the selection's paragraphs into a bulleted
@@ -254,6 +255,7 @@ pub struct Scriva {
     fonts_settling: bool,
     /// The header or footer dialog. Blank text takes the header away.
     chrome_draft: Option<ChromeDraft>,
+    watermark_draft: Option<WatermarkDraft>,
     /// The paragraph dialog: what it opened with, and what has been typed
     /// since, so that only the fields the user touched are applied.
     paragraph_draft: Option<(ParagraphDraft, ParagraphDraft)>,
@@ -385,6 +387,7 @@ impl Scriva {
             pending_fonts: None,
             fonts_settling: false,
             chrome_draft: None,
+            watermark_draft: None,
             paragraph_draft: None,
             size_draft: None,
             copied_drawing: None,
@@ -736,9 +739,9 @@ impl Scriva {
                     "Opened as a copy".to_owned(),
                     "Word 97-2003 documents are read but not written, so this \
                      one will be saved as a .docx. Its pictures come with it, \
-                     the diagrams the old format kept as metafiles included; \
-                     its shapes and watermarks are shown but are not written \
-                     into the copy."
+                     the diagrams the old format kept as metafiles included, \
+                     and so does its watermark; the shapes it draws a page \
+                     frame with are shown but are not written into the copy."
                         .to_owned(),
                 ));
             }
@@ -1216,6 +1219,7 @@ impl Scriva {
                 };
             }),
             Command::EditHeader => self.open_chrome_dialog(false),
+            Command::Watermark => self.open_watermark_dialog(),
             Command::EditFooter => self.open_chrome_dialog(true),
             Command::Bullets => self.toggle_list(true),
             Command::Numbers => self.toggle_list(false),
@@ -2807,6 +2811,86 @@ struct ChromeDraft {
     page_number: bool,
 }
 
+/// The watermark box.
+///
+/// **A watermark is a document property, not an object to be dragged.** Word's
+/// own box offers the word, the face and the colour and decides the rest, and
+/// nobody has ever wanted to place one by hand — so this states the same few
+/// things, and the size and the turn come from the page it will be stamped on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WatermarkDraft {
+    text: String,
+    /// Blank for Calibri, which is what Word writes when asked for nothing.
+    font: String,
+    /// Six hex digits; blank for Word's own silver.
+    color: String,
+    /// Diagonal is Word's default and the reason a watermark reads as one
+    /// rather than as a heading someone left behind.
+    diagonal: bool,
+    /// Whether the document already had one, which decides whether the box
+    /// offers to remove it.
+    existing: bool,
+}
+
+/// The watermark a document carries, if it carries one.
+///
+/// A watermark is a shape made of words anchored in a header, and there is
+/// nothing else in a header it could be confused with — a running head is
+/// text in a paragraph, not a shape. The first one found answers for all of
+/// them: Word writes the same shape into every header of the section, and a
+/// document whose headers disagreed would have been made by hand.
+fn watermark_in(document: &Document) -> Option<&wp_model::doc::ShapeText> {
+    document
+        .headers
+        .iter()
+        .filter(|header| !header.footer)
+        .find_map(|header| shape_words_in(&header.content))
+}
+
+fn shape_words_in(blocks: &[Block]) -> Option<&wp_model::doc::ShapeText> {
+    for block in blocks {
+        if let Block::Paragraph(paragraph) = block {
+            for drawing in paragraph.drawings() {
+                if let Some(text) = drawing.text.as_deref() {
+                    return Some(text);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Takes every shape made of words out of a header body, and any paragraph
+/// left holding nothing at all.
+///
+/// **A paragraph that held only the watermark goes with it.** Word puts the
+/// shape in a paragraph of its own, and leaving that paragraph behind leaves
+/// an empty line in the header — which is not nothing: it is a line of header
+/// height, and it pushes the body text down the page.
+fn strip_watermark(blocks: &mut Vec<Block>) {
+    let mut emptied = Vec::new();
+    for (index, block) in blocks.iter_mut().enumerate() {
+        let Block::Paragraph(paragraph) = block else {
+            continue;
+        };
+        let mut nth = 0;
+        while nth < paragraph.drawings().len() {
+            match paragraph.drawings()[nth].text.is_some() {
+                true => {
+                    paragraph.remove_drawing(nth);
+                }
+                false => nth += 1,
+            }
+        }
+        if paragraph.text().is_empty() && paragraph.drawings().is_empty() {
+            emptied.push(index);
+        }
+    }
+    for index in emptied.into_iter().rev() {
+        blocks.remove(index);
+    }
+}
+
 /// A number for a dialog field: two decimals at most, and none where none
 /// are needed, so that three points reads "3" and not "3.00".
 fn trim_number(value: f64) -> String {
@@ -3376,6 +3460,10 @@ impl DocumentApp for Scriva {
             self.chrome_dialog(ctx);
             return;
         }
+        if self.watermark_draft.is_some() {
+            self.watermark_dialog(ctx);
+            return;
+        }
         if self.paragraph_draft.is_some() {
             self.paragraph_dialog(ctx);
             return;
@@ -3519,6 +3607,7 @@ impl DocumentApp for Scriva {
             || self.column_draft.is_some()
             || self.cell_margin_draft.is_some()
             || self.chrome_draft.is_some()
+            || self.watermark_draft.is_some()
             || self.paragraph_draft.is_some()
             || self.size_draft.is_some()
             || self.zoom_draft.is_some()
@@ -4340,6 +4429,286 @@ impl Scriva {
             }
         }
         self.changed();
+    }
+
+    /// Opens the watermark box, prefilled with the watermark the document
+    /// already carries.
+    fn open_watermark_dialog(&mut self) {
+        let found = watermark_in(&self.document);
+        self.watermark_draft = Some(WatermarkDraft {
+            text: found
+                .map(|shape| shape.text.to_string())
+                .unwrap_or_default(),
+            font: found
+                .and_then(|shape| shape.font.as_deref().map(str::to_owned))
+                .unwrap_or_default(),
+            color: match found.and_then(|shape| shape.color) {
+                Some(wp_model::Color::Rgb(rgb)) => {
+                    format!("{:02X}{:02X}{:02X}", rgb[0], rgb[1], rgb[2])
+                }
+                _ => String::new(),
+            },
+            // A shape turned at all is a diagonal one; Word's own is 315.
+            diagonal: found.is_none_or(|shape| shape.rotation != 0.0),
+            existing: found.is_some(),
+        });
+    }
+
+    fn watermark_dialog(&mut self, ctx: &egui::Context) {
+        let Some(mut draft) = self.watermark_draft.clone() else {
+            return;
+        };
+        let mut done: Option<bool> = None;
+        let mut remove = false;
+        egui::Modal::new(egui::Id::new("scriva-watermark"))
+            .frame(dialog::frame(ctx))
+            .show(ctx, |ui| {
+                dialog::form_style(ui.style_mut());
+                dialog::body(ui, |ui| {
+                    ui.set_width(320.0);
+                    ui.label(egui::RichText::new("Watermark").font(dialog::heading_font(16.0)));
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        ui.add_sized([56.0, 20.0], egui::Label::new("Text:"));
+                        ui.add(egui::TextEdit::singleline(&mut draft.text).desired_width(232.0));
+                    });
+                    ui.horizontal(|ui| {
+                        ui.add_sized([56.0, 20.0], egui::Label::new("Font:"));
+                        ui.add(egui::TextEdit::singleline(&mut draft.font).desired_width(150.0));
+                    });
+                    ui.horizontal(|ui| {
+                        ui.add_sized([56.0, 20.0], egui::Label::new("Colour:"));
+                        ui.add(egui::TextEdit::singleline(&mut draft.color).desired_width(64.0));
+                        ui.label("hex");
+                    });
+                    ui.add_space(4.0);
+                    ui.checkbox(&mut draft.diagonal, "Diagonal");
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new(
+                            "It goes in the header, behind the words, on every page.",
+                        )
+                        .small()
+                        .weak(),
+                    );
+                    ui.add_space(12.0);
+                    if draft.existing {
+                        if ui.button("Remove watermark").clicked() {
+                            remove = true;
+                            done = Some(true);
+                        }
+                        ui.add_space(6.0);
+                    }
+                    if let Some(answer) = dialog::confirm(ui, "Apply") {
+                        done = Some(answer);
+                    }
+                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                        done = Some(false);
+                    }
+                });
+            });
+        self.watermark_draft = Some(draft.clone());
+        match done {
+            Some(true) => {
+                self.watermark_draft = None;
+                if remove {
+                    draft.text.clear();
+                }
+                self.apply_watermark(&draft);
+            }
+            Some(false) => self.watermark_draft = None,
+            None => {}
+        }
+    }
+
+    /// Puts the watermark into every header the section names, taking away
+    /// whatever one was there — one undo step.
+    ///
+    /// **Into every header, not just the default one.** A document with a
+    /// title page names three, and Word stamps all of them; putting the shape
+    /// in one alone gives a document whose first page is unmarked, which for a
+    /// watermark is the page that most needed marking.
+    fn apply_watermark(&mut self, draft: &WatermarkDraft) {
+        use wp_model::doc::{HeaderFooter, Inline, Piece, Run};
+        use wp_model::section::{HeaderId, HeaderKind, HeaderRef};
+        self.history.push(edit::Change::Chrome {
+            headers: self.document.headers.clone(),
+            section: Box::new(self.document.section.clone()),
+            caret: self.caret(),
+        });
+        let shape = self.watermark_shape(draft);
+        let document = &mut self.document;
+        for header in document.headers.iter_mut().filter(|header| !header.footer) {
+            strip_watermark(&mut header.content);
+        }
+        let Some(shape) = shape else {
+            self.changed();
+            return;
+        };
+        // A document that names no header at all needs one made for the
+        // watermark to live in; the writer assigns its part and relationship
+        // when it first writes the package.
+        if document.section.headers.is_empty() {
+            let id = HeaderId(document.headers.iter().map(|h| h.id.0).max().unwrap_or(0) + 1);
+            document.headers.push(HeaderFooter {
+                id,
+                part: None,
+                rel: None,
+                footer: false,
+                content: Vec::new(),
+            });
+            document.section.headers.push(HeaderRef {
+                kind: HeaderKind::Default,
+                body: id,
+                rel: None,
+            });
+        }
+        // **Only the headers a page will actually show.** A document commonly
+        // names three — default, first, even — while `<w:titlePg>` and the
+        // document's even/odd setting are both off, in which case two of them
+        // are never drawn. Word stamps the watermark on the one that is:
+        // measured against a watermark Word wrote itself, which put the shape
+        // in the default header and left the other two parts empty. Stamping
+        // all three writes shapes into stories no reader ever sees, and Word
+        // then reports three watermarks on a document that shows one.
+        let title_page = document.section.title_page;
+        let even_and_odd = document.settings.even_and_odd_headers;
+        let mut wanted: Vec<HeaderId> = document
+            .section
+            .headers
+            .iter()
+            .filter(|reference| match reference.kind {
+                HeaderKind::Default => true,
+                HeaderKind::First => title_page,
+                HeaderKind::Even => even_and_odd,
+            })
+            .map(|reference| reference.body)
+            .collect();
+        // Two references may name one body — "link to previous" writes that —
+        // and a body stamped twice carries the watermark twice.
+        wanted.sort_unstable_by_key(|id| id.0);
+        wanted.dedup();
+        for id in wanted {
+            let Some(header) = document
+                .headers
+                .iter_mut()
+                .find(|header| header.id == id && !header.footer)
+            else {
+                continue;
+            };
+            let mut paragraph = Paragraph::new();
+            paragraph.props.spacing.before = Some(Twips(0));
+            paragraph.props.spacing.after = Some(Twips(0));
+            paragraph.content.push(Inline::Run(Run {
+                content: vec![Piece::Drawing(Box::new(shape.clone()))],
+                ..Run::new()
+            }));
+            header.content.push(Block::Paragraph(paragraph));
+        }
+        self.changed();
+    }
+
+    /// The shape a watermark draft asks for, or `None` when the draft is
+    /// blank and the watermark is being taken away.
+    ///
+    /// **The size is derived rather than asked for.** Word's box does not
+    /// offer one either: it fits the words to the page. A turned shape's
+    /// bounding box is `(w + h) / root two` across *and* down, so the width
+    /// that just fits the text area is `side * root two / (1 + 1/aspect)` —
+    /// which on US Letter with "CONFIDENTIAL" gives 529.5 points against the
+    /// 527.75 Word itself wrote, a third of a per cent apart. The aspect is
+    /// the string's own, measured, so the letters keep their proportions
+    /// instead of being stretched into a shape someone guessed.
+    fn watermark_shape(&mut self, draft: &WatermarkDraft) -> Option<wp_model::doc::Drawing> {
+        /// The width-to-height proportion of a watermark whose words could
+        /// not be measured. Word's own "CONFIDENTIAL" is four to one.
+        const DEFAULT_ASPECT: f64 = 4.0;
+        use wp_model::doc::{Alignment, DrawingPosition, Offset, RelativeTo, ShapeText, Wrap};
+        let text = draft.text.trim();
+        if text.is_empty() {
+            return None;
+        }
+        let family = match draft.font.trim() {
+            "" => "Calibri".to_owned(),
+            named => named.to_owned(),
+        };
+        let request = wp_layout::FontRequest {
+            family: family.clone().into(),
+            size: 100.0,
+            bold: false,
+            italic: false,
+        };
+        let section = &self.document.section;
+        let across = section.text_width().points();
+        let down = (section.page.height.points() - section.margins.top.points())
+            - section.margins.bottom.points();
+        // Measured when there is a shaper to measure with. There is one
+        // whenever a window is open, which is whenever this box can be
+        // reached; the fallback is for a document driven without a screen,
+        // and is the proportion Word's own "CONFIDENTIAL" comes out at.
+        let aspect = self
+            .shaper
+            .as_mut()
+            .map(|shaper| {
+                use wp_layout::Shaper as _;
+                let metrics = shaper.metrics(&request);
+                (
+                    shaper.width(text, &request),
+                    metrics.ascent + metrics.descent,
+                )
+            })
+            .filter(|(natural, tall)| *natural > 0.0 && *tall > 0.0)
+            .map(|(natural, tall)| natural / tall)
+            .unwrap_or(DEFAULT_ASPECT);
+        let width = match draft.diagonal {
+            true => across.min(down) * std::f64::consts::SQRT_2 / (1.0 + 1.0 / aspect),
+            false => across,
+        };
+        let width = width.max(1.0);
+        Some(wp_model::doc::Drawing {
+            // No source: the writer authors the VML afresh, which is what
+            // makes an edited watermark actually reach the file.
+            source: Vec::new().into(),
+            anchored: true,
+            extent: (
+                wp_model::Emu::from_points(width),
+                wp_model::Emu::from_points(width / aspect),
+            ),
+            rel: None,
+            chart: None,
+            name: None,
+            description: None,
+            wrap: Wrap::None,
+            distance: Default::default(),
+            position: Some(Box::new(DrawingPosition {
+                horizontal: Offset {
+                    relative_to: RelativeTo::Margin,
+                    offset: None,
+                    align: Some(Alignment::Center),
+                },
+                vertical: Offset {
+                    relative_to: RelativeTo::Margin,
+                    offset: None,
+                    align: Some(Alignment::Center),
+                },
+            })),
+            behind_text: true,
+            outline: None,
+            text: Some(Box::new(ShapeText {
+                text: text.into(),
+                font: Some(family.into()),
+                color: Some(
+                    wp_model::Color::from_val(draft.color.trim())
+                        .filter(|color| !color.is_auto())
+                        // Word's own watermark grey, lightened the way its
+                        // half-opaque fill lightens it.
+                        .unwrap_or(wp_model::Color::Rgb([0xE0, 0xE0, 0xE0])),
+                ),
+                bold: false,
+                italic: false,
+                rotation: if draft.diagonal { 315.0 } else { 0.0 },
+            })),
+        })
     }
 
     /// Runs one edit against the table the caret is in, as one undo step, or
@@ -5673,6 +6042,174 @@ mod tests {
             .collect();
         app.stamp += 1;
         app
+    }
+
+    fn watermark_draft(text: &str) -> WatermarkDraft {
+        WatermarkDraft {
+            text: text.to_owned(),
+            font: String::new(),
+            color: String::new(),
+            diagonal: true,
+            existing: false,
+        }
+    }
+
+    #[test]
+    fn a_watermark_is_put_in_a_header_the_document_did_not_have() {
+        let mut app = app_with(&["body text"]);
+        assert!(app.document.headers.is_empty(), "nothing to start with");
+        app.apply_watermark(&watermark_draft("CONFIDENTIAL"));
+
+        let shape = watermark_in(&app.document).expect("the watermark is there");
+        assert_eq!(&*shape.text, "CONFIDENTIAL");
+        assert_eq!(shape.rotation, 315.0, "diagonal, as Word's own is");
+        // A header body with no part and no relationship: the writer gives it
+        // both, and the section now names it.
+        let header = app.document.headers.first().expect("a header was made");
+        assert!(header.part.is_none() && header.rel.is_none());
+        assert!(!header.footer);
+        assert_eq!(app.document.section.headers.len(), 1);
+    }
+
+    #[test]
+    fn the_watermark_is_stamped_only_on_the_headers_a_page_will_show() {
+        // A document commonly names three headers while the settings that
+        // would show two of them are off. Word stamps the one that is drawn
+        // and leaves the other parts empty — measured against a watermark
+        // Word wrote itself.
+        let mut app = app_with(&["body text"]);
+        for (index, kind) in [
+            wp_model::HeaderKind::Default,
+            wp_model::HeaderKind::First,
+            wp_model::HeaderKind::Even,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let id = wp_model::HeaderId(index as u32);
+            app.document.headers.push(wp_model::doc::HeaderFooter {
+                id,
+                part: None,
+                rel: None,
+                footer: false,
+                content: Vec::new(),
+            });
+            app.document.section.headers.push(wp_model::HeaderRef {
+                kind,
+                body: id,
+                rel: None,
+            });
+        }
+        app.apply_watermark(&watermark_draft("DRAFT"));
+        let carrying = |app: &Scriva| -> Vec<u32> {
+            app.document
+                .headers
+                .iter()
+                .filter(|header| shape_words_in(&header.content).is_some())
+                .map(|header| header.id.0)
+                .collect()
+        };
+        assert_eq!(carrying(&app), vec![0], "the default header alone");
+
+        // Turn on the two settings that put the others on a page, and they
+        // are stamped too — a title page without the watermark is the page
+        // that most needed it.
+        app.document.section.title_page = true;
+        app.document.settings.even_and_odd_headers = true;
+        app.apply_watermark(&watermark_draft("DRAFT"));
+        assert_eq!(carrying(&app), vec![0, 1, 2], "all three, once each");
+    }
+
+    #[test]
+    fn a_second_watermark_replaces_the_first_rather_than_joining_it() {
+        let mut app = app_with(&["body text"]);
+        app.apply_watermark(&watermark_draft("DRAFT"));
+        app.apply_watermark(&watermark_draft("FINAL"));
+        let shapes: Vec<String> = app
+            .document
+            .headers
+            .iter()
+            .flat_map(|header| &header.content)
+            .filter_map(|block| match block {
+                Block::Paragraph(paragraph) => Some(paragraph),
+                _ => None,
+            })
+            .flat_map(|paragraph| paragraph.drawings())
+            .filter_map(|drawing| drawing.text.as_deref())
+            .map(|text| text.text.to_string())
+            .collect();
+        assert_eq!(shapes, vec!["FINAL".to_owned()]);
+    }
+
+    #[test]
+    fn removing_a_watermark_takes_its_paragraph_with_it_and_undoes_in_one_step() {
+        let mut app = app_with(&["body text"]);
+        app.apply_watermark(&watermark_draft("CONFIDENTIAL"));
+        let with = app.document.headers[0].content.len();
+        assert_eq!(with, 1, "one paragraph, holding the shape");
+
+        app.apply_watermark(&watermark_draft(""));
+        assert!(watermark_in(&app.document).is_none(), "it is gone");
+        assert!(
+            app.document.headers[0].content.is_empty(),
+            "and so is the empty line it would have left behind"
+        );
+
+        app.run(Command::Undo);
+        assert_eq!(
+            watermark_in(&app.document).map(|shape| shape.text.to_string()),
+            Some("CONFIDENTIAL".to_owned()),
+            "one undo brings it back"
+        );
+    }
+
+    #[test]
+    fn a_watermark_that_was_read_out_of_a_header_is_offered_back_to_be_edited() {
+        let mut app = app_with(&["body text"]);
+        app.apply_watermark(&WatermarkDraft {
+            text: "SAMPLE".to_owned(),
+            font: "Verdana".to_owned(),
+            color: "1E6F5C".to_owned(),
+            diagonal: false,
+            existing: false,
+        });
+        app.open_watermark_dialog();
+        let draft = app.watermark_draft.clone().expect("the box is open");
+        assert_eq!(draft.text, "SAMPLE");
+        assert_eq!(draft.font, "Verdana");
+        assert_eq!(draft.color, "1E6F5C");
+        assert!(!draft.diagonal, "an unturned shape reads back as flat");
+        assert!(draft.existing, "so the box offers to remove it");
+    }
+
+    #[test]
+    fn a_watermarks_size_is_taken_from_the_page_it_will_be_stamped_on() {
+        let mut app = app_with(&["body text"]);
+        app.apply_watermark(&watermark_draft("CONFIDENTIAL"));
+        let drawing = app.document.headers[0]
+            .content
+            .iter()
+            .filter_map(|block| match block {
+                Block::Paragraph(paragraph) => paragraph.drawings().first().copied(),
+                _ => None,
+            })
+            .next()
+            .expect("the shape");
+        // Turned through forty-five degrees, a shape's bounding box is
+        // `(w + h) / root two` each way, so the widest that fits the text area
+        // is what this comes to. Word's own is 527.75 by 131.95 on the same
+        // page; without a shaper here the fallback proportion decides, and
+        // both numbers land within a couple of points of Word's.
+        assert!(
+            (drawing.extent.0.points() - 529.5).abs() < 2.0,
+            "width {} is not the width that fits",
+            drawing.extent.0.points()
+        );
+        assert!(
+            (drawing.extent.1.points() - 132.4).abs() < 2.0,
+            "height {} does not keep the proportion",
+            drawing.extent.1.points()
+        );
     }
 
     #[test]

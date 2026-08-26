@@ -974,3 +974,40 @@ zero. Read against the body's walk that names a real paragraph, which is a
 worse failure than not finding one: the click selects something, the handles
 are drawn round the shape, and a drag resizes a picture elsewhere in the
 document.
+
+A watermark is VML, in a notation Word deprecated and still writes.
+
+Everything else a modern document draws is DrawingML under `<w:drawing>`.
+Design ▸ Watermark writes a `<v:shape>` of type `#_x0000_t136` — WordArt —
+inside a `<w:pict>` in the header, with the words in a `string` attribute on
+`<v:textpath>`, the size and the turn in a CSS `style`, and the colour in a
+`fillcolor` that is usually a *name* rather than hex: Word writes `silver`,
+so a reader that only knows `#rrggbb` loses the colour of the commonest
+watermark there is. `<v:fill opacity=".5"/>` beside it is why Word's grey
+draws about twice as light as its name suggests.
+
+The `<o:lock shapetype="t"/>` is what makes a shape type a template.
+
+A `<w:pict>` carries the `<v:shapetype>` the shape is an instance of, and
+without that lock at the end of it Word counts the template itself as a second
+shape in the header — a page with two objects on it, one of them not even
+indexable through the object model, and its own Remove Watermark then leaves
+that one behind. Its `<v:formulas>` are not decoration either: the `path`
+refers to `@7` and `@8`, and a shape type whose path names formulas it does
+not carry is not one Word will draw text along.
+
+An undeclared namespace prefix is not a document Word draws badly.
+
+It is a document Word refuses to open at all — "Word experienced an error
+trying to open the file", with no hint as to which byte. A `<w:pict>` this
+application authors declares `v`, `o` and `w10` on itself, because the file it
+is being written into may declare only `w`.
+
+Word stamps a watermark on the headers a page will actually show.
+
+A document commonly names three — default, first and even — while `<w:titlePg>`
+and the document-wide even/odd setting are both off, so two of them are never
+drawn. Word puts the shape in the default header and leaves the other parts
+empty; stamping all three writes shapes into stories no reader sees, and Word
+then reports three watermarks on a document that shows one. The rule that
+decides which headers are live is the same one that picks a header for a page.

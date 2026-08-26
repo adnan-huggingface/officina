@@ -350,7 +350,18 @@ fn read_run(reader: &mut Reader<&[u8]>, ctx: &mut Ctx<'_>) -> Run {
                     b"pict" | b"object" => {
                         let rel = find_embed(reader, &name).map(Into::into);
                         let source = ctx.span(start, reader.buffer_position() as usize);
-                        run.content.push(Piece::Embedded { rel, source });
+                        // A `<w:pict>` that is a shape made of words — a
+                        // watermark, a piece of WordArt — is modelled as a
+                        // drawing so that it is laid out and drawn. Its bytes
+                        // ride along all the same, so nothing is re-authored
+                        // until someone edits it. See `crate::pict`.
+                        match crate::pict::words(&source) {
+                            Some(mut drawing) => {
+                                drawing.source = source;
+                                run.content.push(Piece::Drawing(Box::new(drawing)));
+                            }
+                            None => run.content.push(Piece::Embedded { rel, source }),
+                        }
                     }
                     other => {
                         let owned = other.to_vec();

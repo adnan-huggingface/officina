@@ -458,6 +458,12 @@ impl Scriva {
                 if menu::item(ui, "&Footer…", "").clicked() {
                     chosen = Some(Command::EditFooter);
                 }
+                // Word keeps this on a Design tab of its own. There is no
+                // such menu here, and a watermark is a thing put into the
+                // header — which is where the two commands beside it live.
+                if menu::item(ui, "&Watermark…", "").clicked() {
+                    chosen = Some(Command::Watermark);
+                }
             });
 
             // Everything here acts on the table the caret is in, and says so

@@ -21,6 +21,12 @@
 //! referenced — a package may contain headers no section uses, and Word writes
 //! them.
 //!
+//! **A watermark is the one thing Word still writes as VML.** It is a
+//! `<v:shape>` of the WordArt type in a header, inside a `<w:pict>` — not a
+//! `<w:drawing>` — and it is read into the same shape-of-words the rest of
+//! the application already draws. See [`pict`]. Every other `<w:pict>` keeps
+//! travelling as opaque bytes.
+//!
 //! [`HeaderId`]: wp_model::section::HeaderId
 
 #![forbid(unsafe_code)]
@@ -34,6 +40,7 @@ pub mod media;
 mod notes;
 mod numbering;
 mod parts;
+mod pict;
 mod props;
 mod styles;
 pub mod write;

@@ -2542,6 +2542,66 @@ watermark can be seen but not changed. For a `.doc` that costs nothing — the
 reader is read-only and its shapes were never written into the copy anyway.
 
 
+### The watermark, seen and changed
+
+**A `.docx` watermark was not drawn at all.** Word writes one as VML — a
+`<v:shape>` of the WordArt type inside a `<w:pict>` in the header — and the
+reader kept those bytes perfectly and laid out nothing, so a watermarked
+document opened looking like a document with no watermark. Only the legacy
+`.doc` reader built a shape-of-words the renderer could draw. Nothing in the
+corpus exercised `<w:pict>`, which is why it went unnoticed; there is a
+`watermark.docx` in it now, made by the same Word that makes the rest.
+
+`crates/wp-docx/src/pict.rs` reads the shape into the same `ShapeText` the
+`.doc` path already produced: the string, the face, the fill, the size, the
+turn and where on the page it sits. Everything else about the element stays in
+the bytes, so an untouched watermark is written back byte for byte — the
+fidelity harness now proves that over a real Word watermark, on the untouched
+save and on the save-after-edit both. A `<w:pict>` that is a *picture*
+watermark stays opaque and undrawn: the washout it needs is not modelled, and
+stamping a photograph over the text at full strength would be further from the
+truth than leaving the space empty.
+
+**Insert ▸ Watermark…** states the word, the face, the colour and whether it
+lies diagonally, and offers to remove the one that is there. Word keeps this on
+a Design tab; there is no such menu here, and the command belongs beside the
+two that also put things in the header.
+
+**The size is derived rather than asked for**, because Word's own box does not
+ask either. Turned through forty-five degrees a shape's bounding box is
+`(w + h) / √2` each way, so the width that just fits the text area is
+`side · √2 / (1 + 1/aspect)`, and the aspect is the string's own, measured. On
+US Letter with "CONFIDENTIAL" that gives 529.5 points against the 527.75 Word
+itself wrote.
+
+**What Word says about the result.** A document with a watermark this
+application authored opens in Word without repair, with one shape in the
+header, named `PowerPlusWaterMarkObject1`, of the text-effect type, turned 315
+degrees, behind the text — which is what its own Remove Watermark looks for.
+Rendered to PDF by Word and by `wp-print` side by side, the two agree on where
+the ink starts to a tenth of a point.
+
+**Two things only the real Word could have told us.** A `<w:pict>` whose
+namespace prefixes are undeclared is not drawn badly, it is refused outright;
+and a shape type without its `<o:lock shapetype="t"/>` is counted as a second
+shape, so a watermarked page carried two objects and Remove Watermark would
+have left one behind. Both were found by opening the file through COM and
+asking what was in it, and neither would have shown up in any test written
+against our own reader.
+
+**What still differs.** The letters are about four and a half per cent smaller
+than Word's for the same box. Word's WordArt fits the glyph *outline* to the
+shape; `shape_words` scales by the em box, which is a little smaller. The
+placement is exact — both renderings start their ink at the same point — so
+this is the fitting rule and not the geometry, and it is the same rule the
+`.doc` watermark has always been drawn with.
+
+**A side effect worth stating.** A `.doc` opened as a copy now carries its
+watermark into the saved `.docx`, because the shape it was read into finally
+has a writer. The page frame it draws with a plain rectangle still does not:
+there is nothing to write it as. The dialog that says so has been corrected.
+
+
 ## Deferred
 
 - [x] **PDF** — was dropped per Q3; built after ship as `wp-print`. See above.

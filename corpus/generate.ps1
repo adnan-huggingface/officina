@@ -402,6 +402,38 @@ if ($doWord) {
         $d.Close(0)
     }
 
+    Invoke-Doc 'watermark.docx' 'Word' $docxDir {
+        param($word, $path, $png)
+        # A watermark is the one thing Word still writes as VML: a `<v:shape>`
+        # of the WordArt type in the header, with the words in a `string`
+        # attribute. Nothing else in this corpus exercises `<w:pict>`, and a
+        # reader that keeps those bytes but draws nothing shows a watermarked
+        # document as an unwatermarked one.
+        $d = $word.Documents.Add()
+        $d.Content.Text = ("Body text under the watermark. " * 60)
+        $h = $d.Sections.Item(1).Headers.Item(1)
+        $shape = $h.Shapes.AddTextEffect(0, "CONFIDENTIAL", "Calibri", 1, $false, $false, 0, 0)
+        $shape.Name = "PowerPlusWaterMarkObject1"
+        $shape.TextEffect.NormalizedHeight = $false
+        $shape.Line.Visible = $false
+        $shape.Fill.Visible = $true
+        $shape.Fill.Solid()
+        $shape.Fill.ForeColor.RGB = 12632256          # silver, Word's own
+        $shape.Fill.Transparency = 0.5
+        $shape.Rotation = 315
+        $shape.LockAspectRatio = $true
+        $shape.Height = $word.InchesToPoints(1.83)
+        $shape.Width = $word.InchesToPoints(7.33)
+        $shape.WrapFormat.AllowOverlap = $true
+        $shape.WrapFormat.Type = 3                    # wdWrapNone
+        $shape.RelativeHorizontalPosition = 0         # margin
+        $shape.RelativeVerticalPosition = 0
+        $shape.Left = -999995                         # wdShapeCenter
+        $shape.Top = -999995
+        $d.SaveAs2($path, 12)
+        $d.Close(0)
+    }
+
     Invoke-Doc 'rtl-and-cjk.docx' 'Word' $docxDir {
         param($word, $path, $png)
         $d = $word.Documents.Add()

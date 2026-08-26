@@ -14,6 +14,8 @@
 //! touched comes back byte-for-byte, because nothing disagrees and nothing is
 //! rewritten.
 
+use std::fmt::Write as _;
+
 use quick_xml::events::Event;
 use wp_model::doc::Drawing;
 use wp_model::Emu;
@@ -28,6 +30,15 @@ pub fn patch(drawing: &Drawing) -> Vec<u8> {
     let source: &[u8] = &drawing.source;
     if source.is_empty() {
         return author(drawing);
+    }
+    // A `<w:pict>` is VML, and none of the DrawingML elements spliced below
+    // exist in it — a watermark states its size and its place in a CSS
+    // `style` attribute instead. There is nothing here that could edit one,
+    // so it goes back as it came; the watermark box replaces the whole shape
+    // rather than patching it, which arrives as an empty `source` and is
+    // authored afresh.
+    if is_vml(source) {
+        return source.to_vec();
     }
     let mut out = Vec::with_capacity(source.len());
     let mut splicer = Splicer::new(source);
@@ -101,6 +112,9 @@ pub fn patch(drawing: &Drawing) -> Vec<u8> {
 /// naming an undeclared prefix is not a picture Word cannot draw, it is a file
 /// Word offers to repair.
 fn author(drawing: &Drawing) -> Vec<u8> {
+    if drawing.text.is_some() {
+        return author_watermark(drawing);
+    }
     if drawing.chart.is_some() {
         return author_chart(drawing);
     }
@@ -180,6 +194,115 @@ fn author_chart(drawing: &Drawing) -> Vec<u8> {
     .into_bytes()
 }
 
+/// Whether a drawing's bytes are a `<w:pict>` rather than a `<w:drawing>`.
+///
+/// The first element decides it, so a leading comment or processing
+/// instruction cannot fool this into splicing VML.
+fn is_vml(source: &[u8]) -> bool {
+    let mut reader = quick_xml::Reader::from_reader(source);
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
+                return local(e.name().as_ref()) == b"pict"
+            }
+            Ok(Event::Eof) | Err(_) => return false,
+            _ => {}
+        }
+    }
+}
+
+/// The WordArt shape type a watermark is an instance of, exactly as Word
+/// writes it.
+///
+/// **The `<o:lock shapetype="t"/>` at the end is not decoration.** Without it
+/// Word counts the template itself as a second shape in the header — a
+/// watermarked page with two objects on it, one of them un-indexable — and
+/// its own Remove Watermark then leaves that one behind. The formulas define
+/// the `@7`, `@8` and the rest that the `path` refers to; a shape type whose
+/// path names formulas it does not carry is not a shape type Word can draw
+/// text along.
+///
+/// Taken from what this machine's Word emitted for its own watermark, the
+/// same way `corpus/generate.ps1` gets everything else here.
+const WORDART_SHAPETYPE: &str = concat!(
+    r#"<v:shapetype id="_x0000_t136" coordsize="21600,21600" o:spt="136" adj="10800""#,
+    r#" path="m@7,l@8,m@5,21600l@6,21600e">"#,
+    r#"<v:formulas>"#,
+    r##"<v:f eqn="sum #0 0 10800"/><v:f eqn="prod #0 2 1"/><v:f eqn="sum 21600 0 @1"/>"##,
+    r#"<v:f eqn="sum 0 0 @2"/><v:f eqn="sum 21600 0 @3"/><v:f eqn="if @0 @3 0"/>"#,
+    r#"<v:f eqn="if @0 21600 @1"/><v:f eqn="if @0 0 @2"/><v:f eqn="if @0 @4 21600"/>"#,
+    r#"<v:f eqn="mid @5 @6"/><v:f eqn="mid @8 @5"/><v:f eqn="mid @7 @8"/>"#,
+    r#"<v:f eqn="mid @6 @7"/><v:f eqn="sum @6 0 @5"/>"#,
+    r#"</v:formulas>"#,
+    r#"<v:path textpathok="t" o:connecttype="custom""#,
+    r#" o:connectlocs="@9,0;@10,10800;@11,21600;@12,10800" o:connectangles="270,180,90,0"/>"#,
+    r#"<v:textpath on="t" fitshape="t"/>"#,
+    r##"<v:handles><v:h position="#0,bottomRight" xrange="6629,14971"/></v:handles>"##,
+    r#"<o:lock v:ext="edit" text="t" shapetype="t"/>"#,
+    r#"</v:shapetype>"#,
+);
+
+/// A `<w:pict>` for a watermark this application put in the document.
+///
+/// **Word still writes a watermark as VML**, so this does too. Authoring the
+/// DrawingML equivalent would be a document Word opens and shows correctly
+/// and its own Design ▸ Watermark ▸ Remove Watermark cannot find — a file
+/// that looks right and behaves wrong, which is worse than one that looks
+/// wrong.
+///
+/// The shape carries the `PowerPlusWaterMarkObject` name Word gives its own:
+/// that name is how Word tells a watermark from a piece of art someone drew,
+/// and one written without it cannot be removed from Word's own menu.
+///
+/// There is no whitespace anywhere in what this emits. VML is not
+/// whitespace-sensitive, but a `<w:pict>` full of indentation is a `<w:pict>`
+/// that no longer round-trips against the bytes it was read from.
+fn author_watermark(drawing: &Drawing) -> Vec<u8> {
+    let Some(shape) = drawing.text.as_deref() else {
+        return Vec::new();
+    };
+    let text = crate::write::escape_attr(&shape.text);
+    let face = crate::write::escape_attr(shape.font.as_deref().unwrap_or("Calibri"));
+    let width = drawing.extent.0.points();
+    let height = drawing.extent.1.points();
+    let rotation = shape.rotation;
+    let fill = match shape.color {
+        Some(wp_model::Color::Rgb([r, g, b])) => format!("#{r:02x}{g:02x}{b:02x}"),
+        _ => "silver".to_owned(),
+    };
+    // A negative z-index puts the shape under the words, which is the whole
+    // point of a watermark: the document must stay legible over it.
+    let style = format!(
+        "position:absolute;margin-left:0;margin-top:0;\
+         width:{width:.2}pt;height:{height:.2}pt;rotation:{rotation};z-index:-251658752;\
+         mso-position-horizontal:center;mso-position-horizontal-relative:margin;\
+         mso-position-vertical:center;mso-position-vertical-relative:margin"
+    );
+    let mut out = String::with_capacity(WORDART_SHAPETYPE.len() + 512);
+    // The three VML namespaces are declared here, on the one element this
+    // authors that encloses everything using them. `document.xml` in a file
+    // Word wrote declares them at the root; one written by something else may
+    // declare only `w`, and a prefix nothing declares is not a watermark Word
+    // draws badly — it is a file Word refuses to open.
+    let _ = write!(
+        out,
+        r#"<w:pict xmlns:v="{V}" xmlns:o="{O}" xmlns:w10="{W10}">"#
+    );
+    out.push_str(WORDART_SHAPETYPE);
+    out.push_str(r##"<v:shape id="PowerPlusWaterMarkObject1" type="#_x0000_t136""##);
+    let _ = write!(out, r#" style="{style}" fillcolor="{fill}" stroked="f">"#);
+    let _ = write!(
+        out,
+        r#"<v:textpath style="font-family:&quot;{face}&quot;;font-size:1pt" trim="t" fitpath="t" string="{text}"/>"#
+    );
+    out.push_str(r#"<w10:wrap anchorx="margin" anchory="margin"/>"#);
+    out.push_str("</v:shape></w:pict>");
+    out.into_bytes()
+}
+
+const V: &str = "urn:schemas-microsoft-com:vml";
+const O: &str = "urn:schemas-microsoft-com:office:office";
+const W10: &str = "urn:schemas-microsoft-com:office:word";
 const WP: &str = "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing";
 const A: &str = "http://schemas.openxmlformats.org/drawingml/2006/main";
 const PIC: &str = "http://schemas.openxmlformats.org/drawingml/2006/picture";
@@ -384,6 +507,48 @@ mod tests {
             out.contains(r#"relativeFrom="column"><wp:posOffset>4444"#),
             "{out}"
         );
+    }
+
+    #[test]
+    fn a_pict_is_handed_back_exactly_as_it_came() {
+        // None of the DrawingML this splices exists in VML, and a watermark
+        // states its size in a CSS `style` instead. Byte-for-byte is the
+        // whole invariant: an untouched watermark must not be re-authored.
+        let source: &[u8] = br##"<w:pict><v:shape id="PowerPlusWaterMarkObject1" type="#_x0000_t136" style="position:absolute;width:527.75pt;height:131.95pt;rotation:315" fillcolor="silver" stroked="f"><v:fill opacity=".5"/><v:textpath style="font-family:&quot;Calibri&quot;" string="CONFIDENTIAL"/></v:shape></w:pict>"##;
+        let mut model = drawing("");
+        model.source = source.into();
+        model.extent = (Emu::from_points(1.0), Emu::from_points(1.0));
+        assert_eq!(patch(&model), source, "not one byte moved");
+    }
+
+    #[test]
+    fn an_authored_watermark_is_vml_this_can_read_back() {
+        let mut model = drawing("");
+        model.source = Vec::new().into();
+        model.rel = None;
+        model.extent = (Emu::from_points(529.5), Emu::from_points(132.4));
+        model.text = Some(Box::new(wp_model::doc::ShapeText {
+            text: "CONFIDENTIAL".into(),
+            font: Some("Verdana".into()),
+            color: Some(wp_model::Color::Rgb([0xE0, 0xE0, 0xE0])),
+            bold: false,
+            italic: false,
+            rotation: 315.0,
+        }));
+        let out = patch(&model);
+        let text = String::from_utf8(out.clone()).expect("utf-8");
+        // Word finds its own watermarks by this name, and Remove Watermark
+        // will not touch a shape that lacks it.
+        assert!(text.contains("PowerPlusWaterMarkObject"), "{text}");
+        assert!(text.contains("_x0000_t136"), "the WordArt shape type");
+
+        let read = crate::pict::words(&out).expect("and it reads back as words");
+        let shape = read.text.expect("with its words");
+        assert_eq!(&*shape.text, "CONFIDENTIAL");
+        assert_eq!(shape.font.as_deref(), Some("Verdana"));
+        assert_eq!(shape.rotation, 315.0);
+        assert_eq!(read.extent.0.points().round(), 530.0);
+        assert!(read.behind_text, "written behind the words");
     }
 
     #[test]
