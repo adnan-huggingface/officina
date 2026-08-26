@@ -10,16 +10,20 @@
 //! Nothing clones the body — a hundred-page document must not pay for a
 //! keystroke.
 
-use wp_model::doc::{Block, Document, Paragraph};
+use wp_model::doc::{Block, Document, Paragraph, Scope};
 use wp_model::prop::{Justify, ParaProps, RunProps};
 
 use crate::text;
 
-/// A position in the document: which paragraph, and how far into its text.
+/// A position in one of the document's flows: which paragraph, and how far
+/// into its text.
 ///
-/// The paragraph is named by its index in [`Document::paragraphs`] — document
+/// The paragraph is named by its index in that flow's own walk — document
 /// order, tables and content controls included — because that is the only name
-/// that works for a document whose paragraphs have no `w14:paraId`.
+/// that works for a document whose paragraphs have no `w14:paraId`. *Which*
+/// flow is a [`Scope`], and it is carried beside the caret rather than in it:
+/// a selection cannot span two of them, so one scope answers for both ends and
+/// for the change they make.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub struct Caret {
     pub paragraph: usize,
@@ -114,15 +118,26 @@ pub enum Change {
     },
 }
 
+/// One change and the flow it was made in.
+///
+/// The scope has to be remembered with the change: undoing a header's edit
+/// against the body would restore the header's paragraph over whatever
+/// paragraph of the text happened to share its number.
+#[derive(Debug, Clone)]
+struct Entry {
+    scope: Scope,
+    change: Change,
+}
+
 /// The undo and redo stacks.
 #[derive(Debug, Default)]
 pub struct History {
-    undo: Vec<Change>,
-    redo: Vec<Change>,
+    undo: Vec<Entry>,
+    redo: Vec<Entry>,
     /// Where the last change was, so consecutive typing coalesces into one
     /// entry. Word collapses a word's worth of typing into a single undo, which
     /// is what makes Ctrl+Z usable at all.
-    last: Option<(usize, usize)>,
+    last: Option<(Scope, usize, usize)>,
 }
 
 impl History {
@@ -145,8 +160,8 @@ impl History {
     }
 
     /// Records a change, discarding anything that was redoable.
-    pub fn push(&mut self, change: Change) {
-        self.undo.push(change);
+    pub fn push(&mut self, scope: Scope, change: Change) {
+        self.undo.push(Entry { scope, change });
         self.redo.clear();
         self.last = None;
     }
@@ -155,41 +170,57 @@ impl History {
     ///
     /// Joined to the previous entry when the caret carried straight on from
     /// where the last one ended, so a word typed is one undo rather than five.
-    pub fn push_typing(&mut self, change: Change, paragraph: usize, offset: usize, word_end: bool) {
-        let continues = self.last == Some((paragraph, offset)) && !self.undo.is_empty();
+    pub fn push_typing(
+        &mut self,
+        scope: Scope,
+        change: Change,
+        paragraph: usize,
+        offset: usize,
+        word_end: bool,
+    ) {
+        let continues = self.last == Some((scope, paragraph, offset)) && !self.undo.is_empty();
         if !continues {
-            self.undo.push(change);
+            self.undo.push(Entry { scope, change });
         }
         self.redo.clear();
         self.last = if word_end {
             None
         } else {
-            Some((paragraph, offset + 1))
+            Some((scope, paragraph, offset + 1))
         };
     }
 
-    pub fn undo(&mut self, document: &mut Document) -> Option<Caret> {
-        let change = self.undo.pop()?;
-        let (inverse, caret) = apply(document, change);
-        self.redo.push(inverse);
+    /// Takes the last change back, and says where the caret goes — including
+    /// which flow, so undoing an edit made in a header opens that header again
+    /// rather than moving a caret in the body to the same number.
+    pub fn undo(&mut self, document: &mut Document) -> Option<(Scope, Caret)> {
+        let entry = self.undo.pop()?;
+        let (inverse, caret) = apply(document, entry.scope, entry.change);
+        self.redo.push(Entry {
+            scope: entry.scope,
+            change: inverse,
+        });
         self.last = None;
-        Some(caret)
+        Some((entry.scope, caret))
     }
 
-    pub fn redo(&mut self, document: &mut Document) -> Option<Caret> {
-        let change = self.redo.pop()?;
-        let (inverse, caret) = apply(document, change);
-        self.undo.push(inverse);
+    pub fn redo(&mut self, document: &mut Document) -> Option<(Scope, Caret)> {
+        let entry = self.redo.pop()?;
+        let (inverse, caret) = apply(document, entry.scope, entry.change);
+        self.undo.push(Entry {
+            scope: entry.scope,
+            change: inverse,
+        });
         self.last = None;
-        Some(caret)
+        Some((entry.scope, caret))
     }
 }
 
 /// Applies a change and returns the one that undoes it.
-fn apply(document: &mut Document, change: Change) -> (Change, Caret) {
+fn apply(document: &mut Document, scope: Scope, change: Change) -> (Change, Caret) {
     match change {
         Change::Paragraph { index, before } => {
-            let mut paragraphs = document.paragraphs_mut();
+            let mut paragraphs = document.paragraphs_in_mut(scope);
             let Some(target) = paragraphs.get_mut(index) else {
                 return (Change::Paragraph { index, before }, Caret::default());
             };
@@ -207,7 +238,7 @@ fn apply(document: &mut Document, change: Change) -> (Change, Caret) {
         Change::Split { index } => {
             // Undoing a split is a merge.
             let (first, second) = {
-                let paragraphs = document.paragraphs();
+                let paragraphs = document.paragraphs_in(scope);
                 match (paragraphs.get(index), paragraphs.get(index + 1)) {
                     (Some(a), Some(b)) => (Box::new((*a).clone()), Box::new((*b).clone())),
                     _ => return (Change::Split { index }, Caret::default()),
@@ -215,7 +246,7 @@ fn apply(document: &mut Document, change: Change) -> (Change, Caret) {
             };
             let offset = text::len(&first);
             let joined = text::merge(&first, &second);
-            replace_range(document, index..index + 2, vec![joined]);
+            replace_range(document, scope, index..index + 2, vec![joined]);
             (
                 Change::Merge {
                     index,
@@ -234,7 +265,7 @@ fn apply(document: &mut Document, change: Change) -> (Change, Caret) {
             second,
         } => {
             let offset = text::len(&first);
-            replace_range(document, index..index + 1, vec![*first, *second]);
+            replace_range(document, scope, index..index + 1, vec![*first, *second]);
             (
                 Change::Split { index },
                 Caret {
@@ -245,14 +276,14 @@ fn apply(document: &mut Document, change: Change) -> (Change, Caret) {
         }
         Change::Range { first, before, now } => {
             let current: Vec<Paragraph> = {
-                let paragraphs = document.paragraphs();
+                let paragraphs = document.paragraphs_in(scope);
                 paragraphs[first.min(paragraphs.len())..(first + now).min(paragraphs.len())]
                     .iter()
                     .map(|p| (*p).clone())
                     .collect()
             };
             let restored = before.len();
-            replace_range(document, first..first + current.len(), before);
+            replace_range(document, scope, first..first + current.len(), before);
             (
                 Change::Range {
                     first,
@@ -276,12 +307,15 @@ fn apply(document: &mut Document, change: Change) -> (Change, Caret) {
             )
         }
         Change::Blocks { index, before, now } => {
-            let index = index.min(document.body.len());
-            let end = (index + now).min(document.body.len());
+            let Some(blocks) = document.blocks_mut(scope) else {
+                return (Change::Blocks { index, before, now }, Caret::default());
+            };
+            let index = index.min(blocks.len());
+            let end = (index + now).min(blocks.len());
             let restored = before.len();
-            let was: Vec<wp_model::doc::Block> = document.body.splice(index..end, before).collect();
+            let was: Vec<wp_model::doc::Block> = blocks.splice(index..end, before).collect();
             let caret = Caret {
-                paragraph: paragraphs_before_block(document, index),
+                paragraph: paragraphs_before_block(document, scope, index),
                 offset: 0,
             };
             (
@@ -312,10 +346,11 @@ fn apply(document: &mut Document, change: Change) -> (Change, Caret) {
     }
 }
 
-/// How many paragraphs of the flattened walk come before `block` of the body —
-/// the bridge from a body position back to a caret.
-fn paragraphs_before_block(document: &Document, block: usize) -> usize {
-    document.body[..block.min(document.body.len())]
+/// How many paragraphs of the flattened walk come before `block` of the flow —
+/// the bridge from a block position back to a caret.
+fn paragraphs_before_block(document: &Document, scope: Scope, block: usize) -> usize {
+    let blocks = document.blocks(scope);
+    blocks[..block.min(blocks.len())]
         .iter()
         .map(paragraphs_in_block)
         .sum()
@@ -346,10 +381,14 @@ fn paragraphs_in_block(block: &wp_model::doc::Block) -> usize {
 /// A caret inside a *nested* table answers with the outer cell, which is the
 /// cell a table command edits — the outer table is the one whose block the
 /// undo history replaces whole.
-pub fn table_cell_at(document: &Document, caret: Caret) -> Option<(usize, usize, usize)> {
+pub fn table_cell_at(
+    document: &Document,
+    scope: Scope,
+    caret: Caret,
+) -> Option<(usize, usize, usize)> {
     use wp_model::doc::Block;
     let mut counted = 0;
-    for (index, block) in document.body.iter().enumerate() {
+    for (index, block) in document.blocks(scope).iter().enumerate() {
         let within = paragraphs_in_block(block);
         if caret.paragraph < counted + within {
             let Block::Table(table) = block else {
@@ -380,16 +419,17 @@ pub fn table_cell_at(document: &Document, caret: Caret) -> Option<(usize, usize,
 /// stays where it was for a block with no paragraph to land on.
 pub fn insert_block(
     document: &mut Document,
+    scope: Scope,
     history: &mut History,
     selection: Selection,
     block: wp_model::doc::Block,
 ) -> Caret {
     let (caret, _) = selection.ordered();
     // The top-level block whose flattened paragraphs contain the caret; past
-    // the end means the body's end.
+    // the end means the flow's end.
     let mut counted = 0;
-    let mut index = document.body.len();
-    for (at, candidate) in document.body.iter().enumerate() {
+    let mut index = document.blocks(scope).len();
+    for (at, candidate) in document.blocks(scope).iter().enumerate() {
         let within = paragraphs_in_block(candidate);
         if caret.paragraph < counted + within {
             index = at;
@@ -397,14 +437,20 @@ pub fn insert_block(
         }
         counted += within;
     }
-    let landing = paragraphs_before_block(document, index);
+    let landing = paragraphs_before_block(document, scope, index);
     let has_paragraph = paragraphs_in_block(&block) > 0;
-    history.push(Change::Blocks {
-        index,
-        before: Vec::new(),
-        now: 1,
-    });
-    document.body.insert(index, block);
+    let Some(blocks) = document.blocks_mut(scope) else {
+        return caret;
+    };
+    history.push(
+        scope,
+        Change::Blocks {
+            index,
+            before: Vec::new(),
+            now: 1,
+        },
+    );
+    blocks.insert(index, block);
     if has_paragraph {
         Caret {
             paragraph: landing,
@@ -423,10 +469,13 @@ pub fn set_section(
     section: wp_model::SectionProps,
 ) {
     let before = std::mem::replace(&mut document.section, section);
-    history.push(Change::Section {
-        before: Box::new(before),
-        caret,
-    });
+    history.push(
+        Scope::Body,
+        Change::Section {
+            before: Box::new(before),
+            caret,
+        },
+    );
 }
 
 /// Inserts a break — a page break, mostly — at the caret, Ctrl+Enter's job.
@@ -436,19 +485,23 @@ pub fn set_section(
 /// line the caret is drawn on follows the text that now sits after the break.
 pub fn insert_break(
     document: &mut Document,
+    scope: Scope,
     history: &mut History,
     selection: Selection,
     kind: wp_model::doc::Break,
 ) -> Caret {
-    let caret = delete_selection(document, history, selection);
-    let Some(before) = paragraph_at(document, caret.paragraph) else {
+    let caret = delete_selection(document, scope, history, selection);
+    let Some(before) = paragraph_at(document, scope, caret.paragraph) else {
         return caret;
     };
-    history.push(Change::Paragraph {
-        index: caret.paragraph,
-        before: Box::new(before),
-    });
-    let mut paragraphs = document.paragraphs_mut();
+    history.push(
+        scope,
+        Change::Paragraph {
+            index: caret.paragraph,
+            before: Box::new(before),
+        },
+    );
+    let mut paragraphs = document.paragraphs_in_mut(scope);
     let Some(target) = paragraphs.get_mut(caret.paragraph) else {
         return caret;
     };
@@ -459,7 +512,7 @@ pub fn insert_break(
     }
 }
 
-/// Replaces a run of paragraphs, by index into the document's flattened walk.
+/// Replaces a run of paragraphs, by index into the flow's flattened walk.
 ///
 /// Paragraphs can be added or removed wherever the whole range is the direct
 /// children of *one* container — the body, one table cell, or one content
@@ -468,14 +521,21 @@ pub fn insert_break(
 /// Word. Only a range that crosses containers — a selection reaching from
 /// inside a cell out to the body — cannot change how many paragraphs there
 /// are, and is overwritten in place instead.
-pub fn replace_range(document: &mut Document, range: std::ops::Range<usize>, with: Vec<Paragraph>) {
+pub fn replace_range(
+    document: &mut Document,
+    scope: Scope,
+    range: std::ops::Range<usize>,
+    with: Vec<Paragraph>,
+) {
     let mut with = Some(with);
     let mut flat = 0usize;
-    if splice_blocks(&mut document.body, &mut flat, &range, &mut with) {
-        return;
+    if let Some(blocks) = document.blocks_mut(scope) {
+        if splice_blocks(blocks, &mut flat, &range, &mut with) {
+            return;
+        }
     }
     if let Some(with) = with.take() {
-        replace_in_place(document, range, with);
+        replace_in_place(document, scope, range, with);
     }
 }
 
@@ -535,8 +595,13 @@ fn splice_blocks(
 }
 
 /// Overwrites paragraphs in place, without changing how many there are.
-fn replace_in_place(document: &mut Document, range: std::ops::Range<usize>, with: Vec<Paragraph>) {
-    let mut paragraphs = document.paragraphs_mut();
+fn replace_in_place(
+    document: &mut Document,
+    scope: Scope,
+    range: std::ops::Range<usize>,
+    with: Vec<Paragraph>,
+) {
+    let mut paragraphs = document.paragraphs_in_mut(scope);
     for (offset, replacement) in with.into_iter().enumerate() {
         if let Some(target) = paragraphs.get_mut(range.start + offset) {
             **target = replacement;
@@ -547,12 +612,13 @@ fn replace_in_place(document: &mut Document, range: std::ops::Range<usize>, with
 /// Types `input` at the selection, replacing it if it is not empty.
 pub fn type_text(
     document: &mut Document,
+    scope: Scope,
     history: &mut History,
     selection: Selection,
     input: &str,
 ) -> Caret {
-    let caret = delete_selection(document, history, selection);
-    let Some(before) = paragraph_at(document, caret.paragraph) else {
+    let caret = delete_selection(document, scope, history, selection);
+    let Some(before) = paragraph_at(document, scope, caret.paragraph) else {
         return caret;
     };
     let word_end = input
@@ -565,12 +631,12 @@ pub fn type_text(
     };
     let single = input.chars().count() == 1;
     if single {
-        history.push_typing(change, caret.paragraph, caret.offset, word_end);
+        history.push_typing(scope, change, caret.paragraph, caret.offset, word_end);
     } else {
-        history.push(change);
+        history.push(scope, change);
     }
 
-    let mut paragraphs = document.paragraphs_mut();
+    let mut paragraphs = document.paragraphs_in_mut(scope);
     let Some(target) = paragraphs.get_mut(caret.paragraph) else {
         return caret;
     };
@@ -584,6 +650,7 @@ pub fn type_text(
 /// Removes whatever the selection covers, and returns where the caret lands.
 pub fn delete_selection(
     document: &mut Document,
+    scope: Scope,
     history: &mut History,
     selection: Selection,
 ) -> Caret {
@@ -592,14 +659,17 @@ pub fn delete_selection(
     }
     let (start, end) = selection.ordered();
     if start.paragraph == end.paragraph {
-        let Some(before) = paragraph_at(document, start.paragraph) else {
+        let Some(before) = paragraph_at(document, scope, start.paragraph) else {
             return start;
         };
-        history.push(Change::Paragraph {
-            index: start.paragraph,
-            before: Box::new(before),
-        });
-        let mut paragraphs = document.paragraphs_mut();
+        history.push(
+            scope,
+            Change::Paragraph {
+                index: start.paragraph,
+                before: Box::new(before),
+            },
+        );
+        let mut paragraphs = document.paragraphs_in_mut(scope);
         if let Some(target) = paragraphs.get_mut(start.paragraph) {
             text::remove(target, start.offset..end.offset);
         }
@@ -609,18 +679,21 @@ pub fn delete_selection(
     // Across paragraphs: the first keeps its head, the last keeps its tail, and
     // the two become one.
     let before: Vec<Paragraph> = {
-        let paragraphs = document.paragraphs();
+        let paragraphs = document.paragraphs_in(scope);
         paragraphs[start.paragraph..=end.paragraph.min(paragraphs.len() - 1)]
             .iter()
             .map(|p| (*p).clone())
             .collect()
     };
-    history.push(Change::Range {
-        first: start.paragraph,
-        before: before.clone(),
-        // The range becomes the one joined paragraph.
-        now: 1,
-    });
+    history.push(
+        scope,
+        Change::Range {
+            first: start.paragraph,
+            before: before.clone(),
+            // The range becomes the one joined paragraph.
+            now: 1,
+        },
+    );
 
     let mut head = before[0].clone();
     let head_len = text::len(&head);
@@ -628,18 +701,24 @@ pub fn delete_selection(
     let mut tail = before[before.len() - 1].clone();
     text::remove(&mut tail, 0..end.offset);
     let joined = text::merge(&head, &tail);
-    replace_range(document, start.paragraph..end.paragraph + 1, vec![joined]);
+    replace_range(
+        document,
+        scope,
+        start.paragraph..end.paragraph + 1,
+        vec![joined],
+    );
     start
 }
 
 /// Splits the paragraph at the caret — the Enter key.
 pub fn split_paragraph(
     document: &mut Document,
+    scope: Scope,
     history: &mut History,
     selection: Selection,
 ) -> Caret {
-    let caret = delete_selection(document, history, selection);
-    let Some(paragraph) = paragraph_at(document, caret.paragraph) else {
+    let caret = delete_selection(document, scope, history, selection);
+    let Some(paragraph) = paragraph_at(document, scope, caret.paragraph) else {
         return caret;
     };
     let (head, mut tail) = text::split(&paragraph, caret.offset);
@@ -651,11 +730,15 @@ pub fn split_paragraph(
             }
         }
     }
-    history.push(Change::Split {
-        index: caret.paragraph,
-    });
+    history.push(
+        scope,
+        Change::Split {
+            index: caret.paragraph,
+        },
+    );
     replace_range(
         document,
+        scope,
         caret.paragraph..caret.paragraph + 1,
         vec![head, tail],
     );
@@ -666,21 +749,29 @@ pub fn split_paragraph(
 }
 
 /// Backspace: one character, or the paragraph mark before this paragraph.
-pub fn backspace(document: &mut Document, history: &mut History, selection: Selection) -> Caret {
+pub fn backspace(
+    document: &mut Document,
+    scope: Scope,
+    history: &mut History,
+    selection: Selection,
+) -> Caret {
     if !selection.is_empty() {
-        return delete_selection(document, history, selection);
+        return delete_selection(document, scope, history, selection);
     }
     let caret = selection.head;
-    let Some(paragraph) = paragraph_at(document, caret.paragraph) else {
+    let Some(paragraph) = paragraph_at(document, scope, caret.paragraph) else {
         return caret;
     };
     if caret.offset > 0 {
         let previous = text::previous_char(&paragraph.text(), caret.offset);
-        history.push(Change::Paragraph {
-            index: caret.paragraph,
-            before: Box::new(paragraph),
-        });
-        let mut paragraphs = document.paragraphs_mut();
+        history.push(
+            scope,
+            Change::Paragraph {
+                index: caret.paragraph,
+                before: Box::new(paragraph),
+            },
+        );
+        let mut paragraphs = document.paragraphs_in_mut(scope);
         if let Some(target) = paragraphs.get_mut(caret.paragraph) {
             text::remove(target, previous..caret.offset);
         }
@@ -692,45 +783,54 @@ pub fn backspace(document: &mut Document, history: &mut History, selection: Sele
     if caret.paragraph == 0 {
         return caret;
     }
-    join_with_previous(document, history, caret.paragraph)
+    join_with_previous(document, scope, history, caret.paragraph)
 }
 
 /// Delete: one character forward, or the paragraph mark after this paragraph.
 pub fn delete_forward(
     document: &mut Document,
+    scope: Scope,
     history: &mut History,
     selection: Selection,
 ) -> Caret {
     if !selection.is_empty() {
-        return delete_selection(document, history, selection);
+        return delete_selection(document, scope, history, selection);
     }
     let caret = selection.head;
-    let Some(paragraph) = paragraph_at(document, caret.paragraph) else {
+    let Some(paragraph) = paragraph_at(document, scope, caret.paragraph) else {
         return caret;
     };
     let content = paragraph.text();
     if caret.offset < content.len() {
         let next = text::next_char(&content, caret.offset);
-        history.push(Change::Paragraph {
-            index: caret.paragraph,
-            before: Box::new(paragraph),
-        });
-        let mut paragraphs = document.paragraphs_mut();
+        history.push(
+            scope,
+            Change::Paragraph {
+                index: caret.paragraph,
+                before: Box::new(paragraph),
+            },
+        );
+        let mut paragraphs = document.paragraphs_in_mut(scope);
         if let Some(target) = paragraphs.get_mut(caret.paragraph) {
             text::remove(target, caret.offset..next);
         }
         return caret;
     }
-    if caret.paragraph + 1 >= document.paragraphs().len() {
+    if caret.paragraph + 1 >= document.paragraphs_in(scope).len() {
         return caret;
     }
-    join_with_previous(document, history, caret.paragraph + 1)
+    join_with_previous(document, scope, history, caret.paragraph + 1)
 }
 
 /// Joins paragraph `index` onto the one before it.
-fn join_with_previous(document: &mut Document, history: &mut History, index: usize) -> Caret {
+fn join_with_previous(
+    document: &mut Document,
+    scope: Scope,
+    history: &mut History,
+    index: usize,
+) -> Caret {
     let (first, second) = {
-        let paragraphs = document.paragraphs();
+        let paragraphs = document.paragraphs_in(scope);
         match (paragraphs.get(index - 1), paragraphs.get(index)) {
             (Some(a), Some(b)) => (Box::new((*a).clone()), Box::new((*b).clone())),
             _ => return Caret::default(),
@@ -738,12 +838,15 @@ fn join_with_previous(document: &mut Document, history: &mut History, index: usi
     };
     let offset = text::len(&first);
     let joined = text::merge(&first, &second);
-    history.push(Change::Merge {
-        index: index - 1,
-        first,
-        second,
-    });
-    replace_range(document, index - 1..index + 1, vec![joined]);
+    history.push(
+        scope,
+        Change::Merge {
+            index: index - 1,
+            first,
+            second,
+        },
+    );
+    replace_range(document, scope, index - 1..index + 1, vec![joined]);
     Caret {
         paragraph: index - 1,
         offset,
@@ -758,6 +861,7 @@ fn join_with_previous(document: &mut Document, history: &mut History, index: usi
 /// keeps it.
 pub fn format_runs(
     document: &mut Document,
+    scope: Scope,
     history: &mut History,
     selection: Selection,
     change: impl Fn(&mut RunProps) + Copy,
@@ -767,19 +871,22 @@ pub fn format_runs(
     }
     let (start, end) = selection.ordered();
     let before: Vec<Paragraph> = {
-        let paragraphs = document.paragraphs();
+        let paragraphs = document.paragraphs_in(scope);
         paragraphs[start.paragraph..=end.paragraph.min(paragraphs.len() - 1)]
             .iter()
             .map(|p| (*p).clone())
             .collect()
     };
-    history.push(Change::Range {
-        first: start.paragraph,
-        now: before.len(),
-        before,
-    });
+    history.push(
+        scope,
+        Change::Range {
+            first: start.paragraph,
+            now: before.len(),
+            before,
+        },
+    );
 
-    let mut paragraphs = document.paragraphs_mut();
+    let mut paragraphs = document.paragraphs_in_mut(scope);
     for index in start.paragraph..=end.paragraph {
         let Some(target) = paragraphs.get_mut(index) else {
             continue;
@@ -933,13 +1040,14 @@ fn run_piece_len(piece: &wp_model::doc::Piece) -> usize {
 /// is centred by putting the caret in it.
 pub fn format_paragraphs(
     document: &mut Document,
+    scope: Scope,
     history: &mut History,
     selection: Selection,
     change: impl Fn(&mut ParaProps) + Copy,
 ) {
     let (start, end) = selection.ordered();
     let before: Vec<Paragraph> = {
-        let paragraphs = document.paragraphs();
+        let paragraphs = document.paragraphs_in(scope);
         if paragraphs.is_empty() {
             return;
         }
@@ -949,12 +1057,15 @@ pub fn format_paragraphs(
             .map(|p| (*p).clone())
             .collect()
     };
-    history.push(Change::Range {
-        first: start.paragraph,
-        now: before.len(),
-        before,
-    });
-    let mut paragraphs = document.paragraphs_mut();
+    history.push(
+        scope,
+        Change::Range {
+            first: start.paragraph,
+            now: before.len(),
+            before,
+        },
+    );
+    let mut paragraphs = document.paragraphs_in_mut(scope);
     for index in start.paragraph..=end.paragraph {
         if let Some(target) = paragraphs.get_mut(index) {
             change(&mut target.props);
@@ -967,11 +1078,12 @@ pub fn format_paragraphs(
 /// What a toolbar button asks to know whether it should look pressed.
 pub fn all_runs(
     document: &Document,
+    scope: Scope,
     selection: Selection,
     test: impl Fn(&RunProps) -> bool,
 ) -> bool {
     let (start, end) = selection.ordered();
-    let paragraphs = document.paragraphs();
+    let paragraphs = document.paragraphs_in(scope);
     let mut any = false;
     for index in start.paragraph..=end.paragraph.min(paragraphs.len().saturating_sub(1)) {
         let Some(paragraph) = paragraphs.get(index) else {
@@ -987,8 +1099,8 @@ pub fn all_runs(
     any
 }
 
-pub fn paragraph_at(document: &Document, index: usize) -> Option<Paragraph> {
-    document.paragraphs().get(index).map(|p| (*p).clone())
+pub fn paragraph_at(document: &Document, scope: Scope, index: usize) -> Option<Paragraph> {
+    document.paragraph_in(scope, index).cloned()
 }
 
 /// What the selection covers, as paragraphs — runs, properties and all.
@@ -997,12 +1109,12 @@ pub fn paragraph_at(document: &Document, index: usize) -> Option<Paragraph> {
 /// selection removed, so a bold word stays bold and a bulleted item stays a
 /// bulleted item. Copying the *text* is what loses that, and copying the text is
 /// all the clipboard could do.
-pub fn copy_range(document: &Document, selection: Selection) -> Vec<Paragraph> {
+pub fn copy_range(document: &Document, scope: Scope, selection: Selection) -> Vec<Paragraph> {
     if selection.is_empty() {
         return Vec::new();
     }
     let (start, end) = selection.ordered();
-    let paragraphs = document.paragraphs();
+    let paragraphs = document.paragraphs_in(scope);
     if start.paragraph >= paragraphs.len() {
         return Vec::new();
     }
@@ -1038,12 +1150,13 @@ pub fn copy_range(document: &Document, selection: Selection) -> Vec<Paragraph> {
 /// paste a bulleted list and it is still a bulleted list.
 pub fn paste_paragraphs(
     document: &mut Document,
+    scope: Scope,
     history: &mut History,
     selection: Selection,
     clip: &[Paragraph],
 ) -> Caret {
-    let caret = delete_selection(document, history, selection);
-    let Some(target) = paragraph_at(document, caret.paragraph) else {
+    let caret = delete_selection(document, scope, history, selection);
+    let Some(target) = paragraph_at(document, scope, caret.paragraph) else {
         return caret;
     };
     let Some((clip_first, rest)) = clip.split_first() else {
@@ -1053,12 +1166,20 @@ pub fn paste_paragraphs(
 
     if rest.is_empty() {
         // All of it lands inside the one paragraph.
-        history.push(Change::Paragraph {
-            index: caret.paragraph,
-            before: Box::new(target),
-        });
+        history.push(
+            scope,
+            Change::Paragraph {
+                index: caret.paragraph,
+                before: Box::new(target),
+            },
+        );
         let joined = text::merge(&text::merge(&head, clip_first), &tail);
-        replace_range(document, caret.paragraph..caret.paragraph + 1, vec![joined]);
+        replace_range(
+            document,
+            scope,
+            caret.paragraph..caret.paragraph + 1,
+            vec![joined],
+        );
         return Caret {
             paragraph: caret.paragraph,
             offset: caret.offset + text::len(clip_first),
@@ -1071,23 +1192,25 @@ pub fn paste_paragraphs(
     built.extend(middle.iter().cloned());
     built.push(text::merge(clip_last, &tail));
 
-    history.push(Change::Range {
-        first: caret.paragraph,
-        before: vec![target],
-        now: built.len(),
-    });
+    history.push(
+        scope,
+        Change::Range {
+            first: caret.paragraph,
+            before: vec![target],
+            now: built.len(),
+        },
+    );
     let landed = Caret {
         paragraph: caret.paragraph + built.len() - 1,
         offset: text::len(clip_last),
     };
-    replace_range(document, caret.paragraph..caret.paragraph + 1, built);
+    replace_range(document, scope, caret.paragraph..caret.paragraph + 1, built);
     landed
 }
 
 /// The alignment of the paragraph the caret is in.
-pub fn justify_at(document: &Document, caret: Caret) -> Option<Justify> {
-    let paragraphs = document.paragraphs();
-    let paragraph = paragraphs.get(caret.paragraph)?;
+pub fn justify_at(document: &Document, scope: Scope, caret: Caret) -> Option<Justify> {
+    let paragraph = document.paragraph_in(scope, caret.paragraph)?;
     document
         .styles
         .resolve_paragraph(&paragraph.props, None)
@@ -1143,13 +1266,16 @@ mod tests {
         set_section(&mut document, &mut history, here, section);
         assert_eq!(document.section.margins.top, Twips(2880));
 
-        let caret = history.undo(&mut document).expect("there is an undo");
+        let caret = history
+            .undo(&mut document)
+            .map(|(_, caret)| caret)
+            .expect("there is an undo");
         assert_eq!(
             document.section.margins.top, was,
             "the old margins are back"
         );
         assert_eq!(caret, here, "undo returns to where the user was");
-        history.redo(&mut document);
+        history.redo(&mut document).map(|(_, caret)| caret);
         assert_eq!(document.section.margins.top, Twips(2880));
     }
 
@@ -1158,7 +1284,13 @@ mod tests {
         use wp_model::doc::{Break, Piece};
         let mut document = document(&["hello world"]);
         let mut history = History::new();
-        let caret = insert_break(&mut document, &mut history, at(0, 5), Break::Page);
+        let caret = insert_break(
+            &mut document,
+            Scope::Body,
+            &mut history,
+            at(0, 5),
+            Break::Page,
+        );
         // A break is not a byte of text: nothing the caret counts has changed.
         assert_eq!(
             caret,
@@ -1181,7 +1313,7 @@ mod tests {
             "and the text reads straight through it"
         );
 
-        history.undo(&mut document);
+        history.undo(&mut document).map(|(_, caret)| caret);
         assert!(!has_break(&document), "undo takes the break out");
         assert_eq!(document.paragraphs()[0].text(), "hello world");
     }
@@ -1190,13 +1322,13 @@ mod tests {
     fn typing_inserts_and_undo_takes_it_back() {
         let mut document = document(&["hello"]);
         let mut history = History::new();
-        let caret = type_text(&mut document, &mut history, at(0, 5), " world");
+        let caret = type_text(&mut document, Scope::Body, &mut history, at(0, 5), " world");
         assert_eq!(document.text(), "hello world");
         assert_eq!(caret.offset, 11);
 
-        history.undo(&mut document);
+        history.undo(&mut document).map(|(_, caret)| caret);
         assert_eq!(document.text(), "hello");
-        history.redo(&mut document);
+        history.redo(&mut document).map(|(_, caret)| caret);
         assert_eq!(document.text(), "hello world");
     }
 
@@ -1210,13 +1342,14 @@ mod tests {
         for letter in "hello".chars() {
             caret = type_text(
                 &mut document,
+                Scope::Body,
                 &mut history,
                 Selection::at(caret),
                 &letter.to_string(),
             );
         }
         assert_eq!(document.text(), "hello");
-        history.undo(&mut document);
+        history.undo(&mut document).map(|(_, caret)| caret);
         assert_eq!(document.text(), "", "the whole word went in one");
     }
 
@@ -1228,12 +1361,13 @@ mod tests {
         for letter in "one two".chars() {
             caret = type_text(
                 &mut document,
+                Scope::Body,
                 &mut history,
                 Selection::at(caret),
                 &letter.to_string(),
             );
         }
-        history.undo(&mut document);
+        history.undo(&mut document).map(|(_, caret)| caret);
         assert_eq!(
             document.text(),
             "one ",
@@ -1245,7 +1379,7 @@ mod tests {
     fn enter_splits_a_paragraph_and_undo_joins_it() {
         let mut document = document(&["hello world"]);
         let mut history = History::new();
-        let caret = split_paragraph(&mut document, &mut history, at(0, 5));
+        let caret = split_paragraph(&mut document, Scope::Body, &mut history, at(0, 5));
         assert_eq!(document.paragraphs().len(), 2);
         assert_eq!(document.text(), "hello\n world");
         assert_eq!(
@@ -1256,10 +1390,10 @@ mod tests {
             }
         );
 
-        history.undo(&mut document);
+        history.undo(&mut document).map(|(_, caret)| caret);
         assert_eq!(document.paragraphs().len(), 1);
         assert_eq!(document.text(), "hello world");
-        history.redo(&mut document);
+        history.redo(&mut document).map(|(_, caret)| caret);
         assert_eq!(document.paragraphs().len(), 2);
     }
 
@@ -1267,7 +1401,7 @@ mod tests {
     fn backspace_at_the_start_of_a_paragraph_joins_it_to_the_one_before() {
         let mut document = document(&["first", "second"]);
         let mut history = History::new();
-        let caret = backspace(&mut document, &mut history, at(1, 0));
+        let caret = backspace(&mut document, Scope::Body, &mut history, at(1, 0));
         assert_eq!(document.paragraphs().len(), 1);
         assert_eq!(document.text(), "firstsecond");
         assert_eq!(
@@ -1278,7 +1412,7 @@ mod tests {
             }
         );
 
-        history.undo(&mut document);
+        history.undo(&mut document).map(|(_, caret)| caret);
         assert_eq!(document.paragraphs().len(), 2);
         assert_eq!(document.text(), "first\nsecond");
     }
@@ -1287,7 +1421,7 @@ mod tests {
     fn backspace_at_the_very_start_of_the_document_does_nothing() {
         let mut document = document(&["only"]);
         let mut history = History::new();
-        backspace(&mut document, &mut history, at(0, 0));
+        backspace(&mut document, Scope::Body, &mut history, at(0, 0));
         assert_eq!(document.text(), "only");
         assert!(!history.can_undo(), "nothing happened, so nothing to undo");
     }
@@ -1296,7 +1430,7 @@ mod tests {
     fn delete_at_the_end_joins_the_next_paragraph_up() {
         let mut document = document(&["first", "second"]);
         let mut history = History::new();
-        let caret = delete_forward(&mut document, &mut history, at(0, 5));
+        let caret = delete_forward(&mut document, Scope::Body, &mut history, at(0, 5));
         assert_eq!(document.text(), "firstsecond");
         assert_eq!(
             caret,
@@ -1311,7 +1445,12 @@ mod tests {
     fn a_selection_spanning_paragraphs_is_deleted_as_one() {
         let mut document = document(&["first", "middle", "last"]);
         let mut history = History::new();
-        let caret = delete_selection(&mut document, &mut history, span((0, 2), (2, 2)));
+        let caret = delete_selection(
+            &mut document,
+            Scope::Body,
+            &mut history,
+            span((0, 2), (2, 2)),
+        );
         assert_eq!(document.paragraphs().len(), 1);
         assert_eq!(document.text(), "fist");
         assert_eq!(
@@ -1322,7 +1461,7 @@ mod tests {
             }
         );
 
-        history.undo(&mut document);
+        history.undo(&mut document).map(|(_, caret)| caret);
         assert_eq!(document.paragraphs().len(), 3);
         assert_eq!(document.text(), "first\nmiddle\nlast");
     }
@@ -1334,11 +1473,16 @@ mod tests {
         // after it.
         let mut document = document(&["aa", "bb", "cc", "dd"]);
         let mut history = History::new();
-        delete_selection(&mut document, &mut history, span((1, 1), (2, 1)));
+        delete_selection(
+            &mut document,
+            Scope::Body,
+            &mut history,
+            span((1, 1), (2, 1)),
+        );
         assert_eq!(document.text(), "aa\nbc\ndd");
-        history.undo(&mut document);
+        history.undo(&mut document).map(|(_, caret)| caret);
         assert_eq!(document.text(), "aa\nbb\ncc\ndd");
-        history.redo(&mut document);
+        history.redo(&mut document).map(|(_, caret)| caret);
         assert_eq!(document.text(), "aa\nbc\ndd");
     }
 
@@ -1346,7 +1490,13 @@ mod tests {
     fn typing_over_a_selection_replaces_it() {
         let mut document = document(&["hello world"]);
         let mut history = History::new();
-        let caret = type_text(&mut document, &mut history, span((0, 0), (0, 5)), "goodbye");
+        let caret = type_text(
+            &mut document,
+            Scope::Body,
+            &mut history,
+            span((0, 0), (0, 5)),
+            "goodbye",
+        );
         assert_eq!(document.text(), "goodbye world");
         assert_eq!(caret.offset, 7);
     }
@@ -1357,9 +1507,13 @@ mod tests {
         // takes the formatting and it looks like the selection was ignored.
         let mut document = document(&["boldplain"]);
         let mut history = History::new();
-        format_runs(&mut document, &mut history, span((0, 0), (0, 4)), |props| {
-            props.toggles.set(Toggle::Bold, true)
-        });
+        format_runs(
+            &mut document,
+            Scope::Body,
+            &mut history,
+            span((0, 0), (0, 4)),
+            |props| props.toggles.set(Toggle::Bold, true),
+        );
         let paragraphs = document.paragraphs();
         let runs = paragraphs[0].runs();
         assert_eq!(runs.len(), 2, "the run was cut in two");
@@ -1379,6 +1533,7 @@ mod tests {
         let end = text::len(document.paragraphs()[2]);
         format_runs(
             &mut document,
+            Scope::Body,
             &mut history,
             span((0, 0), (2, end)),
             |props| props.toggles.set(Toggle::Bold, true),
@@ -1394,9 +1549,13 @@ mod tests {
     fn a_selection_stopping_short_of_the_end_leaves_the_mark_alone() {
         let mut document = document(&["boldplain"]);
         let mut history = History::new();
-        format_runs(&mut document, &mut history, span((0, 0), (0, 4)), |props| {
-            props.toggles.set(Toggle::Bold, true)
-        });
+        format_runs(
+            &mut document,
+            Scope::Body,
+            &mut history,
+            span((0, 0), (0, 4)),
+            |props| props.toggles.set(Toggle::Bold, true),
+        );
         assert!(
             document.paragraphs()[0].props.mark.is_none(),
             "the mark is past the selection"
@@ -1407,11 +1566,15 @@ mod tests {
     fn formatting_is_undoable_like_everything_else() {
         let mut document = document(&["text"]);
         let mut history = History::new();
-        format_runs(&mut document, &mut history, span((0, 0), (0, 4)), |props| {
-            props.toggles.set(Toggle::Italic, true)
-        });
+        format_runs(
+            &mut document,
+            Scope::Body,
+            &mut history,
+            span((0, 0), (0, 4)),
+            |props| props.toggles.set(Toggle::Italic, true),
+        );
         assert!(document.paragraphs()[0].runs()[0].props.italic());
-        history.undo(&mut document);
+        history.undo(&mut document).map(|(_, caret)| caret);
         assert!(!document.paragraphs()[0].runs()[0].props.italic());
     }
 
@@ -1419,15 +1582,19 @@ mod tests {
     fn centring_a_paragraph_needs_no_selection() {
         let mut document = document(&["one", "two"]);
         let mut history = History::new();
-        format_paragraphs(&mut document, &mut history, at(1, 0), |props| {
-            props.justify = Some(Justify::Center)
-        });
+        format_paragraphs(
+            &mut document,
+            Scope::Body,
+            &mut history,
+            at(1, 0),
+            |props| props.justify = Some(Justify::Center),
+        );
         assert_eq!(document.paragraphs()[0].props.justify, None);
         assert_eq!(
             document.paragraphs()[1].props.justify,
             Some(Justify::Center)
         );
-        history.undo(&mut document);
+        history.undo(&mut document).map(|(_, caret)| caret);
         assert_eq!(document.paragraphs()[1].props.justify, None);
     }
 
@@ -1447,15 +1614,15 @@ mod tests {
         // drift apart because there is only one implementation.
         let mut document = document(&["a", "b"]);
         let mut history = History::new();
-        type_text(&mut document, &mut history, at(0, 1), "X");
-        split_paragraph(&mut document, &mut history, at(0, 1));
+        type_text(&mut document, Scope::Body, &mut history, at(0, 1), "X");
+        split_paragraph(&mut document, Scope::Body, &mut history, at(0, 1));
         let after = document.text();
 
-        history.undo(&mut document);
-        history.undo(&mut document);
+        history.undo(&mut document).map(|(_, caret)| caret);
+        history.undo(&mut document).map(|(_, caret)| caret);
         assert_eq!(document.text(), "a\nb");
-        history.redo(&mut document);
-        history.redo(&mut document);
+        history.redo(&mut document).map(|(_, caret)| caret);
+        history.redo(&mut document).map(|(_, caret)| caret);
         assert_eq!(document.text(), after);
     }
 
@@ -1500,7 +1667,7 @@ mod tests {
         // pressing Enter in one bullet destroyed the next.
         let mut document = cell_document(&["first item", "second item"]);
         let mut history = History::new();
-        let caret = split_paragraph(&mut document, &mut history, at(0, 5));
+        let caret = split_paragraph(&mut document, Scope::Body, &mut history, at(0, 5));
         assert_eq!(
             texts(&document),
             ["first", " item", "second item", "after the table"]
@@ -1520,7 +1687,7 @@ mod tests {
             3,
             "the cell gained the new paragraph"
         );
-        history.undo(&mut document);
+        history.undo(&mut document).map(|(_, caret)| caret);
         assert_eq!(
             texts(&document),
             ["first item", "second item", "after the table"]
@@ -1534,7 +1701,7 @@ mod tests {
         // the second as well — every join duplicated a paragraph.
         let mut document = cell_document(&["first item", "second item"]);
         let mut history = History::new();
-        let caret = backspace(&mut document, &mut history, at(1, 0));
+        let caret = backspace(&mut document, Scope::Body, &mut history, at(1, 0));
         assert_eq!(
             texts(&document),
             ["first itemsecond item", "after the table"]
@@ -1546,7 +1713,7 @@ mod tests {
                 offset: 10
             }
         );
-        history.undo(&mut document);
+        history.undo(&mut document).map(|(_, caret)| caret);
         assert_eq!(
             texts(&document),
             ["first item", "second item", "after the table"]
@@ -1557,9 +1724,14 @@ mod tests {
     fn deleting_a_selection_across_cell_paragraphs_joins_them() {
         let mut document = cell_document(&["first item", "second item"]);
         let mut history = History::new();
-        delete_selection(&mut document, &mut history, span((0, 5), (1, 6)));
+        delete_selection(
+            &mut document,
+            Scope::Body,
+            &mut history,
+            span((0, 5), (1, 6)),
+        );
         assert_eq!(texts(&document), ["first item", "after the table"]);
-        history.undo(&mut document);
+        history.undo(&mut document).map(|(_, caret)| caret);
         assert_eq!(
             texts(&document),
             ["first item", "second item", "after the table"]
@@ -1586,10 +1758,10 @@ mod tests {
             ..Document::new()
         };
         let mut history = History::new();
-        type_text(&mut document, &mut history, at(0, 2), "X");
+        type_text(&mut document, Scope::Body, &mut history, at(0, 2), "X");
         assert_eq!(document.paragraphs()[0].text(), "inX a cell");
         assert_eq!(document.body.len(), 1, "still one table and nothing beside");
-        history.undo(&mut document);
+        history.undo(&mut document).map(|(_, caret)| caret);
         assert_eq!(document.paragraphs()[0].text(), "in a cell");
     }
 }

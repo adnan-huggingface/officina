@@ -130,7 +130,7 @@ pub fn painted_runs(line: &wp_layout::inline::Line) -> Vec<(f64, f64, [u8; 3])> 
 pub fn flatten(page: &Page) -> Vec<Op> {
     let mut ops = Vec::new();
     let theme = wp_model::Theme::default();
-    for placement in page.painted() {
+    for (_, placement) in page.painted() {
         match &placement.kind {
             Placed::Fill(rgb) => ops.push(Op::Fill {
                 x: placement.x,
@@ -697,6 +697,8 @@ mod tests {
             header: Vec::new(),
             footer: Vec::new(),
             footnotes: Vec::new(),
+            header_body: None,
+            footer_body: None,
         }
     }
 

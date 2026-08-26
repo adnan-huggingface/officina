@@ -1011,3 +1011,44 @@ drawn. Word puts the shape in the default header and leaves the other parts
 empty; stamping all three writes shapes into stories no reader sees, and Word
 then reports three watermarks on a document that shows one. The rule that
 decides which headers are live is the same one that picks a header for a page.
+
+A document is not one body, and a paragraph index is not a position.
+
+Its own text is one flow of blocks; every header and footer is another, edited
+the same way and counting its paragraphs from zero. An editor that names a
+position by number alone can only ever reach one of them — and it will not fail
+loudly, it will quietly agree that paragraph three of the header is paragraph
+three of the text. That is one bug on the way in (a click on the body selected
+a shape drawn in the header) and a worse one on the way back out (undo
+restoring a header's paragraph over a paragraph of the text). The flow belongs
+beside the index everywhere the index goes: in the caret, in the hit test, in
+the layout's placements, and in every entry of the undo stack.
+
+An editor that can only edit one flow grows a dialog for every other one.
+
+Scriva's header box asked for text, a face, a size and an alignment because
+that was all the editor could put into a header — not because that is what a
+header is. Real ones hold tables, logos and fields, and a box like that
+flattens them on Apply. The dialog was not a design decision that turned out
+badly; it was the shape of a missing capability, and it stayed convincing until
+someone opened a document whose header had a table in it. When a feature can
+only be offered through a form, ask whether the form is standing in for
+something the editor cannot yet do.
+
+A field's pieces all sit at the same offset.
+
+`{ PAGE }` is five pieces — start, instruction, separator, cached result, end —
+and only the cached result carries any text. Inserting them one at a time at a
+caret offset writes them in reverse, because each insertion lands at the same
+offset and goes in front of the last. Anything made of several pieces that
+carry no text between them has to arrive as one splice.
+
+A premultiplied white at two-thirds alpha is not a veil, it is paint.
+
+Greying the part of a page that is not being edited looked like a two-line
+change: a translucent white rectangle over it. Full-white channels with an
+alpha of 0xAA are super-luminous in premultiplied space — they add white while
+attenuating only a third — and the body went blank, table rules and all. The
+suite could not have caught it and neither could reading the code; a screenshot
+of the running application did, in one glance. Premultiply the channels with
+the alpha, or use the helper that does.

@@ -2602,6 +2602,79 @@ has a writer. The page frame it draws with a plain rectangle still does not:
 there is nothing to write it as. The dialog that says so has been corrected.
 
 
+### The header is edited where it is drawn
+
+**A box that takes a header's text and gives text back is not an editor.** The
+one this replaces asked for the words, a face, a size and an alignment, and
+wrote a header of plain paragraphs from them. The header of the document that
+prompted it holds a table — ECN#, DATE, BY, REVISION, ISSUE — and applying that
+box to it would have written one line of text where the table used to be. It
+was also on the wrong menu: Insert is for putting something in, and a header
+that is already there is being *changed*.
+
+**The reason it was a box was structural, not a choice.** The editor could only
+edit one flow. A caret said which paragraph, counted through
+`Document::paragraphs` — the body's own walk — and a header is flowed on its
+own with its count starting again at zero, so there was no way to name a
+position inside one. Nothing in the caret, the hit test or the undo stack could
+say *which* body it meant.
+
+So `wp_model::Scope` names one: the body, or one header or footer by the
+identity its section references. Every editing operation takes one; the undo
+stack records it with each change, because taking back a header's edit against
+the body would restore the header's paragraph over whatever paragraph of the
+text happened to share its number. A `Page` now says which body each of its two
+bands was laid out from, so a line in the band names a paragraph of *that*
+header — and which header it is depends on the page, since a section can name a
+different one for its first page and its even ones.
+
+**What that buys is that a header is edited by the editor.** Double-click the
+top margin and the caret moves into the band; the text washes out; a dashed
+rule and a tab say which band is open. Type, select, bold, tab to the centre,
+insert a table, drag the watermark, Ctrl+Z. A header holding a table is still a
+header holding a table afterwards, because nothing was re-authored from a
+description of it. Escape, the bar's own Close, or a double-click on the page
+puts the caret back in the text exactly where it left.
+
+**A click on the part of the page that is not being edited does nothing**, which
+is what the wash over it promises. Word's own rule, and the alternative — a
+click dragging the caret out from under the keyboard while the header still
+looks open — is worse than an unresponsive one.
+
+**Where the three commands live now.** Scriva has a menu bar and no ribbon, so
+they went where Word's own menu bar had them rather than where its ribbon does:
+**View ▸ Header and Footer** opens the band, **Insert ▸ Header / Footer** makes
+one and drops the caret in it, **Insert ▸ Page Number** puts a PAGE field where
+the caret is, and **Format ▸ Watermark…** is Word 2003's Format ▸ Background ▸
+Printed Watermark under a shorter name. A watermark keeps its box — it is one
+shape with four properties and nobody has ever wanted to place one by hand —
+but it is now also a shape that can be selected and dragged once the header it
+lives in is open, which is exactly how Word behaves.
+
+**A new band is not a bare paragraph.** Word's Header and Footer styles hold
+the line to single, take the space off both ends of it, and put a centre tab at
+the middle of the text column and a right tab at its end — which is what makes
+Tab walk a name, a title and a page number across the width. A paragraph
+without them inherits the *body's* defaults, and a document set with an inch of
+space after every paragraph would push its own text down the page to make room
+under a one-line header.
+
+**Two things only the running application could have said.** A wash of full
+white at two-thirds alpha does not grey a page, it paints over it: the colour
+is premultiplied, and the first attempt erased the very text it was meant to
+leave showing — the body went blank, table rules and all, and only a screenshot
+said so. And a double-click in the *other* margin while one band is open has to
+switch to it, not take a word: the first version fell through to the ordinary
+double-click and selected a word in the header while the pointer was down in the
+footer.
+
+**A field is not one piece and cannot be inserted one piece at a time.** Its
+start, its instruction, its separator, its cached result and its end carry no
+text between them, so every one of them lands at the same offset — and a second
+insertion at that offset goes *before* what the first one put there. The first
+page number came out written backwards, end first. The whole field arrives as
+one splice now.
+
 ## Deferred
 
 - [x] **PDF** — was dropped per Q3; built after ship as `wp-print`. See above.

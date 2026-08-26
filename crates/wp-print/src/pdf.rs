@@ -871,6 +871,8 @@ mod tests {
             header: Vec::new(),
             footer: Vec::new(),
             footnotes: Vec::new(),
+            header_body: None,
+            footer_body: None,
         }
     }
 

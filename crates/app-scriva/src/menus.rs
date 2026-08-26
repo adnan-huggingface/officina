@@ -109,6 +109,8 @@ impl Scriva {
         let navigator = self.showing_navigator();
         let (tracking, reviewer) = self.reviewing();
         let (orientation, paper, margins) = self.page_setup();
+        let in_band = self.editing_band();
+        let (has_header, has_footer) = self.has_bands();
 
         menu::bar(ui, |ui| {
             let mut chosen = None;
@@ -208,6 +210,16 @@ impl Scriva {
                     }
                 });
                 menu::sep(ui);
+                // Word's own menu bar kept this here, and it is the right
+                // place: opening the header is a change of what is being
+                // looked at and edited, not something inserted.
+                if menu::check(ui, "&Header and Footer", "", in_band).clicked() {
+                    chosen = Some(match in_band {
+                        true => Command::CloseChrome,
+                        false => Command::EditHeader,
+                    });
+                }
+                menu::sep(ui);
                 if menu::check(ui, "Formatting &Marks", "Ctrl+Shift+8", marks).clicked() {
                     chosen = Some(Command::ShowMarks);
                 }
@@ -231,6 +243,14 @@ impl Scriva {
                 }
                 if menu::item(ui, "Strike&through", "").clicked() {
                     chosen = Some(Command::Strike);
+                }
+                // Word's menu bar had this at Format ▸ Background ▸ Printed
+                // Watermark; there is no background submenu here to hang it
+                // under, and a watermark is a thing the page is formatted
+                // with rather than a thing inserted into the text.
+                menu::sep(ui);
+                if menu::item(ui, "&Watermark…", "").clicked() {
+                    chosen = Some(Command::Watermark);
                 }
                 menu::sep(ui);
                 if menu::item(ui, "Su&perscript", "Ctrl+Shift+=").clicked() {
@@ -452,18 +472,37 @@ impl Scriva {
                     chosen = Some(Command::UpdateToc);
                 }
                 menu::sep(ui);
-                if menu::item(ui, "&Header…", "").clicked() {
-                    chosen = Some(Command::EditHeader);
-                }
-                if menu::item(ui, "&Footer…", "").clicked() {
-                    chosen = Some(Command::EditFooter);
-                }
-                // Word keeps this on a Design tab of its own. There is no
-                // such menu here, and a watermark is a thing put into the
-                // header — which is where the two commands beside it live.
-                if menu::item(ui, "&Watermark…", "").clicked() {
-                    chosen = Some(Command::Watermark);
-                }
+                // Edit makes the band if the document has none and puts the
+                // caret in it. There is nothing to fill in first: what goes in
+                // a header is typed into the header.
+                menu::sub(ui, "&Header", |ui| {
+                    if menu::item(ui, "&Edit Header", "").clicked() {
+                        chosen = Some(Command::EditHeader);
+                    }
+                    ui.add_enabled_ui(has_header, |ui| {
+                        if menu::item(ui, "&Remove Header", "").clicked() {
+                            chosen = Some(Command::RemoveChrome { footer: false });
+                        }
+                    });
+                });
+                menu::sub(ui, "&Footer", |ui| {
+                    if menu::item(ui, "&Edit Footer", "").clicked() {
+                        chosen = Some(Command::EditFooter);
+                    }
+                    ui.add_enabled_ui(has_footer, |ui| {
+                        if menu::item(ui, "&Remove Footer", "").clicked() {
+                            chosen = Some(Command::RemoveChrome { footer: true });
+                        }
+                    });
+                });
+                menu::sub(ui, "Page &Number", |ui| {
+                    if menu::item(ui, "&Plain Number", "").clicked() {
+                        chosen = Some(Command::InsertPageNumber { of_pages: false });
+                    }
+                    if menu::item(ui, "Page &X of Y", "").clicked() {
+                        chosen = Some(Command::InsertPageNumber { of_pages: true });
+                    }
+                });
             });
 
             // Everything here acts on the table the caret is in, and says so

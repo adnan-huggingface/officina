@@ -115,7 +115,19 @@ pub fn insert(paragraph: &mut Paragraph, offset: usize, text: &str) -> usize {
 /// added, which for a page break is none: the caret's world is bytes, and a
 /// break is not a byte.
 pub fn insert_piece(paragraph: &mut Paragraph, offset: usize, piece: Piece) -> usize {
-    let added = piece_len(&piece);
+    insert_pieces(paragraph, offset, vec![piece])
+}
+
+/// The same, for several pieces that go in together and in order.
+///
+/// **A field is not one piece and cannot be inserted one piece at a time.**
+/// Its start, its instruction, its separator, its cached result and its end
+/// carry no text between them, so every one of them lands at the same offset —
+/// and a second call at that offset goes *before* what the first one put
+/// there. Inserting `{ PAGE }` a piece at a time wrote it backwards, end
+/// first. So the whole field arrives as one splice.
+pub fn insert_pieces(paragraph: &mut Paragraph, offset: usize, pieces: Vec<Piece>) -> usize {
+    let added: usize = pieces.iter().map(piece_len).sum();
     match spot_at(paragraph, offset) {
         Some(spot) => {
             let Some(run) = nth_run_mut(paragraph, spot.run) else {
@@ -126,9 +138,10 @@ pub fn insert_piece(paragraph: &mut Paragraph, offset: usize, piece: Piece) -> u
                     let owned = existing.to_string();
                     let (left, right) = owned.split_at(spot.offset);
                     *existing = left.into();
-                    run.content.insert(spot.piece + 1, piece);
+                    let tail = Piece::Text(right.into());
+                    let at = spot.piece + 1;
                     run.content
-                        .insert(spot.piece + 2, Piece::Text(right.into()));
+                        .splice(at..at, pieces.into_iter().chain(std::iter::once(tail)));
                 }
                 Some(_) => {
                     let at = if spot.offset == 0 {
@@ -136,18 +149,18 @@ pub fn insert_piece(paragraph: &mut Paragraph, offset: usize, piece: Piece) -> u
                     } else {
                         spot.piece + 1
                     };
-                    run.content.insert(at, piece);
+                    run.content.splice(at..at, pieces);
                 }
-                None => run.content.push(piece),
+                None => run.content.extend(pieces),
             }
         }
-        // The paragraph has no text to land in: the piece starts a run of the
+        // The paragraph has no text to land in: the pieces start a run of the
         // mark's own formatting, same as typing into an empty paragraph.
         None => {
             let props = props_at(paragraph, 0);
             paragraph.content.push(Inline::Run(Run {
                 props,
-                content: vec![piece],
+                content: pieces,
                 prop_change: None,
             }));
         }

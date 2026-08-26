@@ -89,11 +89,27 @@ pub enum Command {
     /// Table ▸ Border Colour: every rule of the caret's table in this colour.
     BorderColor(wp_model::Color),
     CustomBorderColor,
-    /// Insert ▸ Header… — the dialog for the text on top of every page.
+    /// Opens the header of the page being looked at, for editing in place —
+    /// View ▸ Header and Footer, and a double-click in the top margin.
     EditHeader,
-    Watermark,
-    /// Insert ▸ Footer… — the same, underneath.
+    /// The same, underneath.
     EditFooter,
+    /// Back to the text: Escape, the band bar's own button, and a
+    /// double-click on the body.
+    CloseChrome,
+    /// Word's Switch Between Header and Footer, under its own name.
+    SwitchBand,
+    /// A PAGE field at the caret, and with it the total when asked.
+    InsertPageNumber {
+        of_pages: bool,
+    },
+    /// Word's Remove Header and Remove Footer: the band and the references
+    /// that name it, gone together.
+    RemoveChrome {
+        footer: bool,
+    },
+    /// Format ▸ Watermark…
+    Watermark,
     /// Paragraph ▸ Bullets — the selection's paragraphs into a bulleted
     /// list, or out of the one they are in.
     Bullets,
@@ -213,6 +229,19 @@ pub struct Scriva {
     view: View,
     history: History,
     selection: Selection,
+    /// Which of the document's flows the caret is in: the text, or one header
+    /// or footer being edited in place.
+    ///
+    /// **A header is edited where it is drawn, not in a box.** A real one
+    /// holds a table of revisions, a logo and three fields; a dialog that took
+    /// its text and gave text back would hand that document a paragraph where
+    /// its table used to be. So the editor moves into the band instead — the
+    /// same caret, the same keys, the same undo — and this says where it is.
+    scope: wp_model::Scope,
+    /// Where the caret stood in the text before a band was opened, so closing
+    /// one puts it back rather than at the top of the page. Word does the
+    /// same, and a caret that jumps on the way out loses the user's place.
+    left_behind: Option<Selection>,
     shaper: Option<Egui>,
     recent: Recent,
     message: Option<(String, String)>,
@@ -253,8 +282,6 @@ pub struct Scriva {
     /// Set for the one frame between handing egui new fonts and it having
     /// built them, during which nothing measured is to be believed.
     fonts_settling: bool,
-    /// The header or footer dialog. Blank text takes the header away.
-    chrome_draft: Option<ChromeDraft>,
     watermark_draft: Option<WatermarkDraft>,
     /// The paragraph dialog: what it opened with, and what has been typed
     /// since, so that only the fields the user touched are applied.
@@ -367,6 +394,8 @@ impl Scriva {
             view: View::default(),
             history: History::new(),
             selection: Selection::default(),
+            scope: wp_model::Scope::Body,
+            left_behind: None,
             shaper: None,
             recent: Recent::load(SCRIVA),
             message: None,
@@ -386,7 +415,6 @@ impl Scriva {
             cell_margin_draft: None,
             pending_fonts: None,
             fonts_settling: false,
-            chrome_draft: None,
             watermark_draft: None,
             paragraph_draft: None,
             size_draft: None,
@@ -444,6 +472,26 @@ impl Scriva {
         self.selection.head
     }
 
+    /// Puts the caret at a place that may not be in the flow it is in now —
+    /// what undo needs, since a header's edit has to be taken back with the
+    /// header open, and what closing a band needs on the way out.
+    ///
+    /// A scope naming a header that is no longer there sends the caret back to
+    /// the text rather than into an empty flow with nothing drawn for it.
+    fn go_to(&mut self, scope: wp_model::Scope, caret: Caret) {
+        let scope = match scope {
+            wp_model::Scope::Chrome(id) if self.document.header(id).is_none() => {
+                wp_model::Scope::Body
+            }
+            scope => scope,
+        };
+        if self.scope != scope {
+            self.picked = None;
+        }
+        self.scope = scope;
+        self.selection = Selection::at(clamp(&self.document, scope, caret));
+    }
+
     fn set_caret(&mut self, caret: Caret, extend: bool) {
         if extend {
             self.selection.head = caret;
@@ -460,7 +508,7 @@ impl Scriva {
     fn link_at(&self, caret: Caret) -> Option<crate::links::Destination> {
         let link = self
             .document
-            .paragraph(caret.paragraph)?
+            .paragraph_in(self.scope, caret.paragraph)?
             .link_at(caret.offset)?;
         if let Some(anchor) = &link.anchor {
             return Some(crate::links::Destination::Here(anchor.to_string()));
@@ -500,15 +548,29 @@ impl Scriva {
     }
 
     fn paragraph_count(&self) -> usize {
-        self.document.paragraphs().len()
+        self.document.paragraphs_in(self.scope).len()
     }
 
     fn paragraph_text(&self, index: usize) -> String {
         self.document
-            .paragraphs()
-            .get(index)
+            .paragraph_in(self.scope, index)
             .map(|paragraph| paragraph.text())
             .unwrap_or_default()
+    }
+
+    /// Whether a header or footer is open for editing, for the View menu's
+    /// tick and for anything that must not act on the text while it is.
+    pub(crate) fn editing_band(&self) -> bool {
+        self.scope != wp_model::Scope::Body
+    }
+
+    /// Whether the section names a header and whether it names a footer, for
+    /// the two Remove commands.
+    pub(crate) fn has_bands(&self) -> (bool, bool) {
+        (
+            !self.document.section.headers.is_empty(),
+            !self.document.section.footers.is_empty(),
+        )
     }
 
     pub(crate) fn document_ref(&self) -> &Document {
@@ -587,27 +649,27 @@ impl Scriva {
 
     /// Whether the selection is bold, italic and underlined, for the toolbar.
     pub(crate) fn emphasis(&self) -> (bool, bool, bool) {
-        let scope = self.formatting_scope();
+        let range = self.formatting_range();
         (
-            edit::all_runs(&self.document, scope, |props| {
+            edit::all_runs(&self.document, self.scope, range, |props| {
                 props.toggles.is_on(Toggle::Bold)
             }),
-            edit::all_runs(&self.document, scope, |props| {
+            edit::all_runs(&self.document, self.scope, range, |props| {
                 props.toggles.is_on(Toggle::Italic)
             }),
-            edit::all_runs(&self.document, scope, |props| {
+            edit::all_runs(&self.document, self.scope, range, |props| {
                 props.underline.is_some_and(|u| u.kind.draws())
             }),
         )
     }
 
     pub(crate) fn alignment(&self) -> Option<Justify> {
-        edit::justify_at(&self.document, self.caret())
+        edit::justify_at(&self.document, self.scope, self.caret())
     }
 
     /// What a formatting command with no selection would act on: the word the
     /// caret is in.
-    fn formatting_scope(&self) -> Selection {
+    fn formatting_range(&self) -> Selection {
         if !self.selection.is_empty() {
             return self.selection;
         }
@@ -698,6 +760,8 @@ impl Scriva {
         self.dirty = false;
         self.history.clear();
         self.selection = Selection::default();
+        self.scope = wp_model::Scope::Body;
+        self.left_behind = None;
         self.scroll = 0.0;
         self.stamp = self.stamp.wrapping_add(1);
         self.view.invalidate();
@@ -729,6 +793,8 @@ impl Scriva {
                 self.dirty = true;
                 self.history.clear();
                 self.selection = Selection::default();
+                self.scope = wp_model::Scope::Body;
+                self.left_behind = None;
                 self.picked = None;
                 self.scroll = 0.0;
                 self.stamp = self.stamp.wrapping_add(1);
@@ -785,6 +851,8 @@ impl Scriva {
                 self.dirty = false;
                 self.history.clear();
                 self.selection = Selection::default();
+                self.scope = wp_model::Scope::Body;
+                self.left_behind = None;
                 self.scroll = 0.0;
                 self.stamp = self.stamp.wrapping_add(1);
                 self.view.invalidate();
@@ -1070,6 +1138,8 @@ impl Scriva {
         self.dirty = false;
         self.history.clear();
         self.selection = Selection::default();
+        self.scope = wp_model::Scope::Body;
+        self.left_behind = None;
         self.scroll = 0.0;
         self.stamp = self.stamp.wrapping_add(1);
         self.view.invalidate();
@@ -1085,6 +1155,22 @@ impl Scriva {
     }
 
     pub fn run(&mut self, command: Command) {
+        // Some commands are about the text and nothing else — a search, a
+        // heading in the navigation pane, the table of contents. A match or a
+        // heading is a position in the body, and it has no address inside an
+        // open header, so those close the band before they act rather than
+        // sending the caret to a paragraph number in the wrong flow.
+        if matches!(
+            command,
+            Command::Find
+                | Command::Replace
+                | Command::FindNext
+                | Command::FindPrevious
+                | Command::GoTo(_)
+                | Command::UpdateToc
+        ) {
+            self.close_band();
+        }
         match command {
             Command::New => self.close_document(),
             Command::Open => {
@@ -1117,14 +1203,14 @@ impl Scriva {
             Command::Close => self.close_document(),
             Command::Exit => {}
             Command::Undo => {
-                if let Some(caret) = self.history.undo(&mut self.document) {
-                    self.selection = Selection::at(clamp(&self.document, caret));
+                if let Some((scope, caret)) = self.history.undo(&mut self.document) {
+                    self.go_to(scope, caret);
                     self.changed();
                 }
             }
             Command::Redo => {
-                if let Some(caret) = self.history.redo(&mut self.document) {
-                    self.selection = Selection::at(clamp(&self.document, caret));
+                if let Some((scope, caret)) = self.history.redo(&mut self.document) {
+                    self.go_to(scope, caret);
                     self.changed();
                 }
             }
@@ -1218,9 +1304,16 @@ impl Scriva {
                     chosen => Some(chosen),
                 };
             }),
-            Command::EditHeader => self.open_chrome_dialog(false),
+            Command::EditHeader => self.enter_band(self.caret_page(), false),
+            Command::EditFooter => self.enter_band(self.caret_page(), true),
+            Command::CloseChrome => self.close_band(),
+            Command::SwitchBand => {
+                let footer = self.in_footer();
+                self.enter_band(self.caret_page(), !footer);
+            }
+            Command::InsertPageNumber { of_pages } => self.insert_page_field(of_pages),
+            Command::RemoveChrome { footer } => self.remove_band(footer),
             Command::Watermark => self.open_watermark_dialog(),
-            Command::EditFooter => self.open_chrome_dialog(true),
             Command::Bullets => self.toggle_list(true),
             Command::Numbers => self.toggle_list(false),
             Command::TableBorders(on) => self.edit_table(move |table, _, _| {
@@ -1271,6 +1364,7 @@ impl Scriva {
             Command::PageBreak => {
                 let caret = edit::insert_break(
                     &mut self.document,
+                    self.scope,
                     &mut self.history,
                     self.selection,
                     wp_model::doc::Break::Page,
@@ -1370,6 +1464,7 @@ impl Scriva {
             Command::GoTo(paragraph) => {
                 let caret = clamp(
                     &self.document,
+                    self.scope,
                     Caret {
                         paragraph,
                         offset: 0,
@@ -1431,6 +1526,7 @@ impl Scriva {
         let range = span.entries();
         edit::format_paragraphs(
             &mut self.document,
+            self.scope,
             &mut self.history,
             Selection::at(Caret {
                 paragraph: span.first,
@@ -1438,7 +1534,7 @@ impl Scriva {
             }),
             |_| {},
         );
-        edit::replace_range(&mut self.document, range, rows);
+        edit::replace_range(&mut self.document, self.scope, range, rows);
         self.changed();
     }
 
@@ -1451,7 +1547,7 @@ impl Scriva {
             ));
             return;
         }
-        self.selection = Selection::at(clamp(&self.document, self.caret()));
+        self.selection = Selection::at(clamp(&self.document, self.scope, self.caret()));
         self.changed();
     }
 
@@ -1474,7 +1570,7 @@ impl Scriva {
         };
         let mark = found.mark.clone();
         if crate::revise::resolve_one(&mut self.document, &mut self.history, &mark, how) {
-            self.selection = Selection::at(clamp(&self.document, self.caret()));
+            self.selection = Selection::at(clamp(&self.document, self.scope, self.caret()));
             self.changed();
         }
     }
@@ -1526,13 +1622,13 @@ impl Scriva {
     fn probe_runs(&self, f: impl Fn(&wp_model::RunProps) -> bool) -> bool {
         if self.selection.is_empty() {
             let caret = self.caret();
-            let paragraphs = self.document.paragraphs();
+            let paragraphs = self.document.paragraphs_in(self.scope);
             let Some(paragraph) = paragraphs.get(caret.paragraph) else {
                 return false;
             };
             f(&text::props_at(paragraph, caret.offset))
         } else {
-            edit::all_runs(&self.document, self.selection, f)
+            edit::all_runs(&self.document, self.scope, self.selection, f)
         }
     }
 
@@ -1582,14 +1678,17 @@ impl Scriva {
                 // typing here inherits (`text::props_at`). Ctrl+B on a blank
                 // line followed by typing must produce bold text.
                 let index = caret.paragraph;
-                let Some(before) = edit::paragraph_at(&self.document, index) else {
+                let Some(before) = edit::paragraph_at(&self.document, self.scope, index) else {
                     return;
                 };
-                self.history.push(edit::Change::Paragraph {
-                    index,
-                    before: Box::new(before),
-                });
-                let mut paragraphs = self.document.paragraphs_mut();
+                self.history.push(
+                    self.scope,
+                    edit::Change::Paragraph {
+                        index,
+                        before: Box::new(before),
+                    },
+                );
+                let mut paragraphs = self.document.paragraphs_in_mut(self.scope);
                 if let Some(target) = paragraphs.get_mut(index) {
                     let mut mark = target.props.mark.as_deref().cloned().unwrap_or_default();
                     change(&mut mark);
@@ -1608,10 +1707,17 @@ impl Scriva {
                     offset: word.end,
                 },
             };
-            edit::format_runs(&mut self.document, &mut self.history, selection, change);
+            edit::format_runs(
+                &mut self.document,
+                self.scope,
+                &mut self.history,
+                selection,
+                change,
+            );
         } else {
             edit::format_runs(
                 &mut self.document,
+                self.scope,
                 &mut self.history,
                 self.selection,
                 change,
@@ -1623,6 +1729,7 @@ impl Scriva {
     fn format_paragraphs(&mut self, change: impl Fn(&mut wp_model::ParaProps) + Copy) {
         edit::format_paragraphs(
             &mut self.document,
+            self.scope,
             &mut self.history,
             self.selection,
             change,
@@ -1634,7 +1741,7 @@ impl Scriva {
     /// already in a list of that kind, and the press then takes them out.
     fn toggle_list(&mut self, bullets: bool) {
         let (start, end) = self.selection.ordered();
-        let paragraphs = self.document.paragraphs();
+        let paragraphs = self.document.paragraphs_in(self.scope);
         let last = end.paragraph.min(paragraphs.len().saturating_sub(1));
         let kind = |reference: wp_model::prop::NumRef| {
             let level = self
@@ -1721,7 +1828,7 @@ impl Scriva {
         let Some(text) = self.selected_plain_text() else {
             return false;
         };
-        let paragraphs = edit::copy_range(&self.document, self.selection);
+        let paragraphs = edit::copy_range(&self.document, self.scope, self.selection);
         clipboard_set(
             &text,
             &clip::html(&self.document, &paragraphs),
@@ -1903,11 +2010,12 @@ impl Scriva {
             let clip = vec![drawing_paragraph(drawing)];
             let caret = edit::paste_paragraphs(
                 &mut self.document,
+                self.scope,
                 &mut self.history,
                 self.selection,
                 &clip,
             );
-            self.selection = Selection::at(clamp(&self.document, caret));
+            self.selection = Selection::at(clamp(&self.document, self.scope, caret));
             self.changed();
             self.reveal = Some(self.caret());
             return true;
@@ -1976,9 +2084,14 @@ impl Scriva {
             width,
             height,
         )];
-        let caret =
-            edit::paste_paragraphs(&mut self.document, &mut self.history, self.selection, &clip);
-        self.selection = Selection::at(clamp(&self.document, caret));
+        let caret = edit::paste_paragraphs(
+            &mut self.document,
+            self.scope,
+            &mut self.history,
+            self.selection,
+            &clip,
+        );
+        self.selection = Selection::at(clamp(&self.document, self.scope, caret));
         self.changed();
         self.reveal = Some(self.caret());
         true
@@ -2040,9 +2153,14 @@ impl Scriva {
             outline: None,
         };
         let clip = vec![drawing_paragraph(drawing)];
-        let caret =
-            edit::paste_paragraphs(&mut self.document, &mut self.history, self.selection, &clip);
-        self.selection = Selection::at(clamp(&self.document, caret));
+        let caret = edit::paste_paragraphs(
+            &mut self.document,
+            self.scope,
+            &mut self.history,
+            self.selection,
+            &clip,
+        );
+        self.selection = Selection::at(clamp(&self.document, self.scope, caret));
         self.changed();
         self.reveal = Some(self.caret());
         true
@@ -2062,11 +2180,12 @@ impl Scriva {
         };
         let caret = edit::paste_paragraphs(
             &mut self.document,
+            self.scope,
             &mut self.history,
             self.selection,
             &paragraphs,
         );
-        self.selection = Selection::at(clamp(&self.document, caret));
+        self.selection = Selection::at(clamp(&self.document, self.scope, caret));
         self.changed();
         self.reveal = Some(self.caret());
     }
@@ -2085,9 +2204,13 @@ impl Scriva {
         if self.document.settings.track_changes {
             self.record_delete();
         } else {
-            let caret =
-                edit::delete_selection(&mut self.document, &mut self.history, self.selection);
-            self.selection = Selection::at(clamp(&self.document, caret));
+            let caret = edit::delete_selection(
+                &mut self.document,
+                self.scope,
+                &mut self.history,
+                self.selection,
+            );
+            self.selection = Selection::at(clamp(&self.document, self.scope, caret));
             self.changed();
         }
     }
@@ -2105,9 +2228,13 @@ impl Scriva {
             _ => {}
         }
         for segment in segments {
-            let caret =
-                edit::split_paragraph(&mut self.document, &mut self.history, self.selection);
-            self.selection = Selection::at(clamp(&self.document, caret));
+            let caret = edit::split_paragraph(
+                &mut self.document,
+                self.scope,
+                &mut self.history,
+                self.selection,
+            );
+            self.selection = Selection::at(clamp(&self.document, self.scope, caret));
             self.changed();
             if !segment.is_empty() {
                 self.type_text(segment);
@@ -2429,7 +2556,7 @@ impl Scriva {
                         offset: 0,
                     }
                 } else {
-                    let offset = view::line_span(&self.view, caret)
+                    let offset = view::line_span(&self.view, self.scope, caret)
                         .map(|(start, _)| start)
                         .unwrap_or(0);
                     Caret {
@@ -2449,7 +2576,7 @@ impl Scriva {
                         offset: self.paragraph_text(last).len(),
                     }
                 } else {
-                    let offset = match view::line_span(&self.view, caret) {
+                    let offset = match view::line_span(&self.view, self.scope, caret) {
                         Some((start, mut end)) if end < content.len() => {
                             while end > start && content.as_bytes().get(end - 1) == Some(&b' ') {
                                 end -= 1;
@@ -2485,6 +2612,7 @@ impl Scriva {
                     };
                     edit::delete_selection(
                         &mut self.document,
+                        self.scope,
                         &mut self.history,
                         Selection {
                             anchor: from,
@@ -2492,9 +2620,14 @@ impl Scriva {
                         },
                     )
                 } else {
-                    edit::backspace(&mut self.document, &mut self.history, self.selection)
+                    edit::backspace(
+                        &mut self.document,
+                        self.scope,
+                        &mut self.history,
+                        self.selection,
+                    )
                 };
-                self.selection = Selection::at(clamp(&self.document, caret));
+                self.selection = Selection::at(clamp(&self.document, self.scope, caret));
                 self.changed();
             }
             Key::Delete => {
@@ -2506,6 +2639,7 @@ impl Scriva {
                     };
                     edit::delete_selection(
                         &mut self.document,
+                        self.scope,
                         &mut self.history,
                         Selection {
                             anchor: caret,
@@ -2513,9 +2647,14 @@ impl Scriva {
                         },
                     )
                 } else {
-                    edit::delete_forward(&mut self.document, &mut self.history, self.selection)
+                    edit::delete_forward(
+                        &mut self.document,
+                        self.scope,
+                        &mut self.history,
+                        self.selection,
+                    )
                 };
-                self.selection = Selection::at(clamp(&self.document, caret));
+                self.selection = Selection::at(clamp(&self.document, self.scope, caret));
                 self.changed();
             }
             Key::Enter => {
@@ -2529,10 +2668,11 @@ impl Scriva {
                 } else {
                     let caret = edit::split_paragraph(
                         &mut self.document,
+                        self.scope,
                         &mut self.history,
                         self.selection,
                     );
-                    self.selection = Selection::at(clamp(&self.document, caret));
+                    self.selection = Selection::at(clamp(&self.document, self.scope, caret));
                     self.changed();
                 }
             }
@@ -2556,6 +2696,7 @@ impl Scriva {
                 } else {
                     let caret = edit::type_text(
                         &mut self.document,
+                        self.scope,
                         &mut self.history,
                         self.selection,
                         "\t",
@@ -2565,11 +2706,13 @@ impl Scriva {
                 }
             }
             Key::Escape => {
-                // Escape leaves things, nearest first: the find bar, then the
-                // selection.
+                // Escape leaves things, nearest first: the find bar, then an
+                // open header or footer, then the selection.
                 if self.finder.is_some() {
                     self.finder = None;
                     self.finder_focused = false;
+                } else if self.scope != wp_model::Scope::Body {
+                    self.close_band();
                 } else {
                     self.selection = Selection::at(caret);
                 }
@@ -2586,8 +2729,13 @@ impl Scriva {
     /// Types text, recording it as a tracked insertion when tracking is on.
     fn type_text(&mut self, input: &str) {
         if !self.document.settings.track_changes {
-            let caret =
-                edit::type_text(&mut self.document, &mut self.history, self.selection, input);
+            let caret = edit::type_text(
+                &mut self.document,
+                self.scope,
+                &mut self.history,
+                self.selection,
+                input,
+            );
             self.selection = Selection::at(caret);
             self.changed();
             return;
@@ -2599,15 +2747,18 @@ impl Scriva {
             self.record_delete();
         }
         let id = crate::revise::next_revision_id(&self.document);
-        let Some(before) = edit::paragraph_at(&self.document, start.paragraph) else {
+        let Some(before) = edit::paragraph_at(&self.document, self.scope, start.paragraph) else {
             return;
         };
-        self.history.push(edit::Change::Paragraph {
-            index: start.paragraph,
-            before: Box::new(before),
-        });
+        self.history.push(
+            self.scope,
+            edit::Change::Paragraph {
+                index: start.paragraph,
+                before: Box::new(before),
+            },
+        );
         let author = self.author.clone();
-        let mut paragraphs = self.document.paragraphs_mut();
+        let mut paragraphs = self.document.paragraphs_in_mut(self.scope);
         let Some(target) = paragraphs.get_mut(start.paragraph) else {
             return;
         };
@@ -2643,22 +2794,29 @@ impl Scriva {
             // Across paragraphs the deletion covers paragraph marks too, which
             // is a change to the body rather than to one paragraph. Not
             // recorded; stated rather than half-done.
-            let caret =
-                edit::delete_selection(&mut self.document, &mut self.history, self.selection);
+            let caret = edit::delete_selection(
+                &mut self.document,
+                self.scope,
+                &mut self.history,
+                self.selection,
+            );
             self.selection = Selection::at(caret);
             self.changed();
             return;
         }
         let id = crate::revise::next_revision_id(&self.document);
-        let Some(before) = edit::paragraph_at(&self.document, start.paragraph) else {
+        let Some(before) = edit::paragraph_at(&self.document, self.scope, start.paragraph) else {
             return;
         };
-        self.history.push(edit::Change::Paragraph {
-            index: start.paragraph,
-            before: Box::new(before),
-        });
+        self.history.push(
+            self.scope,
+            edit::Change::Paragraph {
+                index: start.paragraph,
+                before: Box::new(before),
+            },
+        );
         let author = self.author.clone();
-        let mut paragraphs = self.document.paragraphs_mut();
+        let mut paragraphs = self.document.paragraphs_in_mut(self.scope);
         if let Some(target) = paragraphs.get_mut(start.paragraph) {
             let _ = crate::revise::record_deletion(target, start.offset..end.offset, &author, id);
         }
@@ -2680,18 +2838,18 @@ impl Scriva {
     /// One line up or down, using the laid-out lines. Measured down the stack
     /// of pages, so the last line of one page steps onto the first of the next.
     fn line_step(&self, caret: Caret, down: bool) -> Caret {
-        let Some((_, rect)) = view::caret_rect(&self.view, caret) else {
+        let Some((_, rect)) = view::caret_rect(&self.view, self.scope, caret) else {
             return caret;
         };
         let step = rect.height().max(1.0) as f64 * if down { 1.0 } else { -1.0 };
-        view::step_from(&self.view, caret, step).unwrap_or(caret)
+        view::step_from(&self.view, self.scope, caret, step).unwrap_or(caret)
     }
 
     /// One screenful up or down — Page Up and Page Down.
     fn page_step(&self, caret: Caret, down: bool) -> Caret {
         let screen = (self.viewport.y.max(60.0) as f64) / (self.view.zoom * view::SCALE).max(0.01);
         let step = screen * if down { 1.0 } else { -1.0 };
-        view::step_from(&self.view, caret, step).unwrap_or(caret)
+        view::step_from(&self.view, self.scope, caret, step).unwrap_or(caret)
     }
 }
 
@@ -2792,23 +2950,35 @@ struct ParagraphDraft {
     hanging: String,
 }
 
-/// The header or footer box: its text, one paragraph per line, and the
-/// formatting every line takes — a header is set in one voice, and a box that
-/// could format each word would be the editor again, in miniature.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ChromeDraft {
-    footer: bool,
-    text: String,
-    /// Blank for the document's own font.
-    font: String,
-    /// Points; blank for the document's own size.
-    size: String,
-    /// Six hex digits; blank for automatic.
-    color: String,
-    justify: Justify,
-    /// "Page N of M" at the centre of the first line, after a centre tab —
-    /// the way Word's own galleries lay a name and a page number on one line.
-    page_number: bool,
+/// The one paragraph a newly made header or footer starts with.
+///
+/// **Word's Header and Footer styles are load-bearing.** They hold the line to
+/// single, take the space off both ends of it, and put a centre tab at the
+/// middle of the text column and a right tab at its end — which is what makes
+/// Tab in a header walk name, title, page number across the width. A bare
+/// paragraph would inherit the *body's* defaults instead, and a document set
+/// with an inch of space after every paragraph would push its own text down
+/// the page to make room under a one-line header.
+fn band_paragraph(section: &wp_model::SectionProps) -> Paragraph {
+    use wp_model::prop::{TabKind, TabLeader, TabStop};
+    let width = section.text_width();
+    let mut paragraph = Paragraph::new();
+    paragraph.props.spacing.before = Some(Twips(0));
+    paragraph.props.spacing.after = Some(Twips(0));
+    paragraph.props.spacing.line = Some(LineSpacing::Multiple(Line240::SINGLE));
+    paragraph.props.tabs = Some(vec![
+        TabStop {
+            position: Twips(width.0 / 2),
+            kind: TabKind::Center,
+            leader: TabLeader::None,
+        },
+        TabStop {
+            position: width,
+            kind: TabKind::End,
+            leader: TabLeader::None,
+        },
+    ]);
+    paragraph
 }
 
 /// The watermark box.
@@ -2904,8 +3074,8 @@ fn trim_number(value: f64) -> String {
 }
 
 /// A caret that is inside the document it names.
-fn clamp(document: &Document, caret: Caret) -> Caret {
-    let paragraphs = document.paragraphs();
+fn clamp(document: &Document, scope: wp_model::Scope, caret: Caret) -> Caret {
+    let paragraphs = document.paragraphs_in(scope);
     if paragraphs.is_empty() {
         return Caret::default();
     }
@@ -3357,7 +3527,14 @@ impl DocumentApp for Scriva {
         let command = self.menus(ui);
         rule(ui);
         let bar = self.format_bar(ui);
-        if let Some(command) = command.or(bar) {
+        let band = match self.scope {
+            wp_model::Scope::Body => None,
+            wp_model::Scope::Chrome(_) => {
+                rule(ui);
+                self.band_bar(ui)
+            }
+        };
+        if let Some(command) = command.or(bar).or(band) {
             // The same guard the keyboard route takes: File ▸ New discarding
             // an unsaved document would be a menu doing what Ctrl+N will not.
             match command {
@@ -3372,7 +3549,7 @@ impl DocumentApp for Scriva {
     fn status(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             let pages = self.view.pages().len().max(1);
-            let page = view::caret_rect(&self.view, self.caret())
+            let page = view::caret_rect(&self.view, self.scope, self.caret())
                 .map(|(index, _)| index + 1)
                 .unwrap_or(1);
             ui.label(format!("Page {page} of {pages}"));
@@ -3454,10 +3631,6 @@ impl DocumentApp for Scriva {
         }
         if self.cell_margin_draft.is_some() {
             self.cell_margin_dialog(ctx);
-            return;
-        }
-        if self.chrome_draft.is_some() {
-            self.chrome_dialog(ctx);
             return;
         }
         if self.watermark_draft.is_some() {
@@ -3606,7 +3779,6 @@ impl DocumentApp for Scriva {
             || self.color_draft.is_some()
             || self.column_draft.is_some()
             || self.cell_margin_draft.is_some()
-            || self.chrome_draft.is_some()
             || self.watermark_draft.is_some()
             || self.paragraph_draft.is_some()
             || self.size_draft.is_some()
@@ -3877,8 +4049,8 @@ impl Scriva {
     /// table's edge now falls on.
     fn merge_cells(&mut self) {
         let (start, end) = self.selection.ordered();
-        let from = edit::table_cell_at(&self.document, start);
-        let to = edit::table_cell_at(&self.document, end);
+        let from = edit::table_cell_at(&self.document, self.scope, start);
+        let to = edit::table_cell_at(&self.document, self.scope, end);
         let (Some((index, at_row, first)), Some((index_end, row_end, last))) = (from, to) else {
             self.message = Some((
                 "Not in a table".to_owned(),
@@ -3893,11 +4065,14 @@ impl Scriva {
             ));
             return;
         }
-        self.history.push(edit::Change::Blocks {
-            index,
-            before: vec![self.document.body[index].clone()],
-            now: 1,
-        });
+        self.history.push(
+            self.scope,
+            edit::Change::Blocks {
+                index,
+                before: vec![self.document.body[index].clone()],
+                now: 1,
+            },
+        );
         if let Block::Table(table) = &mut self.document.body[index] {
             let column = starting_column(table, at_row, first);
             let row = &mut table.rows[at_row];
@@ -3935,7 +4110,7 @@ impl Scriva {
                 .sum();
             cell.props.width = wp_model::table::Width::Fixed(Twips(total));
         }
-        self.selection = Selection::at(clamp(&self.document, start));
+        self.selection = Selection::at(clamp(&self.document, self.scope, start));
         self.reveal = Some(self.caret());
         self.changed();
     }
@@ -3945,7 +4120,8 @@ impl Scriva {
     /// to show.
     fn open_paragraph_dialog(&mut self) {
         let caret = self.caret();
-        let Some(paragraph) = edit::paragraph_at(&self.document, caret.paragraph) else {
+        let Some(paragraph) = edit::paragraph_at(&self.document, self.scope, caret.paragraph)
+        else {
             return;
         };
         let props = &paragraph.props;
@@ -4131,303 +4307,283 @@ impl Scriva {
     /// Opens the header or footer box, prefilled with what is there now: its
     /// text, one paragraph per line, and the formatting of its first words —
     /// the box sets one voice, so the first is the one it can show.
-    fn open_chrome_dialog(&mut self, footer: bool) {
-        use wp_model::doc::{Inline, Piece};
-        let refs = match footer {
+    /// The page the caret is standing on, which is the page a band command
+    /// means: "the header" is always some particular page's header.
+    fn caret_page(&self) -> usize {
+        view::caret_rect(&self.view, self.scope, self.caret())
+            .map(|(index, _)| index)
+            .unwrap_or(0)
+    }
+
+    /// Whether the band being edited is a footer.
+    fn in_footer(&self) -> bool {
+        match self.scope {
+            wp_model::Scope::Body => false,
+            wp_model::Scope::Chrome(id) => {
+                self.document.header(id).is_some_and(|header| header.footer)
+            }
+        }
+    }
+
+    /// Opens a page's header or footer for editing in place.
+    ///
+    /// **The band is edited where it is drawn.** A header holding a table, a
+    /// logo and three fields cannot be stated in a box and read back, so the
+    /// caret moves into it instead and every command that works in the text
+    /// works there — which is what Word does, and why its header has never
+    /// had a dialog.
+    fn enter_band(&mut self, page: usize, footer: bool) {
+        let Some(id) = self.band_body(page, footer) else {
+            return;
+        };
+        if self.scope == wp_model::Scope::Body {
+            self.left_behind = Some(self.selection);
+        }
+        self.go_to(wp_model::Scope::Chrome(id), Caret::default());
+        self.reveal = Some(self.caret());
+    }
+
+    /// Takes the section's headers or footers away — Word's Remove Header,
+    /// which removes every kind the section names and not only the one the
+    /// page in front of you happens to show.
+    ///
+    /// Bodies and references go together in one change, because a reference
+    /// pointing at nothing is a document Word calls damaged.
+    fn remove_band(&mut self, footer: bool) {
+        let going: Vec<wp_model::HeaderId> = match footer {
             true => &self.document.section.footers,
             false => &self.document.section.headers,
-        };
-        let body = refs
-            .iter()
-            .find(|r| r.kind == wp_model::HeaderKind::Default)
-            .and_then(|r| {
-                self.document
-                    .headers
-                    .iter()
-                    .find(|h| h.id == r.body && h.footer == footer)
-            });
-        let mut draft = ChromeDraft {
-            footer,
-            text: String::new(),
-            font: String::new(),
-            size: String::new(),
-            color: String::new(),
-            justify: Justify::Start,
-            page_number: false,
-        };
-        let Some(body) = body else {
-            self.chrome_draft = Some(draft);
-            return;
-        };
-        let paragraphs = body.content.iter().filter_map(|block| match block {
-            Block::Paragraph(p) => Some(p),
-            _ => None,
-        });
-        let mut lines = Vec::new();
-        for (index, paragraph) in paragraphs.enumerate() {
-            let runs = paragraph.content.iter().filter_map(|inline| match inline {
-                Inline::Run(run) => Some(run),
-                _ => None,
-            });
-            let mut paged = false;
-            for run in runs.clone() {
-                if run.content.iter().any(|piece| {
-                    matches!(piece, Piece::Instruction(code) if code.to_ascii_uppercase().contains("PAGE"))
-                }) {
-                    paged = true;
-                }
-            }
-            if index == 0 {
-                draft.justify = paragraph.props.justify.unwrap_or_default();
-                let first = runs
-                    .clone()
-                    .map(|run| &run.props)
-                    .chain(paragraph.props.mark.as_deref())
-                    .next();
-                if let Some(props) = first {
-                    draft.font = props.fonts.ascii.as_deref().unwrap_or_default().to_owned();
-                    draft.size = props
-                        .size
-                        .map(|s| trim_number(f64::from(s.0) / 2.0))
-                        .unwrap_or_default();
-                    draft.color = match props.color {
-                        Some(wp_model::Color::Rgb([r, g, b])) => format!("{r:02X}{g:02X}{b:02X}"),
-                        _ => String::new(),
-                    };
-                }
-            }
-            let mut text = paragraph.text();
-            if paged {
-                // The page number was put after a tab by this box; what the
-                // user typed is what stood before it.
-                draft.page_number = true;
-                if let Some(at) = text.find('\t') {
-                    text.truncate(at);
-                }
-            }
-            lines.push(text);
         }
-        draft.text = lines.join("\n");
-        self.chrome_draft = Some(draft);
+        .iter()
+        .map(|reference| reference.body)
+        .collect();
+        if going.is_empty() {
+            return;
+        }
+        self.close_band();
+        self.history.push(
+            wp_model::Scope::Body,
+            edit::Change::Chrome {
+                headers: self.document.headers.clone(),
+                section: Box::new(self.document.section.clone()),
+                caret: self.caret(),
+            },
+        );
+        match footer {
+            true => self.document.section.footers.clear(),
+            false => self.document.section.headers.clear(),
+        }
+        self.document
+            .headers
+            .retain(|header| !going.contains(&header.id));
+        self.changed();
     }
 
-    fn chrome_dialog(&mut self, ctx: &egui::Context) {
-        let Some(mut draft) = self.chrome_draft.clone() else {
+    /// Back to the text, where the caret was before the band was opened.
+    fn close_band(&mut self) {
+        if self.scope == wp_model::Scope::Body {
             return;
-        };
-        let mut done: Option<bool> = None;
-        egui::Modal::new(egui::Id::new("scriva-chrome"))
-            .frame(dialog::frame(ctx))
-            .show(ctx, |ui| {
-                dialog::form_style(ui.style_mut());
-                dialog::body(ui, |ui| {
-                    ui.set_width(320.0);
-                    let title = if draft.footer { "Footer" } else { "Header" };
-                    ui.label(egui::RichText::new(title).font(dialog::heading_font(16.0)));
-                    ui.add_space(8.0);
-                    ui.add(
-                        egui::TextEdit::multiline(&mut draft.text)
-                            .desired_width(288.0)
-                            .desired_rows(3),
-                    );
-                    ui.label(
-                        egui::RichText::new("One paragraph per line. Blank takes it away.")
-                            .small()
-                            .weak(),
-                    );
-                    ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        ui.add_sized([56.0, 20.0], egui::Label::new("Font:"));
-                        ui.add(egui::TextEdit::singleline(&mut draft.font).desired_width(150.0));
-                    });
-                    ui.horizontal(|ui| {
-                        ui.add_sized([56.0, 20.0], egui::Label::new("Size:"));
-                        ui.add(egui::TextEdit::singleline(&mut draft.size).desired_width(64.0));
-                        ui.label("pt");
-                    });
-                    ui.horizontal(|ui| {
-                        ui.add_sized([56.0, 20.0], egui::Label::new("Colour:"));
-                        ui.add(egui::TextEdit::singleline(&mut draft.color).desired_width(64.0));
-                        ui.label("hex");
-                    });
-                    ui.horizontal(|ui| {
-                        ui.add_sized([56.0, 20.0], egui::Label::new("Align:"));
-                        let name = |j: Justify| match j {
-                            Justify::Center => "Centre",
-                            Justify::End => "Right",
-                            _ => "Left",
-                        };
-                        egui::ComboBox::from_id_salt("scriva-chrome-align")
-                            .selected_text(name(draft.justify))
-                            .width(100.0)
-                            .show_ui(ui, |ui| {
-                                for justify in [Justify::Start, Justify::Center, Justify::End] {
-                                    ui.selectable_value(&mut draft.justify, justify, name(justify));
-                                }
-                            });
-                    });
-                    ui.add_space(4.0);
-                    ui.checkbox(&mut draft.page_number, "\"Page N of M\" at the centre");
-                    ui.add_space(12.0);
-                    if let Some(answer) = dialog::confirm(ui, "Apply") {
-                        done = Some(answer);
-                    }
-                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                        done = Some(false);
-                    }
-                });
-            });
-        self.chrome_draft = Some(draft.clone());
-        match done {
-            Some(true) => {
-                self.chrome_draft = None;
-                self.apply_chrome(&draft);
-            }
-            Some(false) => self.chrome_draft = None,
-            None => {}
         }
+        self.scope = wp_model::Scope::Body;
+        self.picked = None;
+        let back = self.left_behind.take().unwrap_or_default();
+        self.selection = Selection {
+            anchor: clamp(&self.document, wp_model::Scope::Body, back.anchor),
+            head: clamp(&self.document, wp_model::Scope::Body, back.head),
+        };
     }
 
-    /// Puts the box's text into the default header or footer, making one
-    /// when there is none and taking it away when the text is blank — one
-    /// undo step, bodies and references together.
+    /// Which body holds the band this page shows — making an empty one, with
+    /// the section reference that gives it its identity, when the page has
+    /// none.
     ///
-    /// The page number is a PAGE and a NUMPAGES field after a centre tab at
-    /// the middle of the text column, on the first line: Word's own way of
-    /// laying a name on the left and a page number in the middle of one
-    /// line, and what its galleries write.
-    fn apply_chrome(&mut self, draft: &ChromeDraft) {
-        use wp_model::doc::{HeaderFooter, Inline, Piece, Run};
-        use wp_model::prop::{TabKind, TabLeader, TabStop};
+    /// The *kind* is the one the page asked for rather than the default: a
+    /// title page in a section with a first-page header of its own has to
+    /// open that one, and a new header made for a title page has to be the
+    /// first-page header or it will not appear on the page it was made from.
+    fn band_body(&mut self, page: usize, footer: bool) -> Option<wp_model::HeaderId> {
+        use wp_model::doc::HeaderFooter;
         use wp_model::section::{HeaderId, HeaderKind, HeaderRef};
-        let footer = draft.footer;
-        let text = draft.text.as_str();
-        self.history.push(edit::Change::Chrome {
-            headers: self.document.headers.clone(),
-            section: Box::new(self.document.section.clone()),
-            caret: self.caret(),
-        });
-        let document = &mut self.document;
-        let margins = &document.section.margins;
-        let middle = Twips((document.section.page.width.0 - margins.start.0 - margins.end.0) / 2);
-        let refs = match footer {
-            true => &mut document.section.footers,
-            false => &mut document.section.headers,
-        };
-        let existing = refs
-            .iter()
-            .find(|r| r.kind == HeaderKind::Default)
-            .map(|r| r.body);
-        if text.trim().is_empty() && !draft.page_number {
-            if let Some(id) = existing {
-                refs.retain(|r| !(r.kind == HeaderKind::Default && r.body == id));
-                document
-                    .headers
-                    .retain(|h| !(h.id == id && h.footer == footer));
-            }
-        } else {
-            let mut props = wp_model::RunProps::default();
-            let font = draft.font.trim();
-            if !font.is_empty() {
-                props.fonts.ascii = Some(font.into());
-                props.fonts.high_ansi = Some(font.into());
-            }
-            if let Some(size) = draft.size.trim().parse::<f64>().ok().filter(|s| *s > 0.0) {
-                props.size = Some(HalfPoint((size * 2.0).round() as i32).clamped());
-            }
-            if let Some(color) = wp_model::Color::from_val(&draft.color) {
-                props.color = Some(color);
-            }
-            let lines: Vec<&str> = if text.trim().is_empty() {
-                vec![""]
-            } else {
-                text.lines().collect()
-            };
-            let content: Vec<Block> = lines
-                .iter()
-                .enumerate()
-                .map(|(index, line)| {
-                    let mut paragraph = Paragraph::new();
-                    paragraph.props.justify = Some(draft.justify);
-                    paragraph.props.mark = Some(Box::new(props.clone()));
-                    // Word's built-in Header and Footer styles hold the line to
-                    // single and take the space off both ends of it, and the
-                    // galleries write their paragraphs in those styles. A bare
-                    // paragraph here would inherit the *body's* defaults
-                    // instead — a document set an inch of space after every
-                    // paragraph would push its own text down the page to make
-                    // room under a one-line header.
-                    paragraph.props.spacing.before = Some(Twips(0));
-                    paragraph.props.spacing.after = Some(Twips(0));
-                    paragraph.props.spacing.line = Some(LineSpacing::Multiple(Line240::SINGLE));
-                    let mut pieces = Vec::new();
-                    if !line.is_empty() {
-                        pieces.push(Piece::Text((*line).into()));
-                    }
-                    if index == 0 && draft.page_number {
-                        paragraph.props.tabs = Some(vec![TabStop {
-                            position: middle,
-                            kind: TabKind::Center,
-                            leader: TabLeader::None,
-                        }]);
-                        let field = |code: &str| {
-                            [
-                                Piece::FieldStart {
-                                    dirty: false,
-                                    lock: false,
-                                },
-                                Piece::Instruction(format!(" {code} ").into()),
-                                Piece::FieldSeparate,
-                                Piece::Text("1".into()),
-                                Piece::FieldEnd,
-                            ]
-                        };
-                        pieces.push(Piece::Tab);
-                        pieces.push(Piece::Text("Page ".into()));
-                        pieces.extend(field("PAGE"));
-                        pieces.push(Piece::Text(" of ".into()));
-                        pieces.extend(field("NUMPAGES"));
-                    }
-                    if !pieces.is_empty() {
-                        paragraph.content.push(Inline::Run(Run {
-                            props: props.clone(),
-                            content: pieces,
-                            ..Run::new()
-                        }));
-                    }
-                    Block::Paragraph(paragraph)
-                })
-                .collect();
-            match existing {
-                Some(id) => {
-                    if let Some(header) = document
-                        .headers
-                        .iter_mut()
-                        .find(|h| h.id == id && h.footer == footer)
-                    {
-                        header.content = content;
-                    }
-                }
-                None => {
-                    // A fresh body with no part and no relationship: the
-                    // writer assigns both when it first writes the package.
-                    let id =
-                        HeaderId(document.headers.iter().map(|h| h.id.0).max().unwrap_or(0) + 1);
-                    document.headers.push(HeaderFooter {
-                        id,
-                        part: None,
-                        rel: None,
-                        footer,
-                        content,
-                    });
-                    refs.push(HeaderRef {
-                        kind: HeaderKind::Default,
-                        body: id,
-                        rel: None,
-                    });
-                }
-            }
+        let laid = self.view.pages().get(page);
+        let number = laid.map(|page| page.number).unwrap_or(1);
+        let kind = self
+            .document
+            .section
+            .header_for_page(number, self.document.settings.even_and_odd_headers)
+            .unwrap_or(HeaderKind::Default);
+        // The laid-out page first, because it is what the user is looking at;
+        // the section after it, because the layout is a frame behind — and it
+        // is exactly one frame behind at the moment a band has just been made,
+        // which is when making a second one would go unnoticed.
+        let existing = laid
+            .and_then(|page| match footer {
+                true => page.footer_body,
+                false => page.header_body,
+            })
+            .or_else(|| match footer {
+                true => self.document.section.footer(kind),
+                false => self.document.section.header(kind),
+            });
+        if existing.is_some() {
+            return existing;
         }
+        // A body and the reference to it are one change: restoring either
+        // without the other leaves a reference pointing at nothing.
+        self.history.push(
+            wp_model::Scope::Body,
+            edit::Change::Chrome {
+                headers: self.document.headers.clone(),
+                section: Box::new(self.document.section.clone()),
+                caret: self.caret(),
+            },
+        );
+        let id = HeaderId(
+            self.document
+                .headers
+                .iter()
+                .map(|header| header.id.0)
+                .max()
+                .unwrap_or(0)
+                + 1,
+        );
+        let content = vec![Block::Paragraph(band_paragraph(&self.document.section))];
+        self.document.headers.push(HeaderFooter {
+            id,
+            part: None,
+            rel: None,
+            footer,
+            content,
+        });
+        let refs = match footer {
+            true => &mut self.document.section.footers,
+            false => &mut self.document.section.headers,
+        };
+        refs.push(HeaderRef {
+            kind,
+            body: id,
+            rel: None,
+        });
+        self.changed();
+        Some(id)
+    }
+
+    /// Which band of a page a point is in: the margin above the text, or the
+    /// one below it. `None` between them, which is the body.
+    fn band_at(&self, spot: view::Spot) -> Option<bool> {
+        let page = self.view.pages().get(spot.page)?;
+        if spot.y < page.geometry.top {
+            return Some(false);
+        }
+        if spot.y > page.geometry.height - page.geometry.bottom {
+            return Some(true);
+        }
+        None
+    }
+
+    /// Whether a click there is a click in the flow being edited.
+    ///
+    /// The rest of the page is showing but not being edited, and a click on it
+    /// must not drag the caret out from under the keyboard — the same reason
+    /// the veil is drawn over it.
+    fn click_lands_here(&self, spot: view::Spot) -> bool {
+        match self.scope {
+            wp_model::Scope::Body => self.band_at(spot).is_none(),
+            wp_model::Scope::Chrome(_) => self.band_at(spot) == Some(self.in_footer()),
+        }
+    }
+
+    /// The bar that stands under the toolbar while a band is open, saying
+    /// which one and offering the two ways out of it.
+    fn band_bar(&mut self, ui: &mut egui::Ui) -> Option<Command> {
+        let footer = self.in_footer();
+        let mut chosen = None;
+        ui.horizontal(|ui| {
+            ui.add_space(8.0);
+            ui.label(
+                egui::RichText::new(match footer {
+                    true => "Footer",
+                    false => "Header",
+                })
+                .strong(),
+            );
+            ui.label(
+                egui::RichText::new("— the page itself is not being edited")
+                    .weak()
+                    .small(),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add_space(8.0);
+                if ui
+                    .button("Close")
+                    .on_hover_text("Go back to the text — Esc, or double-click the page")
+                    .clicked()
+                {
+                    chosen = Some(Command::CloseChrome);
+                }
+                if ui
+                    .button(match footer {
+                        true => "Go to Header",
+                        false => "Go to Footer",
+                    })
+                    .clicked()
+                {
+                    chosen = Some(Command::SwitchBand);
+                }
+            });
+        });
+        chosen
+    }
+
+    /// Puts a page number at the caret — Word's Insert ▸ Page Number, which is
+    /// a field and not a typed digit, so it counts on every page it is drawn.
+    fn insert_page_field(&mut self, of_pages: bool) {
+        use wp_model::doc::Piece;
+        let caret = self.caret();
+        let Some(before) = edit::paragraph_at(&self.document, self.scope, caret.paragraph) else {
+            return;
+        };
+        self.history.push(
+            self.scope,
+            edit::Change::Paragraph {
+                index: caret.paragraph,
+                before: Box::new(before),
+            },
+        );
+        // The cached "1" between the separator and the end is what a reader
+        // that does not evaluate fields shows, and what Word writes.
+        let field = |code: &str| {
+            [
+                Piece::FieldStart {
+                    dirty: false,
+                    lock: false,
+                },
+                Piece::Instruction(format!(" {code} ").into()),
+                Piece::FieldSeparate,
+                Piece::Text("1".into()),
+                Piece::FieldEnd,
+            ]
+        };
+        let mut pieces: Vec<Piece> = Vec::new();
+        if of_pages {
+            pieces.push(Piece::Text("Page ".into()));
+        }
+        pieces.extend(field("PAGE"));
+        if of_pages {
+            pieces.push(Piece::Text(" of ".into()));
+            pieces.extend(field("NUMPAGES"));
+        }
+        let mut offset = caret.offset;
+        {
+            let mut paragraphs = self.document.paragraphs_in_mut(self.scope);
+            let Some(target) = paragraphs.get_mut(caret.paragraph) else {
+                return;
+            };
+            offset += crate::text::insert_pieces(target, offset, pieces);
+        }
+        self.selection = Selection::at(Caret {
+            paragraph: caret.paragraph,
+            offset,
+        });
         self.changed();
     }
 
@@ -4531,11 +4687,14 @@ impl Scriva {
     fn apply_watermark(&mut self, draft: &WatermarkDraft) {
         use wp_model::doc::{HeaderFooter, Inline, Piece, Run};
         use wp_model::section::{HeaderId, HeaderKind, HeaderRef};
-        self.history.push(edit::Change::Chrome {
-            headers: self.document.headers.clone(),
-            section: Box::new(self.document.section.clone()),
-            caret: self.caret(),
-        });
+        self.history.push(
+            wp_model::Scope::Body,
+            edit::Change::Chrome {
+                headers: self.document.headers.clone(),
+                section: Box::new(self.document.section.clone()),
+                caret: self.caret(),
+            },
+        );
         let shape = self.watermark_shape(draft);
         let document = &mut self.document;
         for header in document.headers.iter_mut().filter(|header| !header.footer) {
@@ -4715,18 +4874,22 @@ impl Scriva {
     /// says why nothing happened.
     fn edit_table(&mut self, change: impl FnOnce(&mut wp_model::table::Table, usize, usize)) {
         let caret = self.caret();
-        let Some((index, row, cell)) = edit::table_cell_at(&self.document, caret) else {
+        let Some((index, row, cell)) = edit::table_cell_at(&self.document, self.scope, caret)
+        else {
             self.message = Some((
                 "Not in a table".to_owned(),
                 "Put the caret in a table cell first, then try again.".to_owned(),
             ));
             return;
         };
-        self.history.push(edit::Change::Blocks {
-            index,
-            before: vec![self.document.body[index].clone()],
-            now: 1,
-        });
+        self.history.push(
+            self.scope,
+            edit::Change::Blocks {
+                index,
+                before: vec![self.document.body[index].clone()],
+                now: 1,
+            },
+        );
         if let Block::Table(table) = &mut self.document.body[index] {
             change(table, row, cell);
         }
@@ -4738,7 +4901,7 @@ impl Scriva {
     /// padding from its style, which is where Word keeps its own 0.08in.
     fn open_cell_margin_dialog(&mut self) {
         let caret = self.caret();
-        let Some((index, _, _)) = edit::table_cell_at(&self.document, caret) else {
+        let Some((index, _, _)) = edit::table_cell_at(&self.document, self.scope, caret) else {
             self.message = Some((
                 "Not in a table".to_owned(),
                 "Put the caret in a table cell first, then try again.".to_owned(),
@@ -4836,7 +4999,8 @@ impl Scriva {
     /// Opens the width box on the caret's column, prefilled in inches.
     fn open_column_dialog(&mut self) {
         let caret = self.caret();
-        let Some((index, row, cell)) = edit::table_cell_at(&self.document, caret) else {
+        let Some((index, row, cell)) = edit::table_cell_at(&self.document, self.scope, caret)
+        else {
             self.message = Some((
                 "Not in a table".to_owned(),
                 "Put the caret in a table cell first, then try again.".to_owned(),
@@ -4909,11 +5073,12 @@ impl Scriva {
         };
         let caret = edit::insert_block(
             &mut self.document,
+            self.scope,
             &mut self.history,
             self.selection,
             Block::Table(table),
         );
-        self.selection = Selection::at(clamp(&self.document, caret));
+        self.selection = Selection::at(clamp(&self.document, self.scope, caret));
         self.changed();
         self.reveal = Some(self.caret());
     }
@@ -5388,7 +5553,7 @@ impl Scriva {
                     // either, a link is text that happens to be blue and the
                     // only way to find out it can be followed is to guess.
                     let link = over
-                        .and_then(|spot| view::character_over(&self.view, spot))
+                        .and_then(|spot| view::character_over(&self.view, self.scope, spot))
                         .and_then(|caret| self.link_at(caret));
                     match (&link, ui.input(|i| i.modifiers.command)) {
                         (Some(_), true) => ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand),
@@ -5441,6 +5606,7 @@ impl Scriva {
                 view::paint(
                     &painter,
                     &self.view,
+                    self.scope,
                     self.selection,
                     if self.finder.is_some() {
                         &self.find_matches
@@ -5469,7 +5635,8 @@ impl Scriva {
                         .and_then(|pointer| self.spot_at(pointer, origin, zoom));
                     self.dragging = None;
                     match spot.and_then(|spot| {
-                        view::drawing_at(&self.view, spot, reach).map(|found| (spot, found))
+                        view::drawing_at(&self.view, self.scope, spot, reach)
+                            .map(|found| (spot, found))
                     }) {
                         Some((spot, (picked, rect))) => {
                             let already = self.picked == Some(picked);
@@ -5491,9 +5658,17 @@ impl Scriva {
                 if self.picked.is_none() {
                     if let Some(pointer) = response.interact_pointer_pos() {
                         if let Some(spot) = self.spot_at(pointer, origin, zoom) {
-                            if let Some(caret) = view::caret_at(&self.view, spot) {
-                                let extend = ui.input(|i| i.modifiers.shift) || self.sweeping;
-                                self.set_caret(caret, extend);
+                            // A click on the part of the page that is *not*
+                            // being edited is not a place to put the caret.
+                            // While a header is open the text is showing and
+                            // not editable — which is what the wash over it
+                            // says — and dragging the caret out from under the
+                            // keyboard would make a liar of it.
+                            if self.click_lands_here(spot) {
+                                if let Some(caret) = view::caret_at(&self.view, self.scope, spot) {
+                                    let extend = ui.input(|i| i.modifiers.shift) || self.sweeping;
+                                    self.set_caret(caret, extend);
+                                }
                             }
                         }
                     }
@@ -5505,28 +5680,62 @@ impl Scriva {
                         if let Some(destination) = response
                             .interact_pointer_pos()
                             .and_then(|pointer| self.spot_at(pointer, origin, zoom))
-                            .and_then(|spot| view::character_over(&self.view, spot))
+                            .and_then(|spot| view::character_over(&self.view, self.scope, spot))
                             .and_then(|caret| self.link_at(caret))
                         {
                             self.follow_link(destination);
                         }
                     }
                     // A second click takes the word and a third takes the
-                    // paragraph, the way every word processor since has.
+                    // paragraph, the way every word processor since has —
+                    // except in the margins. There a double-click opens the
+                    // band drawn there, and once one is open a double-click on
+                    // the page closes it again and puts the caret where it
+                    // landed. Both gestures are Word's, and they are the only
+                    // way most people ever reach a header.
                     if response.double_clicked() {
-                        let caret = self.caret();
-                        let content = self.paragraph_text(caret.paragraph);
-                        let word = text::word_at(&content, caret.offset);
-                        self.selection = Selection {
-                            anchor: Caret {
-                                paragraph: caret.paragraph,
-                                offset: word.start,
-                            },
-                            head: Caret {
-                                paragraph: caret.paragraph,
-                                offset: word.end,
-                            },
-                        };
+                        let spot = response
+                            .interact_pointer_pos()
+                            .and_then(|pointer| self.spot_at(pointer, origin, zoom));
+                        let band = spot.and_then(|spot| self.band_at(spot));
+                        // A margin that is not the band already open — the
+                        // footer while the header is up, or either of them
+                        // from the text — opens the one drawn there. A margin
+                        // that *is* the open band is ordinary text, and a
+                        // double-click in it takes a word like anywhere else.
+                        let elsewhere = band.is_some_and(|footer| {
+                            !self.editing_band() || footer != self.in_footer()
+                        });
+                        match (elsewhere, self.scope, band) {
+                            (true, _, Some(footer)) => {
+                                if let Some(spot) = spot {
+                                    self.enter_band(spot.page, footer);
+                                }
+                            }
+                            (_, wp_model::Scope::Chrome(_), None) => {
+                                self.close_band();
+                                if let Some(caret) = spot
+                                    .and_then(|spot| view::caret_at(&self.view, self.scope, spot))
+                                {
+                                    self.set_caret(caret, false);
+                                }
+                            }
+                            _ => {
+                                let caret = self.caret();
+                                let content = self.paragraph_text(caret.paragraph);
+                                let word = text::word_at(&content, caret.offset);
+                                self.selection = Selection {
+                                    anchor: Caret {
+                                        paragraph: caret.paragraph,
+                                        offset: word.start,
+                                    },
+                                    head: Caret {
+                                        paragraph: caret.paragraph,
+                                        offset: word.end,
+                                    },
+                                };
+                            }
+                        }
                     }
                     if response.triple_clicked() {
                         let caret = self.caret();
@@ -5548,7 +5757,7 @@ impl Scriva {
                         if let Some(caret) = response
                             .interact_pointer_pos()
                             .and_then(|pointer| self.spot_at(pointer, origin, zoom))
-                            .and_then(|spot| view::caret_at(&self.view, spot))
+                            .and_then(|spot| view::caret_at(&self.view, self.scope, spot))
                         {
                             let (start, end) = self.selection.ordered();
                             let inside =
@@ -5566,7 +5775,7 @@ impl Scriva {
                     if let Some(found) = response
                         .interact_pointer_pos()
                         .and_then(|pointer| self.spot_at(pointer, origin, zoom))
-                        .and_then(|spot| view::drawing_at(&self.view, spot, reach))
+                        .and_then(|spot| view::drawing_at(&self.view, self.scope, spot, reach))
                     {
                         self.picked = Some(found.0);
                     }
@@ -5576,7 +5785,7 @@ impl Scriva {
                     let clicked = response
                         .interact_pointer_pos()
                         .and_then(|pointer| self.spot_at(pointer, origin, zoom))
-                        .and_then(|spot| view::character_over(&self.view, spot))
+                        .and_then(|spot| view::character_over(&self.view, self.scope, spot))
                         .and_then(|caret| self.link_at(caret));
                     self.menu_link = clicked;
                 }
@@ -5686,7 +5895,7 @@ impl Scriva {
                 if self.reveal.is_some() && self.view.is_stale(self.stamp) {
                     ui.ctx().request_repaint();
                 } else if let Some(caret) = self.reveal.take() {
-                    if let Some((page, rect)) = view::caret_rect(&self.view, caret) {
+                    if let Some((page, rect)) = view::caret_rect(&self.view, self.scope, caret) {
                         let (page_x, page_y) = self.view.page_origin(page);
                         let min = origin
                             + egui::vec2(
@@ -5714,7 +5923,7 @@ impl Scriva {
         let Some(picked) = self.picked else {
             return;
         };
-        let Some((page, _)) = view::rect_of(&self.view, picked) else {
+        let Some((page, _)) = view::rect_of(&self.view, self.scope, picked) else {
             return;
         };
         let geometry = match self.view.pages().get(page) {
@@ -5723,14 +5932,18 @@ impl Scriva {
         };
         // Where the paragraph starts on the page, which is what an offset
         // relative to the paragraph is measured from.
-        let origin = view::rect_of(&self.view, picked)
+        let origin = view::rect_of(&self.view, self.scope, picked)
             .map(|(_, rect)| (rect.0, rect.1))
             .unwrap_or((geometry.start, geometry.top));
-        let before = match self.document.paragraphs().get(picked.paragraph) {
+        let before = match self
+            .document
+            .paragraphs_in(self.scope)
+            .get(picked.paragraph)
+        {
             Some(paragraph) => (*paragraph).clone(),
             None => return,
         };
-        let mut paragraphs = self.document.paragraphs_mut();
+        let mut paragraphs = self.document.paragraphs_in_mut(self.scope);
         let Some(drawing) = paragraphs
             .get_mut(picked.paragraph)
             .and_then(|paragraph| paragraph.drawing_mut(picked.nth))
@@ -5746,10 +5959,13 @@ impl Scriva {
             return;
         }
         if !self.dragged {
-            self.history.push(crate::edit::Change::Paragraph {
-                index: picked.paragraph,
-                before: Box::new(before),
-            });
+            self.history.push(
+                self.scope,
+                crate::edit::Change::Paragraph {
+                    index: picked.paragraph,
+                    before: Box::new(before),
+                },
+            );
             self.dragged = true;
         }
         self.changed();
@@ -5787,7 +6003,7 @@ impl Scriva {
         let Some(spot) = over else {
             return egui::CursorIcon::Text;
         };
-        let Some((found, rect)) = view::drawing_at(&self.view, spot, reach) else {
+        let Some((found, rect)) = view::drawing_at(&self.view, self.scope, spot, reach) else {
             return egui::CursorIcon::Text;
         };
         match self.picked == Some(found) {
@@ -5801,7 +6017,10 @@ impl Scriva {
     /// The drawing the selection names, if it still exists.
     fn picked_drawing(&self) -> Option<&wp_model::doc::Drawing> {
         let picked = self.picked?;
-        let paragraph = *self.document.paragraphs().get(picked.paragraph)?;
+        let paragraph = *self
+            .document
+            .paragraphs_in(self.scope)
+            .get(picked.paragraph)?;
         paragraph.drawings().get(picked.nth).copied()
     }
 
@@ -5846,12 +6065,16 @@ impl Scriva {
 
     /// Sets the selected picture's size, in points. One undo entry.
     fn resize_drawing(&mut self, picked: crate::drawings::Picked, width: f64, height: f64) {
-        let before = match self.document.paragraphs().get(picked.paragraph) {
+        let before = match self
+            .document
+            .paragraphs_in(self.scope)
+            .get(picked.paragraph)
+        {
             Some(paragraph) => (*paragraph).clone(),
             None => return,
         };
         let changed = {
-            let mut paragraphs = self.document.paragraphs_mut();
+            let mut paragraphs = self.document.paragraphs_in_mut(self.scope);
             paragraphs
                 .get_mut(picked.paragraph)
                 .and_then(|paragraph| paragraph.drawing_mut(picked.nth))
@@ -5860,10 +6083,13 @@ impl Scriva {
         if !changed {
             return;
         }
-        self.history.push(crate::edit::Change::Paragraph {
-            index: picked.paragraph,
-            before: Box::new(before),
-        });
+        self.history.push(
+            self.scope,
+            crate::edit::Change::Paragraph {
+                index: picked.paragraph,
+                before: Box::new(before),
+            },
+        );
         self.changed();
     }
 
@@ -5872,12 +6098,16 @@ impl Scriva {
         let Some(picked) = self.picked else {
             return false;
         };
-        let before = match self.document.paragraphs().get(picked.paragraph) {
+        let before = match self
+            .document
+            .paragraphs_in(self.scope)
+            .get(picked.paragraph)
+        {
             Some(paragraph) => (*paragraph).clone(),
             None => return false,
         };
         let removed = {
-            let mut paragraphs = self.document.paragraphs_mut();
+            let mut paragraphs = self.document.paragraphs_in_mut(self.scope);
             paragraphs
                 .get_mut(picked.paragraph)
                 .is_some_and(|paragraph| paragraph.remove_drawing(picked.nth))
@@ -5885,10 +6115,13 @@ impl Scriva {
         if !removed {
             return false;
         }
-        self.history.push(crate::edit::Change::Paragraph {
-            index: picked.paragraph,
-            before: Box::new(before),
-        });
+        self.history.push(
+            self.scope,
+            crate::edit::Change::Paragraph {
+                index: picked.paragraph,
+                before: Box::new(before),
+            },
+        );
         self.picked = None;
         self.changed();
         true
@@ -6408,60 +6641,6 @@ mod tests {
     }
 
     #[test]
-    fn a_footer_with_a_page_number_is_one_line_with_fields_after_a_centre_tab() {
-        use wp_model::doc::{Inline, Piece};
-        let mut app = app_with(&["text"]);
-        app.apply_chrome(&ChromeDraft {
-            footer: true,
-            text: "ADNAN KHAN".into(),
-            font: "Verdana".into(),
-            size: "8".into(),
-            color: String::new(),
-            justify: Justify::Start,
-            page_number: true,
-        });
-        let footer = app
-            .document
-            .headers
-            .iter()
-            .find(|h| h.footer)
-            .expect("a footer was made");
-        assert_eq!(footer.content.len(), 1, "name and number share the line");
-        let Block::Paragraph(paragraph) = &footer.content[0] else {
-            panic!("a paragraph");
-        };
-        let text_width = app.document.section.page.width.0
-            - app.document.section.margins.start.0
-            - app.document.section.margins.end.0;
-        let tabs = paragraph.props.tabs.as_ref().expect("a tab stop");
-        assert_eq!(tabs[0].kind, wp_model::prop::TabKind::Center);
-        assert_eq!(tabs[0].position, Twips(text_width / 2));
-        let Inline::Run(run) = &paragraph.content[0] else {
-            panic!("a run");
-        };
-        assert_eq!(run.props.size, Some(HalfPoint(16)));
-        assert_eq!(run.props.fonts.ascii.as_deref(), Some("Verdana"));
-        let codes: Vec<String> = run
-            .content
-            .iter()
-            .filter_map(|piece| match piece {
-                Piece::Instruction(code) => Some(code.trim().to_owned()),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(codes, ["PAGE", "NUMPAGES"]);
-        assert!(run.content.contains(&Piece::Tab));
-
-        // Reopened, the box shows the name alone and remembers the number.
-        app.open_chrome_dialog(true);
-        let draft = app.chrome_draft.clone().expect("the box is open");
-        assert_eq!(draft.text, "ADNAN KHAN");
-        assert!(draft.page_number);
-        assert_eq!(draft.size, "8");
-        assert_eq!(draft.font, "Verdana");
-    }
-
-    #[test]
     fn turning_borders_off_writes_none_rather_than_nothing() {
         let mut app = app_with(&["text"]);
         app.insert_table(2, 2);
@@ -6553,37 +6732,6 @@ mod tests {
     }
 
     #[test]
-    fn a_header_holds_its_line_to_single_whatever_the_body_spaces_itself_by() {
-        let mut app = app_with(&["text"]);
-        app.apply_chrome(&ChromeDraft {
-            footer: false,
-            text: "RESUME / CV".into(),
-            font: "Bookman Old Style".into(),
-            size: "16".into(),
-            color: String::new(),
-            justify: Justify::Center,
-            page_number: false,
-        });
-        let header = app
-            .document
-            .headers
-            .iter()
-            .find(|h| !h.footer)
-            .expect("a header was made");
-        let Block::Paragraph(paragraph) = &header.content[0] else {
-            panic!("a paragraph");
-        };
-        // Word's Header style, which is what a bare paragraph here would miss:
-        // the body's space-after would otherwise push the page's text down.
-        assert_eq!(paragraph.props.spacing.before, Some(Twips(0)));
-        assert_eq!(paragraph.props.spacing.after, Some(Twips(0)));
-        assert_eq!(
-            paragraph.props.spacing.line,
-            Some(LineSpacing::Multiple(Line240::SINGLE))
-        );
-    }
-
-    #[test]
     fn the_bullet_press_makes_a_list_and_the_second_press_unmakes_it() {
         let mut app = app_with(&["one", "two"]);
         app.run(Command::SelectAll);
@@ -6642,54 +6790,248 @@ mod tests {
         );
     }
 
-    /// The header box as it was before it could format: text alone.
-    fn plain_chrome(footer: bool, text: &str) -> ChromeDraft {
-        ChromeDraft {
-            footer,
-            text: text.into(),
-            font: String::new(),
-            size: String::new(),
-            color: String::new(),
-            justify: Justify::Start,
-            page_number: false,
-        }
+    /// Types `input` where the caret is, in whichever flow it is in.
+    fn typed(app: &mut Scriva, input: &str) {
+        let caret = edit::type_text(
+            &mut app.document,
+            app.scope,
+            &mut app.history,
+            app.selection,
+            input,
+        );
+        app.selection = Selection::at(caret);
+        app.changed();
     }
 
     #[test]
-    fn the_header_box_makes_a_header_and_blank_takes_it_away() {
+    fn opening_a_header_a_document_does_not_have_makes_one_and_puts_the_caret_in_it() {
         let mut app = app_with(&["text"]);
-        app.apply_chrome(&plain_chrome(false, "RESUME / CV"));
-        assert_eq!(app.document.headers.len(), 1);
-        let header = &app.document.headers[0];
+        app.run(Command::EditHeader);
+        let wp_model::Scope::Chrome(id) = app.scope else {
+            panic!("the caret is in the header");
+        };
+        let header = app.document.header(id).expect("which the document has");
         assert!(!header.footer);
-        assert_eq!(wp_model::doc::text_of(&header.content), "RESUME / CV");
         let reference = &app.document.section.headers[0];
         assert_eq!(reference.kind, wp_model::HeaderKind::Default);
-        assert_eq!(reference.body, header.id);
+        assert_eq!(reference.body, id);
         assert!(
             reference.rel.is_none(),
             "no relationship until a save assigns one"
         );
 
-        // Editing keeps the body's identity, because the writer finds the
-        // part to rewrite by it.
-        app.apply_chrome(&plain_chrome(false, "CURRICULUM VITAE"));
-        assert_eq!(app.document.headers.len(), 1, "still the one header");
+        // Word's Header style, which is what a bare paragraph would miss: the
+        // body's space-after would otherwise push the page's own text down to
+        // make room under a one-line header, and Tab would walk nowhere.
+        let Block::Paragraph(paragraph) = &header.content[0] else {
+            panic!("a paragraph");
+        };
+        assert_eq!(paragraph.props.spacing.before, Some(Twips(0)));
+        assert_eq!(paragraph.props.spacing.after, Some(Twips(0)));
         assert_eq!(
-            wp_model::doc::text_of(&app.document.headers[0].content),
-            "CURRICULUM VITAE"
+            paragraph.props.spacing.line,
+            Some(LineSpacing::Multiple(Line240::SINGLE))
         );
+        let tabs = paragraph.props.tabs.as_ref().expect("a centre and a right");
+        assert_eq!(tabs[0].kind, wp_model::prop::TabKind::Center);
+        assert_eq!(tabs[1].kind, wp_model::prop::TabKind::End);
+        assert_eq!(tabs[1].position, app.document.section.text_width());
+    }
 
-        app.apply_chrome(&plain_chrome(false, ""));
-        assert!(app.document.headers.is_empty(), "blank takes it away");
-        assert!(app.document.section.headers.is_empty(), "reference and all");
+    #[test]
+    fn typing_in_an_open_header_leaves_the_body_alone_and_undoes_with_it_open() {
+        let mut app = app_with(&["the body"]);
+        app.run(Command::EditHeader);
+        typed(&mut app, "RESUME / CV");
+        let wp_model::Scope::Chrome(id) = app.scope else {
+            panic!("still in the header");
+        };
+        assert_eq!(
+            wp_model::doc::text_of(&app.document.header(id).expect("there").content),
+            "RESUME / CV"
+        );
+        assert_eq!(app.document.text(), "the body", "the text is untouched");
+
+        // A paragraph index means one thing in the header and another in the
+        // body, so undo has to know which flow made the change — and put the
+        // caret back in it.
+        app.run(Command::Undo);
+        assert_eq!(app.scope, wp_model::Scope::Chrome(id));
+        assert_eq!(
+            wp_model::doc::text_of(&app.document.header(id).expect("there").content),
+            ""
+        );
+        assert_eq!(app.document.text(), "the body");
+    }
+
+    #[test]
+    fn a_header_that_holds_a_table_is_still_a_table_after_it_has_been_edited() {
+        use wp_model::table::{Cell, Row, Table};
+        let mut app = app_with(&["the body"]);
+        app.run(Command::EditHeader);
+        let wp_model::Scope::Chrome(id) = app.scope else {
+            panic!("in the header");
+        };
+        // A real header: a table of revisions, which is what the box this
+        // replaced would have flattened into one line of text.
+        app.document.header_mut(id).expect("there").content.insert(
+            0,
+            Block::Table(Table {
+                rows: vec![Row {
+                    props: Default::default(),
+                    cells: vec![Cell::new(), Cell::new()],
+                }],
+                ..Table::new()
+            }),
+        );
+        app.changed();
+
+        // The caret is in the first cell, because the flow walks a table's
+        // paragraphs in document order exactly as the body's does.
+        app.selection = Selection::at(Caret::default());
+        typed(&mut app, "ECN#");
+        app.selection = Selection::at(Caret {
+            paragraph: 1,
+            offset: 0,
+        });
+        typed(&mut app, "DATE");
+
+        let header = app.document.header(id).expect("there");
+        let Block::Table(table) = &header.content[0] else {
+            panic!("the table is still a table");
+        };
+        assert_eq!(
+            wp_model::doc::text_of(&table.rows[0].cells[0].content),
+            "ECN#"
+        );
+        assert_eq!(
+            wp_model::doc::text_of(&table.rows[0].cells[1].content),
+            "DATE"
+        );
+    }
+
+    #[test]
+    fn closing_a_band_puts_the_caret_back_where_it_stood_in_the_text() {
+        let mut app = app_with(&["one", "two"]);
+        let was = Caret {
+            paragraph: 1,
+            offset: 2,
+        };
+        app.selection = Selection::at(was);
+        app.run(Command::EditFooter);
+        assert!(app.editing_band());
+        assert!(
+            app.document.headers.iter().any(|header| header.footer),
+            "Insert ▸ Footer makes one"
+        );
+        app.run(Command::CloseChrome);
+        assert_eq!(app.scope, wp_model::Scope::Body);
+        assert_eq!(app.caret(), was, "and not at the top of the page");
+    }
+
+    #[test]
+    fn the_band_bar_switches_between_the_two_without_making_a_third() {
+        let mut app = app_with(&["text"]);
+        app.run(Command::EditHeader);
+        app.run(Command::SwitchBand);
+        assert!(app.in_footer());
+        app.run(Command::SwitchBand);
+        assert!(!app.in_footer());
+        assert_eq!(app.document.headers.len(), 2, "one header and one footer");
+    }
+
+    #[test]
+    fn a_page_number_is_a_field_and_not_a_typed_digit() {
+        use wp_model::doc::{Inline, Piece};
+        let mut app = app_with(&["text"]);
+        app.run(Command::EditFooter);
+        app.run(Command::InsertPageNumber { of_pages: true });
+        let wp_model::Scope::Chrome(id) = app.scope else {
+            panic!("in the footer");
+        };
+        let footer = app.document.header(id).expect("there");
+        let Block::Paragraph(paragraph) = &footer.content[0] else {
+            panic!("a paragraph");
+        };
+        let codes: Vec<String> = paragraph
+            .content
+            .iter()
+            .filter_map(|inline| match inline {
+                Inline::Run(run) => Some(run),
+                _ => None,
+            })
+            .flat_map(|run| &run.content)
+            .filter_map(|piece| match piece {
+                Piece::Instruction(code) => Some(code.trim().to_owned()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(codes, ["PAGE", "NUMPAGES"]);
+        assert!(paragraph.text().starts_with("Page "));
+    }
+
+    #[test]
+    fn removing_a_header_takes_its_references_with_it_and_undoes_in_one_step() {
+        let mut app = app_with(&["text"]);
+        app.run(Command::EditHeader);
+        typed(&mut app, "RESUME / CV");
+        app.run(Command::CloseChrome);
+
+        app.run(Command::RemoveChrome { footer: false });
+        assert!(app.document.headers.is_empty());
+        assert!(
+            app.document.section.headers.is_empty(),
+            "a reference pointing at nothing is a damaged document"
+        );
 
         app.run(Command::Undo);
         assert_eq!(
-            wp_model::doc::text_of(&app.document.headers[0].content),
-            "CURRICULUM VITAE",
-            "one undo brings back bodies and references together"
+            app.document.headers.len(),
+            1,
+            "bodies and references, together"
         );
+        assert_eq!(
+            wp_model::doc::text_of(&app.document.headers[0].content),
+            "RESUME / CV"
+        );
+    }
+
+    #[test]
+    fn a_click_in_the_margin_is_not_a_place_to_put_the_caret_in_the_text() {
+        // While the body is what is being edited, the margins are not part of
+        // it; while a band is open, the page is not. A click on the wrong one
+        // has to do nothing, which is what the wash over it promises.
+        let mut app = laid_app("the body", 400.0);
+        let page = &app.view.pages()[0];
+        let (top, middle, bottom) = (
+            view::Spot {
+                page: 0,
+                x: page.geometry.start + 1.0,
+                y: 4.0,
+            },
+            view::Spot {
+                page: 0,
+                x: page.geometry.start + 1.0,
+                y: page.geometry.top + 4.0,
+            },
+            view::Spot {
+                page: 0,
+                x: page.geometry.start + 1.0,
+                y: page.geometry.height - 4.0,
+            },
+        );
+        assert_eq!(app.band_at(top), Some(false));
+        assert_eq!(app.band_at(bottom), Some(true));
+        assert_eq!(app.band_at(middle), None);
+        assert!(!app.click_lands_here(top));
+        assert!(app.click_lands_here(middle));
+
+        app.run(Command::EditHeader);
+        assert!(
+            app.click_lands_here(top),
+            "the header is what is being edited"
+        );
+        assert!(!app.click_lands_here(middle), "and the text is not");
     }
 
     #[test]
@@ -7070,7 +7412,7 @@ mod tests {
         let text = app.selected_text().expect("something to copy");
         app.clipboard = Some(Clip {
             text,
-            paragraphs: edit::copy_range(&app.document, app.selection),
+            paragraphs: edit::copy_range(&app.document, app.scope, app.selection),
         });
     }
 
@@ -7142,7 +7484,12 @@ mod tests {
         assert!(app.insert_picture(PIXEL, "image/png", 96, 48), "it pastes");
 
         // What the Enter key does, at the caret the paste left behind.
-        let caret = edit::split_paragraph(&mut app.document, &mut app.history, app.selection);
+        let caret = edit::split_paragraph(
+            &mut app.document,
+            app.scope,
+            &mut app.history,
+            app.selection,
+        );
         app.selection = Selection::at(caret);
 
         let pictures: usize = app
@@ -7225,7 +7572,12 @@ mod tests {
             paragraph: 0,
             offset: 2,
         });
-        let caret = edit::backspace(&mut app.document, &mut app.history, app.selection);
+        let caret = edit::backspace(
+            &mut app.document,
+            app.scope,
+            &mut app.history,
+            app.selection,
+        );
         assert_eq!(caret.offset, 1);
         assert_eq!(app.paragraph_text(0), "ab");
         assert!(app.document.paragraphs()[0].drawings().is_empty());
@@ -7409,7 +7761,7 @@ mod tests {
             },
         };
         app.run(Command::Bold);
-        let paragraphs = edit::copy_range(&app.document, app.selection);
+        let paragraphs = edit::copy_range(&app.document, app.scope, app.selection);
         let html = clip::html(&app.document, &paragraphs);
         assert!(html.contains("font-weight:bold"), "{html}");
         assert!(html.contains("this bold"), "{html}");
@@ -7509,7 +7861,7 @@ mod tests {
         let text = app.selected_text().expect("something to copy");
         app.clipboard = Some(Clip {
             text: text.clone(),
-            paragraphs: edit::copy_range(&app.document, app.selection),
+            paragraphs: edit::copy_range(&app.document, app.scope, app.selection),
         });
         let was = app.document.paragraphs().len();
 
@@ -7550,7 +7902,12 @@ mod tests {
             paragraph: 1,
             offset: 0,
         });
-        let caret = edit::backspace(&mut app.document, &mut app.history, app.selection);
+        let caret = edit::backspace(
+            &mut app.document,
+            app.scope,
+            &mut app.history,
+            app.selection,
+        );
         app.selection = Selection::at(caret);
         assert_eq!(app.paragraph_count(), 1);
         app.run(Command::Undo);
@@ -7569,6 +7926,7 @@ mod tests {
         };
         let clamped = clamp(
             &document,
+            wp_model::Scope::Body,
             Caret {
                 paragraph: 9,
                 offset: 900,

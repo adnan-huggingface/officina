@@ -953,6 +953,27 @@ pub struct HeaderFooter {
     pub content: Vec<Block>,
 }
 
+/// Which of a document's flows a position or an edit is in.
+///
+/// **A document is not one body.** Its own is the long one, and every header
+/// and footer is another — each a list of blocks, each edited the same way,
+/// and each counting its paragraphs from zero. So a paragraph index alone
+/// cannot say where it is: paragraph three means one thing in the body and
+/// another in the header stamped on the page beside it, and an editor that
+/// only ever names the number is an editor that can only ever reach one of
+/// them.
+///
+/// Word draws the same line. The caret is in the body or it is in a header;
+/// a selection never spans the two, and closing the header puts the caret
+/// back where it was in the text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, PartialOrd, Ord)]
+pub enum Scope {
+    #[default]
+    Body,
+    /// One header or footer body, by the identity the section references it by.
+    Chrome(HeaderId),
+}
+
 /// `settings.xml`, as far as anything here needs it.
 ///
 /// The part is large and most of it is compatibility flags from Word 6. What is
@@ -1049,6 +1070,53 @@ impl Document {
         text_of(&self.body)
     }
 
+    /// The blocks of one of the document's flows.
+    ///
+    /// A scope naming a header the document does not have answers with nothing
+    /// rather than with the body: a caret left behind in a header that has
+    /// since been taken away must find an empty flow, not quietly start
+    /// editing the first page of the text.
+    pub fn blocks(&self, scope: Scope) -> &[Block] {
+        match scope {
+            Scope::Body => &self.body,
+            Scope::Chrome(id) => self
+                .header(id)
+                .map(|header| header.content.as_slice())
+                .unwrap_or_default(),
+        }
+    }
+
+    /// The same flow, to change. `None` when the scope names nothing.
+    pub fn blocks_mut(&mut self, scope: Scope) -> Option<&mut Vec<Block>> {
+        match scope {
+            Scope::Body => Some(&mut self.body),
+            Scope::Chrome(id) => self.header_mut(id).map(|header| &mut header.content),
+        }
+    }
+
+    /// Every paragraph of one flow, in document order, the ones inside tables
+    /// and content controls included.
+    pub fn paragraphs_in(&self, scope: Scope) -> Vec<&Paragraph> {
+        let mut out = Vec::new();
+        walk_paragraphs(self.blocks(scope), &mut out);
+        out
+    }
+
+    /// The same walk, to change.
+    pub fn paragraphs_in_mut(&mut self, scope: Scope) -> Vec<&mut Paragraph> {
+        let mut out = Vec::new();
+        if let Some(blocks) = self.blocks_mut(scope) {
+            walk_paragraphs_mut(blocks, &mut out);
+        }
+        out
+    }
+
+    /// One paragraph of one flow, by its place in that flow's own walk.
+    pub fn paragraph_in(&self, scope: Scope, index: usize) -> Option<&Paragraph> {
+        let mut at = 0;
+        walk_to(self.blocks(scope), &mut at, index)
+    }
+
     /// Every paragraph in the body, in document order, including the ones inside
     /// tables and content controls.
     ///
@@ -1056,9 +1124,7 @@ impl Document {
     /// slightly differently is how a list in a table ends up numbered
     /// separately from the same list outside one.
     pub fn paragraphs(&self) -> Vec<&Paragraph> {
-        let mut out = Vec::new();
-        walk_paragraphs(&self.body, &mut out);
-        out
+        self.paragraphs_in(Scope::Body)
     }
 
     /// One paragraph by its place in that walk, without gathering the rest.
@@ -1067,36 +1133,7 @@ impl Document {
     /// document, which is the wrong shape for anything asked once a frame —
     /// what is under the pointer, what the caret is standing in.
     pub fn paragraph(&self, index: usize) -> Option<&Paragraph> {
-        fn walk<'a>(blocks: &'a [Block], at: &mut usize, want: usize) -> Option<&'a Paragraph> {
-            for block in blocks {
-                match block {
-                    Block::Paragraph(paragraph) => {
-                        if *at == want {
-                            return Some(paragraph);
-                        }
-                        *at += 1;
-                    }
-                    Block::Table(table) => {
-                        for row in &table.rows {
-                            for cell in &row.cells {
-                                if let Some(found) = walk(&cell.content, at, want) {
-                                    return Some(found);
-                                }
-                            }
-                        }
-                    }
-                    Block::Structured(sdt) => {
-                        if let Some(found) = walk(&sdt.content, at, want) {
-                            return Some(found);
-                        }
-                    }
-                    Block::Anchor(_) | Block::AltChunk { .. } => {}
-                }
-            }
-            None
-        }
-        let mut at = 0;
-        walk(&self.body, &mut at, index)
+        self.paragraph_in(Scope::Body, index)
     }
 
     /// Every paragraph, mutably, in the same document order as
@@ -1106,9 +1143,7 @@ impl Document {
     /// name a paragraph, and its position in this walk is the only name that
     /// works for a document whose paragraphs have no `w14:paraId`.
     pub fn paragraphs_mut(&mut self) -> Vec<&mut Paragraph> {
-        let mut out = Vec::new();
-        walk_paragraphs_mut(&mut self.body, &mut out);
-        out
+        self.paragraphs_in_mut(Scope::Body)
     }
 
     /// Every drawing the document holds, to change — the headers and footers
@@ -1247,6 +1282,10 @@ impl Document {
         self.headers.iter().find(|header| header.id == id)
     }
 
+    pub fn header_mut(&mut self, id: HeaderId) -> Option<&mut HeaderFooter> {
+        self.headers.iter_mut().find(|header| header.id == id)
+    }
+
     /// Every author who has made a tracked change or left a comment.
     pub fn authors(&self) -> Vec<Arc<str>> {
         let mut people = People::default();
@@ -1299,6 +1338,41 @@ fn walk_paragraphs_mut<'a>(blocks: &'a mut [Block], into: &mut Vec<&'a mut Parag
             Block::Anchor(_) | Block::AltChunk { .. } => {}
         }
     }
+}
+
+/// The paragraph at `want` in a walk that has already counted `at` of them,
+/// without gathering the rest.
+///
+/// [`Document::paragraphs_in`] allocates a vector of every paragraph in the
+/// flow, which is the wrong shape for anything asked once a frame — what is
+/// under the pointer, what the caret is standing in.
+fn walk_to<'a>(blocks: &'a [Block], at: &mut usize, want: usize) -> Option<&'a Paragraph> {
+    for block in blocks {
+        match block {
+            Block::Paragraph(paragraph) => {
+                if *at == want {
+                    return Some(paragraph);
+                }
+                *at += 1;
+            }
+            Block::Table(table) => {
+                for row in &table.rows {
+                    for cell in &row.cells {
+                        if let Some(found) = walk_to(&cell.content, at, want) {
+                            return Some(found);
+                        }
+                    }
+                }
+            }
+            Block::Structured(sdt) => {
+                if let Some(found) = walk_to(&sdt.content, at, want) {
+                    return Some(found);
+                }
+            }
+            Block::Anchor(_) | Block::AltChunk { .. } => {}
+        }
+    }
+    None
 }
 
 fn walk_paragraphs<'a>(blocks: &'a [Block], into: &mut Vec<&'a Paragraph>) {

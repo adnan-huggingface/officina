@@ -41,7 +41,7 @@ pub use banding::{Band, CellAt, TablePart, TableScheme};
 pub use color::{Color, Highlight, Theme, ThemeSlot};
 pub use doc::{
     Block, Break, Document, Drawing, HeaderFooter, Hyperlink, Inline, Note, NoteKind, Paragraph,
-    Piece, Run, Sdt, SdtKind, Settings, Wrap,
+    Piece, Run, Scope, Sdt, SdtKind, Settings, Wrap,
 };
 pub use field::Field;
 pub use numbering::{AbstractNum, Counters, Level, Num, NumFormat, Numbering};

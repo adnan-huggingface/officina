@@ -31,10 +31,10 @@
 
 use std::sync::Arc;
 
-use wp_model::doc::{Block, Break, Document, Paragraph, Piece};
+use wp_model::doc::{Block, Break, Document, Paragraph, Piece, Scope};
 use wp_model::numbering::Counters;
 use wp_model::prop::Border;
-use wp_model::section::{HeaderKind, PageBox, SectionProps};
+use wp_model::section::{HeaderId, HeaderKind, PageBox, SectionProps};
 use wp_model::style::Layers;
 use wp_model::table::{CellVAlign, Table, VMerge, Width};
 use wp_model::units::Twips;
@@ -223,6 +223,18 @@ pub struct Page {
     pub header: Vec<Placement>,
     pub footer: Vec<Placement>,
     pub footnotes: Vec<Placement>,
+    /// Which header body this page's band was laid out from, and which footer
+    /// body its own was.
+    ///
+    /// **A band's paragraph numbers are its own.** The header is flowed from
+    /// zero, so a `Placed::Line` in [`Page::header`] names a paragraph of that
+    /// header and not of the document — and which header it is depends on the
+    /// page, since a section can name a different one for its first page and
+    /// for its even ones. Without this the numbers are an index into nothing,
+    /// which is exactly how a click on the body once selected the page frame
+    /// drawn in the header.
+    pub header_body: Option<HeaderId>,
+    pub footer_body: Option<HeaderId>,
 }
 
 impl Page {
@@ -234,6 +246,30 @@ impl Page {
             .chain(&self.header)
             .chain(&self.footer)
             .chain(&self.footnotes)
+    }
+
+    /// The placements of one of the document's flows on this page.
+    ///
+    /// What an editor working in `scope` may put a caret in, and nothing else:
+    /// a page that shows a different header than the one being edited answers
+    /// with nothing, so a click there cannot land on a paragraph of a header
+    /// that is not open.
+    pub fn placements(&self, scope: Scope) -> &[Placement] {
+        match scope {
+            Scope::Body => &self.content,
+            Scope::Chrome(id) if self.header_body == Some(id) => &self.header,
+            Scope::Chrome(id) if self.footer_body == Some(id) => &self.footer,
+            Scope::Chrome(_) => &[],
+        }
+    }
+
+    /// Which flow a band belongs to, for a caller holding one of the vectors.
+    pub fn header_scope(&self) -> Option<Scope> {
+        self.header_body.map(Scope::Chrome)
+    }
+
+    pub fn footer_scope(&self) -> Option<Scope> {
+        self.footer_body.map(Scope::Chrome)
     }
 
     /// Everything on the page, in the order a renderer must draw it: shapes
@@ -250,7 +286,12 @@ impl Page {
     /// it.** Every shape anchored in one is drawn before the page's own words,
     /// whatever the shape itself says about being behind the text — which is
     /// what stops a watermark from striking out the page it stamps.
-    pub fn painted(&self) -> impl Iterator<Item = &Placement> {
+    /// Each placement arrives with the flow it belongs to, because a line's
+    /// paragraph number means nothing without it — the selection a renderer
+    /// paints over paragraph three has to know which body's third paragraph
+    /// that is. Footnotes answer [`Scope::Body`]: they are the body's own
+    /// apparatus and a header is not.
+    pub fn painted(&self) -> impl Iterator<Item = (Scope, &Placement)> {
         fn layer(placement: &Placement, in_band: bool) -> u8 {
             match &placement.kind {
                 Placed::Edge { .. } => 2,
@@ -261,22 +302,29 @@ impl Page {
                 _ => 1,
             }
         }
-        let bands = self.header.iter().chain(&self.footer);
-        let mut out: Vec<(u8, &Placement)> = self
+        let header = self.header_scope().unwrap_or_default();
+        let footer = self.footer_scope().unwrap_or_default();
+        let bands = self
+            .header
+            .iter()
+            .map(move |placement| (header, placement))
+            .chain(self.footer.iter().map(move |placement| (footer, placement)));
+        let mut out: Vec<(u8, Scope, &Placement)> = self
             .content
             .iter()
-            .map(|placement| (layer(placement, false), placement))
-            .chain(bands.map(|placement| (layer(placement, true), placement)))
+            .map(|placement| (layer(placement, false), Scope::Body, placement))
+            .chain(bands.map(|(scope, placement)| (layer(placement, true), scope, placement)))
             .chain(
                 self.footnotes
                     .iter()
-                    .map(|placement| (layer(placement, false), placement)),
+                    .map(|placement| (layer(placement, false), Scope::Body, placement)),
             )
             .collect();
         // Stable, so within a layer the page is still drawn in the order it
         // was laid out: content, header, footer, notes.
-        out.sort_by_key(|(layer, _)| *layer);
-        out.into_iter().map(|(_, placement)| placement)
+        out.sort_by_key(|(layer, _, _)| *layer);
+        out.into_iter()
+            .map(|(_, scope, placement)| (scope, placement))
     }
 }
 
@@ -544,6 +592,8 @@ fn layout_once(document: &Document, ctx: &Context<'_>, shaper: &mut dyn Shaper) 
                 header: Vec::new(),
                 footer: Vec::new(),
                 footnotes: Vec::new(),
+                header_body: None,
+                footer_body: None,
             };
             // A multi-column section runs its items down the first column and
             // then the next. Balancing the last page is a separate problem and
@@ -772,6 +822,7 @@ fn place_bands(
     }) {
         if let Some(header) = document.header(body) {
             let y = section.margins.header.points();
+            page.header_body = Some(body);
             for placement in band(&header.content, document, ctx, shaper, width).0 {
                 page.header.push(Placement {
                     x: section.margins.start.points() + placement.x,
@@ -785,6 +836,7 @@ fn place_bands(
     if let Some(body) = section.footer(kind) {
         if let Some(footer) = document.header(body) {
             let (placements, height) = band(&footer.content, document, ctx, shaper, width);
+            page.footer_body = Some(body);
             let top = section.page.height.points() - section.margins.footer.points() - height;
             for placement in placements {
                 page.footer.push(Placement {
@@ -3247,7 +3299,7 @@ mod tests {
         let page = &pages(&document)[0];
         let order: Vec<u8> = page
             .painted()
-            .filter_map(|p| match p.kind {
+            .filter_map(|(_, p)| match p.kind {
                 Placed::Fill(_) => Some(0),
                 Placed::Edge { .. } => Some(1),
                 _ => None,
@@ -4293,6 +4345,18 @@ mod tests {
         assert!(
             page.header[0].y < page.geometry.top,
             "the header sits above the top margin"
+        );
+        // The band is flowed from zero, so its line's paragraph number means
+        // nothing without the body it was counted through.
+        assert_eq!(page.header_body, Some(wp_model::HeaderId(0)));
+        assert_eq!(page.footer_body, None);
+        let scope = wp_model::Scope::Chrome(wp_model::HeaderId(0));
+        assert_eq!(page.placements(scope).len(), 1, "the band is its own flow");
+        assert!(
+            page.placements(wp_model::Scope::Body)
+                .iter()
+                .all(|placement| placement.y >= page.geometry.top),
+            "and none of it is the body's"
         );
     }
 

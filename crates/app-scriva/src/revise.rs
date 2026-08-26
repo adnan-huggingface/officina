@@ -172,14 +172,17 @@ pub fn resolve_all(document: &mut Document, history: &mut History, how: Resolve)
             resolved[index - 1].mark_revision = None;
         }
     }
-    history.push(Change::Range {
-        first: 0,
-        before: before.clone(),
-        // Rejected paragraph marks joined their paragraphs, so fewer may
-        // stand here than were recorded.
-        now: resolved.len(),
-    });
-    crate::edit::replace_range(document, 0..before.len(), resolved);
+    history.push(
+        wp_model::Scope::Body,
+        Change::Range {
+            first: 0,
+            before: before.clone(),
+            // Rejected paragraph marks joined their paragraphs, so fewer may
+            // stand here than were recorded.
+            now: resolved.len(),
+        },
+    );
+    crate::edit::replace_range(document, wp_model::Scope::Body, 0..before.len(), resolved);
     count
 }
 
@@ -208,32 +211,56 @@ pub fn resolve_one(
             let Some(next) = document.paragraphs().get(index + 1).map(|p| (*p).clone()) else {
                 return false;
             };
-            history.push(Change::Merge {
-                index,
-                first: Box::new(before.clone()),
-                second: Box::new(next.clone()),
-            });
+            history.push(
+                wp_model::Scope::Body,
+                Change::Merge {
+                    index,
+                    first: Box::new(before.clone()),
+                    second: Box::new(next.clone()),
+                },
+            );
             let mut joined = crate::text::merge(&before, &next);
             joined.mark_revision = None;
-            crate::edit::replace_range(document, index..index + 2, vec![joined]);
+            crate::edit::replace_range(
+                document,
+                wp_model::Scope::Body,
+                index..index + 2,
+                vec![joined],
+            );
             return true;
         }
-        history.push(Change::Paragraph {
-            index,
-            before: Box::new(before.clone()),
-        });
+        history.push(
+            wp_model::Scope::Body,
+            Change::Paragraph {
+                index,
+                before: Box::new(before.clone()),
+            },
+        );
         let mut kept = before;
         kept.mark_revision = None;
-        crate::edit::replace_range(document, index..index + 1, vec![kept]);
+        crate::edit::replace_range(
+            document,
+            wp_model::Scope::Body,
+            index..index + 1,
+            vec![kept],
+        );
         return true;
     }
 
-    history.push(Change::Paragraph {
-        index,
-        before: Box::new(before.clone()),
-    });
+    history.push(
+        wp_model::Scope::Body,
+        Change::Paragraph {
+            index,
+            before: Box::new(before.clone()),
+        },
+    );
     let settled = settle_paragraph(&before, how, Some(mark));
-    crate::edit::replace_range(document, index..index + 1, vec![settled]);
+    crate::edit::replace_range(
+        document,
+        wp_model::Scope::Body,
+        index..index + 1,
+        vec![settled],
+    );
     true
 }
 
@@ -593,11 +620,14 @@ pub fn add_comment(
         .take(end.paragraph - start.paragraph + 1)
         .map(|p| (*p).clone())
         .collect();
-    history.push(Change::Range {
-        first: start.paragraph,
-        before: before.clone(),
-        now: before.len(),
-    });
+    history.push(
+        wp_model::Scope::Body,
+        Change::Range {
+            first: start.paragraph,
+            before: before.clone(),
+            now: before.len(),
+        },
+    );
 
     let mut comment = wp_model::Comment::new(id, author);
     comment.initials = Some(initials.into());
@@ -620,6 +650,7 @@ pub fn add_comment(
     }
     crate::edit::replace_range(
         document,
+        wp_model::Scope::Body,
         start.paragraph..start.paragraph + before.len(),
         after,
     );
@@ -632,11 +663,14 @@ pub fn delete_comment(document: &mut Document, history: &mut History, id: u32) -
         return false;
     }
     let before: Vec<Paragraph> = document.paragraphs().iter().map(|p| (*p).clone()).collect();
-    history.push(Change::Range {
-        first: 0,
-        before: before.clone(),
-        now: before.len(),
-    });
+    history.push(
+        wp_model::Scope::Body,
+        Change::Range {
+            first: 0,
+            before: before.clone(),
+            now: before.len(),
+        },
+    );
     document.comments.retain(|comment| comment.id != id);
 
     let after: Vec<Paragraph> = before
@@ -661,7 +695,7 @@ pub fn delete_comment(document: &mut Document, history: &mut History, id: u32) -
             paragraph
         })
         .collect();
-    crate::edit::replace_range(document, 0..before.len(), after);
+    crate::edit::replace_range(document, wp_model::Scope::Body, 0..before.len(), after);
     true
 }
 

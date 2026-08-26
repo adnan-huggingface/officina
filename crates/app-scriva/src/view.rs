@@ -10,10 +10,10 @@
 //! about the cell canvas, and it is the same lesson.
 
 use ui_kit::egui;
-use wp_layout::block::{Placed, Placement};
+use wp_layout::block::{Page, Placed, Placement};
 use wp_layout::inline::Content;
 use wp_layout::shape::Shaper;
-use wp_model::Document;
+use wp_model::{Document, Scope};
 
 use crate::drawings::Picked;
 use crate::edit::{Caret, Selection};
@@ -30,6 +30,8 @@ const SELECTION: egui::Color32 = egui::Color32::from_rgba_premultiplied(0x2A, 0x
 const MATCH: egui::Color32 = egui::Color32::from_rgba_premultiplied(0x92, 0x84, 0x28, 0x60);
 /// The outline and grips of a selected drawing.
 const HANDLE: egui::Color32 = egui::Color32::from_rgb(0x2A, 0x5C, 0xAA);
+/// The dashed rule and tag marking an open header or footer.
+const BAND: egui::Color32 = egui::Color32::from_rgb(0x7A, 0x7A, 0x82);
 
 /// What one point of the page takes on the glass at 100% — Word's hundred
 /// per cent, which is not a point per point.
@@ -195,10 +197,10 @@ pub struct Spot {
 /// The line nearest the click vertically, then the character nearest it
 /// horizontally — nearest, not containing, because a click past the end of a
 /// line has to land at the end of the line rather than nowhere.
-pub fn caret_at(view: &View, spot: Spot) -> Option<Caret> {
+pub fn caret_at(view: &View, scope: Scope, spot: Spot) -> Option<Caret> {
     let page = view.pages.get(spot.page)?;
     let mut best: Option<((f64, f64), &Placement, usize)> = None;
-    for placement in &page.content {
+    for placement in page.placements(scope) {
         let Placed::Line { paragraph, .. } = &placement.kind else {
             continue;
         };
@@ -218,12 +220,18 @@ pub fn caret_at(view: &View, spot: Spot) -> Option<Caret> {
     let Placed::Line { line, .. } = &placement.kind else {
         return None;
     };
-    Some(caret_in(view, line, paragraph, spot.x - placement.x))
+    Some(caret_in(view, scope, line, paragraph, spot.x - placement.x))
 }
 
 /// Where along `line` a caret goes for a point `x` measured from the line's
 /// own left edge.
-fn caret_in(view: &View, line: &wp_layout::inline::Line, paragraph: usize, x: f64) -> Caret {
+fn caret_in(
+    view: &View,
+    scope: Scope,
+    line: &wp_layout::inline::Line,
+    paragraph: usize,
+    x: f64,
+) -> Caret {
     let offset = offset_in(line, x);
     // A point past the end of a line that *wrapped* belongs before the space the
     // wrap ate: its byte is on this line and its caret would draw at the start of
@@ -231,7 +239,7 @@ fn caret_in(view: &View, line: &wp_layout::inline::Line, paragraph: usize, x: f6
     // paragraph has no next line and its trailing space is real text the caret
     // has to be able to sit after — which is where Word puts a click out there,
     // and where this used to refuse to go.
-    let offset = match offset == line_range(line).1 && wraps_after(view, paragraph, offset) {
+    let offset = match offset == line_range(line).1 && wraps_after(view, scope, paragraph, offset) {
         true => before_wrap_space(line, offset),
         false => offset,
     };
@@ -248,9 +256,9 @@ fn caret_in(view: &View, line: &wp_layout::inline::Line, paragraph: usize, x: f6
 /// that letter. Asking the first question of a hyperlink answers that the
 /// pointer is past the end of the link whenever it is on the second half of
 /// the link's last letter.
-pub fn character_over(view: &View, spot: Spot) -> Option<Caret> {
+pub fn character_over(view: &View, scope: Scope, spot: Spot) -> Option<Caret> {
     let page = view.pages.get(spot.page)?;
-    let found = page.content.iter().find(|placement| {
+    let found = page.placements(scope).iter().find(|placement| {
         matches!(placement.kind, Placed::Line { .. })
             && (placement.x..=placement.x + placement.width).contains(&spot.x)
             && (placement.y..=placement.y + placement.height).contains(&spot.y)
@@ -294,9 +302,9 @@ fn character_in(line: &wp_layout::inline::Line, x: f64) -> usize {
 }
 
 /// Whether another line of the same paragraph carries on from `end`.
-fn wraps_after(view: &View, paragraph: usize, end: usize) -> bool {
+fn wraps_after(view: &View, scope: Scope, paragraph: usize, end: usize) -> bool {
     view.pages.iter().any(|page| {
-        page.content.iter().any(|placement| {
+        page.placements(scope).iter().any(|placement| {
             matches!(&placement.kind, Placed::Line { line, paragraph: p }
                 if *p == paragraph && line_range(line) != (end, end) && line_range(line).0 == end)
         })
@@ -383,10 +391,10 @@ fn offset_in(line: &wp_layout::inline::Line, x: f64) -> usize {
 /// and drawing it at the end of the line above looks like the caret refused to
 /// move. Only the paragraph's true end — which no later line shares — keeps
 /// the caret on the line that ends there.
-fn line_holding(view: &View, caret: Caret) -> Option<(usize, &Placement)> {
+fn line_holding(view: &View, scope: Scope, caret: Caret) -> Option<(usize, &Placement)> {
     let mut at_end: Option<(usize, &Placement)> = None;
     for (index, page) in view.pages.iter().enumerate() {
-        for placement in &page.content {
+        for placement in page.placements(scope) {
             let Placed::Line { line, paragraph } = &placement.kind else {
                 continue;
             };
@@ -406,8 +414,8 @@ fn line_holding(view: &View, caret: Caret) -> Option<(usize, &Placement)> {
 }
 
 /// Where a caret sits on the page, as a vertical stroke.
-pub fn caret_rect(view: &View, caret: Caret) -> Option<(usize, egui::Rect)> {
-    if let Some((index, placement)) = line_holding(view, caret) {
+pub fn caret_rect(view: &View, scope: Scope, caret: Caret) -> Option<(usize, egui::Rect)> {
+    if let Some((index, placement)) = line_holding(view, scope, caret) {
         if let Placed::Line { line, .. } = &placement.kind {
             let x = x_of(line, caret.offset).unwrap_or(0.0) + placement.x;
             return Some((
@@ -422,7 +430,7 @@ pub fn caret_rect(view: &View, caret: Caret) -> Option<(usize, egui::Rect)> {
     // A paragraph with no text at all still has a line, and the caret goes at
     // its left edge.
     for (index, page) in view.pages.iter().enumerate() {
-        for placement in &page.content {
+        for placement in page.placements(scope) {
             if let Placed::Line { paragraph, .. } = &placement.kind {
                 if *paragraph == caret.paragraph {
                     return Some((
@@ -442,8 +450,8 @@ pub fn caret_rect(view: &View, caret: Caret) -> Option<(usize, egui::Rect)> {
 /// The byte range of the *visual* line the caret sits on — what Home and End
 /// mean in a paragraph that wraps. The paragraph's own ends are Ctrl+Home and
 /// Ctrl+End's business.
-pub fn line_span(view: &View, caret: Caret) -> Option<(usize, usize)> {
-    let (_, placement) = line_holding(view, caret)?;
+pub fn line_span(view: &View, scope: Scope, caret: Caret) -> Option<(usize, usize)> {
+    let (_, placement) = line_holding(view, scope, caret)?;
     let Placed::Line { line, .. } = &placement.kind else {
         return None;
     };
@@ -464,8 +472,8 @@ pub fn line_span(view: &View, caret: Caret) -> Option<(usize, usize)> {
 ///
 /// Arrow keys and Page Up/Down both come here: the only difference is the size
 /// of the step.
-pub fn step_from(view: &View, caret: Caret, dy: f64) -> Option<Caret> {
-    let (page, rect) = caret_rect(view, caret)?;
+pub fn step_from(view: &View, scope: Scope, caret: Caret, dy: f64) -> Option<Caret> {
+    let (page, rect) = caret_rect(view, scope, caret)?;
     let (page_x, page_y) = view.page_origin(page);
     let x = page_x + rect.min.x as f64;
     let from = page_y + rect.center().y as f64;
@@ -474,7 +482,7 @@ pub fn step_from(view: &View, caret: Caret, dy: f64) -> Option<Caret> {
     let mut best: Option<((f64, f64), &Placement, usize, f64)> = None;
     for (index, page) in view.pages.iter().enumerate() {
         let (origin_x, origin_y) = view.page_origin(index);
-        for placement in &page.content {
+        for placement in page.placements(scope) {
             let Placed::Line { paragraph, .. } = &placement.kind else {
                 continue;
             };
@@ -502,7 +510,13 @@ pub fn step_from(view: &View, caret: Caret, dy: f64) -> Option<Caret> {
     let Placed::Line { line, .. } = &placement.kind else {
         return None;
     };
-    Some(caret_in(view, line, paragraph, x - origin_x - placement.x))
+    Some(caret_in(
+        view,
+        scope,
+        line,
+        paragraph,
+        x - origin_x - placement.x,
+    ))
 }
 
 /// The byte range of the paragraph text a line covers.
@@ -892,24 +906,22 @@ struct Pickable {
 /// text, because the shape covers the page. Word does not let one be picked
 /// from the body either: a watermark "is usually part of the header, even
 /// though it appears in the middle of the page", and reaching it means opening
-/// the header first. Scriva has no header layer to open, so those shapes are
-/// simply not selectable.
-///
-/// That is also the only honest answer here, because [`Picked`] cannot name
-/// one. It says *which paragraph*, counted through the body's own walk, and a
-/// header is flowed separately and starts its count again at nought — so the
-/// page frame of a 440-paragraph document reported itself as a drawing of body
-/// paragraph 0, and resizing it would have resized whatever picture that
-/// paragraph really holds.
+/// the header first — which is exactly what `scope` is. A watermark or a page
+/// frame is picked by opening the band it lives in, and is untouchable from
+/// the body, because [`Picked`] names a paragraph of one flow and a header
+/// starts its count again at nought: the page frame of a 440-paragraph
+/// document once reported itself as a drawing of body paragraph 0, and
+/// resizing it would have resized whatever picture that paragraph really
+/// holds.
 ///
 /// In painting order, so the last one that contains a point is the one on top —
 /// which is the one a click means.
-fn pickable(view: &View, page: usize) -> Vec<Pickable> {
+fn pickable(view: &View, scope: Scope, page: usize) -> Vec<Pickable> {
     let mut out = Vec::new();
     let Some(page) = view.pages.get(page) else {
         return out;
     };
-    for placement in &page.content {
+    for placement in page.placements(scope) {
         match &placement.kind {
             Placed::Drawing {
                 anchor,
@@ -971,8 +983,12 @@ fn pickable(view: &View, page: usize) -> Vec<Pickable> {
 }
 
 /// Every drawing on a page a click may pick, and the rectangle it was drawn in.
-pub fn drawing_rects(view: &View, page: usize) -> Vec<(Picked, (f64, f64, f64, f64))> {
-    pickable(view, page)
+pub fn drawing_rects(
+    view: &View,
+    scope: Scope,
+    page: usize,
+) -> Vec<(Picked, (f64, f64, f64, f64))> {
+    pickable(view, scope, page)
         .into_iter()
         .map(|found| (found.picked, found.rect))
         .collect()
@@ -989,12 +1005,17 @@ pub fn drawing_rects(view: &View, page: usize) -> Vec<(Picked, (f64, f64, f64, f
 /// covering it needs the Select Objects tool, and a plain click does not do
 /// it. The shape is still reachable everywhere it is not covered, so nothing
 /// becomes unselectable by being large.
-pub fn drawing_at(view: &View, spot: Spot, reach: f64) -> Option<(Picked, (f64, f64, f64, f64))> {
-    let found = pickable(view, spot.page);
+pub fn drawing_at(
+    view: &View,
+    scope: Scope,
+    spot: Spot,
+    reach: f64,
+) -> Option<(Picked, (f64, f64, f64, f64))> {
+    let found = pickable(view, scope, spot.page);
     // Asked once, and only by a page that has something behind its words to
     // ask about: this runs for every frame the pointer moves over the paper.
     let on_a_letter =
-        found.iter().any(|found| found.behind_text) && character_over(view, spot).is_some();
+        found.iter().any(|found| found.behind_text) && character_over(view, scope, spot).is_some();
     found
         .into_iter()
         .rev()
@@ -1010,9 +1031,9 @@ pub fn drawing_at(view: &View, spot: Spot, reach: f64) -> Option<(Picked, (f64, 
 }
 
 /// The rectangle a picked drawing was drawn in, wherever it is.
-pub fn rect_of(view: &View, picked: Picked) -> Option<(usize, (f64, f64, f64, f64))> {
+pub fn rect_of(view: &View, scope: Scope, picked: Picked) -> Option<(usize, (f64, f64, f64, f64))> {
     for page in 0..view.pages.len() {
-        if let Some((_, rect)) = drawing_rects(view, page)
+        if let Some((_, rect)) = drawing_rects(view, scope, page)
             .into_iter()
             .find(|(found, _)| *found == picked)
         {
@@ -1020,6 +1041,83 @@ pub fn rect_of(view: &View, picked: Picked) -> Option<(usize, (f64, f64, f64, f6
         }
     }
     None
+}
+
+/// Washes out everything on a page that is not the flow being edited.
+///
+/// **Word greys the text while the header is open**, and the grey is the whole
+/// message: it says the words are still there, still printing, and not what
+/// the keys are going into. A page that shows a different header than the one
+/// open — another section's, or the first page's — has no live band at all,
+/// so the whole sheet goes back.
+fn veil(painter: &egui::Painter, page: &Page, scope: Scope, rect: egui::Rect, zoom: f32) {
+    // Premultiplied, which is the whole of it: full-white channels at
+    // two-thirds alpha do not veil a page, they paint over it — the first
+    // attempt erased the text it was meant to grey.
+    const WASH: egui::Color32 = egui::Color32::from_rgba_premultiplied(0xA8, 0xA8, 0xA8, 0xA8);
+    let (from, to) = match (page.header_scope(), page.footer_scope()) {
+        (Some(header), _) if header == scope => (page.geometry.top, page.geometry.height),
+        (_, Some(footer)) if footer == scope => (0.0, page.geometry.height - page.geometry.bottom),
+        _ => (0.0, page.geometry.height),
+    };
+    if to <= from {
+        return;
+    }
+    let veiled = egui::Rect::from_min_max(
+        egui::pos2(rect.left(), rect.top() + from as f32 * zoom),
+        egui::pos2(rect.right(), rect.top() + to as f32 * zoom),
+    );
+    painter.rect_filled(veiled.intersect(rect), 0.0, WASH);
+}
+
+/// The dashed rule and the tab that say where the band ends, as Word draws
+/// them while a header is open.
+fn paint_band_rule(
+    painter: &egui::Painter,
+    page: &Page,
+    scope: Scope,
+    rect: egui::Rect,
+    zoom: f32,
+) {
+    let Scope::Chrome(_) = scope else {
+        return;
+    };
+    let (y, label, above) = if page.header_scope() == Some(scope) {
+        (page.geometry.top, "Header", true)
+    } else if page.footer_scope() == Some(scope) {
+        (page.geometry.height - page.geometry.bottom, "Footer", false)
+    } else {
+        return;
+    };
+    let y = rect.top() + y as f32 * zoom;
+    let (left, right) = (
+        rect.left() + page.geometry.start as f32 * zoom,
+        rect.right() - page.geometry.end as f32 * zoom,
+    );
+    // Dashes rather than a rule, because the line is not on the paper: it is
+    // the application saying where the band stops, and a solid one reads as a
+    // border the document does not have.
+    let dash = 4.0;
+    let mut x = left;
+    while x < right {
+        let end = (x + dash).min(right);
+        painter.line_segment(
+            [egui::pos2(x, y), egui::pos2(end, y)],
+            egui::Stroke::new(1.0, BAND),
+        );
+        x = end + dash;
+    }
+    let anchor = match above {
+        true => egui::Align2::LEFT_BOTTOM,
+        false => egui::Align2::LEFT_TOP,
+    };
+    painter.text(
+        egui::pos2(left, y),
+        anchor,
+        label,
+        egui::FontId::proportional(9.0),
+        BAND,
+    );
 }
 
 /// Draws the selection handles of a picked drawing.
@@ -1062,6 +1160,7 @@ fn paint_handles(painter: &egui::Painter, at: egui::Pos2, size: egui::Vec2, zoom
 pub fn paint(
     painter: &egui::Painter,
     view: &View,
+    scope: Scope,
     selection: Selection,
     highlights: &[Selection],
     caret: Option<Caret>,
@@ -1091,23 +1190,37 @@ pub fn paint(
             egui::StrokeKind::Outside,
         );
 
-        for placement in page.painted() {
+        for (flow, placement) in page.painted() {
             paint_placement(
                 painter,
                 placement,
                 top_left,
                 zoom,
                 shaper,
-                selection,
-                highlights,
+                // A selection belongs to one flow. Paragraph three of the
+                // body and paragraph three of the header wear the same
+                // number, and a highlight that went by number alone struck
+                // the header of every page a body selection touched.
+                match flow == scope {
+                    true => selection,
+                    false => Selection::default(),
+                },
+                match flow {
+                    Scope::Body => highlights,
+                    Scope::Chrome(_) => &[],
+                },
                 pictures,
                 &page.geometry,
             );
         }
+        if scope != Scope::Body {
+            veil(painter, page, scope, rect, zoom);
+        }
+        paint_band_rule(painter, page, scope, rect, zoom);
     }
 
     if let Some(picked) = picked {
-        if let Some((page, (x, y, width, height))) = rect_of(view, picked) {
+        if let Some((page, (x, y, width, height))) = rect_of(view, scope, picked) {
             let (page_x, page_y) = view.page_origin(page);
             let top_left = origin + egui::vec2(page_x as f32 * zoom, page_y as f32 * zoom);
             paint_handles(
@@ -1123,7 +1236,7 @@ pub fn paint(
     // blinking in text the arrow keys are no longer moving through.
     if focused && picked.is_none() {
         if let Some(caret) = caret {
-            if let Some((page, rect)) = caret_rect(view, caret) {
+            if let Some((page, rect)) = caret_rect(view, scope, caret) {
                 let (page_x, page_y) = view.page_origin(page);
                 let top_left = origin + egui::vec2(page_x as f32 * zoom, page_y as f32 * zoom);
                 let stroke = egui::Rect::from_min_size(
@@ -1589,6 +1702,76 @@ mod tests {
         (view, shaper)
     }
 
+    /// A document with a header of its own, laid out.
+    fn laid_with_header(body: &[&str], header: &str) -> (View, Egui, wp_model::HeaderId) {
+        use wp_model::doc::HeaderFooter;
+        use wp_model::section::{HeaderId, HeaderKind, HeaderRef};
+        let mut document = document(body);
+        let id = HeaderId(1);
+        document.headers.push(HeaderFooter {
+            id,
+            part: None,
+            rel: None,
+            footer: false,
+            content: vec![Block::Paragraph(Paragraph::of(header))],
+        });
+        document.section.headers.push(HeaderRef {
+            kind: HeaderKind::Default,
+            body: id,
+            rel: None,
+        });
+        let ctx = context();
+        let mut shaper = Egui::new(&ctx);
+        let mut view = View::default();
+        view.refresh(&document, &wp_layout::FieldValues::new(), 1, &mut shaper);
+        (view, shaper, id)
+    }
+
+    #[test]
+    fn a_click_in_the_open_header_puts_the_caret_in_the_header_and_not_in_the_text() {
+        let (view, _, id) = laid_with_header(&["the body"], "RESUME / CV");
+        let page = &view.pages()[0];
+        assert_eq!(page.header_body, Some(id), "the page says whose band it is");
+        let band = page
+            .header
+            .iter()
+            .find(|placement| matches!(placement.kind, Placed::Line { .. }))
+            .expect("the header was laid out");
+        let spot = Spot {
+            page: 0,
+            x: band.x + 1.0,
+            y: band.y + band.height / 2.0,
+        };
+
+        let scope = Scope::Chrome(id);
+        let caret = caret_at(&view, scope, spot).expect("a caret in the header");
+        assert_eq!(caret.paragraph, 0, "the header's own first paragraph");
+
+        // The same point, asked of the body, is not the body's: a header is a
+        // flow of its own and none of its lines are the text's.
+        assert!(
+            page.placements(Scope::Body)
+                .iter()
+                .all(|placement| !std::ptr::eq(placement, band)),
+            "the band is not among the body's placements"
+        );
+    }
+
+    #[test]
+    fn a_selection_in_one_flow_does_not_paint_the_same_numbered_line_in_another() {
+        // Paragraph 0 of the body and paragraph 0 of the header wear the same
+        // number, and the painter is told the flow so it cannot confuse them.
+        let (view, _, id) = laid_with_header(&["the body"], "RESUME / CV");
+        let page = &view.pages()[0];
+        let flows: Vec<Scope> = page
+            .painted()
+            .filter(|(_, placement)| matches!(placement.kind, Placed::Line { .. }))
+            .map(|(flow, _)| flow)
+            .collect();
+        assert!(flows.contains(&Scope::Body));
+        assert!(flows.contains(&Scope::Chrome(id)));
+    }
+
     #[test]
     fn a_document_lays_out_to_at_least_one_page() {
         let (view, _) = laid(&["hello world"]);
@@ -1618,12 +1801,13 @@ mod tests {
             paragraph: 0,
             offset: 0,
         };
-        let (_, rect) = caret_rect(&view, caret).expect("the caret is drawn somewhere");
+        let (_, rect) =
+            caret_rect(&view, Scope::Body, caret).expect("the caret is drawn somewhere");
         let step = rect.height() as f64;
-        let down = step_from(&view, caret, step).expect("a line below");
+        let down = step_from(&view, Scope::Body, caret, step).expect("a line below");
         assert_eq!(down.paragraph, 1, "the page below, not the line it left");
 
-        let up = step_from(&view, down, -step).expect("a line above");
+        let up = step_from(&view, Scope::Body, down, -step).expect("a line above");
         assert_eq!(up.paragraph, 0, "and back again");
     }
 
@@ -1654,6 +1838,7 @@ mod tests {
             .expect("the first paragraph is on the page");
         let caret = caret_at(
             &view,
+            Scope::Body,
             Spot {
                 page: 0,
                 x: first.x + 1.0,
@@ -1676,6 +1861,7 @@ mod tests {
             .expect("a line");
         let caret = caret_at(
             &view,
+            Scope::Body,
             Spot {
                 page: 0,
                 x: line.x + line.width + 500.0,
@@ -1706,18 +1892,21 @@ mod tests {
             y: line.y + line.height / 2.0,
         };
         assert_eq!(
-            caret_at(&view, spot).expect("a caret").offset,
+            caret_at(&view, Scope::Body, spot).expect("a caret").offset,
             "short".len(),
             "the caret goes after the letter"
         );
         assert_eq!(
-            character_over(&view, spot).expect("a letter").offset,
+            character_over(&view, Scope::Body, spot)
+                .expect("a letter")
+                .offset,
             "shor".len(),
             "but the pointer is on it"
         );
         // And off the line there is no letter at all.
         assert!(character_over(
             &view,
+            Scope::Body,
             Spot {
                 x: line.x + line.width + 40.0,
                 ..spot
@@ -1733,6 +1922,7 @@ mod tests {
         let (view, _) = laid(&["one", "two", "three"]);
         let caret = caret_at(
             &view,
+            Scope::Body,
             Spot {
                 page: 0,
                 x: 100.0,
@@ -1749,6 +1939,7 @@ mod tests {
         for offset in 0..="hello world".len() {
             let found = caret_rect(
                 &view,
+                Scope::Body,
                 Caret {
                     paragraph: 0,
                     offset,
@@ -1763,6 +1954,7 @@ mod tests {
         let (view, _) = laid(&["", "after"]);
         let found = caret_rect(
             &view,
+            Scope::Body,
             Caret {
                 paragraph: 0,
                 offset: 0,
@@ -1805,6 +1997,7 @@ mod tests {
         assert_eq!(lines[0].1, boundary, "wrapped lines share the byte");
         let (_, rect) = caret_rect(
             &view,
+            Scope::Body,
             Caret {
                 paragraph: 0,
                 offset: boundary,
@@ -1818,6 +2011,7 @@ mod tests {
         assert_eq!(
             line_span(
                 &view,
+                Scope::Body,
                 Caret {
                     paragraph: 0,
                     offset: boundary
@@ -1833,6 +2027,7 @@ mod tests {
         let (view, lines) = wrapped();
         let caret = caret_at(
             &view,
+            Scope::Body,
             Spot {
                 page: 0,
                 x: 10_000.0,
@@ -1844,7 +2039,7 @@ mod tests {
             caret.offset < lines[0].1,
             "before the space the wrap ate, not on the boundary"
         );
-        let (_, rect) = caret_rect(&view, caret).expect("a rect");
+        let (_, rect) = caret_rect(&view, Scope::Body, caret).expect("a rect");
         assert!(
             (rect.min.y as f64 - lines[0].2).abs() < 0.1,
             "and it draws on the clicked line"
@@ -1890,6 +2085,7 @@ mod tests {
                 .expect("both cells have a line");
             let caret = caret_at(
                 &view,
+                Scope::Body,
                 Spot {
                     page: 0,
                     x: placement.x + placement.width / 2.0,
@@ -1910,9 +2106,10 @@ mod tests {
                 paragraph: 0,
                 offset,
             };
-            let (page, rect) = caret_rect(&view, caret).expect("a rectangle");
+            let (page, rect) = caret_rect(&view, Scope::Body, caret).expect("a rectangle");
             let back = caret_at(
                 &view,
+                Scope::Body,
                 Spot {
                     page,
                     x: rect.min.x as f64 + 0.1,
@@ -1956,9 +2153,10 @@ mod tests {
                 paragraph: 0,
                 offset,
             };
-            let (page, rect) = caret_rect(view, caret).expect("a rectangle");
+            let (page, rect) = caret_rect(view, Scope::Body, caret).expect("a rectangle");
             let back = caret_at(
                 view,
+                Scope::Body,
                 Spot {
                     page,
                     x: rect.min.x as f64 + 0.1,
@@ -1997,6 +2195,7 @@ mod tests {
             .expect("a line");
         let caret = caret_at(
             &view,
+            Scope::Body,
             Spot {
                 page: 0,
                 x: line.x + line.width + 500.0,
@@ -2032,6 +2231,7 @@ mod tests {
         round_trips(&view, "before\tafter");
         let (_, before) = caret_rect(
             &view,
+            Scope::Body,
             Caret {
                 paragraph: 0,
                 offset: 6,
@@ -2040,6 +2240,7 @@ mod tests {
         .expect("before the tab");
         let (_, after) = caret_rect(
             &view,
+            Scope::Body,
             Caret {
                 paragraph: 0,
                 offset: 7,
@@ -2087,7 +2288,7 @@ mod tests {
             ..Paragraph::new()
         })];
         view.refresh(&document, &wp_layout::FieldValues::new(), 1, &mut shaper);
-        let rects = drawing_rects(&view, 0);
+        let rects = drawing_rects(&view, Scope::Body, 0);
         let (picked, rect) = *rects.first().expect("the picture is on the page");
         let (x, y, w, h) = rect;
         assert_eq!((w, h), (60.0, 30.0), "drawn at the size it says");
@@ -2096,6 +2297,7 @@ mod tests {
         // what the click answered: paragraph, and which drawing of it.
         let (hit, _) = drawing_at(
             &view,
+            Scope::Body,
             Spot {
                 page: 0,
                 x: x + w / 2.0,
@@ -2105,7 +2307,10 @@ mod tests {
         )
         .expect("a click on a picture picks it");
         assert_eq!(hit, picked);
-        assert_eq!(rect_of(&view, picked).map(|(page, _)| page), Some(0));
+        assert_eq!(
+            rect_of(&view, Scope::Body, picked).map(|(page, _)| page),
+            Some(0)
+        );
 
         // And its corner is a grip, which is what a drag pulls.
         assert_eq!(
@@ -2187,8 +2392,14 @@ mod tests {
             x: page.geometry.width / 2.0,
             y: page.geometry.height / 2.0,
         };
-        assert_eq!(drawing_at(&view, spot, crate::drawings::GRIP), None);
-        assert!(caret_at(&view, spot).is_some(), "and the caret can be put");
+        assert_eq!(
+            drawing_at(&view, Scope::Body, spot, crate::drawings::GRIP),
+            None
+        );
+        assert!(
+            caret_at(&view, Scope::Body, spot).is_some(),
+            "and the caret can be put"
+        );
     }
 
     #[test]
@@ -2215,7 +2426,7 @@ mod tests {
             x: line.x + 1.0,
             y: line.y + line.height / 2.0,
         };
-        assert_eq!(drawing_at(&view, on_a_letter, 0.0), None);
+        assert_eq!(drawing_at(&view, Scope::Body, on_a_letter, 0.0), None);
 
         // Below the words the shape is bare, and there it is still the shape.
         let bare = Spot {
@@ -2223,7 +2434,7 @@ mod tests {
             x: line.x + 1.0,
             y: line.y + line.height + 200.0,
         };
-        assert!(drawing_at(&view, bare, 0.0).is_some());
+        assert!(drawing_at(&view, Scope::Body, bare, 0.0).is_some());
     }
 
     #[test]
@@ -2268,6 +2479,7 @@ mod tests {
         round_trips(&view, &format!("before{}after", wp_model::doc::OBJECT));
         let (_, before) = caret_rect(
             &view,
+            Scope::Body,
             Caret {
                 paragraph: 0,
                 offset: 6,
@@ -2276,6 +2488,7 @@ mod tests {
         .expect("in front of it");
         let (_, after) = caret_rect(
             &view,
+            Scope::Body,
             Caret {
                 paragraph: 0,
                 offset: 7,
