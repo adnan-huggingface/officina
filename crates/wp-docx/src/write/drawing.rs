@@ -537,6 +537,7 @@ mod tests {
             color: Some(wp_model::Color::Rgb([0xE0, 0xE0, 0xE0])),
             bold: false,
             italic: false,
+            stretch: true,
             rotation: 315.0,
         }));
         let out = patch(&model);

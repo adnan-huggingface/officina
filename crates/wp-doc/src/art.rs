@@ -111,6 +111,10 @@ pub struct Shape {
     pub text: Option<String>,
     /// `gtextFont`, the face that text is set in.
     pub font: Option<String>,
+    /// `fGtextFStretch` of `geometryTextBooleanProperties` — whether the words
+    /// are pulled about until their ink fills the shape, or only set at the
+    /// size that fills its width. See [`wp_model::doc::ShapeText::stretch`].
+    pub stretch: bool,
     /// `wzName` — the name the selection pane shows. Word's own watermarks are
     /// called `PowerPlusWaterMarkObject` and nothing else is, which is the only
     /// way to tell one from an ordinary piece of WordArt.
@@ -143,6 +147,7 @@ impl Default for Shape {
             picture: None,
             text: None,
             font: None,
+            stretch: false,
             name: None,
             fill: None,
             filled: true,
@@ -397,6 +402,12 @@ fn properties(count: u16, table: &[u8], shape: &mut Shape) {
             // `gtextUNICODE` and `gtextFont`, both UTF-16 with a terminator.
             0x00C0 => shape.text = bytes.map(utf16),
             0x00C5 => shape.font = bytes.map(utf16),
+            // `geometryTextBooleanProperties`. Only `fGtextFStretch`, bit 3 of
+            // the second byte, is read, and the mask in the high half is not
+            // consulted: Word's own WordArt sets the bit without marking it
+            // used, and a reader that believed the mask would draw the one
+            // kind of shape that *is* stretched as if it were not.
+            0x00FF => shape.stretch = value & 0x0080 != 0,
             // `pib`. Zero is "no picture", which is not picture zero.
             0x0104 => shape.picture = (value != 0).then_some(value),
             0x0181 => shape.fill = colour(value),
@@ -618,6 +629,34 @@ mod tests {
         properties(2, &table, &mut shape);
         assert_eq!(shape.text.as_deref(), Some("DRA"));
         assert_eq!(shape.rotation, 315.0);
+    }
+
+    #[test]
+    fn a_watermark_says_its_words_are_not_to_be_stretched_and_word_art_says_they_are() {
+        // The two values are the ones the two shapes actually carry, read off
+        // a `.doc` Word wrote: its diagonal watermark and a piece of WordArt
+        // inserted from the gallery. They differ in exactly one bit — bit 3 of
+        // the second byte, `fGtextFStretch` — and Word draws the second with
+        // its letters pulled about to fill the box and the first without.
+        //
+        // The high half is the mask of which booleans the shape claims to have
+        // stated, and it is not consulted: the WordArt's mask leaves the
+        // stretch bit out while its value sets it, so a reader that believed
+        // the mask would draw the one shape that *is* stretched flat.
+        let table = |value: u32| {
+            let mut out = Vec::new();
+            out.extend(0x00FFu16.to_le_bytes());
+            out.extend(value.to_le_bytes());
+            out
+        };
+        let read = |value: u32| {
+            let mut shape = Shape::default();
+            properties(1, &table(value), &mut shape);
+            shape.stretch
+        };
+        assert!(!read(0xC086_0000), "the watermark's own value");
+        assert!(read(0x5700_0080), "and the gallery WordArt's");
+        assert!(!Shape::default().stretch, "a shape that says nothing");
     }
 
     #[test]

@@ -774,8 +774,8 @@ pub struct ShapeOutline {
 /// draws a watermarked page as a blank one, and the document quietly loses the
 /// word that was the point of stamping it.
 ///
-/// The glyphs are stretched to fill the shape rather than set at a point size:
-/// that is what makes WordArt WordArt, and it is why there is no size here.
+/// There is no size here because WordArt has none: the glyphs are drawn to the
+/// shape, and [`ShapeText::stretch`] says which of the two ways.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ShapeText {
     pub text: Arc<str>,
@@ -783,6 +783,21 @@ pub struct ShapeText {
     pub color: Option<crate::Color>,
     pub bold: bool,
     pub italic: bool,
+    /// Whether the ink is pulled about until it fills the shape.
+    ///
+    /// **The two look nothing alike, and a watermark is the second kind.**
+    /// Stretched, the drawn outline spans the shape's width *and* its height,
+    /// so a word in a box four times as wide as it is tall comes out with
+    /// letters half again as fat as the face draws them. Unstretched, the
+    /// words are set at the size whose advances fill the shape's width and are
+    /// only scaled down the page until one em covers its height — which for
+    /// Word's own diagonal `CONFIDENTIAL`, measured, is Courier New at 84.6
+    /// points drawn 1.8 times as tall.
+    ///
+    /// A `.doc` says which in `fGtextFStretch`. VML has no way to say it —
+    /// Word writes the same `<v:textpath>` for both — so a shape read from a
+    /// `.docx` is stretched, which is what Word does with one.
+    pub stretch: bool,
     /// Degrees clockwise from upright. Word's own diagonal watermark is 315.
     pub rotation: f64,
 }

@@ -178,6 +178,10 @@ fn drawing(shape: &Shape, text: &str, face: Option<String>) -> Drawing {
             color: Some(wp_model::Color::Rgb(rgb)),
             bold: false,
             italic: false,
+            // VML cannot say otherwise: Word writes the same `<v:textpath>`
+            // for a watermark and for a piece of WordArt that is stretched,
+            // and draws a shape read back from one stretched.
+            stretch: true,
             rotation,
         })),
     }

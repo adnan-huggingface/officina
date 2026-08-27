@@ -2930,6 +2930,71 @@ the honest answer is to say so rather than to pick one. Content-measured
 autofit — a table's columns fitted to what is in them rather than taken from
 its grid — is untouched and remains a body of work of its own.
 
+## A watermark is not stretched, and a page does not space away from its top (2026-08-27)
+
+Three things `table_render_test.doc` — sixteen pages of engineering
+specification, a `.doc`, a diagonal `CONFIDENTIAL` on every page — still got
+wrong, all found by exporting Word's own PDF of it and measuring the glyph
+outlines against ours.
+
+**WordArt has two behaviours and this only had one.** The words of a shape are
+either pulled about until their drawn outline fills the box — which is what
+Word's WordArt gallery makes, and what was measured into this application — or
+set at the size whose *advances* fill the box's width and only scaled down the
+page. A watermark is the second kind, and drawing it as the first made its
+letters three times as fat as Word draws them. The shape says which in
+`fGtextFStretch`, bit 3 of the second byte of `geometryTextBooleanProperties`,
+and the two shapes differ in that one bit and nothing else: `0xC0860000` for the
+watermark against `0x57000080` for a piece of gallery WordArt saved beside it.
+The mask in the high half is not consulted, because the gallery WordArt sets the
+bit without marking it used and a reader that believed the mask would draw flat
+the one shape that is not.
+
+The geometry of the second kind, measured against Word's own outlines: the pen
+starts at the shape's left edge and twelve advances of 50.758 points come to
+609.10, the shape's width exactly; one em is the shape's height, so Courier
+New's cap at 1170 of 2048 units draws 86.99 points tall in a box of 152.25; and
+the baseline stands a descent — 615 units of the same em — above the shape's
+foot. Every letter's width and height then matched the face's own bounds to a
+hundredth of a point. VML cannot say which kind a shape is — Word writes the
+same `<v:textpath>` for both — so a shape read out of a `.docx` is stretched,
+which is what Word does with one.
+
+**Word does not space a paragraph away from the top of a page it fell onto.**
+Page five of this document begins with a heading set twelve points before, and
+Word puts it at the top margin exactly. Pages two and four begin with the same
+heading style and Word gives those their twelve points. The difference is in the
+paragraphs: the headings on pages two and four *carry their own page break*,
+`` as the first character of the paragraph, and the space follows the break
+as it would follow anything else. The one on page five simply ran out of room on
+page four. So the space is flowed in like any other and taken off again by
+whichever page the item turns out to open — which is not known until the flow is
+paginated, so it is taken off in two places, by `paginate` on the heights it
+breaks on and by the placement that draws them. A paragraph at the very start of
+the document, where no page ended at all, keeps its space; Word's own
+compatibility list has an option to suppress the typed-break case as well, which
+is the plainest evidence that it is not suppressed by default.
+
+**Both sides of a row's cut have to hold a line.** A row's content box is taller
+than its lines — the cell's padding stands below the last of them — so the
+bottom of the last line was being taken as a place to break, which left a piece
+holding nothing but padding. A heading row that very nearly fitted at the foot
+of page five had all of its words placed there and one and nine tenths of a
+point of padding sent over, where Word moved the whole row to page six.
+
+Page five now holds the same fifty-three lines Word holds, in the same order,
+and fifty-one of them are within a point of where Word puts them.
+
+**What still differs on this document.** The watermark's shape is centred on the
+middle of the page's text area, which is what Word does to within a constant
+8.23 points — measured across five page setups, varying the top margin, the
+bottom margin, the page height and the header distance, and the residual never
+moved. What that constant is has not been found and is not guessed at here. The
+letterhead's `ENGINEERING SPECIFICATIONS` cell sits four and a half points high
+against Word on every page, which is a cell's vertical alignment and not this
+work. Five pages hold embedded Visio drawings, which Word draws as text and
+vectors and this draws as one picture.
+
 ## Deferred
 
 - [x] **PDF** — was dropped per Q3; built after ship as `wp-print`. See above.

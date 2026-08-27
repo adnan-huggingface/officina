@@ -465,6 +465,7 @@ impl Reader<'_> {
                     color: shape.fill.filter(|_| shape.filled),
                     bold: false,
                     italic: false,
+                    stretch: shape.stretch,
                     rotation: shape.rotation,
                 })
             }),

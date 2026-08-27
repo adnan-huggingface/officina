@@ -1170,3 +1170,41 @@ model is `PartialEq` all the way down, comparing two paragraphs costs about a
 hundred and twenty-five nanoseconds, and eight thousand of those is a
 millisecond out of a budget of twenty-six. The exact answer was affordable, and
 it was only the habit of reaching for a hash map that made it look otherwise.
+
+A format that has one name for a thing may still have two behaviours for it.
+
+WordArt was measured once, from shapes made by Word's own gallery, and the
+answer was clear: the drawn outline of the words fills the shape's box across
+and down, whatever the string. That answer is right and it is half the story. A
+watermark is WordArt too, and Word draws it at the size whose advances fill the
+width and only scales it down the page — three times narrower letters than the
+other rule gives. The two shapes are the same shape type, carry the same VML
+when Word writes them to a `.docx`, and differ in one bit of one binary
+property. The lesson is not about that bit. It is that "measured against Word"
+is a claim about the document that was measured, and a second document of the
+same kind is a second measurement, not a confirmation.
+
+A page break the writer typed is part of the paragraph; one the page ran out of
+room for is not.
+
+Word drops a paragraph's space-before at the top of a page — except when the
+paragraph carries the break itself, as `` in its own text, in which case the
+space follows the break as it would follow any other character. Two headings of
+one style, twelve points before, one at the top margin and one twelve points
+down, and nothing in either paragraph's formatting to tell them apart: the
+difference was a character. Probing this in a document made for the purpose gave
+the wrong answer twice, because inserting a page break through Word's own
+automation puts it in a paragraph of its own and so produces the case that
+suppresses. The document that showed the behaviour was the one the bug was
+reported against.
+
+A boundary is not a place to break unless both sides of it hold something.
+
+A table row can be cut between its lines, and the bottom of the last line is a
+line boundary like any other — so it was offered as a cut, and a row at the foot
+of a page had all of its words placed there and its cell's bottom padding sent
+to the next page. Word moves the whole row. The rule that was missing is not
+about padding: it is that a cut has to leave something worth seeing on both
+sides of it, and a filter written as "not inside a line" admits every boundary
+that is merely outside all of them.
+

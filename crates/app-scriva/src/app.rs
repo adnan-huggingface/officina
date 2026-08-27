@@ -5238,6 +5238,9 @@ impl Scriva {
                 ),
                 bold: false,
                 italic: false,
+                // What Word draws for a watermark it reads out of a `.docx`,
+                // which is where this one is going.
+                stretch: true,
                 rotation: if draft.diagonal { 315.0 } else { 0.0 },
             })),
         })

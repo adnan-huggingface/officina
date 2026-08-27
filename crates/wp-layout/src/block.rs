@@ -173,15 +173,28 @@ fn picture_name(drawing: &wp_model::Drawing) -> Option<std::sync::Arc<str>> {
 
 /// Measures a shape's words at the size that fills it.
 ///
-/// **What fills the shape is the ink, not the line box.** Word, measured: a
-/// WordArt shape 400 by 200 points draws "CONFIDENTIAL", "gypsy", "Hg" and
-/// "xxxx" each with their outlines spanning 400 by 200 to a fiftieth of a
-/// point — so four strings of wildly different proportions all come out
+/// **A shape says which of two things to do with its words**, and they look
+/// nothing alike — see [`wp_model::doc::ShapeText::stretch`].
+///
+/// *Stretched*: what fills the shape is the ink, not the line box. Word,
+/// measured: a WordArt shape 400 by 200 points draws "CONFIDENTIAL", "gypsy",
+/// "Hg" and "xxxx" each with their outlines spanning 400 by 200 to a fiftieth
+/// of a point — so four strings of wildly different proportions all come out
 /// exactly as tall as the shape. Fitting the face's ascent-plus-descent
 /// instead makes every string the same height as every other and leaves an
 /// all-capitals watermark two thirds the size Word draws it. A shaper that
 /// cannot see inside the glyphs falls back to the line box, which is what
 /// this always did.
+///
+/// *Not stretched*, which is what a watermark is: the size is the one whose
+/// *advances* fill the shape's width — the pen starts at the shape's left edge
+/// and the last letter's advance ends at its right — and the only thing done
+/// down the page is that one em is scaled to the shape's height, with the
+/// baseline set a descent above the shape's foot. Measured against Word's own
+/// diagonal `CONFIDENTIAL`, a Courier New shape 609.10 by 152.25 points: the
+/// advance came out at 50.758 points, which is that face's 1229/2048 em at
+/// 84.583, and every letter's drawn outline matched the face's own bounds at
+/// that width and at 152.25 of height, to a hundredth of a point.
 pub fn shape_words(
     drawing: &wp_model::Drawing,
     shaper: &mut dyn Shaper,
@@ -203,9 +216,11 @@ pub fn shape_words(
     };
     let ink = shaper.ink(text, &request);
     let metrics = shaper.metrics(&request);
-    let natural = match &ink {
-        Some(ink) => ink.width(),
-        None => shaper.width(text, &request),
+    // What has to reach the shape's width: the ink when the words are pulled
+    // about to fill it, and the advances when they are only sized to it.
+    let natural = match (&ink, shape.stretch) {
+        (Some(ink), true) => ink.width(),
+        _ => shaper.width(text, &request),
     };
     let tall = match &ink {
         Some(ink) => ink.height(),
@@ -216,20 +231,25 @@ pub fn shape_words(
     }
     let box_width = drawing.extent.0.points();
     let box_height = drawing.extent.1.points();
-    // Across fills the box's width and down fills its height. The size is the
-    // first of them, because a size is the only thing a shaper can be asked
-    // for; what the two differ by is the stretch, which the renderers apply.
+    // Across fills the box's width. The size is that, because a size is the
+    // only thing a shaper can be asked for; whatever the down direction wants
+    // beyond it is the stretch, which the renderers apply to the glyphs.
     let across = (box_width / natural).max(0.01);
-    let down = (box_height / tall).max(0.01);
     request.size = MEASURED_AT * across;
-    let stretch = down / across;
+    // Stretched, one em covers the box's height; unstretched, the ink does.
+    let stretch = match shape.stretch {
+        true => (box_height / tall).max(0.01) / across,
+        false => (box_height / request.size).max(0.01),
+    };
 
     let mut measured = Vec::new();
     shaper.advances(text, &request, &mut measured);
     let metrics = shaper.metrics(&request);
     // The box the renderers centre in the shape: the ink's when the glyphs
-    // could be read, and the line box's when they could not.
-    let fitted = shaper.ink(text, &request);
+    // could be read and are being fitted to the shape, and the advances' when
+    // they are not — a watermark's pen starts at the shape's own left edge,
+    // and its baseline stands a descent above the shape's foot.
+    let fitted = shaper.ink(text, &request).filter(|_| shape.stretch);
     let (width, height, ascent, lead) = match &fitted {
         Some(ink) => (
             ink.width(),
@@ -237,10 +257,16 @@ pub fn shape_words(
             ink.top * stretch,
             -ink.left,
         ),
-        None => (
+        None if shape.stretch => (
             measured.iter().map(|advance| advance.width).sum(),
             (metrics.ascent + metrics.descent) * stretch,
             metrics.ascent * stretch,
+            0.0,
+        ),
+        None => (
+            measured.iter().map(|advance| advance.width).sum(),
+            box_height,
+            box_height - metrics.descent * stretch,
             0.0,
         ),
     };
@@ -421,6 +447,23 @@ pub struct Item {
     /// the bottom margin: a line whose type fits on the page stays there even
     /// when its trailing space would not.
     pub slack: f64,
+    /// The space above this item that a page will not give it.
+    ///
+    /// **Word does not space a paragraph away from the top of a page it fell
+    /// onto.** Measured: a paragraph set 24 points before begins at the top
+    /// margin exactly when the page above it simply ran out of room, and keeps
+    /// all 24 when the writer typed the break himself — the break is then part
+    /// of the paragraph, and the space follows it as it would follow anything
+    /// else. Word's own compatibility list has an option to suppress that
+    /// second case as well, which is the plainest evidence that it is not
+    /// suppressed by default. A paragraph at the very start of the document,
+    /// where no page ended at all, also keeps its space.
+    ///
+    /// Which page an item opens is not known until the flow has been
+    /// paginated, so the space is flowed in like any other and taken off
+    /// again afterwards — by [`paginate`], which has to know the heights it is
+    /// breaking on, and by the placement, which draws them.
+    pub space_before: f64,
 }
 
 /// A document, flowed into items and not yet paginated.
@@ -620,7 +663,8 @@ fn layout_once(document: &Document, ctx: &Context<'_>, shaper: &mut dyn Shaper) 
         if is_last_section {
             flow_endnotes(document, ctx, shaper, &mut counters, width, &mut flow);
         }
-        let mut breaks = paginate(&flow.items, height);
+        let opens_document = pages.is_empty();
+        let mut breaks = paginate(&flow.items, height, opens_document);
 
         // Word restarts the half-point accumulator at every page top — the
         // same jump pattern repeats down every page of an unbroken run. Pages
@@ -654,7 +698,7 @@ fn layout_once(document: &Document, ctx: &Context<'_>, shaper: &mut dyn Shaper) 
                 flow_endnotes(document, ctx, shaper, &mut counters, width, &mut second);
             }
             flow = second;
-            breaks = paginate(&flow.items, height);
+            breaks = paginate(&flow.items, height, opens_document);
         }
         flowed = flow.paragraphs;
         let mut placed = 0usize;
@@ -679,8 +723,13 @@ fn layout_once(document: &Document, ctx: &Context<'_>, shaper: &mut dyn Shaper) 
             // is not attempted.
             let column = columns.first().map(|c| c.width.points()).unwrap_or(width);
             let _ = column;
-            let mut y = page.geometry.top;
             let slice = &flow.items[placed..*end];
+            // The space above the first item is not on this page — the item is
+            // started that much higher and everything it holds comes with it.
+            let mut y = page.geometry.top
+                - slice.first().map_or(0.0, |item| {
+                    dropped_space(item, true, opens_document && page_index == 0)
+                });
             for (offset, item) in slice.iter().enumerate() {
                 // A maybe-edge is real only where the page actually cut its
                 // row: above the first item when the same row continues from
@@ -1617,6 +1666,7 @@ fn push_paragraph(
             table: None,
             footnotes: Vec::new(),
             slack: 0.0,
+            space_before: 0.0,
         });
     }
     into.items.append(&mut displaced);
@@ -1921,6 +1971,15 @@ fn push_paragraph(
             // The space-after may sink into the bottom margin rather than
             // pushing this line to the next page.
             slack: if is_last { after } else { 0.0 },
+            // The border's stand-off is not space between paragraphs and is
+            // not dropped with it: it is where the paragraph's own rule goes.
+            // Nor is anything dropped from a paragraph that opens with a break
+            // of its own — see [`Item::space_before`].
+            space_before: if is_first && !opens_with_break {
+                before
+            } else {
+                0.0
+            },
         });
         if ends_page {
             if let Some(last) = into.items.last_mut() {
@@ -1942,6 +2001,7 @@ fn push_paragraph(
                 table: None,
                 footnotes: Vec::new(),
                 slack: 0.0,
+                space_before: 0.0,
             });
             // Everything after the break is a group of its own.
             piece_group = into.items.len();
@@ -1965,6 +2025,7 @@ fn push_paragraph(
             table: None,
             footnotes: Vec::new(),
             slack: 0.0,
+            space_before: 0.0,
         });
     }
 }
@@ -2590,6 +2651,7 @@ fn flow_table(
                 table: Some(table_id),
                 footnotes: Vec::new(),
                 slack: 0.0,
+                space_before: 0.0,
             });
         }
     }
@@ -2713,6 +2775,16 @@ struct CellLine {
 /// line is not a height a page can end at, so it is dropped. What is left is
 /// where the row can be cut, the row's own two edges included.
 ///
+/// **Both sides of a cut have to hold a line of their own.** A row's content
+/// box is taller than its lines — the cell's own padding stands below the last
+/// of them — so the bottom of the last line is a boundary like any other, and
+/// cutting there leaves a piece with nothing in it but that padding. Measured
+/// against Word on the demonstration document: a table whose heading row very
+/// nearly fitted at the foot of a page had all of its words placed there and
+/// one and nine tenths of a point of padding sent over, where Word moved the
+/// whole row to the next page. A page break is a thing a reader sees, and it
+/// has to fall between two things worth seeing.
+///
 /// A row with nothing to split on comes back as a single band and travels
 /// whole. That is the honest answer when two columns of text line up on
 /// nothing: Word would break each cell on its own line boundaries and leave the
@@ -2737,9 +2809,22 @@ fn split_points(cells: &[CellPlan], inner_height: f64) -> Vec<f64> {
                 .any(|line| key(line.top) < at && at < key(line.top + line.height))
         })
     };
+    let lines = |above: bool, at: i64| {
+        cells.iter().any(|cell| {
+            cell.lines.iter().any(|line| match above {
+                true => key(line.top + line.height) <= at,
+                false => key(line.top) >= at,
+            })
+        })
+    };
     let points: Vec<f64> = offsets
         .into_iter()
-        .filter(|at| *at <= total && (*at == 0 || *at == total || !inside(*at)))
+        .filter(|at| {
+            *at <= total
+                && (*at == 0
+                    || *at == total
+                    || (!inside(*at) && lines(true, *at) && lines(false, *at)))
+        })
         .map(|at| at as f64 / 1000.0)
         .collect();
     if points.len() < 2 {
@@ -2756,7 +2841,7 @@ fn split_points(cells: &[CellPlan], inner_height: f64) -> Vec<f64> {
 /// The break is chosen by filling and then **pulling back**: a keep rule can
 /// only be honoured once it is known that the thing it keeps something with does
 /// not fit, and by then the decision has already been made.
-pub fn paginate(items: &[Item], height: f64) -> Vec<usize> {
+pub fn paginate(items: &[Item], height: f64, opens_document: bool) -> Vec<usize> {
     let mut breaks = Vec::new();
     let mut start = 0usize;
     while start < items.len() {
@@ -2786,7 +2871,9 @@ pub fn paginate(items: &[Item], height: f64) -> Vec<usize> {
             if y + item.height - item.slack + wants > height + 0.01 && end > start {
                 break;
             }
-            y += item.height;
+            // See [`Item::space_before`]: an item that opens a page loses it,
+            // unless no page ended above it because the document starts here.
+            y += item.height - dropped_space(item, end == start, opens_document && start == 0);
             notes = wants;
             end += 1;
         }
@@ -2805,6 +2892,15 @@ pub fn paginate(items: &[Item], height: f64) -> Vec<usize> {
         breaks.push(0);
     }
     breaks
+}
+
+/// The space above an item that this page will not give it. See
+/// [`Item::space_before`].
+fn dropped_space(item: &Item, opens_page: bool, opens_document: bool) -> f64 {
+    match opens_page && !opens_document {
+        true => item.space_before,
+        false => 0.0,
+    }
 }
 
 /// How much of the page the rule above the notes costs, as a multiple of the
@@ -3575,6 +3671,87 @@ mod tests {
              not under the empty line it would have left behind: {} against {}",
             after.1,
             tight.1
+        );
+    }
+
+    #[test]
+    fn a_page_does_not_space_away_from_its_top_what_simply_fell_onto_it() {
+        // Word, measured: a paragraph set twenty-four points before begins at
+        // the top margin exactly when the page above it ran out of room, keeps
+        // all twenty-four when the writer typed the break himself, and keeps
+        // them again at the very start of the document, where no page ended.
+        // Read off `table_render_test.doc`, whose headings are all set twelve
+        // points before: the two that carry their own page break stand twelve
+        // points down its page and the two that fell there stand at the top.
+        let spaced = |text: &str| {
+            let mut paragraph = Paragraph::of(text);
+            paragraph.props.spacing.before = Some(Twips::from_points(20.0));
+            Block::Paragraph(paragraph)
+        };
+        let mut blocks = vec![spaced("first")];
+        blocks.extend(paragraphs(5));
+        blocks.push(spaced("fell"));
+        let mut document = document(blocks);
+        document.section = page_of(6);
+        let pages = pages(&document);
+        assert_eq!(pages.len(), 2, "six lines of room and seven paragraphs");
+        assert_eq!(
+            pages[0].content[0].y,
+            pages[0].geometry.top + 20.0,
+            "the document's own first paragraph keeps its space"
+        );
+        assert_eq!(
+            pages[1].content[0].y, pages[1].geometry.top,
+            "and the one that only fell onto the second page does not"
+        );
+    }
+
+    #[test]
+    fn a_row_is_not_cut_where_one_side_of_the_cut_would_hold_no_line() {
+        // The bottom of the last line is a boundary like any other, and it is
+        // not a place to break: below it is the cell's padding and nothing
+        // else. Word, measured on `table_render_test.doc`: a heading row that
+        // very nearly fitted at the foot of page five moved whole to page six,
+        // where this had placed all of its words and sent one and nine tenths
+        // of a point of padding over.
+        let cell = |heights: &[f64]| {
+            let mut top = 0.0;
+            CellPlan {
+                x: 0.0,
+                width: 100.0,
+                align: wp_model::table::CellVAlign::Top,
+                fill: None,
+                edges: std::array::from_fn(|n| CellEdge {
+                    side: [Side::Top, Side::Start, Side::Bottom, Side::End][n],
+                    rules: None,
+                    draws: None,
+                    cuts: None,
+                }),
+                content: heights.iter().sum(),
+                spans: 1,
+                lines: heights
+                    .iter()
+                    .map(|height| {
+                        let line = CellLine {
+                            top,
+                            height: *height,
+                            parts: Vec::new(),
+                        };
+                        top += height;
+                        line
+                    })
+                    .collect(),
+            }
+        };
+        assert_eq!(
+            split_points(&[cell(&[12.0])], 16.0),
+            vec![0.0, 16.0],
+            "one line and some padding is a row that travels whole"
+        );
+        assert_eq!(
+            split_points(&[cell(&[12.0, 12.0])], 28.0),
+            vec![0.0, 12.0, 28.0],
+            "two lines may be parted between them, and still not below the second"
         );
     }
 
@@ -5267,6 +5444,7 @@ mod tests {
             color: None,
             bold: false,
             italic: false,
+            stretch: true,
             rotation: 315.0,
         }));
         let words = shape_words(&drawing, &mut crate::shape::Fixed).expect("a shape of words");
@@ -5341,6 +5519,7 @@ mod tests {
             color: None,
             bold: false,
             italic: false,
+            stretch: true,
             rotation: 0.0,
         }));
         let words = shape_words(&drawing, &mut Inked).expect("a shape of words");
@@ -5371,6 +5550,72 @@ mod tests {
         assert!(
             (baseline - 200.0).abs() < 1e-9,
             "and the baseline is the ink's own bottom"
+        );
+    }
+
+    #[test]
+    fn a_watermark_is_set_to_the_shapes_width_and_only_pulled_down_it() {
+        // The other kind — see [`wp_model::doc::ShapeText::stretch`]. Word,
+        // measured on `table_render_test.doc`: a Courier New shape 609.10 by
+        // 152.25 points draws `CONFIDENTIAL` with an advance of 50.758 points
+        // a letter, which is that face's em at 84.583, and with every letter's
+        // outline matching the face's own bounds at that width and at 152.25
+        // of height. Twelve of those advances is 609.10 exactly — the shape's
+        // width — and 152.25 over 84.583 is the 1.8 the glyphs are drawn tall.
+        //
+        // `Inked` sets four letters at half the size each, so a box 400 wide
+        // wants a size of 200, and a box 300 tall draws them one and a half
+        // times as tall as that.
+        let mut drawing = wp_model::Drawing {
+            source: Vec::new().into(),
+            anchored: true,
+            extent: (
+                wp_model::Emu::from_points(400.0),
+                wp_model::Emu::from_points(300.0),
+            ),
+            rel: None,
+            chart: None,
+            name: None,
+            description: None,
+            wrap: wp_model::Wrap::None,
+            distance: Default::default(),
+            position: None,
+            behind_text: true,
+            text: None,
+            tone: None,
+            outline: None,
+        };
+        drawing.text = Some(Box::new(wp_model::doc::ShapeText {
+            text: "abcd".into(),
+            font: Some("any".into()),
+            color: None,
+            bold: false,
+            italic: false,
+            stretch: false,
+            rotation: 0.0,
+        }));
+        let words = shape_words(&drawing, &mut Inked).expect("a shape of words");
+        assert!(
+            (words.font.size - 200.0).abs() < 1e-9,
+            "the advances fill it"
+        );
+        assert!(
+            (words.stretch - 1.5).abs() < 1e-9,
+            "one em is the box's height"
+        );
+        assert!(
+            (words.width - 400.0).abs() < 1e-9 && words.lead == 0.0,
+            "the pen starts at the shape's own left edge"
+        );
+
+        // `Inked` borrows the fixed shaper's metrics, whose descent is a
+        // quarter of the size: fifty points at two hundred, drawn one and a
+        // half times as tall, so seventy-five above the shape's foot.
+        let (x, baseline) = words.origin(0.0, 0.0, 400.0, 300.0);
+        assert!(x.abs() < 1e-9, "which is where the pen goes");
+        assert!(
+            (baseline - 225.0).abs() < 1e-9,
+            "and the baseline stands a descent above the foot: {baseline}"
         );
     }
 
