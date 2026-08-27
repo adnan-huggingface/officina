@@ -61,7 +61,12 @@ pub enum Placed {
     /// same document-order walk an editor names positions by. Without it a click
     /// on a line resolves to an offset in *some* paragraph and no way to say
     /// which, which is the whole of placing a caret.
-    Line { line: Box<Line>, paragraph: usize },
+    ///
+    /// Shared rather than owned: the same line travels from the flow into an
+    /// item and from the item onto a page, and copying it at each step is what
+    /// a long document spends its afternoon on. A renderer that needs to change
+    /// one takes its own copy — see [`crate::inline::LaidParagraph`].
+    Line { line: Arc<Line>, paragraph: usize },
     /// A filled rectangle: cell or paragraph shading.
     Fill([u8; 3]),
     /// One edge of a border.
@@ -482,6 +487,21 @@ pub struct Frame<'a, 'b> {
 ///
 /// A document with no page fields in it pays for one pass, not two.
 pub fn layout(document: &Document, ctx: &Context<'_>, shaper: &mut dyn Shaper) -> Vec<Page> {
+    // The cache spans the whole of this layout rather than one pass of it: the
+    // second pass a page number or a float asks for lays the same paragraphs
+    // again, and answering those from what the first pass settled is most of
+    // what makes the second pass cheap.
+    if let Some(memo) = ctx.memo {
+        memo.begin(ctx);
+    }
+    let pages = laid(document, ctx, shaper);
+    if let Some(memo) = ctx.memo {
+        memo.commit();
+    }
+    pages
+}
+
+fn laid(document: &Document, ctx: &Context<'_>, shaper: &mut dyn Shaper) -> Vec<Page> {
     let plain = layout_once(document, ctx, shaper);
     // A float anchored to the page or a margin sits where only pagination
     // knows, and the lines it narrows have to be broken before that. So the
@@ -491,6 +511,7 @@ pub fn layout(document: &Document, ctx: &Context<'_>, shaper: &mut dyn Shaper) -
     // moved the float that caused it would never settle.
     let wraps = Wraps::of(&plain);
     let beside = Context {
+        memo: None,
         wraps: &wraps,
         ..*ctx
     };
@@ -1212,16 +1233,52 @@ pub fn flow_paragraph(
             None => beside,
         });
     }
-    let laid = inline::layout(
-        paragraph,
-        index,
-        &layers,
-        label.as_ref(),
-        ctx,
-        width,
-        into.obstacle,
-        shaper,
-    );
+    // A header, a footer and a note each number their paragraphs from zero in
+    // a flow of their own, so their indices are the body's indices and mean
+    // something else entirely. Only the body is remembered.
+    let memo = ctx
+        .memo
+        .filter(|_| ctx.band.is_none() && ctx.note_mark.is_none() && !into.in_note);
+    let in_contents = ctx.contents.holds(index);
+    let recalled = memo.and_then(|memo| {
+        memo.recall(
+            index,
+            paragraph,
+            &layers,
+            label.as_ref(),
+            width,
+            into.obstacle,
+            in_contents,
+        )
+    });
+    let laid = match recalled {
+        Some(laid) => laid,
+        None => {
+            let laid = inline::layout(
+                paragraph,
+                index,
+                &layers,
+                label.as_ref(),
+                ctx,
+                width,
+                into.obstacle,
+                shaper,
+            );
+            if let Some(memo) = memo {
+                memo.remember(
+                    index,
+                    paragraph,
+                    &layers,
+                    label.as_ref(),
+                    width,
+                    into.obstacle,
+                    in_contents,
+                    &laid,
+                );
+            }
+            laid
+        }
+    };
     let first = into.items.len();
     push_paragraph(
         paragraph, &layers, laid, left, width, ctx.theme, shaper, into,
@@ -1700,12 +1757,17 @@ fn push_paragraph(
             into.drift += line.ideal - line.height;
             // The epsilon keeps a debt built from inexact tenths from missing
             // its own due date; no real font's drift sits on the knife edge.
+            //
+            // The line is shared, so paying takes a copy of it. Only the line
+            // that actually tips the debt pays, which is why the copy is rare
+            // and the sharing survives: a face whose laid height is its ideal —
+            // every fixed shaper, and most real ones — never reaches here.
             if into.drift >= 0.5 - 1e-9 {
-                line.height += 0.5;
+                Arc::make_mut(&mut line).height += 0.5;
                 into.drift -= 0.5;
                 into.dumped = true;
             } else if into.drift <= -0.5 + 1e-9 {
-                line.height -= 0.5;
+                Arc::make_mut(&mut line).height -= 0.5;
                 into.drift += 0.5;
                 into.dumped = true;
             }
@@ -1835,7 +1897,7 @@ fn push_paragraph(
             width: line.width,
             height: line.height,
             kind: Placed::Line {
-                line: Box::new(line),
+                line,
                 paragraph: paragraph_index,
             },
         });
@@ -3159,6 +3221,7 @@ mod tests {
             show_hidden: false,
             fields: Box::leak(Box::new(crate::field::FieldValues::default())),
             band: None,
+            memo: None,
             wraps: Box::leak(Box::new(Wraps::default())),
         }
     }
@@ -4526,6 +4589,73 @@ mod tests {
     }
 
     #[test]
+    fn a_paragraph_holding_a_page_number_is_laid_again_and_never_recalled() {
+        // What a `{ PAGE }` draws is settled by the page it lands on, and that
+        // is decided after the paragraph has been laid. A memo that kept it
+        // would draw the number of wherever it used to be — which is the one
+        // way this cache could be wrong without any paragraph having changed.
+        let field = Paragraph {
+            content: vec![Inline::Run(Run {
+                content: vec![
+                    Piece::FieldStart {
+                        dirty: false,
+                        lock: false,
+                    },
+                    Piece::Instruction(" PAGE ".into()),
+                    Piece::FieldSeparate,
+                    Piece::Text("1".into()),
+                    Piece::FieldEnd,
+                ],
+                ..Run::new()
+            })],
+            ..Paragraph::new()
+        };
+        let mut blocks = paragraphs(9);
+        blocks.insert(6, Block::Paragraph(field));
+        let mut document = document(blocks);
+        document.section = page_of(4);
+
+        let theme = document.theme.clone();
+        let memo = crate::Memo::new();
+        let ctx = Context {
+            memo: Some(&memo),
+            ..ctx(&theme)
+        };
+        let mut shaper = crate::shape::Fixed;
+        let first = layout(&document, &ctx, &mut shaper);
+        let again = layout(&document, &ctx, &mut shaper);
+        assert_eq!(again, first, "the same document, laid twice");
+        assert!(
+            first
+                .iter()
+                .any(|page| drawn(page).contains(&"2".to_string())),
+            "the field drew the page it landed on"
+        );
+        let (hits, misses) = memo.tally();
+        assert!(hits >= 9, "the nine plain paragraphs were recalled: {hits}");
+        assert!(
+            misses > 0,
+            "the field's own paragraph was laid again rather than recalled"
+        );
+    }
+
+    /// Every string of text drawn on a page, in placement order.
+    fn drawn(page: &Page) -> Vec<String> {
+        let mut out = Vec::new();
+        for placement in page.everything() {
+            let Placed::Line { line, .. } = &placement.kind else {
+                continue;
+            };
+            for fragment in &line.fragments {
+                if let crate::inline::Content::Text { text, .. } = &fragment.content {
+                    out.push(text.clone());
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
     fn a_page_number_in_a_footer_is_a_different_number_on_every_page() {
         // A footer is laid out again for every page it appears on, from the
         // same paragraphs. One field mark for all of them would answer every
@@ -4834,6 +4964,7 @@ mod tests {
                 show_hidden: false,
                 fields,
                 band: None,
+                memo: None,
                 wraps: Box::leak(Box::new(Wraps::default())),
             }
         }

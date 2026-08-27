@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 use wp_layout::block::{self, Placed};
 use wp_layout::inline::{Content, Context};
 use wp_layout::shape::Fixed;
+use wp_layout::Memo;
 use wp_model::Document;
 
 fn corpus() -> PathBuf {
@@ -74,6 +75,10 @@ fn office_templates() -> Vec<(String, Document)> {
 }
 
 fn lay(document: &Document) -> Vec<block::Page> {
+    lay_with(document, None)
+}
+
+fn lay_with(document: &Document, memo: Option<&Memo>) -> Vec<block::Page> {
     let theme = document.theme.clone();
     let marks = wp_layout::NoteMarks::of(document);
     let contents = wp_layout::field::Contents::of(document);
@@ -92,10 +97,21 @@ fn lay(document: &Document) -> Vec<block::Page> {
         show_hidden: false,
         fields: &wp_layout::FieldValues::new(),
         band: None,
+        memo,
         wraps: &wp_layout::block::Wraps::default(),
     };
     let mut shaper = Fixed;
     block::layout(document, &ctx, &mut shaper)
+}
+
+/// The first paragraph of the body with words in it, and where it stands.
+fn first_words(document: &mut Document) -> Option<&mut wp_model::doc::Paragraph> {
+    document.body.iter_mut().find_map(|block| match block {
+        wp_model::doc::Block::Paragraph(paragraph) if !paragraph.text().is_empty() => {
+            Some(paragraph)
+        }
+        _ => None,
+    })
 }
 
 /// What the layout drew for each paragraph, keyed by the paragraph index the
@@ -263,4 +279,119 @@ fn words_own_page_breaks_are_where_ours_would_be_compared() {
         compared += 1;
     }
     eprintln!("{compared} documents carry Word's own opinion of where the pages ended");
+}
+
+/// **A remembered layout has to be the layout that was remembered**, or the
+/// cache is a silent corruption of the document rather than a saving. It is not
+/// enough to compare page counts: the whole of every page is compared, every
+/// placement and every fragment and every coordinate, over every document in
+/// the corpus — which is where the headers, the footnotes, the tables, the
+/// fields and the numbered lists are.
+///
+/// Three layouts, because the memo has three states and each can be wrong on
+/// its own: none at all, an empty one it fills, and a full one it answers from.
+#[test]
+fn a_layout_answered_from_the_memo_is_the_layout_that_was_laid() {
+    for (name, document) in documents() {
+        let plain = lay(&document);
+        let memo = Memo::new();
+        let cold = lay_with(&document, Some(&memo));
+        assert_eq!(cold, plain, "{name}: with an empty memo");
+        let warm = lay_with(&document, Some(&memo));
+        assert_eq!(warm, plain, "{name}: laid again from the memo");
+        let (hits, _) = memo.tally();
+        assert!(
+            hits > 0 || document.paragraphs().is_empty(),
+            "{name}: nothing was recalled, so the comparison proved nothing"
+        );
+    }
+}
+
+/// The keystroke: one paragraph changed and the rest of the document recalled.
+///
+/// The paragraph that was typed into must be laid again — a memo that answered
+/// for it would show the letter as never typed — and the pages must come out
+/// exactly as a layout that had never seen the document before.
+#[test]
+fn a_paragraph_typed_into_is_the_one_that_is_laid_again() {
+    for (name, mut document) in documents() {
+        let memo = Memo::new();
+        lay_with(&document, Some(&memo));
+        let Some(paragraph) = first_words(&mut document) else {
+            continue;
+        };
+        paragraph.content = vec![wp_model::doc::Inline::Run(wp_model::doc::Run::of(
+            "A word nobody in this document has written before.",
+        ))];
+        let recalled = lay_with(&document, Some(&memo));
+        assert_eq!(
+            recalled,
+            lay(&document),
+            "{name}: after one paragraph changed"
+        );
+    }
+}
+
+/// Return: a paragraph inserted, which moves every paragraph after it by one.
+///
+/// A memo that looked a paragraph up by its own index alone would miss all of
+/// them, so this asserts both answers — that the pages are right, and that they
+/// were mostly recalled rather than laid.
+#[test]
+fn splitting_a_paragraph_does_not_cost_the_whole_document() {
+    for (name, mut document) in documents() {
+        if document.paragraphs().len() < 8 {
+            continue;
+        }
+        let memo = Memo::new();
+        lay_with(&document, Some(&memo));
+        document.body.insert(
+            0,
+            wp_model::doc::Block::Paragraph(wp_model::doc::Paragraph::new()),
+        );
+        let recalled = lay_with(&document, Some(&memo));
+        assert_eq!(
+            recalled,
+            lay(&document),
+            "{name}: after a paragraph was inserted"
+        );
+        let (hits, misses) = memo.tally();
+        assert!(
+            hits > misses,
+            "{name}: {hits} recalled against {misses} laid — the shift was not followed"
+        );
+    }
+}
+
+/// **The memo is emptied by comparison, not by being told.** A style edit
+/// changes every paragraph that wears it while changing none of them, so a
+/// cache keyed on the paragraphs alone would answer with the old lines for ever
+/// and no command would be at fault.
+#[test]
+fn editing_a_style_empties_the_memo_without_anybody_saying_so() {
+    let (name, mut document) = documents()
+        .into_iter()
+        .find(|(_, document)| document.paragraphs().len() > 4)
+        .expect("the corpus holds a document with some text in it");
+    let memo = Memo::new();
+    lay_with(&document, Some(&memo));
+    let normal = document
+        .styles
+        .lookup("Normal")
+        .or_else(|| document.styles.iter().next().map(|(id, _)| id))
+        .expect("a document has styles");
+    document
+        .styles
+        .get_mut(normal)
+        .expect("the style just found")
+        .para
+        .spacing
+        .after = Some(wp_model::units::Twips(1234));
+    let recalled = lay_with(&document, Some(&memo));
+    // The proof is the pages themselves. A memo that had kept its entries would
+    // answer for every paragraph whose own text had not changed, which is all of
+    // them, and the spacing the style now states would appear nowhere.
+    assert_eq!(recalled, lay(&document), "{name}: after a style changed");
+    let (hits, misses) = memo.tally();
+    assert!(misses > hits, "{name}: {hits} recalled, {misses} laid");
 }

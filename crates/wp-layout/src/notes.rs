@@ -22,7 +22,7 @@ use std::collections::BTreeMap;
 use wp_model::doc::{Document, NoteKind};
 
 /// The mark that stands for each note where it is referenced.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NoteMarks {
     /// Keyed by `(is endnote, id)`, because the two kinds number separately
     /// and their ids overlap.

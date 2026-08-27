@@ -77,7 +77,7 @@ impl StyleKind {
 }
 
 /// One `<w:style>`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Style {
     /// `w:styleId` — the identity, and what every reference in the document
     /// holds. Never derived from the name: two styles may share a name.
@@ -146,7 +146,7 @@ impl Style {
 }
 
 /// `<w:docDefaults>` — the bottom layer, and the only one that is never absent.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct DocDefaults {
     pub para: ParaProps,
     pub run: RunProps,
@@ -157,7 +157,7 @@ pub struct DocDefaults {
 /// Append-only, like a workbook's style tables and for the same reason: a
 /// [`StyleId`] is an index, and inserting one in the middle would re-letter
 /// every reference past it.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct StyleTable {
     styles: Vec<Style>,
     by_id: HashMap<Arc<str>, StyleId>,

@@ -58,6 +58,13 @@ pub struct View {
     /// out per frame is what makes an editor feel slow, so it is done when the
     /// document changes and not otherwise.
     stamp: u64,
+    /// The lines of the paragraphs the last keystroke did not touch.
+    ///
+    /// Laying out only when the document changes is not enough on its own: the
+    /// document changes on every keystroke, and a long one costs a third of a
+    /// second to lay. This is what makes the second keystroke cheap. See
+    /// [`wp_layout::Memo`].
+    memo: wp_layout::Memo,
 }
 
 impl Default for View {
@@ -69,6 +76,7 @@ impl Default for View {
             pages: Vec::new(),
             settled: wp_layout::FieldValues::default(),
             stamp: u64::MAX,
+            memo: wp_layout::Memo::new(),
         }
     }
 }
@@ -134,9 +142,11 @@ impl View {
                 false => &carried,
             },
             band: None,
+            memo: Some(&self.memo),
             wraps: &wp_layout::block::Wraps::default(),
         };
-        self.pages = wp_layout::block::layout(document, &ctx, shaper);
+        let pages = wp_layout::block::layout(document, &ctx, shaper);
+        self.pages = pages;
         // Remember what the fields came out as, so the next layout starts from
         // the numbers this one arrived at. A `{ PAGE }` that is already right
         // costs one pass instead of two, on every keystroke.
@@ -151,6 +161,9 @@ impl View {
     pub fn invalidate(&mut self) {
         self.stamp = u64::MAX;
         self.settled = wp_layout::FieldValues::default();
+        // Another document's lines are not this one's, and its paragraphs stand
+        // at the same indices. The memo would answer with them.
+        self.memo.forget();
     }
 
     /// The size of the whole stack of pages, in points before zoom.

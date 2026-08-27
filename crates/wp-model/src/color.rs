@@ -215,7 +215,7 @@ pub struct FontFaces {
 }
 
 /// The document's colour and font schemes, out of `theme1.xml`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Theme {
     /// In `<a:clrScheme>` order — dk1 first — because that is the order the
     /// part writes and [`ThemeSlot::scheme_index`] is defined against it. No

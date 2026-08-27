@@ -728,7 +728,7 @@ mod tests {
             width,
             height: 14.0,
             kind: Placed::Line {
-                line: Box::new(Line {
+                line: std::sync::Arc::new(Line {
                     fragments: vec![Fragment {
                         x: 0.0,
                         width,
@@ -780,7 +780,7 @@ mod tests {
     fn hidden_text_stays_off_the_paper() {
         let mut placement = text_line("secret");
         if let Placed::Line { line, .. } = &mut placement.kind {
-            line.fragments[0].style.hidden = true;
+            std::sync::Arc::make_mut(line).fragments[0].style.hidden = true;
         }
         assert!(flatten(&page_with(vec![placement])).is_empty());
     }
@@ -789,7 +789,8 @@ mod tests {
     fn an_underline_hangs_two_points_below_the_baseline() {
         let mut placement = text_line("under");
         if let Placed::Line { line, .. } = &mut placement.kind {
-            line.fragments[0].style.underline = wp_model::prop::UnderlineKind::Single;
+            std::sync::Arc::make_mut(line).fragments[0].style.underline =
+                wp_model::prop::UnderlineKind::Single;
         }
         let ops = flatten(&page_with(vec![placement]));
         let rule = ops
@@ -806,6 +807,7 @@ mod tests {
     fn chart_line(rel: &str) -> Placement {
         let mut placement = text_line("");
         if let Placed::Line { line, .. } = &mut placement.kind {
+            let line = std::sync::Arc::make_mut(line);
             line.fragments[0].width = 300.0;
             line.fragments[0].content = Content::Object {
                 height: 200.0,

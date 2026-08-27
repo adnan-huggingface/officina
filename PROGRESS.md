@@ -35,10 +35,10 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[-]` deferred
   draws past the right margin in the running application and does not reproduce
   under `Fixed`.
 - Open: **the Linux build has never been run.** See C28.
-- Open: **a large document is laid out in full on every edit.** 8000 paragraphs
-  cost about 330ms; 800 cost 35ms. Incremental layout — reusing the lines of
-  paragraphs that did not change — is the fix, and it is an architectural change
-  rather than an optimisation, so it was named rather than half-built.
+- ~~Open: **a large document is laid out in full on every edit.**~~ *Settled —
+  see "A keystroke lays one paragraph, not eight thousand" below.* It was the
+  architectural change it was called, and it was made: 8000 paragraphs cost
+  255ms to open and 26ms to type a letter into.
 - Carried, and still the user's call rather than ours: **AUDIT finding 27**
   (a sheet's `defaultRowHeight` and `defaultColWidth` are unread, so rows are
   about 4% too tall) and the Calx `collect_cell` allocation refactor.
@@ -2824,6 +2824,70 @@ galley and start working from the same pen and baseline paper does, or the two
 would place the same watermark differently. Every edge of every one of the four
 strings now agrees with Word's own rendering to within a fifth of a point,
 which is the error in measuring a curve by sampling it.
+
+### A keystroke lays one paragraph, not eight thousand
+
+**A document is laid out on every edit, and an edit changes one paragraph.**
+Eight thousand paragraphs cost about a third of a second, and a third of a
+second between a key going down and the letter appearing is the difference
+between an editor and a form. Two changes, one idea — *a laid line is settled
+once and then only carried about*:
+
+**A line is shared rather than copied.** It was copied twice on its way to the
+glass, into the item pagination breaks and again into the page that item lands
+on, and a measurement of where the time actually went put a third of it there
+rather than in the shaping. `Placed::Line` holds the line by reference count
+now. Only one thing ever changes a line after it is laid — Word's half-point
+accumulator, which lengthens the line that tips its debt — and that one takes a
+copy, which is a copy every seventh line of a face that drifts and none at all
+of a face that does not.
+
+**A paragraph's lines are kept, and handed back when nothing that could change
+them has changed.** The whole of `wp_layout::memo` is in what "nothing" means,
+because a cache that is wrong shows the user a document that is not theirs. The
+key is everything the inline layout reads *about the paragraph* — the paragraph,
+the style layers resolved for it, its list label, its measure, any float beside
+it — compared as values rather than hashed, because what a hash collision
+produces is a paragraph silently drawn as a different one. The guard is
+everything it reads that is *not* about the paragraph — the style table, the
+theme, the note marks, four settings — compared once per layout, so that
+editing a style empties the cache without any command having to remember to say
+so. That was the design's one real decision: a cache invalidated by being told
+is a cache that will one day not be told.
+
+Three things are never kept. A paragraph holding a field, because what a field
+draws is settled by the page it lands on and that is decided after it is laid.
+A header, a footer or a note, because each numbers its paragraphs from zero in
+a flow of its own and would answer with the body's. Neither is what a long
+document is made of.
+
+A paragraph is looked up by its own index, so inserting one would shift every
+paragraph after it out of place; it is looked for two either side, and the
+offset that worked is tried first next time. That is what makes pressing Return
+cost the same as typing a letter. A change bigger than the window — a paste of
+fifty paragraphs — costs one slow layout and is then remembered where it now
+stands.
+
+Measured, `cargo xtask perf`: 8000 paragraphs went from 330ms on every keystroke
+to 255ms to open and **26ms** to type into. 2000 paragraphs cost 5ms, 500 cost
+one. The correctness case is the one that matters and it is asked of the whole
+corpus: every document laid three ways — with no memo, with an empty one, and
+with the one the previous layout filled — and the pages compared whole, every
+placement and every coordinate, then again after a paragraph is typed into,
+after one is inserted, and after a style is changed underneath it.
+
+**What it costs, and what still costs the whole document.** The memo holds a
+copy of every paragraph it remembers, with the style layers resolved for it —
+about the document again, in memory. An entry moves from the last layout's shelf
+to this one's as it is matched rather than being copied onto it, so the two
+shelves are one document between them and not two.
+
+Assembling the pages — every line placed at an absolute point on the page it
+landed on — is what the remaining 26ms is, and it is proportional to the
+document rather than to the edit. Pages after an edit that changed no height are
+identical to the pages before it and could be kept whole; that is the next step
+and it is not this one. A header is laid again for every page that shows it,
+which a document with a running head pays two hundred and fifty times over.
 
 ### A line is measured above and below the baseline, separately
 

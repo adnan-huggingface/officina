@@ -841,7 +841,7 @@ mod tests {
                 width: 30.0,
                 height: 14.0,
                 kind: Placed::Line {
-                    line: Box::new(Line {
+                    line: std::sync::Arc::new(Line {
                         fragments: vec![Fragment {
                             x: 0.0,
                             width: 30.0,

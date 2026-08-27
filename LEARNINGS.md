@@ -1136,3 +1136,37 @@ measurements are real, they cannot both be the whole rule, and the gap between
 them is a quarter of a point. Changing the renderer to satisfy one would spoil
 the other. When the oracles disagree by less than the thing is worth, record
 both and change nothing.
+
+Measure where the time goes before deciding what to make faster.
+
+The note said a long document was slow because it was laid out in full on every
+edit, and the obvious fix was to stop laying out the paragraphs that had not
+changed. That was two thirds of the answer. Of the third of a second eight
+thousand paragraphs cost, shaping and breaking them was 240 milliseconds and
+*copying the finished lines about* was 130 — into the item pagination breaks,
+and again onto the page. Caching the shaping alone would have saved half of what
+it looked like it would save, because a cache hit still copied everything it
+handed back. Sharing the lines had to come first; then the cache was worth
+having. Both numbers came from four `Instant::now()` calls in a throwaway test,
+which is fifteen minutes against a week of building the wrong thing.
+
+A cache that is invalidated by being told will one day not be told.
+
+Every paragraph's lines depend on things that are not in the paragraph — the
+style table, the theme, a handful of settings — and the cheap way to handle that
+is for whatever edits a style to say so. It is also the way that fails silently
+and late: the one command that forgets shows the user a document that is not
+theirs, with nothing in the layout at fault. So the cache keeps a copy of
+everything outside the paragraphs that it reads, compares it at the start of
+every layout, and empties itself when it differs. It costs a struct comparison
+per keystroke and it cannot be forgotten, because there is nobody to forget.
+
+Do not fingerprint what you can compare.
+
+The obvious key for a laid paragraph is a hash of it. The obvious key is wrong:
+a hash collision does not produce a slow layout or an error, it produces a
+paragraph drawn as some other paragraph, at a moment nobody can reproduce. The
+model is `PartialEq` all the way down, comparing two paragraphs costs about a
+hundred and twenty-five nanoseconds, and eight thousand of those is a
+millisecond out of a budget of twenty-six. The exact answer was affordable, and
+it was only the habit of reaching for a hash map that made it look otherwise.

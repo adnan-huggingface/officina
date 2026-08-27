@@ -146,9 +146,16 @@ pub struct Line {
 }
 
 /// A paragraph, laid out.
+///
+/// The lines are shared rather than owned. A line is settled once and copied
+/// twice more on its way to the glass — into the item pagination breaks, and
+/// into the page that item lands on — so a document of eight thousand
+/// paragraphs spends more time copying its lines than laying them. Sharing
+/// them is also what lets [`crate::block::Memo`] hand the same line back on the
+/// next keystroke rather than lay it again.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct LaidParagraph {
-    pub lines: Vec<Line>,
+    pub lines: Vec<std::sync::Arc<Line>>,
     /// `<w:spacing w:before>` and `w:after`, in points, after the contextual
     /// rules have been applied by the caller.
     pub space_before: f64,
@@ -234,6 +241,10 @@ pub struct Context<'a> {
     /// by how much. Empty on the first pass, because where such a float sits
     /// is not known until the pages exist — see [`crate::block::Wraps`].
     pub wraps: &'a crate::block::Wraps,
+    /// The lines the last layout arrived at, for the paragraphs this one leaves
+    /// alone. `None` lays every paragraph afresh, which is what a renderer that
+    /// lays a document out once should do. See [`crate::memo::Memo`].
+    pub memo: Option<&'a crate::memo::Memo>,
 }
 
 impl Default for Context<'_> {
@@ -253,6 +264,7 @@ impl Default for Context<'_> {
             show_hidden: false,
             fields: Box::leak(Box::new(FieldValues::default())),
             band: None,
+            memo: None,
             wraps: Box::leak(Box::new(crate::block::Wraps::default())),
         }
     }
@@ -384,7 +396,7 @@ fn done(
     lead_in(&mut lines, shaper);
     let height = lines.iter().map(|line| line.height).sum();
     LaidParagraph {
-        lines,
+        lines: lines.into_iter().map(std::sync::Arc::new).collect(),
         space_before: layers
             .para
             .spacing
@@ -1978,6 +1990,7 @@ mod tests {
             show_hidden: false,
             fields: Box::leak(Box::new(crate::field::FieldValues::default())),
             band: None,
+            memo: None,
             wraps: Box::leak(Box::new(crate::block::Wraps::default())),
         }
     }
@@ -2036,7 +2049,7 @@ mod tests {
             None,
             &mut shaper,
         );
-        laid.lines.into_iter().next().expect("one line")
+        std::sync::Arc::unwrap_or_clone(laid.lines.into_iter().next().expect("one line"))
     }
 
     #[test]
@@ -2120,7 +2133,7 @@ mod tests {
             None,
             &mut shaper,
         );
-        laid.lines.into_iter().next().expect("one line")
+        std::sync::Arc::unwrap_or_clone(laid.lines.into_iter().next().expect("one line"))
     }
 
     #[test]

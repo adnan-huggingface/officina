@@ -65,10 +65,12 @@ pub fn run(corpus: &Path) -> Result<(), String> {
         );
     }
     for count in [500, 2_000, 8_000] {
-        println!(
-            "  {count:>6} paragraphs  layout         {:>6}ms",
-            document_of(count)
-        );
+        // Two numbers, because an editor pays the second one far more often
+        // than the first: opening a document is once, and a keystroke is every
+        // time. See `wp_layout::memo`.
+        let (opened, typed) = document_of(count);
+        println!("  {count:>6} paragraphs  layout         {opened:>6}ms");
+        println!("  {count:>6} paragraphs  one keystroke  {typed:>6}ms");
     }
     Ok(())
 }
@@ -100,8 +102,9 @@ fn workbook_of(count: u32) -> u128 {
     elapsed
 }
 
-/// A document of ordinary paragraphs, laid out to pages.
-fn document_of(count: usize) -> u128 {
+/// A document of ordinary paragraphs, laid out to pages: cold, then again with
+/// one paragraph of it typed into.
+fn document_of(count: usize) -> (u128, u128) {
     use wp_model::doc::{Block, Inline, Paragraph, Run};
 
     let mut document = wp_model::Document::new();
@@ -135,13 +138,28 @@ fn document_of(count: usize) -> u128 {
         show_hidden: false,
         fields: &fields,
         band: None,
+        memo: None,
         wraps: &wp_layout::block::Wraps::default(),
     };
     let start = Instant::now();
     let pages = wp_layout::block::layout(&document, &ctx, &mut wp_layout::shape::Fixed);
-    let elapsed = start.elapsed().as_millis();
+    let opened = start.elapsed().as_millis();
     assert!(!pages.is_empty());
-    elapsed
+
+    let memo = wp_layout::Memo::new();
+    let ctx = wp_layout::inline::Context {
+        memo: Some(&memo),
+        ..ctx
+    };
+    wp_layout::block::layout(&document, &ctx, &mut wp_layout::shape::Fixed);
+    if let Some(Block::Paragraph(paragraph)) = document.body.get_mut(count / 2) {
+        paragraph.content = vec![Inline::Run(Run::of("A letter typed into the middle."))];
+    }
+    let start = Instant::now();
+    let pages = wp_layout::block::layout(&document, &ctx, &mut wp_layout::shape::Fixed);
+    let typed = start.elapsed().as_millis();
+    assert!(!pages.is_empty());
+    (opened, typed)
 }
 
 #[derive(Clone, Copy)]
@@ -189,6 +207,7 @@ fn time(path: &Path, kind: Kind) -> Option<(u128, u128)> {
                 show_hidden: false,
                 fields: &fields,
                 band: None,
+                memo: None,
                 wraps: &wp_layout::block::Wraps::default(),
             };
             let mut shaper = wp_layout::shape::Fixed;
