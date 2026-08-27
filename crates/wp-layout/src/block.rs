@@ -34,7 +34,7 @@ use std::sync::Arc;
 use wp_model::doc::{Block, Break, Document, Paragraph, Piece, Scope};
 use wp_model::numbering::Counters;
 use wp_model::prop::Border;
-use wp_model::section::{HeaderId, HeaderKind, PageBox, SectionProps};
+use wp_model::section::{Bands, HeaderId, HeaderKind, PageBox, SectionProps};
 use wp_model::style::Layers;
 use wp_model::table::{CellVAlign, Table, VMerge, Width};
 use wp_model::units::Twips;
@@ -117,10 +117,19 @@ pub struct ShapeWords {
     pub rotation: f64,
     /// The measured line, before it is turned. The height already carries
     /// [`ShapeWords::stretch`].
+    /// The width of the box that is centred in the shape.
     pub width: f64,
     pub height: f64,
-    /// Baseline below the line's own top.
+    /// Baseline below the box's own top.
     pub ascent: f64,
+    /// Where the pen starts, relative to the left edge of that box.
+    ///
+    /// **A letter does not begin where its pen does.** Word fits the drawn
+    /// *outline* to the shape, so the box being centred is the ink's and the
+    /// pen stands a side bearing to the left of it — negative `lead`, most of
+    /// the time. Zero for a shaper that cannot see inside the glyphs, which is
+    /// the same thing as centring the line box and is what this did before.
+    pub lead: f64,
     /// How much taller than its own proportion the face is drawn.
     ///
     /// **WordArt is not type at a size.** The words are stretched until they
@@ -139,7 +148,10 @@ impl ShapeWords {
     /// `rect`, which is the point every renderer draws from and turns about.
     pub fn origin(&self, x: f64, y: f64, width: f64, height: f64) -> (f64, f64) {
         let (sin, cos) = self.rotation.to_radians().sin_cos();
-        let (vx, vy) = (-self.width / 2.0, -self.height / 2.0 + self.ascent);
+        let (vx, vy) = (
+            -self.width / 2.0 + self.lead,
+            -self.height / 2.0 + self.ascent,
+        );
         (
             x + width / 2.0 + vx * cos - vy * sin,
             y + height / 2.0 + vx * sin + vy * cos,
@@ -147,7 +159,24 @@ impl ShapeWords {
     }
 }
 
+/// What a drawing's picture is fetched and cached under: its relationship,
+/// with the washout it is drawn through folded in.
+fn picture_name(drawing: &wp_model::Drawing) -> Option<std::sync::Arc<str>> {
+    let rel = drawing.rel.as_deref()?;
+    Some(wp_model::doc::picture_key(rel, drawing.tone).into())
+}
+
 /// Measures a shape's words at the size that fills it.
+///
+/// **What fills the shape is the ink, not the line box.** Word, measured: a
+/// WordArt shape 400 by 200 points draws "CONFIDENTIAL", "gypsy", "Hg" and
+/// "xxxx" each with their outlines spanning 400 by 200 to a fiftieth of a
+/// point — so four strings of wildly different proportions all come out
+/// exactly as tall as the shape. Fitting the face's ascent-plus-descent
+/// instead makes every string the same height as every other and leaves an
+/// all-capitals watermark two thirds the size Word draws it. A shaper that
+/// cannot see inside the glyphs falls back to the line box, which is what
+/// this always did.
 pub fn shape_words(
     drawing: &wp_model::Drawing,
     shaper: &mut dyn Shaper,
@@ -167,9 +196,16 @@ pub fn shape_words(
         bold: shape.bold,
         italic: shape.italic,
     };
-    let natural = shaper.width(text, &request);
+    let ink = shaper.ink(text, &request);
     let metrics = shaper.metrics(&request);
-    let tall = metrics.ascent + metrics.descent;
+    let natural = match &ink {
+        Some(ink) => ink.width(),
+        None => shaper.width(text, &request),
+    };
+    let tall = match &ink {
+        Some(ink) => ink.height(),
+        None => metrics.ascent + metrics.descent,
+    };
     if natural <= 0.0 || tall <= 0.0 {
         return None;
     }
@@ -186,12 +222,30 @@ pub fn shape_words(
     let mut measured = Vec::new();
     shaper.advances(text, &request, &mut measured);
     let metrics = shaper.metrics(&request);
+    // The box the renderers centre in the shape: the ink's when the glyphs
+    // could be read, and the line box's when they could not.
+    let fitted = shaper.ink(text, &request);
+    let (width, height, ascent, lead) = match &fitted {
+        Some(ink) => (
+            ink.width(),
+            ink.height() * stretch,
+            ink.top * stretch,
+            -ink.left,
+        ),
+        None => (
+            measured.iter().map(|advance| advance.width).sum(),
+            (metrics.ascent + metrics.descent) * stretch,
+            metrics.ascent * stretch,
+            0.0,
+        ),
+    };
     Some(Box::new(ShapeWords {
         text: text.to_owned(),
         advances: measured.iter().map(|advance| advance.width).collect(),
-        width: measured.iter().map(|advance| advance.width).sum(),
-        height: (metrics.ascent + metrics.descent) * stretch,
-        ascent: metrics.ascent * stretch,
+        width,
+        height,
+        ascent,
+        lead,
         stretch,
         rgb: match shape.color {
             Some(wp_model::Color::Rgb(rgb)) => rgb,
@@ -511,13 +565,17 @@ fn layout_once(document: &Document, ctx: &Context<'_>, shaper: &mut dyn Shaper) 
     // every line of a second section claim a paragraph from the first — and a
     // click in that section landed pages away.
     let mut flowed = 0usize;
+    // Resolved once for the document: which band each section really shows,
+    // with "Link to Previous" followed back through the ones before it.
+    let bands = document.bands();
 
     for (section_index, (range, section)) in document.sections().into_iter().enumerate() {
         if let Some(start) = section.page_numbering.start {
             number = start;
         }
         let width = section.text_width().points();
-        let (top, bottom) = band_margins(document, section, ctx, shaper);
+        let shown = bands.get(section_index).copied().unwrap_or_default();
+        let (top, bottom) = band_margins(document, section, shown, ctx, shaper);
         let height = section.page.height.points() - top - bottom;
         let columns = section.columns.resolve(section.text_width());
 
@@ -670,6 +728,7 @@ fn layout_once(document: &Document, ctx: &Context<'_>, shaper: &mut dyn Shaper) 
                 &mut page,
                 document,
                 section,
+                shown,
                 ctx,
                 shaper,
                 number,
@@ -768,19 +827,20 @@ fn place_notes(
 fn band_margins(
     document: &Document,
     section: &SectionProps,
+    shown: Bands,
     ctx: &Context<'_>,
     shaper: &mut dyn Shaper,
 ) -> (f64, f64) {
     let width = section.text_width().points();
     let mut top = section.margins.top.points();
     let mut bottom = section.margins.bottom.points();
-    if let Some(body) = section.header(HeaderKind::Default) {
+    if let Some(body) = shown.header(HeaderKind::Default) {
         if let Some(header) = document.header(body) {
             let (_, height) = band(&header.content, document, ctx, shaper, width);
             top = top.max(section.margins.header.points() + height);
         }
     }
-    if let Some(body) = section.footer(HeaderKind::Default) {
+    if let Some(body) = shown.footer(HeaderKind::Default) {
         if let Some(footer) = document.header(body) {
             let (_, height) = band(&footer.content, document, ctx, shaper, width);
             bottom = bottom.max(section.margins.footer.points() + height);
@@ -795,6 +855,7 @@ fn place_bands(
     page: &mut Page,
     document: &Document,
     section: &SectionProps,
+    shown: Bands,
     ctx: &Context<'_>,
     shaper: &mut dyn Shaper,
     number: u32,
@@ -814,12 +875,13 @@ fn place_bands(
         ..*ctx
     };
 
-    if let Some(body) = section.header(kind).or_else(|| {
-        // A section with no header of the kind the page wants has *no* header —
-        // the reference being absent is the instruction, and falling back to the
-        // default one would put a header on a title page that asked for none.
-        (kind == HeaderKind::Default).then_some(section.header(HeaderKind::Default)?)
-    }) {
+    // A section that names no header of the kind the page wants shows the one
+    // the section before it does — Word's "Link to Previous" — and if no
+    // section back to the first names one either, the page has no header. What
+    // is never done is falling back to the *default* kind: a title page that
+    // asked for a first-page header and has none is a page with no header, and
+    // stamping the ordinary one on it is the one thing Word does not do.
+    if let Some(body) = shown.header(kind) {
         if let Some(header) = document.header(body) {
             let y = section.margins.header.points();
             page.header_body = Some(body);
@@ -833,7 +895,7 @@ fn place_bands(
         }
     }
 
-    if let Some(body) = section.footer(kind) {
+    if let Some(body) = shown.footer(kind) {
         if let Some(footer) = document.header(body) {
             let (placements, height) = band(&footer.content, document, ctx, shaper, width);
             page.footer_body = Some(body);
@@ -1473,7 +1535,10 @@ fn push_paragraph(
                 width: drawing.extent.0.points(),
                 height: drawing.extent.1.points(),
                 kind: Placed::Drawing {
-                    rel: drawing.rel.clone(),
+                    // The tone rides in the name, so the same bytes drawn
+                    // plainly and washed out as a watermark stay two
+                    // pictures — see `wp_model::doc::picture_key`.
+                    rel: picture_name(drawing),
                     anchor: Some(Box::new(drawing.clone())),
                     paragraph: paragraph_index,
                     nth,
@@ -1564,7 +1629,7 @@ fn push_paragraph(
             width: drawing.extent.0.points(),
             height: drawing.extent.1.points(),
             kind: Placed::Drawing {
-                rel: drawing.rel.clone(),
+                rel: picture_name(drawing),
                 anchor: Some(Box::new(drawing.clone())),
                 paragraph: paragraph_index,
                 nth,
@@ -4361,6 +4426,106 @@ mod tests {
     }
 
     #[test]
+    fn a_section_that_names_no_header_shows_the_one_the_section_before_it_does() {
+        // Word's "Link to Previous", on the wire: asked to link, Word writes a
+        // `<w:sectPr>` with no reference in it at all — so a reader that takes
+        // silence for "no header" leaves every page after the first section
+        // break bare. Measured against a two-section document Word itself
+        // wrote and this application read back.
+        let mut opening = Paragraph::of("section one");
+        let mut first = page_of(20);
+        first.headers.push(wp_model::HeaderRef {
+            kind: HeaderKind::Default,
+            body: wp_model::HeaderId(0),
+            rel: None,
+        });
+        opening.section = Some(Box::new(first));
+
+        let mut document = document(vec![
+            Block::Paragraph(opening),
+            Block::Paragraph(Paragraph::of("section two")),
+        ]);
+        // The trailing section is the linked one: it names nothing.
+        document.section = page_of(20);
+        document.headers.push(wp_model::HeaderFooter {
+            id: wp_model::HeaderId(0),
+            part: None,
+            rel: None,
+            footer: false,
+            content: vec![Block::Paragraph(Paragraph::of("running head"))],
+        });
+
+        let pages = pages(&document);
+        assert_eq!(pages.len(), 2, "one page per section");
+        assert_eq!(pages[0].header_body, Some(wp_model::HeaderId(0)));
+        assert_eq!(
+            pages[1].header_body,
+            Some(wp_model::HeaderId(0)),
+            "the linked section carries the same running head"
+        );
+        assert_eq!(pages[1].header.len(), 1, "and it is drawn there");
+    }
+
+    #[test]
+    fn unlinking_one_kind_of_band_leaves_the_other_two_inherited() {
+        // What Word writes when only the primary header is unlinked: one
+        // `<w:headerReference w:type="default">` for that section and nothing
+        // else, with the first-page and even-page bands still the previous
+        // section's.
+        let mut opening = Paragraph::of("section one");
+        let mut first = page_of(20);
+        first.title_page = true;
+        first.headers.push(wp_model::HeaderRef {
+            kind: HeaderKind::Default,
+            body: wp_model::HeaderId(0),
+            rel: None,
+        });
+        first.headers.push(wp_model::HeaderRef {
+            kind: HeaderKind::First,
+            body: wp_model::HeaderId(1),
+            rel: None,
+        });
+        opening.section = Some(Box::new(first));
+
+        let mut document = document(vec![
+            Block::Paragraph(opening),
+            Block::Paragraph(Paragraph::of("section two")),
+        ]);
+        document.section = page_of(20);
+        document.section.title_page = true;
+        document.section.headers.push(wp_model::HeaderRef {
+            kind: HeaderKind::Default,
+            body: wp_model::HeaderId(2),
+            rel: None,
+        });
+        for id in 0..3u32 {
+            document.headers.push(wp_model::HeaderFooter {
+                id: wp_model::HeaderId(id),
+                part: None,
+                rel: None,
+                footer: false,
+                content: vec![Block::Paragraph(Paragraph::of("head"))],
+            });
+        }
+
+        let shown = document.bands();
+        assert_eq!(
+            shown[1].header(HeaderKind::Default),
+            Some(wp_model::HeaderId(2))
+        );
+        assert_eq!(
+            shown[1].header(HeaderKind::First),
+            Some(wp_model::HeaderId(1)),
+            "the first-page band is still linked"
+        );
+        assert_eq!(
+            shown[1].header(HeaderKind::Even),
+            None,
+            "and nothing names one"
+        );
+    }
+
+    #[test]
     fn a_page_number_in_a_footer_is_a_different_number_on_every_page() {
         // A footer is laid out again for every page it appears on, from the
         // same paragraphs. One field mark for all of them would answer every
@@ -4785,6 +4950,7 @@ mod tests {
             position: None,
             behind_text: false,
             text: None,
+            tone: None,
             outline: None,
         };
         let paragraph = Paragraph {
@@ -4840,6 +5006,7 @@ mod tests {
             position: None,
             behind_text: false,
             text: None,
+            tone: None,
             outline: None,
         };
         let paragraph = Paragraph {
@@ -4900,6 +5067,7 @@ mod tests {
             position: None,
             behind_text: false,
             text: None,
+            tone: None,
             outline: None,
         };
         let paragraph = Paragraph {
@@ -4959,6 +5127,7 @@ mod tests {
             position: None,
             behind_text: true,
             text: None,
+            tone: None,
             outline: None,
         };
         drawing.text = Some(Box::new(wp_model::doc::ShapeText {
@@ -4973,6 +5142,105 @@ mod tests {
         assert_eq!(words.font.size, 100.0, "the size fills the width");
         assert_eq!(words.stretch, 3.0, "and the stretch fills the height");
         assert_eq!(words.height, 300.0, "so the words are as tall as the box");
+        assert_eq!(words.lead, 0.0, "a shaper with no glyphs fits the line box");
+    }
+
+    /// A shaper whose glyphs are known to be inset: half the point size wide
+    /// like [`crate::shape::Fixed`], but with a tenth of the size of side
+    /// bearing at each end and ink reaching only from the baseline to
+    /// six tenths of the size.
+    #[derive(Default)]
+    struct Inked;
+
+    impl Shaper for Inked {
+        fn metrics(&mut self, font: &FontRequest) -> crate::shape::Metrics {
+            crate::shape::Fixed.metrics(font)
+        }
+
+        fn advances(
+            &mut self,
+            text: &str,
+            font: &FontRequest,
+            into: &mut Vec<crate::shape::Advance>,
+        ) {
+            crate::shape::Fixed.advances(text, font, into)
+        }
+
+        fn ink(&mut self, text: &str, font: &FontRequest) -> Option<crate::shape::Ink> {
+            let run = text.chars().count() as f64 * font.size * 0.5;
+            Some(crate::shape::Ink {
+                left: font.size * 0.1,
+                right: run - font.size * 0.1,
+                top: font.size * 0.6,
+                bottom: 0.0,
+            })
+        }
+    }
+
+    #[test]
+    fn word_art_fills_the_shape_with_its_ink_and_not_with_its_line_box() {
+        // Word, measured: a WordArt shape 400 by 200 points draws
+        // "CONFIDENTIAL", "gypsy", "Hg" and "xxxx" with their *outlines*
+        // spanning 400 by 200 in every case — so the box that fills the shape
+        // is the ink's, and a face's ascent-plus-descent has nothing to do
+        // with it. Fitting the line box instead left an all-capitals
+        // watermark two thirds the height Word draws it.
+        let mut drawing = wp_model::Drawing {
+            source: Vec::new().into(),
+            anchored: true,
+            extent: (
+                wp_model::Emu::from_points(400.0),
+                wp_model::Emu::from_points(200.0),
+            ),
+            rel: None,
+            chart: None,
+            name: None,
+            description: None,
+            wrap: wp_model::Wrap::None,
+            distance: Default::default(),
+            position: None,
+            behind_text: true,
+            text: None,
+            tone: None,
+            outline: None,
+        };
+        drawing.text = Some(Box::new(wp_model::doc::ShapeText {
+            text: "abcd".into(),
+            font: Some("any".into()),
+            color: None,
+            bold: false,
+            italic: false,
+            rotation: 0.0,
+        }));
+        let words = shape_words(&drawing, &mut Inked).expect("a shape of words");
+
+        // Four letters at half the size each, less a tenth at either end:
+        // 1.8 sizes of ink, so 400 points of box wants a size of 222.2.
+        assert!((words.font.size - 400.0 / 1.8).abs() < 1e-9);
+        assert!(
+            (words.width - 400.0).abs() < 1e-9,
+            "the ink is as wide as the shape"
+        );
+        assert!(
+            (words.height - 200.0).abs() < 1e-9,
+            "and as tall as the shape"
+        );
+        assert!(
+            (words.ascent - 200.0).abs() < 1e-9,
+            "with the whole of it above the baseline, because this ink has no descender"
+        );
+
+        // The pen stands a side bearing to the left of the ink, so the box
+        // that gets centred is the letters and not the pen's run.
+        let (x, baseline) = words.origin(0.0, 0.0, 400.0, 200.0);
+        assert!(
+            (x + words.font.size * 0.1).abs() < 1e-9,
+            "the pen starts left of the shape by one side bearing"
+        );
+        assert!(
+            (baseline - 200.0).abs() < 1e-9,
+            "and the baseline is the ink's own bottom"
+        );
     }
 
     #[test]
@@ -5014,6 +5282,7 @@ mod tests {
             })),
             behind_text: false,
             text: None,
+            tone: None,
             outline: None,
         };
         let (_, y) = anchor_position(&drawing, &geometry, (72.0, 400.0));
@@ -5058,6 +5327,7 @@ mod tests {
             })),
             behind_text: false,
             text: None,
+            tone: None,
             outline: None,
         };
         let words = "wrap ".repeat(300);
@@ -5140,6 +5410,7 @@ mod tests {
             })),
             behind_text: false,
             text: None,
+            tone: None,
             outline: None,
         };
         // The column is 72..540, so its middle is 306 and a 100pt picture

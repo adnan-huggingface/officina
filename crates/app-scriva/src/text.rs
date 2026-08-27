@@ -672,6 +672,7 @@ mod tests {
             distance: Default::default(),
             position: None,
             behind_text: false,
+            tone: None,
             text: None,
             outline: None,
         }))

@@ -89,12 +89,17 @@ fn probe() {
                     advances,
                     font,
                     rgb,
-                    ..
+                    rotation,
+                    stretch,
                 } => {
                     let width: f64 = advances.iter().sum();
+                    let turn = match rotation == 0.0 && (stretch - 1.0).abs() < 1e-9 {
+                        true => String::new(),
+                        false => format!(" rot={rotation} stretch={stretch}"),
+                    };
                     let _ = writeln!(
                         text,
-                        "T {x:.2} {baseline:.2} {width:.2} {}pt{}{} {} #{:02x}{:02x}{:02x} {run:?}",
+                        "T {x:.2} {baseline:.2} {width:.2} {}pt{}{} {} #{:02x}{:02x}{:02x} {run:?}{turn}",
                         font.size,
                         if font.bold { " b" } else { "" },
                         if font.italic { " i" } else { "" },

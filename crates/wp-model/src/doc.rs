@@ -741,6 +741,9 @@ pub struct Drawing {
     /// The words *inside* the shape, when the shape is words rather than a
     /// picture of them. See [`ShapeText`].
     pub text: Option<Box<ShapeText>>,
+    /// What the picture's brightness and contrast were turned to — the
+    /// washout a picture watermark is drawn through. See [`Tone`].
+    pub tone: Option<Tone>,
     /// The shape drawn as itself — a rectangle with a line, a fill, or both.
     /// See [`ShapeOutline`].
     pub outline: Option<ShapeOutline>,
@@ -806,6 +809,110 @@ pub struct DrawingPosition {
 
 /// One axis of a drawing's position: relative to something, by an amount or by
 /// an alignment.
+/// A straight line through a picture's samples: `out = in * gain + offset`,
+/// both ends of the scale being 0 and 1, and the result clamped.
+///
+/// **This is what a picture watermark is.** Word washes the picture out rather
+/// than drawing it faintly — there is no transparency involved — and a reader
+/// that draws the photograph at full strength puts a holiday snap over the
+/// text of a contract. Measured against Word itself, which bakes the answer
+/// into its own PDF: a ramp of every grey from 0 to 255, exported at seven
+/// settings of brightness and contrast, gives
+///
+/// ```text
+/// gain   = 1 + contrast
+/// offset = (1 - gain) / 2 + (bright / 2) * (1 + gain)
+/// ```
+///
+/// with `bright` and `contrast` the `<a:lum>` attributes over a hundred
+/// thousand, in −1..1. Word's own washout states `bright="70000"
+/// contrast="-70000"`, so `out = 0.3 · in + 0.805` — black comes out at 205
+/// and everything above about 170 is white.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Tone {
+    pub gain: f64,
+    pub offset: f64,
+}
+
+impl Tone {
+    /// From `<a:lum bright contrast>`, each in −1..1.
+    pub fn of_lum(bright: f64, contrast: f64) -> Tone {
+        let gain = 1.0 + contrast;
+        Tone {
+            gain,
+            offset: (1.0 - gain) / 2.0 + (bright / 2.0) * (1.0 + gain),
+        }
+    }
+
+    /// From VML's `<v:imagedata gain blacklevel>`, each already divided out
+    /// of its 16.16 fixed point.
+    ///
+    /// The two notations say the same thing, which is not obvious and was
+    /// measured rather than assumed: handed a shape stating `gain="19661f"
+    /// blacklevel="22938f"`, Word reports the picture's brightness as 0.85 and
+    /// its contrast as 0.15 — the very numbers its own washout sets — so
+    /// `gain` is the multiplier itself and `blacklevel` is the brightness
+    /// above neutral. Three pairs, all three exact.
+    pub fn of_vml(gain: f64, black: f64) -> Tone {
+        Tone::of_lum(black * 2.0, gain - 1.0)
+    }
+
+    /// Whether it changes anything, so a picture nobody adjusted is not
+    /// copied and rewritten for nothing.
+    pub fn is_plain(&self) -> bool {
+        (self.gain - 1.0).abs() < 1e-6 && self.offset.abs() < 1e-6
+    }
+
+    /// One sample through it.
+    pub fn apply(&self, value: u8) -> u8 {
+        let out = f64::from(value) / 255.0 * self.gain + self.offset;
+        (out.clamp(0.0, 1.0) * 255.0).round() as u8
+    }
+
+    /// Every sample of an RGBA buffer through it, alpha untouched — a washout
+    /// changes what colour a pixel is, not whether it is there.
+    pub fn apply_rgba(&self, rgba: &mut [u8]) {
+        // A lookup rather than the arithmetic per sample: a page-sized
+        // watermark is several million of them, and there are 256 answers.
+        let table: [u8; 256] = std::array::from_fn(|value| self.apply(value as u8));
+        for pixel in rgba.chunks_exact_mut(4) {
+            for channel in &mut pixel[..3] {
+                *channel = table[*channel as usize];
+            }
+        }
+    }
+}
+
+/// The name a drawing's picture is fetched and cached under.
+///
+/// **A washed-out picture is a different picture.** The same image part can be
+/// drawn plainly in the body and washed out as a watermark in the header of
+/// one document, so a cache keyed by the relationship alone would hand the
+/// second one whatever the first decoded. The tone travels in the name
+/// instead, and [`picture_source`] takes it out again where the bytes are
+/// actually fetched.
+pub fn picture_key(rel: &str, tone: Option<Tone>) -> String {
+    match tone.filter(|tone| !tone.is_plain()) {
+        None => rel.to_owned(),
+        // A tilde cannot appear in a relationship id, which is an XML name.
+        Some(tone) => format!("{rel}~{:.4}:{:.4}", tone.gain, tone.offset),
+    }
+}
+
+/// The relationship a picture key names, and the tone it is drawn through.
+pub fn picture_source(key: &str) -> (&str, Option<Tone>) {
+    let Some((rel, tone)) = key.split_once('~') else {
+        return (key, None);
+    };
+    let parsed = tone.split_once(':').and_then(|(gain, offset)| {
+        Some(Tone {
+            gain: gain.parse().ok()?,
+            offset: offset.parse().ok()?,
+        })
+    });
+    (rel, parsed)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Offset {
     pub relative_to: RelativeTo,
@@ -1070,6 +1177,21 @@ impl Document {
         text_of(&self.body)
     }
 
+    /// Every flow the document has, the text first and then each header and
+    /// footer in the order they were read.
+    ///
+    /// **Anything that speaks for the whole document has to walk all of
+    /// these.** A search, a review, a spelling pass: each of them was written
+    /// against `paragraphs()` when the body was the only flow there was, and
+    /// each of them quietly stopped at the last paragraph of the text. The
+    /// body comes first because that is the order Word walks them in and the
+    /// order a reader expects Find Next to.
+    pub fn flows(&self) -> Vec<Scope> {
+        let mut out = vec![Scope::Body];
+        out.extend(self.headers.iter().map(|header| Scope::Chrome(header.id)));
+        out
+    }
+
     /// The blocks of one of the document's flows.
     ///
     /// A scope naming a header the document does not have answers with nothing
@@ -1228,6 +1350,61 @@ impl Document {
         }
         out.push((start..self.body.len(), &self.section));
         out
+    }
+
+    /// The properties of one section, to change.
+    ///
+    /// **A document's sections do not all live in the same place.** Every one
+    /// but the last is a `<w:sectPr>` hanging off the paragraph that ends it,
+    /// and the last is the body's own — so changing "the section" means
+    /// changing whichever of those the page in front of the user belongs to.
+    /// Indexed the way [`Document::sections`] hands them out.
+    pub fn section_mut(&mut self, index: usize) -> Option<&mut SectionProps> {
+        let mut seen = 0;
+        for block in self.body.iter_mut() {
+            if let Block::Paragraph(paragraph) = block {
+                if let Some(section) = &mut paragraph.section {
+                    if seen == index {
+                        return Some(section.as_mut());
+                    }
+                    seen += 1;
+                }
+            }
+        }
+        (seen == index).then_some(&mut self.section)
+    }
+
+    /// Every section's properties, copied, in the order [`Document::sections`]
+    /// hands them out. The shape an undo entry keeps, because a change to one
+    /// section is a change to a document whose sections are scattered through
+    /// the body.
+    pub fn section_props(&self) -> Vec<SectionProps> {
+        self.sections()
+            .into_iter()
+            .map(|(_, section)| section.clone())
+            .collect()
+    }
+
+    /// Puts them all back. Extra entries are ignored: a change that added or
+    /// removed a section break is a change to the body, and the body is
+    /// restored by its own entry.
+    pub fn set_section_props(&mut self, all: &[SectionProps]) {
+        for (index, props) in all.iter().enumerate() {
+            if let Some(section) = self.section_mut(index) {
+                *section = props.clone();
+            }
+        }
+    }
+
+    /// Every section's bands, in document order, with "Link to Previous"
+    /// followed — see [`crate::section::Bands`].
+    pub fn bands(&self) -> Vec<crate::section::Bands> {
+        let sections: Vec<&SectionProps> = self
+            .sections()
+            .into_iter()
+            .map(|(_, section)| section)
+            .collect();
+        crate::section::resolve_bands(&sections)
     }
 
     /// The label of every numbered paragraph, in document order.

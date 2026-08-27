@@ -284,6 +284,39 @@ fn headers_and_footers_are_read_and_belong_to_their_section() {
 }
 
 #[test]
+fn a_picture_watermark_is_a_picture_of_its_own_part_washed_out() {
+    // Two things this is the only document in the corpus to say. A picture
+    // inside a *header* names its relationship `rId1`, which is also the name
+    // of the document's own first relationship, so the two can be told apart
+    // only by the part they were written in. And the washout is what makes it
+    // a watermark rather than a photograph over the text: Word states it as
+    // `<a:lum bright="70000" contrast="-70000"/>`, which is three tenths of
+    // the contrast and comes out as black at 205 — measured against Word's own
+    // rendering of a ramp of every grey there is.
+    let document = open("picture-watermark.docx");
+    let bands: Vec<wp_model::Scope> = document
+        .headers
+        .iter()
+        .map(|header| wp_model::Scope::Chrome(header.id))
+        .collect();
+    let drawing = bands
+        .iter()
+        .flat_map(|scope| document.paragraphs_in(*scope))
+        .flat_map(|paragraph| paragraph.drawings())
+        .find(|drawing| drawing.rel.is_some())
+        .expect("the header holds a picture");
+    let rel = drawing.rel.as_deref().expect("naming its part");
+    assert!(
+        rel.starts_with("header") && rel.contains(":rId"),
+        "qualified by the part that named it, not left to collide with the document's own: {rel}"
+    );
+    let tone = drawing.tone.expect("and washed out");
+    assert!((tone.gain - 0.3).abs() < 1e-3);
+    assert_eq!(tone.apply(0), 205, "black comes out the grey Word draws");
+    assert_eq!(tone.apply(255), 255);
+}
+
+#[test]
 fn footnotes_are_read_and_the_separators_are_not_listed_as_notes() {
     let document = open("footnotes-endnotes.docx");
     let real: Vec<_> = document

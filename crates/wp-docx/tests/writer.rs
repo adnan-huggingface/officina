@@ -342,6 +342,7 @@ fn a_pasted_picture_becomes_a_part_a_relationship_and_a_drawing() {
         distance: (Emu(0), Emu(0), Emu(0), Emu(0)),
         position: None,
         behind_text: false,
+        tone: None,
         text: None,
         outline: None,
     };
@@ -417,6 +418,7 @@ fn a_chart_pasted_from_calx_becomes_a_part_a_relationship_and_a_drawing() {
         distance: (Emu(0), Emu(0), Emu(0), Emu(0)),
         position: None,
         behind_text: false,
+        tone: None,
         text: None,
         outline: None,
     };

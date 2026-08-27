@@ -392,6 +392,31 @@ fn offset_in(line: &wp_layout::inline::Line, x: f64) -> usize {
 /// move. Only the paragraph's true end — which no later line shares — keeps
 /// the caret on the line that ends there.
 fn line_holding(view: &View, scope: Scope, caret: Caret) -> Option<(usize, &Placement)> {
+    line_holding_on(view, scope, caret, None)
+}
+
+/// The same, looking on one page before any other.
+///
+/// **A header stands on every page that shows it.** The caret in one therefore
+/// has as many places on the screen as there are pages, and the first of them
+/// is the wrong one whenever the band was opened from somewhere else in the
+/// document: double-clicking the running head on page nine would scroll the
+/// window back to page one to show the very words the pointer was already on.
+fn line_holding_on(
+    view: &View,
+    scope: Scope,
+    caret: Caret,
+    prefer: Option<usize>,
+) -> Option<(usize, &Placement)> {
+    if let Some(page) = prefer {
+        if let Some(found) = view
+            .pages
+            .get(page)
+            .and_then(|_| line_on(view, scope, caret, page))
+        {
+            return Some(found);
+        }
+    }
     let mut at_end: Option<(usize, &Placement)> = None;
     for (index, page) in view.pages.iter().enumerate() {
         for placement in page.placements(scope) {
@@ -414,8 +439,40 @@ fn line_holding(view: &View, scope: Scope, caret: Caret) -> Option<(usize, &Plac
 }
 
 /// Where a caret sits on the page, as a vertical stroke.
+/// One page's own answer, for [`line_holding_on`].
+fn line_on(view: &View, scope: Scope, caret: Caret, index: usize) -> Option<(usize, &Placement)> {
+    let page = view.pages.get(index)?;
+    let mut at_end: Option<(usize, &Placement)> = None;
+    for placement in page.placements(scope) {
+        let Placed::Line { line, paragraph } = &placement.kind else {
+            continue;
+        };
+        if *paragraph != caret.paragraph {
+            continue;
+        }
+        let (start, end) = line_range(line);
+        if caret.offset >= start && caret.offset < end {
+            return Some((index, placement));
+        }
+        if caret.offset >= start && caret.offset == end && at_end.is_none() {
+            at_end = Some((index, placement));
+        }
+    }
+    at_end
+}
+
 pub fn caret_rect(view: &View, scope: Scope, caret: Caret) -> Option<(usize, egui::Rect)> {
-    if let Some((index, placement)) = line_holding(view, scope, caret) {
+    caret_rect_on(view, scope, caret, None)
+}
+
+/// The same, preferring one page — see [`line_holding_on`].
+pub fn caret_rect_on(
+    view: &View,
+    scope: Scope,
+    caret: Caret,
+    prefer: Option<usize>,
+) -> Option<(usize, egui::Rect)> {
+    if let Some((index, placement)) = line_holding_on(view, scope, caret, prefer) {
         if let Placed::Line { line, .. } = &placement.kind {
             let x = x_of(line, caret.offset).unwrap_or(0.0) + placement.x;
             return Some((
@@ -429,7 +486,11 @@ pub fn caret_rect(view: &View, scope: Scope, caret: Caret) -> Option<(usize, egu
     }
     // A paragraph with no text at all still has a line, and the caret goes at
     // its left edge.
-    for (index, page) in view.pages.iter().enumerate() {
+    let order = prefer
+        .into_iter()
+        .chain(0..view.pages.len())
+        .filter_map(|index| Some((index, view.pages.get(index)?)));
+    for (index, page) in order {
         for placement in page.placements(scope) {
             if let Placed::Line { paragraph, .. } = &placement.kind {
                 if *paragraph == caret.paragraph {
@@ -781,6 +842,14 @@ fn paint_metafile(
 /// its box. So the galley is tessellated once, unturned, and its vertices are
 /// stretched and turned here — which is what a stretch *is*, the glyph drawn at
 /// a different proportion rather than at a different size.
+///
+/// **The pen, not the galley's middle.** What is centred in the shape is the
+/// box the layout fitted — the ink's, where the face's outlines could be read
+/// — and a galley's own rectangle is the line box, which for an all-capitals
+/// watermark is half again as tall. So the placement is asked of
+/// [`wp_layout::block::ShapeWords::origin`], the same answer paper works from,
+/// and the galley is hung off its first baseline. Anything else and the screen
+/// and the printer disagree about where a watermark sits.
 fn paint_shape_words(
     painter: &egui::Painter,
     shaper: &mut crate::shaper::Egui,
@@ -796,19 +865,38 @@ fn paint_shape_words(
     let (sin, cos) = angle.sin_cos();
     let stretch = words.stretch as f32;
 
+    // Where the pen starts and where its baseline sits, in the shape's own
+    // box, at this zoom.
+    let (pen_x, pen_y) = words.origin(
+        0.0,
+        0.0,
+        f64::from(rect.width() / zoom),
+        f64::from(rect.height() / zoom),
+    );
+    let pen = rect.min + egui::vec2(pen_x as f32 * zoom, pen_y as f32 * zoom);
+    // The same point inside the galley: a row states its glyphs' baseline, and
+    // the first glyph's own x is where the pen stood when it was drawn.
+    let (origin_x, baseline) = galley
+        .rows
+        .first()
+        .and_then(|row| {
+            let glyph = row.row.glyphs.first()?;
+            Some((row.pos.x + glyph.pos.x, row.pos.y + glyph.pos.y))
+        })
+        .unwrap_or((0.0, galley.rect.height()));
+
     // Where a point of the unturned, unstretched galley lands on the page: it
-    // is measured from the galley's own middle, stretched down its own axis,
-    // turned, and hung off the middle of the shape's box.
-    let half = galley.rect.size() / 2.0;
-    let centre = rect.center();
+    // is measured from the pen, stretched about the baseline — which is the
+    // fixed point paper's text matrix stretches about too — turned, and hung
+    // off the pen's place in the shape.
     let place = |p: egui::Pos2| {
-        let (x, y) = (p.x - half.x, (p.y - half.y) * stretch);
-        egui::pos2(centre.x + x * cos - y * sin, centre.y + x * sin + y * cos)
+        let (x, y) = (p.x - origin_x, (p.y - baseline) * stretch);
+        egui::pos2(pen.x + x * cos - y * sin, pen.y + x * sin + y * cos)
     };
 
     if (stretch - 1.0).abs() < 1e-4 {
-        let turned = egui::vec2(-half.x * cos + half.y * sin, -half.x * sin - half.y * cos);
-        let mut shape = egui::epaint::TextShape::new(centre + turned, galley, colour);
+        let corner = place(egui::Pos2::ZERO);
+        let mut shape = egui::epaint::TextShape::new(corner, galley, colour);
         shape.angle = angle;
         painter.add(shape);
         return;
@@ -1162,7 +1250,7 @@ pub fn paint(
     view: &View,
     scope: Scope,
     selection: Selection,
-    highlights: &[Selection],
+    highlights: &[(Scope, Selection)],
     caret: Option<Caret>,
     focused: bool,
     zoom: f32,
@@ -1205,10 +1293,11 @@ pub fn paint(
                     true => selection,
                     false => Selection::default(),
                 },
-                match flow {
-                    Scope::Body => highlights,
-                    Scope::Chrome(_) => &[],
-                },
+                // The matches carry their flow for the same reason. Find
+                // looks through the headers as well as the text, so a match
+                // is highlighted where it was found and nowhere else.
+                flow,
+                highlights,
                 pictures,
                 &page.geometry,
             );
@@ -1257,7 +1346,8 @@ fn paint_placement(
     zoom: f32,
     shaper: &mut Egui,
     selection: Selection,
-    highlights: &[Selection],
+    flow: Scope,
+    highlights: &[(Scope, Selection)],
     pictures: &crate::pictures::Pictures,
     geometry: &wp_model::PageBox,
 ) {
@@ -1298,8 +1388,8 @@ fn paint_placement(
         }
         Placed::Line { line, paragraph } => {
             paint_line(
-                painter, placement, line, *paragraph, page, zoom, shaper, selection, highlights,
-                pictures,
+                painter, placement, line, *paragraph, page, zoom, shaper, selection, flow,
+                highlights, pictures,
             );
         }
         Placed::Drawing {
@@ -1359,7 +1449,8 @@ fn paint_line(
     zoom: f32,
     shaper: &mut Egui,
     selection: Selection,
-    highlights: &[Selection],
+    flow: Scope,
+    highlights: &[(Scope, Selection)],
     pictures: &crate::pictures::Pictures,
 ) {
     let baseline = placement.y + line.baseline;
@@ -1414,7 +1505,11 @@ fn paint_line(
     for fragment in &line.fragments {
         let x = placement.x + fragment.x;
         if let Some(source) = fragment.source {
-            for highlight in highlights {
+            let here = highlights
+                .iter()
+                .filter(|(at, _)| *at == flow)
+                .map(|(_, highlight)| highlight);
+            for highlight in here {
                 if let Some((from, to)) = covered(highlight, source.start, source.end) {
                     if let Some(rect) =
                         span_rect(placement, fragment, source.start, from, to, page, zoom)
@@ -1725,6 +1820,34 @@ mod tests {
         let mut view = View::default();
         view.refresh(&document, &wp_layout::FieldValues::new(), 1, &mut shaper);
         (view, shaper, id)
+    }
+
+    #[test]
+    fn the_caret_in_a_header_is_shown_on_the_page_it_was_opened_from() {
+        // **A header stands on every page that shows it**, so the caret in one
+        // has as many places on the screen as there are pages. Taking the
+        // first of them scrolled the window back to page one when the running
+        // head was opened on page two — showing the reader the very words the
+        // pointer was already on, several inches away. Found by driving the
+        // application over a two-section document.
+        let body: Vec<String> = (0..80).map(|n| format!("paragraph {n}")).collect();
+        let refs: Vec<&str> = body.iter().map(String::as_str).collect();
+        let (view, _, id) = laid_with_header(&refs, "RUNNING HEAD");
+        assert!(view.pages().len() > 1, "more than one page to choose from");
+        let scope = wp_model::Scope::Chrome(id);
+        let caret = Caret {
+            paragraph: 0,
+            offset: 0,
+        };
+
+        let (first, _) = caret_rect(&view, scope, caret).expect("the band has a caret");
+        assert_eq!(first, 0, "with nothing said, the first page that shows it");
+        let (asked, _) =
+            caret_rect_on(&view, scope, caret, Some(1)).expect("and on the page asked for");
+        assert_eq!(asked, 1);
+        // A page that does not show the band falls back rather than answering
+        // with nothing.
+        assert!(caret_rect_on(&view, scope, caret, Some(99)).is_some());
     }
 
     #[test]
@@ -2278,6 +2401,7 @@ mod tests {
             position: None,
             behind_text: false,
             text: None,
+            tone: None,
             outline: None,
         };
         document.body = vec![Block::Paragraph(Paragraph {
@@ -2341,6 +2465,7 @@ mod tests {
             position: None,
             behind_text,
             text: None,
+            tone: None,
             outline: None,
         }
     }
@@ -2460,6 +2585,7 @@ mod tests {
             position: None,
             behind_text: false,
             text: None,
+            tone: None,
             outline: None,
         };
         document.body = vec![Block::Paragraph(Paragraph {

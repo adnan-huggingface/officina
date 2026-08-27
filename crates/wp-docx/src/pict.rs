@@ -15,12 +15,13 @@
 //! so a document nobody edited is written back exactly as it came, shadow,
 //! locks, formulas and all.
 //!
-//! **A `<w:pict>` that is not words stays opaque.** A picture watermark is a
-//! `<v:imagedata>` with a washout applied through `gain` and `blacklevel`, and
-//! drawing it without the washout would stamp a photograph over the text at
-//! full strength — further from the truth than leaving the space empty. Those
-//! keep travelling as [`wp_model::doc::Piece::Embedded`], preserved and
-//! undrawn, exactly as before.
+//! **A `<w:pict>` may also be a picture**, which is what a picture watermark
+//! is: a `<v:imagedata>` naming the image part, with the washout stated as
+//! `gain` and `blacklevel`. Drawing it without the washout would stamp a
+//! photograph over the text at full strength, so the tone is read with it and
+//! the picture is drawn through it — see [`wp_model::doc::Tone`]. A `<w:pict>`
+//! that is neither keeps travelling as [`wp_model::doc::Piece::Embedded`],
+//! preserved and undrawn.
 
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::Reader;
@@ -33,11 +34,11 @@ use crate::xml::{attr, end_local_name, local_name};
 /// Word's own grey, for a shape whose fill is a name this does not know.
 const WATERMARK_GREY: [u8; 3] = [0xC0, 0xC0, 0xC0];
 
-/// The drawing a `<w:pict>` holds, when what it holds is words.
+/// The drawing a `<w:pict>` holds: a shape of words, or a picture.
 ///
 /// `None` for every other kind, which is the answer that leaves the element
 /// travelling as opaque bytes.
-pub(crate) fn words(source: &[u8]) -> Option<Drawing> {
+pub(crate) fn shape(source: &[u8]) -> Option<Drawing> {
     let mut reader = Reader::from_reader(source);
     reader.config_mut().trim_text(false);
     // The `<v:shapetype>` that precedes the shape carries a `<v:textpath>` of
@@ -46,6 +47,7 @@ pub(crate) fn words(source: &[u8]) -> Option<Drawing> {
     let mut shape: Option<Shape> = None;
     let mut in_shapetype = false;
     let mut found: Option<(String, Option<String>)> = None;
+    let mut picture: Option<(String, Option<wp_model::doc::Tone>)> = None;
     loop {
         match reader.read_event().ok()? {
             Event::Start(e) => match local_name(&e) {
@@ -67,9 +69,25 @@ pub(crate) fn words(source: &[u8]) -> Option<Drawing> {
                     }
                 }
                 // A shape holding a picture is not words, whatever else it
-                // holds. Saying so here rather than after the walk stops a
-                // picture watermark from being drawn as its own filename.
-                b"imagedata" => return None,
+                // holds — and the walk stops looking for a string, so a
+                // picture watermark is never drawn as its own filename.
+                b"imagedata" => {
+                    let rel = attr(&e, b"id").or_else(|| attr(&e, b"pict"))?;
+                    let gain = attr(&e, b"gain").as_deref().and_then(fixed);
+                    let black = attr(&e, b"blacklevel").as_deref().and_then(fixed);
+                    let tone = match (gain, black) {
+                        (None, None) => None,
+                        (gain, black) => {
+                            let tone = wp_model::doc::Tone::of_vml(
+                                gain.unwrap_or(1.0),
+                                black.unwrap_or(0.0),
+                            );
+                            (!tone.is_plain()).then_some(tone)
+                        }
+                    };
+                    picture = Some((rel, tone));
+                    found = None;
+                }
                 _ => {}
             },
             Event::End(e) if end_local_name(&e) == b"shapetype" => in_shapetype = false,
@@ -77,9 +95,27 @@ pub(crate) fn words(source: &[u8]) -> Option<Drawing> {
             _ => {}
         }
     }
-    let (text, face) = found?;
     let shape = shape?;
+    if let Some((rel, tone)) = picture {
+        let mut drawn = drawing(&shape, "", None);
+        drawn.text = None;
+        drawn.rel = Some(rel.into());
+        drawn.tone = tone;
+        return Some(drawn);
+    }
+    let (text, face) = found?;
     Some(drawing(&shape, &text, face))
+}
+
+/// VML's 16.16 fixed point, written with an `f` on the end — `19661f` is
+/// 19661/65536, which is Word's washout gain of three tenths. A bare number is
+/// the value itself, which is how the same attributes are written by hand.
+fn fixed(value: &str) -> Option<f64> {
+    let value = value.trim();
+    match value.strip_suffix('f') {
+        Some(raw) => raw.trim().parse::<f64>().ok().map(|v| v / 65536.0),
+        None => value.parse::<f64>().ok(),
+    }
 }
 
 /// The `<v:shape>` attributes that decide where the words go and what they
@@ -99,6 +135,7 @@ fn read_shape(e: &BytesStart<'_>) -> Shape {
     }
 }
 
+/// The drawing a `<v:shape>` stands for, with its words when it has any.
 fn drawing(shape: &Shape, text: &str, face: Option<String>) -> Drawing {
     let style = shape.style.as_str();
     let width = css_points(style, "width").unwrap_or(0.0).max(1.0);
@@ -109,6 +146,7 @@ fn drawing(shape: &Shape, text: &str, face: Option<String>) -> Drawing {
     let rgb = fill(shape);
     Drawing {
         source: Vec::new().into(),
+        tone: None,
         // `position:absolute` is what makes a shape float; without it the
         // shape sits in the line like a letter, which is ordinary WordArt.
         anchored: css_value(style, "position")
@@ -349,7 +387,7 @@ mod tests {
 
     #[test]
     fn words_are_read_out_of_the_shape_and_not_out_of_the_shapetype() {
-        let drawing = super::words(WORD).expect("a watermark is words");
+        let drawing = super::shape(WORD).expect("a watermark is words");
         let text = drawing.text.expect("and it carries them");
         // The `<v:textpath>` inside `<v:shapetype>` comes first and has no
         // string; taking that one would find no watermark at all.
@@ -363,7 +401,7 @@ mod tests {
 
     #[test]
     fn the_shape_states_its_size_and_its_place_in_a_css_style() {
-        let drawing = super::words(WORD).expect("a watermark");
+        let drawing = super::shape(WORD).expect("a watermark");
         assert_eq!(drawing.extent.0.points().round(), 528.0);
         assert_eq!(drawing.extent.1.points().round(), 132.0);
         assert!(drawing.anchored, "position:absolute floats it");
@@ -380,19 +418,40 @@ mod tests {
     }
 
     #[test]
-    fn a_pict_that_is_a_picture_stays_opaque_rather_than_being_drawn_as_words() {
-        // A picture watermark: the washout it needs is not modelled, so it
-        // must keep travelling as bytes nobody draws.
+    fn a_pict_that_is_a_picture_is_a_picture_and_not_words() {
+        // A picture watermark: the image part it names and the washout it is
+        // drawn through, which is Word's own — `gain="19661f"` and
+        // `blacklevel="22938f"`, which Word itself reads back as a brightness
+        // of 0.85 and a contrast of 0.15.
         let picture = br##"<w:pict><v:shape id="WordPictureWatermark1" type="#_x0000_t75" style="width:400pt;height:300pt"><v:imagedata r:id="rId4" o:title="logo" gain="19661f" blacklevel="22938f"/></v:shape></w:pict>"##;
-        assert!(super::words(picture).is_none());
-        // And so does an ordinary embedded object with no shape in it at all.
-        assert!(super::words(br##"<w:pict><v:rect style="width:10pt"/></w:pict>"##).is_none());
+        let drawing = super::shape(picture).expect("a picture watermark");
+        assert!(drawing.text.is_none(), "not a shape of words");
+        assert_eq!(drawing.rel.as_deref(), Some("rId4"));
+        let tone = drawing.tone.expect("washed out");
+        assert!((tone.gain - 0.3).abs() < 1e-3);
+        assert!(
+            (tone.offset - 0.805).abs() < 1e-3,
+            "black comes out at 205, which is what Word draws"
+        );
+        assert_eq!(tone.apply(0), 205);
+        assert_eq!(tone.apply(255), 255, "and anything light is white");
+
+        // An ordinary embedded object with no shape in it at all stays opaque.
+        assert!(super::shape(br##"<w:pict><v:rect style="width:10pt"/></w:pict>"##).is_none());
+    }
+
+    #[test]
+    fn a_picture_nobody_adjusted_carries_no_tone_at_all() {
+        let plain = br##"<w:pict><v:shape id="p" type="#_x0000_t75" style="width:40pt;height:30pt"><v:imagedata r:id="rId9" o:title=""/></v:shape></w:pict>"##;
+        let drawing = super::shape(plain).expect("a picture");
+        assert_eq!(drawing.rel.as_deref(), Some("rId9"));
+        assert_eq!(drawing.tone, None, "so nothing recolours it");
     }
 
     #[test]
     fn a_shape_with_no_words_in_it_is_not_a_watermark() {
         let empty = br##"<w:pict><v:shape id="s" type="#_x0000_t136" style="position:absolute;width:10pt;height:5pt"><v:textpath string=""/></v:shape></w:pict>"##;
-        assert!(super::words(empty).is_none());
+        assert!(super::shape(empty).is_none());
     }
 
     #[test]

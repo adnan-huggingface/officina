@@ -111,23 +111,35 @@ pub fn rasters(
     pages: &[wp_layout::block::Page],
 ) -> HashMap<String, Raster> {
     let mut out = HashMap::new();
-    for rel in wp_print::ops::image_rels(pages.iter()) {
+    for key in wp_print::ops::image_rels(pages.iter()) {
+        // The name a page draws by carries the washout the picture is drawn
+        // through; the bytes are found by the relationship inside it.
+        let (rel, tone) = wp_model::doc::picture_source(&key);
         // A `.doc`'s pictures came with the document rather than in a package;
         // a `.docx`'s are a relationship away from a part.
         let from_package = || {
-            let name = parts?.target(&rel)?;
+            let name = parts?.target(rel)?;
             Some(package?.part(name)?.data())
         };
-        let Some(bytes) = loose.get(&rel).map(Vec::as_slice).or_else(from_package) else {
+        let Some(bytes) = loose.get(rel).map(Vec::as_slice).or_else(from_package) else {
             continue;
         };
         let Ok(image) = image::load_from_memory(bytes) else {
             continue;
         };
-        let rgba = image.to_rgba8();
-        let jpeg = bytes.starts_with(&[0xFF, 0xD8]).then(|| bytes.to_vec());
+        let mut rgba = image.to_rgba8();
+        // A JPEG rides through to the PDF as its own bytes, which is the whole
+        // point of keeping it — but a washed-out one is no longer those bytes,
+        // so the passthrough is given up along with them.
+        let jpeg = match &tone {
+            Some(tone) => {
+                tone.apply_rgba(&mut rgba);
+                None
+            }
+            None => bytes.starts_with(&[0xFF, 0xD8]).then(|| bytes.to_vec()),
+        };
         out.insert(
-            rel,
+            key,
             Raster {
                 width: rgba.width(),
                 height: rgba.height(),

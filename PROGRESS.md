@@ -2668,12 +2668,205 @@ switch to it, not take a word: the first version fell through to the ordinary
 double-click and selected a word in the header while the pointer was down in the
 footer.
 
+### The rest of the band, and the flows a search walks
+
+**Find looks through the headers and footers now.** It walked
+`Document::paragraphs` — the body's own walk — so a spec number typed into a
+header could not be found, and Find reported no matches for a word printed on
+every page. Every match carries the flow it was found in, all the way to the
+highlight the painter draws; Find Next opens the band a match is in the same
+way a double-click on it would, and Replace All reaches every story. Word does
+the same, and the alternative was a search that quietly lied.
+
+**The two switches that decide how many bands a section has** — "Different
+first page" and "Different odd & even pages" — sit on the band bar, which is
+where Word keeps them and the only place they are ever wanted. Flicking one
+moves the caret into whichever band the page in front of you now asks for, and
+turning it back off leaves the band it stopped using in the document: a switch
+is not a delete, and flicking it back has to bring the header with it. The
+even/odd one is a *document* setting rather than a section's, so it rides in
+the same undo entry as the bodies and references it decides the use of.
+
+**How far the bands sit from the paper's edge** is two more fields on the
+margins box, under "From edge", and a button on the band bar that opens it.
+Word's own Page Setup keeps them on the same sheet as the margins, and they
+belong there: they are measured against the same four edges.
+
+**What still speaks only for the text.** The navigation pane, the reviewer, and
+`revise`'s accept and reject all walk the body. A comment asked for while a
+band was open would have wrapped whatever body paragraph wore the caret's
+number — a silent wrong edit, and the only one this change introduced. Those
+commands close the band before they act, which is honest and is not yet the
+whole answer. *(Settled below: the reviewer speaks in flows now, and Word
+turns out to refuse a comment outside the main story itself.)*
+
 **A field is not one piece and cannot be inserted one piece at a time.** Its
 start, its instruction, its separator, its cached result and its end carry no
 text between them, so every one of them lands at the same offset — and a second
 insertion at that offset goes *before* what the first one put there. The first
 page number came out written backwards, end first. The whole field arrives as
 one splice now.
+
+### The review reaches the header, and Word says where a comment may go
+
+**A tracked change in a header was invisible.** `revise` walked
+`Document::paragraphs` — the body's own walk — so the reviewing pane listed
+nothing for an edit to a running head, Accept All left it standing, and Next
+Change stepped past it. Every change now carries the flow it is in, all the way
+to the pane's *Go to*, which opens the band; the pane says "in the header" or
+"in the footer" beside a change that is not in the text, because two entries
+that read alike and settle different pages are two entries nobody can act on.
+Accepting works flow by flow rather than over one run of paragraphs, since a
+range recorded against the body's numbering would restore a header's paragraphs
+into the text.
+
+**A comment cannot go in a header, and that is Word's own answer.** Asked over
+COM to comment on a header's range, Word declines in those words: *"Comments,
+endnotes and footnotes can only be added to the main story."* So the command
+refuses and says why, which beats both of the alternatives — silently
+commenting whatever body paragraph wore the caret's number, and inventing a
+capability the format's own producer does not have. A comment a *file* carries
+in a header is still found and still removable: the schema allows one, some
+other producer may write one, and a reviewer that cannot see it is a reviewer
+that lies.
+
+**The table of contents is the one command still body-only**, and honestly so:
+it is built from the headings of the text and lands in the text.
+
+### Link to Previous, and the pages a band belongs to
+
+**A section that named no header showed none.** Word's "Link to Previous"
+writes exactly that — asked to link, its `<w:sectPr>` comes out holding no
+reference at all, and asked to unlink only the primary header it writes one
+`<w:headerReference w:type="default">` and leaves the first-page and even-page
+bands inherited. So the link is per kind and per band, and silence is the
+instruction rather than the absence of one. `wp_model::section::Bands` resolves
+each section's three headers and three footers by walking back through the
+sections before it, and the layout asks that rather than the section alone. A
+two-section document Word wrote showed its running head on page one and nothing
+on page two until this was followed.
+
+**Breaking the link copies, it does not empty.** Word, measured: unlink a
+second section's header and the words are still on the page while the first
+section keeps a copy of its own, so the two can then be changed apart. Linking
+again drops this section's reference and leaves its body in the document, so
+flicking the switch back costs nobody the words they typed. The switch sits on
+the band bar beside the other two, and is not offered at all in the first
+section, which has nothing to link to.
+
+**A band belongs to a page, and the caret cannot say which.** The same header
+stands on every page of its section, so asking the layout where the caret is
+answers with the first of them — and every question a band command asks is
+really about the page in front of the user: which section it is in, whether
+that section is linked, which of the three kinds of band the page wants. Found
+by driving the application: opening the running head of a second section
+scrolled the window back to page one to show the very words the pointer was
+already on, and the second section's own switch was missing from the bar
+because the bar was answering for page one. The page is remembered when the
+band is opened.
+
+**Every section's references get their relationship, not just the last one.**
+All but one of a document's sections hang off the paragraph that ends them, and
+a header made by unlinking one of those is named from there alone — so the
+writer wrote the part into the package and left nothing pointing at it.
+
+### A picture in a header, and the washout that makes it a watermark
+
+**A header numbers its relationships from `rId1`, and so does the document.**
+Only the numbering part's were ever qualified, so a logo in a letterhead was
+fetched as whatever the document's own first relationship pointed at — usually
+not an image, so the picture simply did not appear. Every header and footer
+part's relationships are now filed under the part that named them, which is
+also what makes a picture watermark reachable at all. The writer strips the
+qualification again, because the file names a relationship by its bare id and
+which part's it is has already been settled by which part the element is in.
+
+**A picture watermark is the picture washed out, not the picture drawn
+faintly.** There is no transparency involved: Word turns the brightness up and
+the contrast down and bakes the result. Measured against Word itself — a ramp
+of every grey from 0 to 255 put through seven settings of brightness and
+contrast and exported to PDF each time — the rule is
+
+```text
+gain   = 1 + contrast
+offset = (1 - gain) / 2 + (bright / 2) * (1 + gain)
+```
+
+with `bright` and `contrast` the `<a:lum>` attributes over a hundred thousand.
+Word's own washout states `bright="70000" contrast="-70000"`, so black comes
+out at 205 and everything above about 170 is white. VML's older `<v:imagedata
+gain blacklevel>` says the same thing in different words — handed a shape
+stating `gain="19661f" blacklevel="22938f"`, Word reports the picture's
+brightness as 0.85 and its contrast as 0.15, which are the very numbers its own
+washout sets. Both notations are read; the tone is baked into the decoded
+picture, which is what keeps the screen and the printer agreeing. Our washed
+samples match Word's own to one part in 255 across the whole ramp.
+
+`corpus/docx/picture-watermark.docx` is the file that holds this, and it is the
+only one in the corpus with a picture inside a header at all.
+
+### WordArt is fitted by its ink
+
+**A watermark's letters were two thirds the height Word draws them.** The
+fitting rule was the face's ascent plus its descent, which has nothing to do
+with the letters actually on the page. Word fits the *outline*: measured over
+four strings in a 400 by 200 point shape — "CONFIDENTIAL", "gypsy", "Hg" and
+"xxxx", whose proportions could hardly differ more — the drawn ink spans 400 by
+200 in every case, to a fifth of a point. An all-capitals string therefore
+comes out half again as tall as the em box would make it.
+
+So the shaper learned to answer a new question — the box a string's glyphs
+really fill — and `wp_print::ttf` learned to read the first ten bytes of a
+`glyf` entry, which is where every glyph states its own bounding box,
+composites included. A face whose outlines are CFF rather than `glyf` answers
+nothing and the line box stands, which is what the fixed test shaper does too.
+The box the renderers centre in the shape is the ink's, and the pen stands a
+side bearing to the left of it — so the screen had to stop centring epaint's
+galley and start working from the same pen and baseline paper does, or the two
+would place the same watermark differently. Every edge of every one of the four
+strings now agrees with Word's own rendering to within a fifth of a point,
+which is the error in measuring a curve by sampling it.
+
+### A line is measured above and below the baseline, separately
+
+**A line of two faces can be taller than either face's own line.** The height
+was the tallest fragment's whole pitch, which cannot produce such a number —
+and Word's answers are full of them. Measured over sixteen mixtures of Arial,
+Verdana, Georgia, Calibri, Times New Roman and Courier New at 8, 10, 11 and 16
+points, thirty lines each and the pitch read back over COM: the height is the
+largest *ascent plus line gap* on the line plus the largest *descent* on it,
+and it is symmetric — swapping which face holds the words and which holds the
+one odd character gives the same answer to a hundredth of a point. Courier
+New's descent is half again Arial's while its ascent is far shorter, so an
+Arial line with one Courier letter on it comes out at 13.61 against Arial's own
+12.66 and Courier's own 12.47.
+
+The measured single-face pitches keep their calibration: the fragment that owns
+the room above the baseline brings its own laid pitch, and the deepest descent
+on the line takes the place of that face's own. A line of one face still comes
+out at that face's own number.
+
+**A list's label raises a line but does not deepen it.** A bulleted Arial 11
+line pitches at 13.39 — Symbol's ascent, because the bullet is drawn in Symbol
+whatever the words are in, plus *Arial's* descent. Symbol hangs deeper than
+Arial and is not counted for it. The same character typed in as ordinary text
+is, and gives 13.47. This is what made every bulleted line in the demonstration
+document a tenth of a point too tall.
+
+Seventeen cases, Word against this application: the worst disagreement is four
+hundredths of a point, where before it was nine tenths.
+
+**What still differs, and why it was left.** Word draws a table's outermost
+border wholly inside its box rather than centred on its edge — measured on
+tables Word wrote, a rule's ink lies on the far side of its gridline, never
+across it. It was not changed: on the demonstration document, whose tables come
+from a `.doc` and carry that format's own half-gap convention, every column
+boundary already lands within fifteen hundredths of a point of Word's, and
+moving every rule by half its width to satisfy a synthetic file would spoil a
+real one. The two oracles disagree at a level below a quarter of a point and
+the honest answer is to say so rather than to pick one. Content-measured
+autofit — a table's columns fitted to what is in them rather than taken from
+its grid — is untouched and remains a body of work of its own.
 
 ## Deferred
 

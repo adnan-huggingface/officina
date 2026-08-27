@@ -721,6 +721,7 @@ fn blank() -> Drawing {
         position: None,
         behind_text: false,
         text: None,
+        tone: None,
         outline: None,
     }
 }

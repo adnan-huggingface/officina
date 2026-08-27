@@ -152,12 +152,15 @@ impl Pictures {
 }
 
 /// The bytes behind one relationship, whichever way this document keeps them.
+/// The bytes behind a picture name — the washout the name may carry is not
+/// this function's business, only the relationship inside it.
 fn raw<'a>(
     package: Option<&'a ooxml::Package>,
     parts: Option<&wp_docx::DocumentParts>,
     loose: &'a HashMap<String, Vec<u8>>,
-    rel: &str,
+    key: &str,
 ) -> Option<&'a [u8]> {
+    let (rel, _) = wp_model::doc::picture_source(key);
     match loose.get(rel) {
         Some(bytes) => Some(bytes.as_slice()),
         None => Some(package?.part(parts?.target(rel)?)?.data()),
@@ -169,15 +172,22 @@ fn decode(
     package: Option<&ooxml::Package>,
     parts: Option<&wp_docx::DocumentParts>,
     loose: &HashMap<String, Vec<u8>>,
-    rel: &str,
+    key: &str,
 ) -> Option<egui::TextureHandle> {
-    let bytes = raw(package, parts, loose, rel)?;
+    let bytes = raw(package, parts, loose, key)?;
     let image = image::load_from_memory(bytes).ok()?;
-    let rgba = image.to_rgba8();
+    let mut rgba = image.to_rgba8();
+    // A washed-out watermark is the picture *recoloured*, not the picture
+    // drawn faintly — Word bakes the same answer into its own PDF — so the
+    // samples are put through the tone once, here, and the texture is what
+    // gets drawn. See `wp_model::doc::Tone`.
+    if let (_, Some(tone)) = wp_model::doc::picture_source(key) {
+        tone.apply_rgba(&mut rgba);
+    }
     let size = [rgba.width() as usize, rgba.height() as usize];
     let colour = egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw());
     Some(ctx.load_texture(
-        format!("scriva-image-{rel}"),
+        format!("scriva-image-{key}"),
         colour,
         egui::TextureOptions::LINEAR,
     ))
@@ -229,6 +239,7 @@ mod tests {
             distance: Default::default(),
             position: position.map(Box::new),
             behind_text: false,
+            tone: None,
             text: None,
             outline: None,
         }

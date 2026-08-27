@@ -13,7 +13,7 @@
 use std::collections::HashMap;
 
 use ui_kit::egui;
-use wp_layout::shape::{Advance, FontRequest, Metrics, Pitch, Shaper};
+use wp_layout::shape::{Advance, FontRequest, Ink, Metrics, Pitch, Shaper};
 
 /// How many measured strings to keep before starting again.
 ///
@@ -47,6 +47,12 @@ pub struct Egui {
     /// Word puts a line's baseline — see [`Egui::gap`]. Size-independent, so
     /// one lookup serves every size the document sets the face in.
     gaps: HashMap<(String, bool, bool), f64>,
+    /// The ink of whole strings, in ems, per face — asked once per watermark
+    /// and per shape of words, so the cache is tiny and the parse is not
+    /// repeated on every frame. `None` remembers a face whose outlines this
+    /// cannot read.
+    #[allow(clippy::type_complexity)]
+    inks: HashMap<(String, bool, bool, String), Option<Ink>>,
 }
 
 /// A font, reduced to what epaint distinguishes.
@@ -87,6 +93,7 @@ impl Egui {
             rows: HashMap::new(),
             codes: HashMap::new(),
             gaps: HashMap::new(),
+            inks: HashMap::new(),
             named: Vec::new(),
             pitches: HashMap::new(),
         }
@@ -299,6 +306,35 @@ impl Shaper for Egui {
         split(ascent, row_height)
     }
 
+    /// The box the letters of `text` really fill, from the face's own outlines.
+    ///
+    /// Measured in the font's units and returned in points at the size asked
+    /// for, so one parse of the file serves every size. The pen walks by the
+    /// face's *design* advances rather than the shaper's measured ones: this
+    /// is a question about the glyphs, and mixing in epaint's pixel-grid
+    /// rounding would put the answer on a different footing from the outlines
+    /// it is being compared against.
+    fn ink(&mut self, text: &str, font: &FontRequest) -> Option<Ink> {
+        let ask = (
+            font.family.to_ascii_lowercase(),
+            font.bold,
+            font.italic,
+            text.to_owned(),
+        );
+        if !self.inks.contains_key(&ask) {
+            let found = Egui::face_bytes(&font.family, font.bold, font.italic)
+                .and_then(|bytes| ink_of(&bytes, text));
+            self.inks.insert(ask.clone(), found);
+        }
+        let unit = (*self.inks.get(&ask)?)?;
+        Some(Ink {
+            left: unit.left * font.size,
+            right: unit.right * font.size,
+            top: unit.top * font.size,
+            bottom: unit.bottom * font.size,
+        })
+    }
+
     fn advances(&mut self, text: &str, font: &FontRequest, into: &mut Vec<Advance>) {
         let key = self.key(font);
         let widths = self.measure(key, text).to_vec();
@@ -367,6 +403,39 @@ impl Shaper for Egui {
             }
         }
     }
+}
+
+/// The ink of a string in one face, in ems.
+///
+/// `None` when the face states no outlines this can read — a CFF OpenType, a
+/// collection — or when the string draws nothing at all, which a space does.
+fn ink_of(bytes: &[u8], text: &str) -> Option<Ink> {
+    let face = wp_print::ttf::Face::parse(bytes)?;
+    let em = face.units_per_em();
+    let mut pen = 0i32;
+    let mut box_: Option<[f64; 4]> = None;
+    for c in text.chars() {
+        let glyph = face.glyph(c);
+        if let Some([x0, y0, x1, y1]) = face.glyph_box(glyph) {
+            let (left, right) = (
+                f64::from(pen + i32::from(x0)),
+                f64::from(pen + i32::from(x1)),
+            );
+            let (bottom, top) = (f64::from(y0), f64::from(y1));
+            box_ = Some(match box_ {
+                None => [left, bottom, right, top],
+                Some([l, b, r, t]) => [l.min(left), b.min(bottom), r.max(right), t.max(top)],
+            });
+        }
+        pen += i32::from(face.advance(glyph));
+    }
+    let [left, bottom, right, top] = box_?;
+    Some(Ink {
+        left: left / em,
+        right: right / em,
+        top: top / em,
+        bottom: bottom / em,
+    })
 }
 
 /// Word's laid line pitch, measured rather than derived.

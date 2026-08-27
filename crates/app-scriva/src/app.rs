@@ -131,7 +131,11 @@ pub enum Command {
     ShowMarks,
     ShowRevisions,
     /// Put the caret at the start of a paragraph, and show it.
-    GoTo(usize),
+    ///
+    /// The flow travels with the number: every flow counts its paragraphs from
+    /// zero, so "paragraph 4" alone names four different places in a document
+    /// with three headers.
+    GoTo(wp_model::Scope, usize),
     /// Rebuild the table of contents from the headings that are there now.
     UpdateToc,
     /// The pane of headings and bookmarks down the left.
@@ -263,8 +267,12 @@ pub struct Scriva {
     author: crate::revise::Author,
     /// The comment being written, before it is added.
     drafting: Option<String>,
-    /// The custom-margins dialog: top, bottom, left, right, in inches.
-    margins_draft: Option<[String; 4]>,
+    /// The custom-margins dialog, in inches: top, bottom, left, right, and
+    /// then how far the header sits from the top of the paper and the footer
+    /// from the bottom. Word's own Page Setup keeps those last two on the same
+    /// sheet, under "From edge", and they belong with the margins because
+    /// they are measured against the same four edges.
+    margins_draft: Option<[String; 6]>,
     /// The insert-table dialog: columns, then rows.
     table_draft: Option<[String; 2]>,
     /// The colour dialog: what it colours, and six hex digits, as Word's
@@ -294,6 +302,22 @@ pub struct Scriva {
     ending: wp_text::LineEnding,
     /// Where the view should scroll to, once it knows where that is.
     reveal: Option<Caret>,
+    /// Which page to look for the caret on, when more than one shows it.
+    ///
+    /// Only a band's caret is ever in two places at once — a header stands on
+    /// every page that shows it — and the page it was opened from is the one
+    /// the reader is looking at. See [`view::caret_rect_on`].
+    reveal_on: Option<usize>,
+    /// Which page's band is being edited.
+    ///
+    /// **A band belongs to a page, and the caret cannot say which.** The same
+    /// header stands on every page of its section, so asking the layout where
+    /// the caret is answers with the first of them — and every question a band
+    /// command asks is really about the page in front of the user: which
+    /// section it is in, whether that section is linked to the one before it,
+    /// which of the three kinds of band it wants. The page is remembered when
+    /// the band is opened instead.
+    band_page: Option<usize>,
     /// The link the last right-click landed on, for the menu it opened: the
     /// menu is drawn on later frames, when the click is long gone.
     menu_link: Option<crate::links::Destination>,
@@ -302,8 +326,10 @@ pub struct Scriva {
     /// Whether one of the find bar's fields held the keyboard last frame —
     /// while it does, keys type into the bar and not into the document.
     finder_focused: bool,
-    /// Every match of the finder's query, for the view to highlight.
-    find_matches: Vec<Selection>,
+    /// Every match of the finder's query, for the view to highlight — each
+    /// with the flow it was found in, because Find looks through the headers
+    /// and footers as well as the text.
+    find_matches: Vec<find::Found>,
     /// What `find_matches` was computed from, so it is not recomputed while
     /// neither the document nor the query has changed.
     matches_for: (u64, String),
@@ -428,6 +454,8 @@ impl Scriva {
             encoding: wp_text::Encoding::Utf8,
             ending: wp_text::LineEnding::Crlf,
             reveal: None,
+            reveal_on: None,
+            band_page: None,
             menu_link: None,
             finder: None,
             finder_focused: false,
@@ -762,6 +790,7 @@ impl Scriva {
         self.selection = Selection::default();
         self.scope = wp_model::Scope::Body;
         self.left_behind = None;
+        self.band_page = None;
         self.scroll = 0.0;
         self.stamp = self.stamp.wrapping_add(1);
         self.view.invalidate();
@@ -795,6 +824,7 @@ impl Scriva {
                 self.selection = Selection::default();
                 self.scope = wp_model::Scope::Body;
                 self.left_behind = None;
+                self.band_page = None;
                 self.picked = None;
                 self.scroll = 0.0;
                 self.stamp = self.stamp.wrapping_add(1);
@@ -853,6 +883,7 @@ impl Scriva {
                 self.selection = Selection::default();
                 self.scope = wp_model::Scope::Body;
                 self.left_behind = None;
+                self.band_page = None;
                 self.scroll = 0.0;
                 self.stamp = self.stamp.wrapping_add(1);
                 self.view.invalidate();
@@ -1140,6 +1171,7 @@ impl Scriva {
         self.selection = Selection::default();
         self.scope = wp_model::Scope::Body;
         self.left_behind = None;
+        self.band_page = None;
         self.scroll = 0.0;
         self.stamp = self.stamp.wrapping_add(1);
         self.view.invalidate();
@@ -1155,20 +1187,14 @@ impl Scriva {
     }
 
     pub fn run(&mut self, command: Command) {
-        // Some commands are about the text and nothing else — a search, a
-        // heading in the navigation pane, the table of contents. A match or a
-        // heading is a position in the body, and it has no address inside an
-        // open header, so those close the band before they act rather than
-        // sending the caret to a paragraph number in the wrong flow.
-        if matches!(
-            command,
-            Command::Find
-                | Command::Replace
-                | Command::FindNext
-                | Command::FindPrevious
-                | Command::GoTo(_)
-                | Command::UpdateToc
-        ) {
+        // **The table of contents is the body's alone.** It is built from the
+        // headings of the text and lands in the text, and a heading in a
+        // running head is not a heading of the document — so the one command
+        // that really does speak only for the body closes the band before it
+        // acts. Everything else that used to be on this list — the search, the
+        // reviewer, comments, accepting and rejecting — carries the flow it
+        // means and works inside a header the way Word does.
+        if matches!(command, Command::UpdateToc) {
             self.close_band();
         }
         match command {
@@ -1393,6 +1419,8 @@ impl Scriva {
                     inches(m.bottom),
                     inches(m.start),
                     inches(m.end),
+                    inches(m.header),
+                    inches(m.footer),
                 ]);
             }
             Command::Orient(orientation) => {
@@ -1449,7 +1477,21 @@ impl Scriva {
             Command::RejectOne => self.settle_one(crate::revise::Resolve::Reject),
             Command::NextChange => self.next_change(),
             Command::AddComment => {
-                if self.selection.is_empty() {
+                // **Word refuses this outside the main story**, in those
+                // words: "Comments, endnotes and footnotes can only be added
+                // to the main story." Asked over COM against a header's range
+                // it declines rather than commenting somewhere else, and so
+                // does this — a refusal the user can read beats a comment that
+                // silently lands on whatever paragraph of the text wore the
+                // caret's number.
+                if self.editing_band() {
+                    self.message = Some((
+                        "A comment belongs to the text".to_owned(),
+                        "A header or a footer cannot carry one. Close the band \
+                         and select the words in the document."
+                            .to_owned(),
+                    ));
+                } else if self.selection.is_empty() {
                     self.message = Some((
                         "Nothing selected".to_owned(),
                         "A comment is about a piece of text. Select what it is \
@@ -1461,15 +1503,22 @@ impl Scriva {
                 }
             }
             Command::DeleteComment => self.delete_comment_here(),
-            Command::GoTo(paragraph) => {
+            Command::GoTo(scope, paragraph) => {
                 let caret = clamp(
                     &self.document,
-                    self.scope,
+                    scope,
                     Caret {
                         paragraph,
                         offset: 0,
                     },
                 );
+                // Into the band if that is where the thing being gone to is,
+                // and out of one if it is not: a *Go to* that leaves the caret
+                // in a header while pointing at the text is worse than none.
+                match scope {
+                    wp_model::Scope::Body => self.close_band(),
+                    other => self.enter_flow(other),
+                }
                 self.selection = Selection::at(caret);
                 // Scrolled to on the next frame, when the layout knows where it
                 // is: a caret has no place on the page until the page exists.
@@ -1558,9 +1607,13 @@ impl Scriva {
     fn settle_one(&mut self, how: crate::revise::Resolve) {
         let changes = crate::revise::tracked(&self.document);
         let here = self.caret().paragraph;
+        // Nearest within the flow the caret is in before any other, because a
+        // paragraph number means nothing across flows: change 3 of a header is
+        // not two away from paragraph 5 of the text, it is somewhere else
+        // entirely.
         let Some(found) = changes
             .iter()
-            .min_by_key(|change| change.paragraph.abs_diff(here))
+            .min_by_key(|change| (change.scope != self.scope, change.paragraph.abs_diff(here)))
         else {
             self.message = Some((
                 "No tracked changes".to_owned(),
@@ -1580,10 +1633,10 @@ impl Scriva {
         let here = self.caret().paragraph;
         let next = changes
             .iter()
-            .find(|change| change.paragraph > here)
+            .find(|change| (change.scope, change.paragraph) > (self.scope, here))
             .or_else(|| changes.first());
         if let Some(change) = next {
-            self.run(Command::GoTo(change.paragraph));
+            self.run(Command::GoTo(change.scope, change.paragraph));
         }
     }
 
@@ -1596,7 +1649,7 @@ impl Scriva {
             .map(|comment| comment.id)
             .find(|id| {
                 crate::revise::comment_at(&self.document, *id)
-                    .is_some_and(|at| at.paragraph == here)
+                    .is_some_and(|(scope, at)| scope == self.scope && at.paragraph == here)
             });
         match target {
             Some(id) => {
@@ -2150,6 +2203,7 @@ impl Scriva {
             position: None,
             behind_text: false,
             text: None,
+            tone: None,
             outline: None,
         };
         let clip = vec![drawing_paragraph(drawing)];
@@ -2277,7 +2331,8 @@ impl Scriva {
         self.matches_for = (self.stamp, query);
     }
 
-    /// Selects the next or previous match and scrolls to it.
+    /// Selects the next or previous match and scrolls to it, opening the
+    /// header or footer the match is in when that is where it is.
     fn jump_match(&mut self, forward: bool) {
         self.refresh_matches();
         let (start, end) = self.selection.ordered();
@@ -2286,6 +2341,7 @@ impl Scriva {
             // stepped past — but a match starting right at a bare caret counts.
             find::after(
                 &self.find_matches,
+                self.scope,
                 if self.selection.is_empty() {
                     start
                 } else {
@@ -2293,12 +2349,30 @@ impl Scriva {
                 },
             )
         } else {
-            find::before(&self.find_matches, start)
+            find::before(&self.find_matches, self.scope, start)
         };
-        if let Some(found) = found {
+        if let Some((scope, found)) = found {
+            self.enter_flow(scope);
             self.selection = found;
             self.reveal = Some(found.ordered().0);
         }
+    }
+
+    /// Moves the editor into a flow without moving the caret, for a jump that
+    /// already knows where in that flow it is going.
+    ///
+    /// The band a search lands in opens the same way a double-click on it
+    /// would, and the place the caret held in the text is remembered so that
+    /// closing the band still puts it back.
+    fn enter_flow(&mut self, scope: wp_model::Scope) {
+        if self.scope == scope {
+            return;
+        }
+        if self.scope == wp_model::Scope::Body {
+            self.left_behind = Some(self.selection);
+        }
+        self.scope = scope;
+        self.picked = None;
     }
 
     /// Replaces the selected match and moves to the next one.
@@ -2330,7 +2404,11 @@ impl Scriva {
         let replacement = finder.replacement.clone();
         self.refresh_matches();
         let all = self.find_matches.clone();
-        for found in all.iter().rev() {
+        // Back to front so the offsets ahead of each replacement stay true,
+        // and flow by flow for the same reason: a replacement in the header
+        // does not move anything in the text, but one in the same header does.
+        for (scope, found) in all.iter().rev() {
+            self.scope = *scope;
             self.selection = *found;
             self.replace_selection(&replacement);
         }
@@ -3379,6 +3457,7 @@ fn picture_paragraph(
         position: None,
         behind_text: false,
         text: None,
+        tone: None,
         outline: None,
     };
     Paragraph {
@@ -3823,10 +3902,20 @@ impl Scriva {
                     ui.set_width(260.0);
                     ui.label(egui::RichText::new("Margins").font(dialog::heading_font(16.0)));
                     ui.add_space(8.0);
-                    for (label, field) in ["Top:", "Bottom:", "Left:", "Right:"]
+                    for (index, (label, field)) in ["Top:", "Bottom:", "Left:", "Right:"]
                         .into_iter()
+                        .chain(["Header:", "Footer:"])
                         .zip(draft.iter_mut())
+                        .enumerate()
                     {
+                        if index == 4 {
+                            ui.add_space(8.0);
+                            ui.label(
+                                egui::RichText::new("From edge — where the bands sit")
+                                    .small()
+                                    .weak(),
+                            );
+                        }
                         ui.horizontal(|ui| {
                             ui.add_sized([56.0, 20.0], egui::Label::new(label));
                             ui.add(egui::TextEdit::singleline(field).desired_width(64.0));
@@ -3862,6 +3951,8 @@ impl Scriva {
                 section.margins.bottom = parse(&draft[1], m.bottom);
                 section.margins.start = parse(&draft[2], m.start);
                 section.margins.end = parse(&draft[3], m.end);
+                section.margins.header = parse(&draft[4], m.header);
+                section.margins.footer = parse(&draft[5], m.footer);
                 if section.margins != m {
                     self.set_section(section);
                 }
@@ -4310,6 +4401,11 @@ impl Scriva {
     /// The page the caret is standing on, which is the page a band command
     /// means: "the header" is always some particular page's header.
     fn caret_page(&self) -> usize {
+        // A band open on page nine is a band of page nine, whatever the layout
+        // says about where its first line is drawn. See [`Scriva::band_page`].
+        if let Some(page) = self.band_page.filter(|_| self.editing_band()) {
+            return page.min(self.view.pages().len().saturating_sub(1));
+        }
         view::caret_rect(&self.view, self.scope, self.caret())
             .map(|(index, _)| index)
             .unwrap_or(0)
@@ -4341,6 +4437,11 @@ impl Scriva {
         }
         self.go_to(wp_model::Scope::Chrome(id), Caret::default());
         self.reveal = Some(self.caret());
+        // The band of *this* page, not of the first page that happens to show
+        // the same one: opening the running head on page nine must not scroll
+        // the window back to page one.
+        self.reveal_on = Some(page);
+        self.band_page = Some(page);
     }
 
     /// Takes the section's headers or footers away — Word's Remove Header,
@@ -4350,9 +4451,13 @@ impl Scriva {
     /// Bodies and references go together in one change, because a reference
     /// pointing at nothing is a document Word calls damaged.
     fn remove_band(&mut self, footer: bool) {
+        let index = self.caret_section();
+        let Some(section) = self.document.section_mut(index) else {
+            return;
+        };
         let going: Vec<wp_model::HeaderId> = match footer {
-            true => &self.document.section.footers,
-            false => &self.document.section.headers,
+            true => &section.footers,
+            false => &section.headers,
         }
         .iter()
         .map(|reference| reference.body)
@@ -4361,26 +4466,64 @@ impl Scriva {
             return;
         }
         self.close_band();
-        self.history.push(
-            wp_model::Scope::Body,
-            edit::Change::Chrome {
-                headers: self.document.headers.clone(),
-                section: Box::new(self.document.section.clone()),
-                caret: self.caret(),
-            },
-        );
-        match footer {
-            true => self.document.section.footers.clear(),
-            false => self.document.section.headers.clear(),
+        self.history
+            .push(wp_model::Scope::Body, self.chrome_change());
+        if let Some(section) = self.document.section_mut(index) {
+            match footer {
+                true => section.footers.clear(),
+                false => section.headers.clear(),
+            }
         }
+        // Only the bodies nothing still points at: another section may have
+        // been unlinked onto the very same body, and a body a live reference
+        // names is a document Word calls damaged.
+        let kept: Vec<wp_model::HeaderId> = self
+            .document
+            .section_props()
+            .iter()
+            .flat_map(|section| {
+                section
+                    .headers
+                    .iter()
+                    .chain(section.footers.iter())
+                    .map(|reference| reference.body)
+                    .collect::<Vec<_>>()
+            })
+            .collect();
         self.document
             .headers
-            .retain(|header| !going.contains(&header.id));
+            .retain(|header| !going.contains(&header.id) || kept.contains(&header.id));
         self.changed();
+    }
+
+    /// One undo entry covering the bodies, every section's references and the
+    /// setting that decides which of them a page uses.
+    fn chrome_change(&self) -> edit::Change {
+        edit::Change::Chrome {
+            headers: self.document.headers.clone(),
+            sections: self.document.section_props(),
+            settings: Box::new(self.document.settings.clone()),
+            caret: self.caret(),
+        }
+    }
+
+    /// Which section the page the caret is on belongs to.
+    ///
+    /// A band command means *this page's* band, and in a document of several
+    /// sections that is not the same as the last section's — which is what
+    /// `Document::section` alone would have answered.
+    fn caret_section(&self) -> usize {
+        let page = self.caret_page();
+        self.view
+            .pages()
+            .get(page)
+            .map(|page| page.section)
+            .unwrap_or_else(|| self.document.sections().len().saturating_sub(1))
     }
 
     /// Back to the text, where the caret was before the band was opened.
     fn close_band(&mut self) {
+        self.band_page = None;
         if self.scope == wp_model::Scope::Body {
             return;
         }
@@ -4393,6 +4536,25 @@ impl Scriva {
         };
     }
 
+    /// Which kind of band a page asks for: its own if it is a title page or
+    /// an even one and the document says those differ, and the default
+    /// otherwise.
+    fn band_kind(&self, page: usize) -> wp_model::HeaderKind {
+        let laid = self.view.pages().get(page);
+        let number = laid.map(|page| page.number).unwrap_or(1);
+        let index = laid
+            .map(|page| page.section)
+            .unwrap_or_else(|| self.document.sections().len().saturating_sub(1));
+        let sections = self.document.sections();
+        let section = sections
+            .get(index)
+            .map(|(_, section)| *section)
+            .unwrap_or(&self.document.section);
+        section
+            .header_for_page(number, self.document.settings.even_and_odd_headers)
+            .unwrap_or(wp_model::HeaderKind::Default)
+    }
+
     /// Which body holds the band this page shows — making an empty one, with
     /// the section reference that gives it its identity, when the page has
     /// none.
@@ -4402,41 +4564,68 @@ impl Scriva {
     /// open that one, and a new header made for a title page has to be the
     /// first-page header or it will not appear on the page it was made from.
     fn band_body(&mut self, page: usize, footer: bool) -> Option<wp_model::HeaderId> {
-        use wp_model::doc::HeaderFooter;
-        use wp_model::section::{HeaderId, HeaderKind, HeaderRef};
-        let laid = self.view.pages().get(page);
-        let number = laid.map(|page| page.number).unwrap_or(1);
-        let kind = self
-            .document
-            .section
-            .header_for_page(number, self.document.settings.even_and_odd_headers)
-            .unwrap_or(HeaderKind::Default);
+        let kind = self.band_kind(page);
         // The laid-out page first, because it is what the user is looking at;
         // the section after it, because the layout is a frame behind — and it
         // is exactly one frame behind at the moment a band has just been made,
         // which is when making a second one would go unnoticed.
-        let existing = laid
-            .and_then(|page| match footer {
-                true => page.footer_body,
-                false => page.header_body,
-            })
-            .or_else(|| match footer {
-                true => self.document.section.footer(kind),
-                false => self.document.section.header(kind),
-            });
+        let laid = self.view.pages().get(page).and_then(|page| match footer {
+            true => page.footer_body,
+            false => page.header_body,
+        });
+        match laid {
+            Some(id) => Some(id),
+            None => self.band_of_kind(page, kind, footer),
+        }
+    }
+
+    /// The section's band of one kind, made if it has none.
+    ///
+    /// Asked directly, without the laid-out page, by the two switches that
+    /// change *which* kind a page wants: the layout still shows the band the
+    /// page wanted a moment ago, and following it would carry on editing the
+    /// one that is no longer drawn there.
+    fn band_of_kind(
+        &mut self,
+        page: usize,
+        kind: wp_model::HeaderKind,
+        footer: bool,
+    ) -> Option<wp_model::HeaderId> {
+        let index = self.page_section(page);
+        // What the page shows now, with "Link to Previous" followed: a section
+        // that inherits its band already has one to edit, and making a second
+        // would silently unlink it.
+        let shown = self.document.bands();
+        let existing = shown.get(index).and_then(|bands| match footer {
+            true => bands.footer(kind),
+            false => bands.header(kind),
+        });
         if existing.is_some() {
             return existing;
         }
-        // A body and the reference to it are one change: restoring either
-        // without the other leaves a reference pointing at nothing.
-        self.history.push(
-            wp_model::Scope::Body,
-            edit::Change::Chrome {
-                headers: self.document.headers.clone(),
-                section: Box::new(self.document.section.clone()),
-                caret: self.caret(),
-            },
-        );
+        self.make_band(index, kind, footer, Vec::new())
+    }
+
+    /// Makes a band of one kind for one section and points the section at it.
+    ///
+    /// `content` is what goes in it: nothing for a band being made from
+    /// scratch, and a copy of the inherited one for a section being unlinked —
+    /// which is what Word does, measured: unlink a section's header and the
+    /// words stay on the page while the section before it keeps its own copy.
+    ///
+    /// A body and the reference to it are one change, because restoring either
+    /// without the other leaves a reference pointing at nothing.
+    fn make_band(
+        &mut self,
+        index: usize,
+        kind: wp_model::HeaderKind,
+        footer: bool,
+        content: Vec<Block>,
+    ) -> Option<wp_model::HeaderId> {
+        use wp_model::doc::HeaderFooter;
+        use wp_model::section::{HeaderId, HeaderRef};
+        self.history
+            .push(wp_model::Scope::Body, self.chrome_change());
         let id = HeaderId(
             self.document
                 .headers
@@ -4446,7 +4635,17 @@ impl Scriva {
                 .unwrap_or(0)
                 + 1,
         );
-        let content = vec![Block::Paragraph(band_paragraph(&self.document.section))];
+        let content = match content.is_empty() {
+            true => {
+                let sections = self.document.sections();
+                let section = sections
+                    .get(index)
+                    .map(|(_, section)| *section)
+                    .unwrap_or(&self.document.section);
+                vec![Block::Paragraph(band_paragraph(section))]
+            }
+            false => content,
+        };
         self.document.headers.push(HeaderFooter {
             id,
             part: None,
@@ -4454,9 +4653,10 @@ impl Scriva {
             footer,
             content,
         });
+        let section = self.document.section_mut(index)?;
         let refs = match footer {
-            true => &mut self.document.section.footers,
-            false => &mut self.document.section.headers,
+            true => &mut section.footers,
+            false => &mut section.headers,
         };
         refs.push(HeaderRef {
             kind,
@@ -4465,6 +4665,131 @@ impl Scriva {
         });
         self.changed();
         Some(id)
+    }
+
+    /// Which section a laid-out page belongs to.
+    fn page_section(&self, page: usize) -> usize {
+        self.view
+            .pages()
+            .get(page)
+            .map(|page| page.section)
+            .unwrap_or_else(|| self.document.sections().len().saturating_sub(1))
+    }
+
+    /// Word's "Different first page" and "Different odd & even pages" — the
+    /// two switches that decide how many bands a section has and which of
+    /// them any given page shows.
+    ///
+    /// Turning either on does not fill the new band in: Word leaves it empty
+    /// and so does this, which is why the caret follows to whichever band the
+    /// page in front of the user now wants. Turning one off leaves the band
+    /// it stops using in the document, exactly as Word does — a switch is not
+    /// a delete, and flicking it back has to bring the header back with it.
+    fn set_band_kinds(&mut self, title_page: bool, even_and_odd: bool) {
+        let page = self.caret_page();
+        let index = self.page_section(page);
+        // `<w:titlePg>` belongs to the section the page is in — a preface may
+        // have a title page where the chapters after it do not — while the
+        // even/odd flag is the document's and covers all of them.
+        let was = self
+            .document
+            .sections()
+            .get(index)
+            .map(|(_, section)| section.title_page)
+            .unwrap_or(self.document.section.title_page);
+        if title_page == was && even_and_odd == self.document.settings.even_and_odd_headers {
+            return;
+        }
+        let footer = self.in_footer();
+        self.history
+            .push(wp_model::Scope::Body, self.chrome_change());
+        if let Some(section) = self.document.section_mut(index) {
+            section.title_page = title_page;
+        }
+        self.document.settings.even_and_odd_headers = even_and_odd;
+        self.changed();
+        if self.editing_band() {
+            let kind = self.band_kind(page);
+            if let Some(id) = self.band_of_kind(page, kind, footer) {
+                self.go_to(wp_model::Scope::Chrome(id), Caret::default());
+            }
+        }
+    }
+
+    /// Whether the band the caret's page shows is inherited from the section
+    /// before it — Word's "Link to Previous".
+    ///
+    /// `None` in the first section of a document, which has nothing to link
+    /// to and so is never offered the switch.
+    fn linked_to_previous(&self, footer: bool) -> Option<bool> {
+        let page = self.caret_page();
+        let index = self.page_section(page);
+        if index == 0 {
+            return None;
+        }
+        let kind = self.band_kind(page);
+        let sections = self.document.sections();
+        let (_, section) = sections.get(index)?;
+        Some(!wp_model::Bands::is_own(section, kind, footer))
+    }
+
+    /// Links the caret's section to the one before it, or breaks the link.
+    ///
+    /// **Breaking it copies rather than empties.** Word's own answer, measured
+    /// over COM: unlink a second section's header and the words are still
+    /// there, while the first section keeps a copy of its own — so the two can
+    /// then be changed apart. Linking again drops this section's reference and
+    /// leaves its body in the document, so that flicking the switch back does
+    /// not cost the words that were typed into it.
+    fn set_link_to_previous(&mut self, linked: bool) {
+        let page = self.caret_page();
+        let index = self.page_section(page);
+        if index == 0 || self.linked_to_previous(self.in_footer()) == Some(linked) {
+            return;
+        }
+        let footer = self.in_footer();
+        let kind = self.band_kind(page);
+        if linked {
+            self.history
+                .push(wp_model::Scope::Body, self.chrome_change());
+            if let Some(section) = self.document.section_mut(index) {
+                let refs = match footer {
+                    true => &mut section.footers,
+                    false => &mut section.headers,
+                };
+                refs.retain(|reference| reference.kind != kind);
+            }
+            self.changed();
+            // Whatever the section inherits now is what the page shows, and
+            // that is what the caret must be in — or it is editing a band that
+            // is no longer drawn anywhere.
+            match self
+                .document
+                .bands()
+                .get(index)
+                .and_then(|bands| match footer {
+                    true => bands.footer(kind),
+                    false => bands.header(kind),
+                }) {
+                Some(id) => self.go_to(wp_model::Scope::Chrome(id), Caret::default()),
+                None => self.close_band(),
+            }
+            return;
+        }
+        let inherited = self
+            .document
+            .bands()
+            .get(index)
+            .and_then(|bands| match footer {
+                true => bands.footer(kind),
+                false => bands.header(kind),
+            })
+            .and_then(|id| self.document.header(id))
+            .map(|band| band.content.clone())
+            .unwrap_or_default();
+        if let Some(id) = self.make_band(index, kind, footer, inherited) {
+            self.go_to(wp_model::Scope::Chrome(id), Caret::default());
+        }
     }
 
     /// Which band of a page a point is in: the margin above the text, or the
@@ -4496,7 +4821,33 @@ impl Scriva {
     /// which one and offering the two ways out of it.
     fn band_bar(&mut self, ui: &mut egui::Ui) -> Option<Command> {
         let footer = self.in_footer();
+        let index = self.page_section(self.caret_page());
+        let was = (
+            self.document
+                .sections()
+                .get(index)
+                .map(|(_, section)| section.title_page)
+                .unwrap_or(self.document.section.title_page),
+            self.document.settings.even_and_odd_headers,
+        );
+        let (mut title_page, mut even_and_odd) = was;
+        // `None` in the first section: there is nothing before it to link to,
+        // and a switch that can only ever be off is a switch that misleads.
+        let linked = self.linked_to_previous(footer);
+        let mut link = linked.unwrap_or(false);
         let mut chosen = None;
+        // The application's theme leaves an unchecked box with no outline at
+        // all — fine on a menu row, where the tick is the only state worth
+        // showing, and wrong here: a switch nobody can see until it is already
+        // on is a switch nobody finds.
+        {
+            let widgets = &mut ui.style_mut().visuals.widgets;
+            widgets.inactive.bg_fill = egui::Color32::WHITE;
+            widgets.inactive.bg_stroke = egui::Stroke::new(1.0, egui::Color32::from_gray(0x8C));
+            widgets.hovered.bg_fill = egui::Color32::WHITE;
+            widgets.hovered.bg_stroke = egui::Stroke::new(1.0, egui::Color32::from_gray(0x5C));
+            widgets.active.bg_fill = egui::Color32::WHITE;
+        }
         ui.horizontal(|ui| {
             ui.add_space(8.0);
             ui.label(
@@ -4511,6 +4862,20 @@ impl Scriva {
                     .weak()
                     .small(),
             );
+            ui.add_space(12.0);
+            // Word keeps these two on the Header & Footer tab, and they belong
+            // here for the same reason: they are only ever wanted while one is
+            // open, and they decide which one you are looking at.
+            ui.checkbox(&mut title_page, "Different first page")
+                .on_hover_text("The first page of the section carries a band of its own");
+            ui.checkbox(&mut even_and_odd, "Different odd & even")
+                .on_hover_text("Left- and right-hand pages carry different bands");
+            if linked.is_some() {
+                ui.checkbox(&mut link, "Link to Previous").on_hover_text(
+                    "Show the section before this one's band. Turning it off \
+                     takes a copy this section can change on its own.",
+                );
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.add_space(8.0);
                 if ui
@@ -4529,8 +4894,21 @@ impl Scriva {
                 {
                     chosen = Some(Command::SwitchBand);
                 }
+                if ui
+                    .button("From edge…")
+                    .on_hover_text("How far the header and footer sit from the paper's edges")
+                    .clicked()
+                {
+                    chosen = Some(Command::CustomMargins);
+                }
             });
         });
+        if (title_page, even_and_odd) != was {
+            self.set_band_kinds(title_page, even_and_odd);
+        }
+        if linked.is_some_and(|was| was != link) {
+            self.set_link_to_previous(link);
+        }
         chosen
     }
 
@@ -4687,14 +5065,8 @@ impl Scriva {
     fn apply_watermark(&mut self, draft: &WatermarkDraft) {
         use wp_model::doc::{HeaderFooter, Inline, Piece, Run};
         use wp_model::section::{HeaderId, HeaderKind, HeaderRef};
-        self.history.push(
-            wp_model::Scope::Body,
-            edit::Change::Chrome {
-                headers: self.document.headers.clone(),
-                section: Box::new(self.document.section.clone()),
-                caret: self.caret(),
-            },
-        );
+        self.history
+            .push(wp_model::Scope::Body, self.chrome_change());
         let shape = self.watermark_shape(draft);
         let document = &mut self.document;
         for header in document.headers.iter_mut().filter(|header| !header.footer) {
@@ -4852,6 +5224,7 @@ impl Scriva {
                 },
             })),
             behind_text: true,
+            tone: None,
             outline: None,
             text: Some(Box::new(ShapeText {
                 text: text.into(),
@@ -5329,6 +5702,7 @@ impl Scriva {
                     crate::revise::add_comment(
                         &mut self.document,
                         &mut self.history,
+                        self.scope,
                         self.selection,
                         &author.name,
                         &author.initials,
@@ -5347,10 +5721,9 @@ impl Scriva {
     fn find_bar(&mut self, ui: &mut egui::Ui) {
         self.refresh_matches();
         let total = self.find_matches.len();
-        let current = self
-            .find_matches
-            .iter()
-            .position(|found| found.ordered() == self.selection.ordered());
+        let current = self.find_matches.iter().position(|(scope, found)| {
+            *scope == self.scope && found.ordered() == self.selection.ordered()
+        });
 
         let Some(finder) = &self.finder else {
             return;
@@ -5895,7 +6268,10 @@ impl Scriva {
                 if self.reveal.is_some() && self.view.is_stale(self.stamp) {
                     ui.ctx().request_repaint();
                 } else if let Some(caret) = self.reveal.take() {
-                    if let Some((page, rect)) = view::caret_rect(&self.view, self.scope, caret) {
+                    let prefer = self.reveal_on.take();
+                    if let Some((page, rect)) =
+                        view::caret_rect_on(&self.view, self.scope, caret, prefer)
+                    {
                         let (page_x, page_y) = self.view.page_origin(page);
                         let min = origin
                             + egui::vec2(
@@ -7035,6 +7411,289 @@ mod tests {
     }
 
     #[test]
+    fn a_comment_asked_for_in_a_header_is_refused_rather_than_put_somewhere_else() {
+        // Word, over COM, against a header's own range: "Comments, endnotes
+        // and footnotes can only be added to the main story." The trap this
+        // closes is the other answer — `revise` used to speak in body
+        // positions, so a caret standing in a header wore a number that meant
+        // something else there and the comment wrapped whatever body paragraph
+        // shared it.
+        let mut app = app_with(&["the body"]);
+        app.run(Command::EditHeader);
+        typed(&mut app, "RESUME / CV");
+        app.selection = Selection {
+            anchor: Caret {
+                paragraph: 0,
+                offset: 0,
+            },
+            head: Caret {
+                paragraph: 0,
+                offset: 6,
+            },
+        };
+        app.run(Command::AddComment);
+
+        assert!(app.drafting.is_none(), "no box opened");
+        assert!(app.message.is_some(), "and it said why");
+        assert!(app.document.comments.is_empty());
+        assert!(app.editing_band(), "the band is left as it was");
+    }
+
+    #[test]
+    fn a_comment_a_file_carries_in_a_header_is_still_found_and_still_removable() {
+        // Nothing in Word writes one, but the schema allows it and a second
+        // producer may; a reviewer that cannot see it is a reviewer that lies.
+        let mut app = app_with(&["the body"]);
+        app.run(Command::EditHeader);
+        typed(&mut app, "RESUME / CV");
+        let wp_model::Scope::Chrome(id) = app.scope else {
+            panic!("in the header");
+        };
+        let comment = crate::revise::add_comment(
+            &mut app.document,
+            &mut app.history,
+            app.scope,
+            Selection {
+                anchor: Caret {
+                    paragraph: 0,
+                    offset: 0,
+                },
+                head: Caret {
+                    paragraph: 0,
+                    offset: 6,
+                },
+            },
+            "A",
+            "A",
+            "written by something else",
+        );
+
+        assert_eq!(
+            crate::revise::comment_at(&app.document, comment).map(|(scope, _)| scope),
+            Some(wp_model::Scope::Chrome(id)),
+            "found in the flow it is anchored in"
+        );
+        assert_eq!(
+            app.document.text(),
+            "the body",
+            "and the text carries no anchor of it"
+        );
+        assert!(crate::revise::delete_comment(
+            &mut app.document,
+            &mut app.history,
+            comment
+        ));
+        assert_eq!(crate::revise::comment_at(&app.document, comment), None);
+    }
+
+    #[test]
+    fn a_tracked_change_in_a_header_is_listed_and_settled_where_it_stands() {
+        let mut app = app_with(&["the body"]);
+        app.run(Command::EditHeader);
+        let wp_model::Scope::Chrome(id) = app.scope else {
+            panic!("in the header");
+        };
+        app.run(Command::TrackChanges);
+        app.type_text("DRAFT");
+
+        let changes = crate::revise::tracked(&app.document);
+        assert_eq!(changes.len(), 1, "one insertion, in the header");
+        assert_eq!(changes[0].scope, wp_model::Scope::Chrome(id));
+
+        app.run(Command::AcceptAll);
+        assert!(
+            crate::revise::tracked(&app.document).is_empty(),
+            "and accepting reaches it"
+        );
+        assert_eq!(
+            wp_model::doc::text_of(&app.document.header(id).expect("still there").content),
+            "DRAFT",
+            "the words survive being accepted"
+        );
+    }
+
+    /// Two sections: the first names a header, the second names nothing —
+    /// which is exactly what Word writes for a section linked to the previous
+    /// one. The caret lands in the second, because with no layout to ask, the
+    /// last section is the one a page belongs to.
+    fn two_sections_with_a_linked_header() -> Scriva {
+        let mut app = app_with(&["section one", "section two"]);
+        let mut first = wp_model::SectionProps::new();
+        first.headers.push(wp_model::HeaderRef {
+            kind: wp_model::HeaderKind::Default,
+            body: wp_model::HeaderId(0),
+            rel: None,
+        });
+        if let Block::Paragraph(paragraph) = &mut app.document.body[0] {
+            paragraph.section = Some(Box::new(first));
+        }
+        app.document.headers.push(wp_model::doc::HeaderFooter {
+            id: wp_model::HeaderId(0),
+            part: None,
+            rel: None,
+            footer: false,
+            content: vec![Block::Paragraph(Paragraph::of("INHERITED HEAD"))],
+        });
+        app.stamp += 1;
+        app
+    }
+
+    #[test]
+    fn a_linked_section_edits_the_band_it_inherits_rather_than_making_a_second() {
+        let mut app = two_sections_with_a_linked_header();
+        assert_eq!(app.linked_to_previous(false), Some(true));
+
+        app.run(Command::EditHeader);
+        assert_eq!(
+            app.scope,
+            wp_model::Scope::Chrome(wp_model::HeaderId(0)),
+            "the band it shows is the band it opens"
+        );
+        assert_eq!(app.document.headers.len(), 1, "and no second one was made");
+    }
+
+    #[test]
+    fn breaking_the_link_takes_a_copy_the_section_can_change_on_its_own() {
+        // Word's own answer, over COM: unlink a second section's header and
+        // the words stay on the page, while the section before it keeps a copy
+        // of its own — so the two can then be changed apart.
+        let mut app = two_sections_with_a_linked_header();
+        app.run(Command::EditHeader);
+        app.set_link_to_previous(false);
+
+        assert_eq!(app.linked_to_previous(false), Some(false));
+        assert_eq!(app.document.headers.len(), 2, "a copy, not a move");
+        let wp_model::Scope::Chrome(own) = app.scope else {
+            panic!("in the new band");
+        };
+        assert_ne!(own, wp_model::HeaderId(0));
+        assert_eq!(
+            wp_model::doc::text_of(&app.document.header(own).expect("made").content),
+            "INHERITED HEAD",
+            "the words are still on the page"
+        );
+
+        typed(&mut app, "!");
+        assert_eq!(
+            wp_model::doc::text_of(
+                &app.document
+                    .header(wp_model::HeaderId(0))
+                    .expect("still there")
+                    .content
+            ),
+            "INHERITED HEAD",
+            "and the section before it is untouched"
+        );
+
+        // Linking again shows the previous section's band and leaves this
+        // one's body behind, so flicking the switch back costs no words.
+        app.set_link_to_previous(true);
+        assert_eq!(app.linked_to_previous(false), Some(true));
+        assert_eq!(app.scope, wp_model::Scope::Chrome(wp_model::HeaderId(0)));
+    }
+
+    #[test]
+    fn the_first_section_is_never_offered_a_link_to_previous() {
+        let mut app = app_with(&["only section"]);
+        app.run(Command::EditHeader);
+        assert_eq!(
+            app.linked_to_previous(false),
+            None,
+            "there is nothing before it"
+        );
+    }
+
+    #[test]
+    fn turning_on_a_first_page_band_moves_the_caret_into_the_band_that_page_now_wants() {
+        let mut app = app_with(&["text"]);
+        app.run(Command::EditHeader);
+        typed(&mut app, "EVERY PAGE");
+        let wp_model::Scope::Chrome(default) = app.scope else {
+            panic!("in the default header");
+        };
+
+        app.set_band_kinds(true, false);
+        assert!(app.document.section.title_page);
+        let wp_model::Scope::Chrome(first) = app.scope else {
+            panic!("still in a header");
+        };
+        assert_ne!(first, default, "page one wants a band of its own now");
+        assert_eq!(
+            wp_model::doc::text_of(&app.document.header(first).expect("made").content),
+            "",
+            "and Word leaves the new one empty"
+        );
+
+        // A switch is not a delete: the band it stopped using is still there,
+        // and flicking it back finds it rather than making a third.
+        app.set_band_kinds(false, false);
+        assert_eq!(app.scope, wp_model::Scope::Chrome(default));
+        assert_eq!(app.document.headers.len(), 2);
+
+        app.run(Command::Undo);
+        assert!(app.document.section.title_page, "one undo per flick");
+    }
+
+    #[test]
+    fn the_even_page_switch_is_a_document_setting_that_undo_puts_back() {
+        let mut app = app_with(&["text"]);
+        app.run(Command::EditHeader);
+        app.set_band_kinds(false, true);
+        assert!(app.document.settings.even_and_odd_headers);
+        app.run(Command::Undo);
+        assert!(
+            !app.document.settings.even_and_odd_headers,
+            "the setting rides with the bands it decides the use of"
+        );
+    }
+
+    #[test]
+    fn find_looks_through_the_headers_and_opens_the_one_it_lands_in() {
+        let mut app = app_with(&["a spec in the body"]);
+        app.run(Command::EditHeader);
+        typed(&mut app, "spec no 190A1430");
+        app.run(Command::CloseChrome);
+
+        app.finder = Some(crate::find::Finder::new(false));
+        if let Some(finder) = &mut app.finder {
+            finder.query = "spec".into();
+        }
+        app.selection = Selection::at(Caret::default());
+        app.refresh_matches();
+        assert_eq!(app.find_matches.len(), 2, "the text and the header");
+
+        // The first is in the text; the second is in the header, and stepping
+        // on to it opens the band the way a double-click on it would.
+        app.run(Command::FindNext);
+        assert_eq!(app.scope, wp_model::Scope::Body);
+        app.run(Command::FindNext);
+        assert!(app.editing_band(), "Find Next opened the header");
+        assert_eq!(app.selected_text().as_deref(), Some("spec"));
+
+        // And Close still puts the caret back where it stood in the text.
+        app.run(Command::CloseChrome);
+        assert_eq!(app.scope, wp_model::Scope::Body);
+    }
+
+    #[test]
+    fn replace_all_reaches_the_headers_too() {
+        let mut app = app_with(&["draft copy"]);
+        app.run(Command::EditHeader);
+        typed(&mut app, "draft");
+        app.run(Command::CloseChrome);
+
+        app.finder = Some(crate::find::Finder::new(true));
+        if let Some(finder) = &mut app.finder {
+            finder.query = "draft".into();
+            finder.replacement = "final".into();
+        }
+        app.replace_all();
+        assert_eq!(app.document.text(), "final copy");
+        let header = app.document.headers.first().expect("there");
+        assert_eq!(wp_model::doc::text_of(&header.content), "final");
+    }
+
+    #[test]
     fn the_table_menu_says_so_when_the_caret_is_not_in_a_table() {
         let mut app = app_with(&["just a paragraph"]);
         app.run(Command::TableBorders(false));
@@ -7665,6 +8324,7 @@ mod tests {
                 position: None,
                 behind_text: false,
                 text: None,
+                tone: None,
                 outline: None,
             },
             bytes: None,
@@ -8076,7 +8736,7 @@ mod tests {
     #[test]
     fn go_to_puts_the_caret_at_a_paragraph_and_asks_to_be_shown_it() {
         let mut app = app_with(&["one", "two", "three"]);
-        app.run(Command::GoTo(2));
+        app.run(Command::GoTo(wp_model::Scope::Body, 2));
         assert_eq!(
             app.caret(),
             Caret {
@@ -8090,7 +8750,7 @@ mod tests {
     #[test]
     fn go_to_a_paragraph_that_is_not_there_lands_inside_the_document() {
         let mut app = app_with(&["only"]);
-        app.run(Command::GoTo(99));
+        app.run(Command::GoTo(wp_model::Scope::Body, 99));
         assert_eq!(app.caret().paragraph, 0);
     }
 

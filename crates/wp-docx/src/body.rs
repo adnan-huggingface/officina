@@ -342,7 +342,7 @@ fn read_run(reader: &mut Reader<&[u8]>, ctx: &mut Ctx<'_>) -> Run {
                     b"drawing" => {
                         // The whole element is captured, start tag included, so
                         // a writer can put back what it does not understand.
-                        if let Some(mut drawing) = read_drawing(reader) {
+                        if let Some(mut drawing) = read_drawing(reader, ctx) {
                             drawing.source = ctx.span(start, reader.buffer_position() as usize);
                             run.content.push(Piece::Drawing(Box::new(drawing)));
                         }
@@ -350,13 +350,15 @@ fn read_run(reader: &mut Reader<&[u8]>, ctx: &mut Ctx<'_>) -> Run {
                     b"pict" | b"object" => {
                         let rel = find_embed(reader, &name).map(Into::into);
                         let source = ctx.span(start, reader.buffer_position() as usize);
-                        // A `<w:pict>` that is a shape made of words — a
-                        // watermark, a piece of WordArt — is modelled as a
-                        // drawing so that it is laid out and drawn. Its bytes
-                        // ride along all the same, so nothing is re-authored
-                        // until someone edits it. See `crate::pict`.
-                        match crate::pict::words(&source) {
+                        // A `<w:pict>` that is a shape — words, as a text
+                        // watermark and a piece of WordArt are, or a picture —
+                        // is modelled as a drawing so that it is laid out and
+                        // drawn. Its bytes ride along all the same, so nothing
+                        // is re-authored until someone edits it. See
+                        // `crate::pict`.
+                        match crate::pict::shape(&source) {
                             Some(mut drawing) => {
+                                drawing.rel = drawing.rel.map(|rel| ctx.rel(&rel).into());
                                 drawing.source = source;
                                 run.content.push(Piece::Drawing(Box::new(drawing)));
                             }
@@ -489,7 +491,7 @@ fn read_math(reader: &mut Reader<&[u8]>, until: &[u8]) -> MathBlob {
 }
 
 /// `<w:drawing>`: an inline or anchored picture, chart, shape or diagram.
-fn read_drawing(reader: &mut Reader<&[u8]>) -> Option<Drawing> {
+fn read_drawing(reader: &mut Reader<&[u8]>, ctx: &Ctx<'_>) -> Option<Drawing> {
     let mut drawing = Drawing {
         source: Vec::new().into(),
         anchored: false,
@@ -503,6 +505,7 @@ fn read_drawing(reader: &mut Reader<&[u8]>) -> Option<Drawing> {
         position: None,
         behind_text: false,
         text: None,
+        tone: None,
         outline: None,
     };
     let mut horizontal: Option<Offset> = None;
@@ -550,11 +553,28 @@ fn read_drawing(reader: &mut Reader<&[u8]>) -> Option<Drawing> {
                     b"blip" => {
                         drawing.rel = attr(&e, b"embed")
                             .or_else(|| attr(&e, b"link"))
-                            .map(Into::into)
+                            // Qualified by the part it was named in: a header's
+                            // `rId1` is not the document's. See `Ctx::rel`.
+                            .map(|rel| ctx.rel(&rel).into())
+                    }
+                    // `<a:lum>`: how far the picture's brightness and contrast
+                    // were turned. This is what a picture watermark is made
+                    // of — Word writes `bright="70000" contrast="-70000"` and
+                    // draws the washed-out result, so a reader that ignores it
+                    // stamps the photograph over the text at full strength.
+                    b"lum" => {
+                        let per = |name: &[u8]| {
+                            attr(&e, name)
+                                .and_then(|v| v.trim().parse::<f64>().ok())
+                                .unwrap_or(0.0)
+                                / 100_000.0
+                        };
+                        let tone = wp_model::doc::Tone::of_lum(per(b"bright"), per(b"contrast"));
+                        drawing.tone = (!tone.is_plain()).then_some(tone);
                     }
                     // `<c:chart r:id>`: the same shape as a picture's blip,
                     // naming a chart part instead of an image one.
-                    b"chart" => drawing.chart = attr(&e, b"id").map(Into::into),
+                    b"chart" => drawing.chart = attr(&e, b"id").map(|rel| ctx.rel(&rel).into()),
                     b"wrapNone" => drawing.wrap = Wrap::None,
                     b"wrapSquare" => drawing.wrap = Wrap::Square,
                     b"wrapTight" | b"wrapThrough" => drawing.wrap = Wrap::Tight,

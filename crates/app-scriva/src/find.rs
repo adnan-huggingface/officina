@@ -6,9 +6,19 @@
 //! the whole text, because lowercasing can change a string's byte length and an
 //! offset into the lowered text names nothing in the document.
 
-use wp_model::Document;
+use wp_model::{Document, Scope};
 
 use crate::edit::{Caret, Selection};
+
+/// One match: where it is, and which of the document's flows it is in.
+///
+/// **A document has more than one story to search.** Word looks through the
+/// text and then through the headers and footers, and a reader who has put a
+/// spec number in a header expects Find to reach it. A `Selection` alone
+/// cannot say where it was found — every flow counts its paragraphs from
+/// zero — so the scope travels with it, all the way to the highlight the
+/// painter draws and the band Find Next opens.
+pub type Found = (Scope, Selection);
 
 /// The state of the find bar: what is being looked for, and what would go in
 /// its place.
@@ -34,48 +44,58 @@ impl Finder {
     }
 }
 
-/// Every match in the document, in document order.
-pub fn matches(document: &Document, query: &str) -> Vec<Selection> {
+/// Every match in the document — the text first, then each header and footer
+/// — in the order Find Next walks them.
+pub fn matches(document: &Document, query: &str) -> Vec<Found> {
     let mut out = Vec::new();
     if query.is_empty() {
         return out;
     }
-    for (index, paragraph) in document.paragraphs().iter().enumerate() {
-        let text = paragraph.text();
-        for range in find_in(&text, query) {
-            out.push(Selection {
-                anchor: Caret {
-                    paragraph: index,
-                    offset: range.start,
-                },
-                head: Caret {
-                    paragraph: index,
-                    offset: range.end,
-                },
-            });
+    for scope in document.flows() {
+        for (index, paragraph) in document.paragraphs_in(scope).iter().enumerate() {
+            let text = paragraph.text();
+            for range in find_in(&text, query) {
+                out.push((
+                    scope,
+                    Selection {
+                        anchor: Caret {
+                            paragraph: index,
+                            offset: range.start,
+                        },
+                        head: Caret {
+                            paragraph: index,
+                            offset: range.end,
+                        },
+                    },
+                ));
+            }
         }
     }
+    // `Scope` orders the body before every band, so this is the order the
+    // matches were gathered in unless the headers arrived out of order — and
+    // Find Next must walk them the same way every time whatever the file did.
+    out.sort_by_key(|(scope, at)| (*scope, at.ordered().0));
     out
 }
 
 /// The first match starting at or after `from`, wrapping to the start when
 /// there is none. Callers pass the selection's *end*, so a match already
 /// selected is stepped past rather than found again.
-pub fn after(matches: &[Selection], from: Caret) -> Option<Selection> {
+pub fn after(matches: &[Found], scope: Scope, from: Caret) -> Option<Found> {
     matches
         .iter()
         .copied()
-        .find(|found| found.ordered().0 >= from)
+        .find(|(at, found)| (*at, found.ordered().0) >= (scope, from))
         .or_else(|| matches.first().copied())
 }
 
 /// The last match before `from`, wrapping to the end when there is none.
-pub fn before(matches: &[Selection], from: Caret) -> Option<Selection> {
+pub fn before(matches: &[Found], scope: Scope, from: Caret) -> Option<Found> {
     matches
         .iter()
         .rev()
         .copied()
-        .find(|found| found.ordered().0 < from)
+        .find(|(at, found)| (*at, found.ordered().0) < (scope, from))
         .or_else(|| matches.last().copied())
 }
 
@@ -139,10 +159,10 @@ mod tests {
         let document = document(&["The engineer engineered.", "No match here", "Engineer!"]);
         let found = matches(&document, "engineer");
         assert_eq!(found.len(), 3);
-        assert_eq!(found[0].ordered().0.paragraph, 0);
-        assert_eq!(found[0].ordered().0.offset, 4);
-        assert_eq!(found[1].ordered().0.offset, 13);
-        assert_eq!(found[2].ordered().0.paragraph, 2);
+        assert_eq!(found[0].1.ordered().0.paragraph, 0);
+        assert_eq!(found[0].1.ordered().0.offset, 4);
+        assert_eq!(found[1].1.ordered().0.offset, 13);
+        assert_eq!(found[2].1.ordered().0.paragraph, 2);
     }
 
     #[test]
@@ -166,18 +186,19 @@ mod tests {
             paragraph: 0,
             offset: 0,
         };
-        let first = after(&found, start).expect("a match");
-        assert_eq!(first.ordered().0.offset, 0, "a match at the caret counts");
-        let second = after(&found, first.ordered().1).expect("a match");
+        let body = Scope::Body;
+        let first = after(&found, body, start).expect("a match");
+        assert_eq!(first.1.ordered().0.offset, 0, "a match at the caret counts");
+        let second = after(&found, body, first.1.ordered().1).expect("a match");
         assert_eq!(
-            second.ordered().0.offset,
+            second.1.ordered().0.offset,
             8,
             "stepped past the selected one"
         );
-        let wrapped = after(&found, second.ordered().1).expect("a match");
-        assert_eq!(wrapped.ordered().0.offset, 0, "wrapped to the start");
-        let back = before(&found, start).expect("a match");
-        assert_eq!(back.ordered().0.offset, 8, "wrapped to the end");
+        let wrapped = after(&found, body, second.1.ordered().1).expect("a match");
+        assert_eq!(wrapped.1.ordered().0.offset, 0, "wrapped to the start");
+        let back = before(&found, body, start).expect("a match");
+        assert_eq!(back.1.ordered().0.offset, 8, "wrapped to the end");
     }
 
     #[test]
@@ -187,7 +208,7 @@ mod tests {
         let document = document(&["İstanbul istanbul"]);
         let found = matches(&document, "İstanbul");
         assert_eq!(found.len(), 1, "the plain 'i' does not round-trip to İ");
-        assert_eq!(found[0].ordered().0.offset, 0);
+        assert_eq!(found[0].1.ordered().0.offset, 0);
         assert!(equals("İstanbul", "İSTANBUL"));
     }
 }

@@ -88,6 +88,36 @@ pub struct Pitch {
     pub ideal: f64,
 }
 
+/// The box a string's drawn outline fills, in points, measured from the pen
+/// position and the baseline.
+///
+/// **Not the line box.** `left`/`right` exclude the side bearings the advances
+/// carry, and `top`/`bottom` are where the ink of *these letters* reaches
+/// rather than where the face says a line begins and ends — so "xxxx" is as
+/// tall as an x and "Hg" reaches from the cap to the descender. Word's WordArt
+/// fits this box to the shape it is drawn in, which is the only thing that
+/// needs it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Ink {
+    pub left: f64,
+    pub right: f64,
+    /// Above the baseline, positive up.
+    pub top: f64,
+    /// Below the baseline, negative — a string with no descender says a small
+    /// positive number, which is the overshoot of a round letter.
+    pub bottom: f64,
+}
+
+impl Ink {
+    pub fn width(&self) -> f64 {
+        self.right - self.left
+    }
+
+    pub fn height(&self) -> f64 {
+        self.top - self.bottom
+    }
+}
+
 /// One character's contribution to the width of a string.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Advance {
@@ -130,6 +160,17 @@ pub trait Shaper {
         let mut buffer = Vec::new();
         self.advances(text, font, &mut buffer);
         buffer.iter().map(|a| a.width).sum()
+    }
+
+    /// The box the drawn outline of `text` fills — see [`Ink`].
+    ///
+    /// The default answers `None`, which is a shaper saying it cannot look
+    /// inside the glyphs. Every caller must have something to do without it,
+    /// because a face whose outlines are not `glyf` — and the fixed test
+    /// shaper, which has no glyphs at all — will never answer.
+    fn ink(&mut self, text: &str, font: &FontRequest) -> Option<Ink> {
+        let _ = (text, font);
+        None
     }
 }
 

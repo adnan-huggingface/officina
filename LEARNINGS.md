@@ -1052,3 +1052,87 @@ attenuating only a third — and the body went blank, table rules and all. The
 suite could not have caught it and neither could reading the code; a screenshot
 of the running application did, in one glance. Premultiply the channels with
 the alpha, or use the helper that does.
+
+Giving an editor a second flow puts every body-only walk on the clock.
+
+The moment a caret could stand in a header, every function that had quietly
+meant "the body" became a bug waiting for the right keystroke. Most were found
+by the compiler, because the scope had to be passed in. The ones that were not
+are the ones that take a `Selection` and go looking for the paragraph
+themselves: the finder, the reviewer, `revise`'s add-a-comment. Those compiled
+perfectly and would have wrapped the wrong paragraph in comment anchors. After
+widening a model, grep for the old accessor rather than trusting the build.
+
+Ask the application whether it can do the thing before building it.
+
+The reviewer was widened so that a comment could be made on a header, on the
+strength of a note that said Word could. Word cannot: asked over COM to comment
+on a header's range it answers *"Comments, endnotes and footnotes can only be
+added to the main story."* The work was not wasted — tracked changes in a
+header are real and now settle — but the comment half would have been a
+capability the format's own producer refuses, offered as if it were fidelity.
+One COM call, thirty seconds, before the design and not after it.
+
+Silence is an instruction.
+
+A `<w:sectPr>` with no `<w:headerReference>` in it is not a section with no
+header; it is Word's "Link to Previous", and the section shows the one before
+it. The same shape appears twice more in this codebase — a `.doc` cell side of
+all zeroes has not spoken while one of all ones has spoken and wants no rule,
+and a missing first-page header on a title page means *no* header rather than
+the default one. When a format leaves something out, find out whether the
+omission is the message.
+
+Word fits WordArt to the ink, not to the em box.
+
+Four strings of wildly different proportions — "CONFIDENTIAL", "gypsy", "Hg",
+"xxxx" — put in the same 400 by 200 point shape all come out with their drawn
+outlines spanning exactly 400 by 200. The face's ascent and descent have
+nothing to do with it, which is why an all-capitals watermark came out two
+thirds the height Word draws it. The number nobody had was the box the glyphs
+themselves fill, and it is ten bytes into each `glyf` entry.
+
+A washed-out picture is a recoloured picture, not a faint one.
+
+A picture watermark has no transparency in it at all. Word turns the brightness
+up and the contrast down and bakes the answer into the pixels — into its own
+PDF export, which is what made the rule measurable: a ramp of every grey there
+is, run through seven settings, gives `out = in·(1 + contrast) + offset`
+exactly. Baking it where the picture is decoded is also what keeps the screen
+and the printer agreeing, because neither renderer then has to know.
+
+A line has two halves and they may come from different faces.
+
+A line's height was the tallest fragment's whole line height, which can never
+exceed the tallest face's own. Word's answers routinely do: an Arial line with
+one Courier New letter on it is taller than an Arial line *and* taller than a
+Courier line, because Arial reaches higher and Courier hangs lower. The height
+is the largest ascent-plus-gap on the line plus the largest descent on it,
+measured separately. Any rule of the form "the biggest one wins" should be
+suspected the moment the quantity is really a sum of two independent ones.
+
+A list's label is measured on one side only.
+
+A bullet raises a line and does not deepen it — Symbol hangs lower than Arial
+and Word does not charge the line for it, though it charges for the very same
+character typed in as text. A label is not a run, and the layout has to know
+the difference to get the pitch right.
+
+A caret in a header is in several places at once.
+
+The same header stands on every page of its section, so "where is the caret" has
+as many answers as there are pages, and the first of them is almost never the
+right one. Opening the running head on page two scrolled the window back to page
+one to show the same words, and every band command — which section, which kind
+of band, whether it is linked — answered for page one. A position in a flow that
+is drawn more than once has to carry the page it means.
+
+Two oracles can disagree below the level you care about.
+
+Word's own PDF of a table it wrote puts a rule's ink wholly on one side of its
+gridline. The demonstration document, a `.doc`, has our rules landing within
+fifteen hundredths of a point of Word's while straddling theirs. Both
+measurements are real, they cannot both be the whole rule, and the gap between
+them is a quarter of a point. Changing the renderer to satisfy one would spoil
+the other. When the oracles disagree by less than the thing is worth, record
+both and change nothing.

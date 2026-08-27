@@ -434,6 +434,32 @@ if ($doWord) {
         $d.Close(0)
     }
 
+    Invoke-Doc 'picture-watermark.docx' 'Word' $docxDir {
+        param($word, $path, $png)
+        # The other kind of watermark: a picture, washed out rather than drawn
+        # faintly. Word states the wash as `<a:lum bright="70000"
+        # contrast="-70000"/>` on the blip, and a reader that ignores it stamps
+        # the photograph over the text at full strength. Nothing else in this
+        # corpus carries a picture inside a header at all, which is its own
+        # reason to be here: a header numbers its relationships from rId1 just
+        # as the document does, so the two can only be told apart by the part
+        # they were named in.
+        $d = $word.Documents.Add()
+        $d.Content.Text = ("Body text under a picture watermark. " * 40)
+        $h = $d.Sections.Item(1).Headers.Item(1)
+        $shape = $h.Shapes.AddPicture($png, $false, $true, 0, 0)
+        $shape.Name = "WordPictureWatermark1"
+        $shape.PictureFormat.ColorType = 4            # msoPictureWatermark
+        $shape.WrapFormat.AllowOverlap = $true
+        $shape.WrapFormat.Type = 3                    # wdWrapNone
+        $shape.RelativeHorizontalPosition = 0         # margin
+        $shape.RelativeVerticalPosition = 0
+        $shape.Left = -999995                         # wdShapeCenter
+        $shape.Top = -999995
+        $d.SaveAs2($path, 12)
+        $d.Close(0)
+    }
+
     Invoke-Doc 'rtl-and-cjk.docx' 'Word' $docxDir {
         param($word, $path, $png)
         $d = $word.Documents.Add()

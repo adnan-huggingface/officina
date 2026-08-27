@@ -162,8 +162,10 @@ pub fn read(package: &Package) -> Result<Document> {
         let Some(part) = package.part(name) else {
             continue;
         };
+        let scope = crate::parts::scope_of(name);
         let content = {
-            let mut ctx = Ctx::of_part(&mut document.styles, &mut headers, part.data());
+            let mut ctx =
+                Ctx::of_named_part(&mut document.styles, &mut headers, part.data(), &scope);
             read_header(part.data(), &mut ctx, footer)
         };
         document.headers.push(HeaderFooter {

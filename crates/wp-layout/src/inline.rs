@@ -1148,7 +1148,12 @@ fn push_run(
                     field: None,
                     kind: UnitKind::Object {
                         height: drawing.extent.1.points(),
-                        rel: drawing.rel.clone(),
+                        // With the washout folded in — see
+                        // `wp_model::doc::picture_key`.
+                        rel: drawing
+                            .rel
+                            .as_deref()
+                            .map(|rel| wp_model::doc::picture_key(rel, drawing.tone).into()),
                         chart: drawing.chart.clone(),
                         // Filled in once the whole paragraph is walked: a unit
                         // does not know how many drawings came before it.
@@ -1671,6 +1676,27 @@ fn finish(
         // The tallest face on the line decides the gap, as it decides the
         // ascent: a line of mixed sizes is spaced for the largest type on it.
         let mut gap: f64 = 0.0;
+        // **A line is measured above and below the baseline separately, and
+        // the two halves may come from different faces.**
+        //
+        // Word, measured over sixteen mixtures of Arial, Verdana, Georgia,
+        // Calibri, Times New Roman and Courier New at 8, 10, 11 and 16 points:
+        // the height of a line is the largest *ascent plus line gap* on it
+        // plus the largest *descent* on it, and it is symmetric — swapping
+        // which face holds the words and which holds the one odd character
+        // gives the same answer to a hundredth of a point. Courier New's
+        // descent is half again Arial's while its ascent is far shorter, so an
+        // Arial line with one Courier letter on it comes out a point taller
+        // than *either* face's own line: 13.61 against 12.66 and 12.47. Taking
+        // the tallest face's whole line height instead — which is what this
+        // did — cannot produce a number larger than both, and was short by
+        // exactly Courier's extra depth.
+        //
+        // `top` is the fragment that owns the room above the baseline, kept
+        // with its own laid pitch so the *measured* single-face pitches keep
+        // their calibration: a line of one face still comes out at that face's
+        // own number, and a second face only ever adds what it reaches past.
+        let mut top: Option<Top> = None;
         // Room a run border demands above and below the type.
         let mut pad: f64 = 0.0;
         // Word lays a line at the font's *laid* pitch — hinted, a hair off the
@@ -1691,6 +1717,9 @@ fn finish(
         // but tabs has not been measured by the loop below and falls back to
         // the paragraph mark, the same as a line with nothing on it at all.
         let mut measured = false;
+        // Whether any of it was words rather than a label, which is what
+        // decides how deep the line goes.
+        let mut words = false;
         for fragment in &line.fragments {
             // **A tab does not make a line taller.** Word measures a line by
             // the type on it, and a tab is the gap between type: a table of
@@ -1705,8 +1734,20 @@ fn finish(
             }
             measured = true;
             let metrics = fragment_metrics(fragment, shaper);
+            // **A list's label raises a line but does not deepen it.** Word,
+            // measured: a bulleted Arial 11 line pitches at 13.39, which is
+            // Symbol's ascent — the bullet is drawn in Symbol whatever the
+            // words are in — plus *Arial's* descent. Symbol's own descent is
+            // the deeper of the two and goes uncounted. The same bullet typed
+            // in as ordinary text does count, and gives 13.47. So a label is
+            // measured on one side only, and taking it for a run made every
+            // bulleted line in the document a tenth of a point too tall.
+            let label = matches!(fragment.content, Content::Label { .. });
             ascent = ascent.max(metrics.ascent + fragment.style.raise);
-            descent = descent.max(metrics.descent - fragment.style.raise);
+            if !label {
+                words = true;
+                descent = descent.max(metrics.descent - fragment.style.raise);
+            }
             gap = gap.max(leading(ctx, metrics.line_gap));
             // A run's border grows the line above and below by the same
             // amount it takes beside the type. Kept apart from the type's own
@@ -1725,8 +1766,15 @@ fn finish(
                 // The pitch a face states includes its line gap, so a document
                 // laid out without leading is short of it by exactly that.
                 let lead = metrics.line_gap - leading(ctx, metrics.line_gap);
-                base = base.max(pitch.base - lead);
-                ideal = ideal.max(pitch.ideal - lead);
+                let reach = metrics.ascent + fragment.style.raise + leading(ctx, metrics.line_gap);
+                if top.as_ref().is_none_or(|had| reach > had.above) {
+                    top = Some(Top {
+                        above: reach,
+                        base: pitch.base - lead,
+                        ideal: pitch.ideal - lead,
+                        descent: metrics.descent - fragment.style.raise,
+                    });
+                }
                 if fragment.style.raise != 0.0 {
                     boost = boost.max(
                         metrics.ascent + fragment.style.raise + metrics.descent
@@ -1735,17 +1783,41 @@ fn finish(
                 }
             }
         }
+        // A bulleted line with no words on it is still as deep as a line of
+        // that paragraph's own type: the label lends no depth, so the mark's
+        // stands in for it.
+        if measured && !words {
+            descent = descent.max(mark.descent);
+        }
         if !measured {
             ascent = mark.ascent;
             descent = mark.descent;
             gap = leading(ctx, mark.line_gap);
             let pitch = shaper.pitch(&mark_face);
-            base = pitch.base - (mark.line_gap - gap);
-            ideal = pitch.ideal - (mark.line_gap - gap);
+            top = Some(Top {
+                above: mark.ascent + gap,
+                base: pitch.base - (mark.line_gap - gap),
+                ideal: pitch.ideal - (mark.line_gap - gap),
+                descent: mark.descent,
+            });
         }
-        // The gap counts toward the line's natural height, but not toward the
-        // room above the baseline that the *type* occupies.
-        let natural = ascent + descent + gap;
+        // The face that reaches highest brings its own laid pitch with it, and
+        // the deepest descent on the line takes the place of that face's own.
+        let above = match &top {
+            Some(top) => {
+                base = top.base - top.descent + descent;
+                ideal = top.ideal - top.descent + descent;
+                top.above
+            }
+            None => ascent + gap,
+        }
+        // A picture is not type and states no pitch, so it never becomes the
+        // face that owns the room above the line — but it still occupies that
+        // room, and a line holding one is as tall as the picture.
+        .max(ascent);
+        // The room above the baseline is the ascent *and the gap* of whichever
+        // face reaches highest, which is where Word seats the baseline.
+        let natural = above + descent;
         if boost > ideal {
             base = boost;
             ideal = boost;
@@ -1781,7 +1853,7 @@ fn finish(
             // a drop cap set on an exact line three body lines tall has its
             // baseline on the third of them, which is the whole effect.
             LineSpacing::Exact(_) => (line.height - descent - pad).max(0.0),
-            _ => ascent + gap + pad,
+            _ => above + pad,
         };
         line.y = y;
         y += line.height;
@@ -1858,6 +1930,16 @@ fn mark_metrics(
     }
     let style = style_for(' ', &props, ctx);
     shaper.metrics(&style.font)
+}
+
+/// The fragment that owns the room above a line's baseline, with what it
+/// brings: its own laid and ideal pitches, and its own descent — which the
+/// line's deepest descent replaces.
+struct Top {
+    above: f64,
+    base: f64,
+    ideal: f64,
+    descent: f64,
 }
 
 /// The font a paragraph mark is drawn in, for a caret on an empty line.
@@ -2557,6 +2639,144 @@ mod tests {
         assert_eq!(texts(line), ["item"]);
     }
 
+    /// A shaper with two faces of different proportions: "Deep" hangs half
+    /// again as far below the baseline as the plain one and reaches less far
+    /// above it, which is the shape Courier New has beside Arial and the shape
+    /// that made the old rule wrong.
+    #[derive(Default)]
+    struct TwoFaced;
+
+    impl Shaper for TwoFaced {
+        fn metrics(&mut self, font: &FontRequest) -> crate::shape::Metrics {
+            match font.family.as_ref() {
+                "Deep" => crate::shape::Metrics {
+                    ascent: font.size * 0.6,
+                    descent: font.size * 0.4,
+                    line_gap: 0.0,
+                },
+                _ => crate::shape::Metrics {
+                    ascent: font.size * 0.75,
+                    descent: font.size * 0.25,
+                    line_gap: 0.0,
+                },
+            }
+        }
+
+        fn advances(
+            &mut self,
+            text: &str,
+            font: &FontRequest,
+            into: &mut Vec<crate::shape::Advance>,
+        ) {
+            crate::shape::Fixed.advances(text, font, into)
+        }
+    }
+
+    fn deep_run(text: &str) -> Inline {
+        Inline::Run(Run {
+            props: RunProps {
+                fonts: wp_model::Fonts {
+                    ascii: Some("Deep".into()),
+                    ..wp_model::Fonts::default()
+                },
+                ..RunProps::default()
+            },
+            content: vec![Piece::Text(text.into())],
+            ..Run::new()
+        })
+    }
+
+    #[test]
+    fn a_line_is_as_tall_as_its_highest_face_and_as_deep_as_its_deepest() {
+        // Word, measured over sixteen mixtures of six faces: an Arial 11 line
+        // with one Courier New letter on it pitches at 13.61, which is taller
+        // than Arial's own 12.66 *and* taller than Courier's own 12.47 —
+        // Arial's ascent over Courier's descent. Taking the tallest face's
+        // whole line height, which is what this used to do, cannot produce a
+        // number larger than both.
+        let theme = theme();
+        let ctx = ctx(&theme);
+        let plain = Paragraph::of("plain");
+        let mixed = Paragraph {
+            content: vec![
+                Inline::Run(Run {
+                    content: vec![Piece::Text("plain".into())],
+                    ..Run::new()
+                }),
+                deep_run("g"),
+            ],
+            ..Paragraph::new()
+        };
+        let height = |paragraph: &Paragraph| {
+            let mut shaper = TwoFaced;
+            layout(
+                paragraph,
+                0,
+                &layers(),
+                None,
+                &ctx,
+                500.0,
+                None,
+                &mut shaper,
+            )
+            .lines[0]
+                .height
+        };
+        // Ten points of type: the plain face is 7.5 up and 2.5 down, the deep
+        // one 6.0 up and 4.0 down.
+        assert!((height(&plain) - 10.0).abs() < 1e-9);
+        let deep_alone = Paragraph {
+            content: vec![deep_run("g")],
+            ..Paragraph::new()
+        };
+        assert!((height(&deep_alone) - 10.0).abs() < 1e-9);
+        assert!(
+            (height(&mixed) - 11.5).abs() < 1e-9,
+            "taller than either alone: {}",
+            height(&mixed)
+        );
+    }
+
+    #[test]
+    fn a_list_label_raises_a_line_but_does_not_deepen_it() {
+        // Word, measured: a bulleted Arial 11 line pitches at 13.39 — Symbol's
+        // ascent, because the bullet is drawn in Symbol whatever the words
+        // are in, plus *Arial's* descent. Symbol hangs deeper than Arial and
+        // is not counted for it. The same character typed in as ordinary text
+        // is, and gives 13.47.
+        let label = ListLabel {
+            text: "\u{F0B7}".to_string(),
+            props: RunProps {
+                fonts: wp_model::Fonts {
+                    ascii: Some("Deep".into()),
+                    ..wp_model::Fonts::default()
+                },
+                ..RunProps::default()
+            },
+            suffix: Suffix::Tab,
+            bullet: true,
+            picture: None,
+        };
+        let theme = theme();
+        let ctx = ctx(&theme);
+        let mut shaper = TwoFaced;
+        let bulleted = layout(
+            &Paragraph::of("item"),
+            0,
+            &layers(),
+            Some(&label),
+            &ctx,
+            500.0,
+            None,
+            &mut shaper,
+        );
+        assert!(
+            (bulleted.lines[0].height - 10.0).abs() < 1e-9,
+            "the label's own depth is not the line's: {}",
+            bulleted.lines[0].height
+        );
+    }
+
     #[test]
     fn a_label_takes_the_marks_bold_but_never_its_underline() {
         // Measured against Word on probes: a paragraph mark carrying
@@ -2917,6 +3137,7 @@ mod tests {
             distance: Default::default(),
             position: None,
             behind_text: false,
+            tone: None,
             text: None,
             outline: None,
         };

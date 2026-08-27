@@ -156,20 +156,49 @@ pub fn locate(package: &Package) -> Result<DocumentParts> {
     // does. They cannot share a key, so the numbering part's go in under a
     // qualified one. See [`qualified`].
     if let Some(numbering) = found.numbering.clone() {
-        if let Ok(rels) = package.relationships(&numbering) {
-            for rel in rels.iter() {
-                let Some(Ok(target)) = rel.resolve(&numbering) else {
-                    continue;
-                };
-                let kind = rel_kind(rel).to_owned();
-                found
-                    .by_rel_id
-                    .insert(qualified(NUMBERING, &rel.id), (kind, target));
-            }
-        }
+        collect_from(package, &numbering, NUMBERING, &mut found);
+    }
+
+    // **So does every header and footer**, and for the same reason: a letterhead
+    // with a logo in it names that logo `rId1` from `header1.xml`, and the
+    // document's own `rId1` is something else entirely. Unqualified, the logo
+    // was fetched as whatever the document's first relationship pointed at —
+    // usually not an image at all, so the picture simply did not appear.
+    let bands: Vec<PartName> = found
+        .headers
+        .values()
+        .chain(found.footers.values())
+        .cloned()
+        .collect();
+    for band in bands {
+        let scope = scope_of(&band);
+        collect_from(package, &band, &scope, &mut found);
     }
 
     Ok(found)
+}
+
+/// Every relationship of one part, filed under a key qualified by `scope`.
+fn collect_from(package: &Package, part: &PartName, scope: &str, found: &mut DocumentParts) {
+    let Ok(rels) = package.relationships(part) else {
+        return;
+    };
+    for rel in rels.iter() {
+        let Some(Ok(target)) = rel.resolve(part) else {
+            continue;
+        };
+        let kind = rel_kind(rel).to_owned();
+        found
+            .by_rel_id
+            .insert(qualified(scope, &rel.id), (kind, target));
+    }
+}
+
+/// What a part's relationships are qualified by: its own file name, which is
+/// unique within a package and is what a reader of that part has to hand.
+pub fn scope_of(name: &PartName) -> String {
+    let raw = name.as_str();
+    raw[raw.rfind('/').map_or(0, |at| at + 1)..].to_owned()
 }
 
 /// The part whose relationships a picture bullet's image belongs to.
@@ -182,6 +211,14 @@ pub const NUMBERING: &str = "numbering";
 /// `rId1` would be handed the document's first image instead of its own.
 pub fn qualified(part: &str, rel_id: &str) -> String {
     format!("{part}:{rel_id}")
+}
+
+/// The bare relationship id inside a qualified one.
+///
+/// What a *writer* needs: the file says `r:embed="rId1"`, and which part's
+/// `rId1` it is has already been decided by which part the element is in.
+pub fn plain_rel(key: &str) -> &str {
+    key.rsplit_once(':').map_or(key, |(_, id)| id)
 }
 
 /// Accepts every word processing flavour: `.docx`, macro-enabled, and the two

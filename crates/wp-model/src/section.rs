@@ -249,6 +249,76 @@ impl HeaderKind {
             HeaderKind::Even => "even",
         }
     }
+
+    /// Its place in a [`Bands`] table.
+    pub const fn index(self) -> usize {
+        match self {
+            HeaderKind::Default => 0,
+            HeaderKind::First => 1,
+            HeaderKind::Even => 2,
+        }
+    }
+
+    /// All three, in the order a file writes them.
+    pub const ALL: [HeaderKind; 3] = [HeaderKind::Default, HeaderKind::First, HeaderKind::Even];
+}
+
+/// The header and footer bodies a section really shows, once "Link to
+/// Previous" has been followed back through the sections before it.
+///
+/// **Saying nothing is the instruction.** A section that carries no
+/// `<w:headerReference>` of a kind is not a section with no header of that
+/// kind — it is a section that shows the one before it, which is exactly what
+/// Word's "Link to Previous" writes: asked over COM, a linked section's
+/// `<w:sectPr>` comes out holding no reference at all, and an unlinked one
+/// holds a reference for that kind alone while the other two stay inherited.
+/// So the link is per kind and per band, and a document whose second section
+/// is linked showed no header at all until this was followed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Bands {
+    headers: [Option<HeaderId>; 3],
+    footers: [Option<HeaderId>; 3],
+}
+
+impl Bands {
+    pub fn header(&self, kind: HeaderKind) -> Option<HeaderId> {
+        self.headers[kind.index()]
+    }
+
+    pub fn footer(&self, kind: HeaderKind) -> Option<HeaderId> {
+        self.footers[kind.index()]
+    }
+
+    /// Whether this section states the band itself rather than inheriting it —
+    /// which is "Link to Previous" turned off.
+    pub fn is_own(section: &SectionProps, kind: HeaderKind, footer: bool) -> bool {
+        match footer {
+            true => section.footer(kind).is_some(),
+            false => section.header(kind).is_some(),
+        }
+    }
+}
+
+/// Resolves every section's bands in document order.
+///
+/// The first section inherits from nothing, so a band it does not name is a
+/// band no page of it shows.
+pub fn resolve_bands(sections: &[&SectionProps]) -> Vec<Bands> {
+    let mut out: Vec<Bands> = Vec::with_capacity(sections.len());
+    for section in sections {
+        let inherited = out.last().copied().unwrap_or_default();
+        let mut here = inherited;
+        for kind in HeaderKind::ALL {
+            if let Some(body) = section.header(kind) {
+                here.headers[kind.index()] = Some(body);
+            }
+            if let Some(body) = section.footer(kind) {
+                here.footers[kind.index()] = Some(body);
+            }
+        }
+        out.push(here);
+    }
+    out
 }
 
 /// Index into the document's list of header and footer bodies.

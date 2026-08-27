@@ -108,12 +108,24 @@ pub enum Change {
         /// reason [`Change::Range`] counts its paragraphs.
         now: usize,
     },
-    /// The header and footer bodies, with the section that references them —
-    /// one change, because a header exists only through its reference and
+    /// The header and footer bodies, with the sections that reference them
+    /// and the settings that decide which of them a page ever shows — one
+    /// change, because a header exists only through its reference and
     /// restoring one without the other leaves a reference pointing at nothing.
+    ///
+    /// *Sections*, plural, and all of them: "Link to Previous" is a change to
+    /// one section that changes what every section after it shows, and every
+    /// section but the last lives on the paragraph that ends it rather than in
+    /// one place a single entry could name.
+    ///
+    /// `<w:evenAndOddHeaders>` rides along for the same reason the sections
+    /// do: it is a *document* setting, but the only thing it decides is
+    /// whether a section's even-page band is used, and turning it off is a
+    /// change to what the page shows exactly as removing the band would be.
     Chrome {
         headers: Vec<wp_model::doc::HeaderFooter>,
-        section: Box<wp_model::SectionProps>,
+        sections: Vec<wp_model::SectionProps>,
+        settings: Box<wp_model::Settings>,
         caret: Caret,
     },
 }
@@ -329,15 +341,19 @@ fn apply(document: &mut Document, scope: Scope, change: Change) -> (Change, Care
         }
         Change::Chrome {
             headers,
-            section,
+            sections,
+            settings,
             caret,
         } => {
             let was_headers = std::mem::replace(&mut document.headers, headers);
-            let was_section = std::mem::replace(&mut document.section, *section);
+            let was_sections = document.section_props();
+            document.set_section_props(&sections);
+            let was_settings = std::mem::replace(&mut document.settings, *settings);
             (
                 Change::Chrome {
                     headers: was_headers,
-                    section: Box::new(was_section),
+                    sections: was_sections,
+                    settings: Box::new(was_settings),
                     caret,
                 },
                 caret,

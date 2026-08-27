@@ -53,7 +53,7 @@ pub use prop::{
 };
 pub use revision::{Anchor, Comment, Mark, People, PropChange, Revision};
 pub use section::{
-    Columns, HeaderId, HeaderKind, HeaderRef, Orientation, PageBox, PageMargins, PageSize,
+    Bands, Columns, HeaderId, HeaderKind, HeaderRef, Orientation, PageBox, PageMargins, PageSize,
     SectionProps, SectionStart,
 };
 pub use style::{DocDefaults, Layers, Style, StyleId, StyleKind, StyleTable};

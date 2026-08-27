@@ -58,6 +58,12 @@ pub(crate) struct Ctx<'a> {
     /// the reader was handed events rather than a part, which only happens in
     /// this crate's own tests.
     part: &'a [u8],
+    /// Which part is being read, when it is not the document.
+    ///
+    /// A header names its own pictures `rId1` just as the document names its
+    /// own `rId1`, so a relationship read out of one has to be filed under a
+    /// key that says which part it came from — see [`crate::parts::qualified`].
+    scope: Option<&'a str>,
 }
 
 impl<'a> Ctx<'a> {
@@ -66,6 +72,7 @@ impl<'a> Ctx<'a> {
             styles,
             headers,
             part: &[],
+            scope: None,
         }
     }
 
@@ -78,6 +85,31 @@ impl<'a> Ctx<'a> {
             styles,
             headers,
             part,
+            scope: None,
+        }
+    }
+
+    /// The same, for a part that is not the document — a header or a footer,
+    /// whose relationships are numbered from `rId1` all over again.
+    pub fn of_named_part(
+        styles: &'a mut StyleTable,
+        headers: &'a mut HeaderIndex,
+        part: &'a [u8],
+        scope: &'a str,
+    ) -> Ctx<'a> {
+        Ctx {
+            styles,
+            headers,
+            part,
+            scope: Some(scope),
+        }
+    }
+
+    /// The key a relationship named inside this part is looked up by.
+    pub fn rel(&self, id: &str) -> String {
+        match self.scope {
+            Some(scope) => crate::parts::qualified(scope, id),
+            None => id.to_owned(),
         }
     }
 

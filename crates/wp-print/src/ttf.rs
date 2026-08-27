@@ -8,9 +8,15 @@
 //! opening the font), and the descriptor's vertical metrics.
 //!
 //! So this reads exactly four questions' worth of tables — `cmap`, `hmtx`,
-//! `head`/`hhea`, `OS/2`/`post` — and nothing else. No glyf, no hinting, no
-//! kerning: layout already happened, and the placement of every fragment
-//! arrives from the layout engine to the point.
+//! `head`/`hhea`, `OS/2`/`post` — and nothing else. No hinting, no kerning:
+//! layout already happened, and the placement of every fragment arrives from
+//! the layout engine to the point.
+//!
+//! One table beyond that, and only its first ten bytes: `glyf`, for the box a
+//! glyph's outline actually fills. WordArt is fitted to a shape by its *path*
+//! rather than by its line box — Word, measured — and no other table says how
+//! tall a drawn letter is. Every `glyf` entry opens with its own bounding box,
+//! composites included, so nothing here has to understand an outline.
 
 /// One parsed face, holding the tables it answers from.
 pub struct Face<'a> {
@@ -19,6 +25,8 @@ pub struct Face<'a> {
     cmap: Option<Cmap<'a>>,
     hmtx: &'a [u8],
     number_of_h_metrics: u16,
+    /// `loca` and `glyf`, when the face has them — see [`Face::glyph_box`].
+    glyf: Option<(&'a [u8], &'a [u8], bool)>,
     /// From `hhea`, in font units.
     pub ascent: i16,
     pub descent: i16,
@@ -111,6 +119,12 @@ impl<'a> Face<'a> {
             .unwrap_or(0.0);
 
         let cmap = table(b"cmap").and_then(pick_subtable);
+        // `indexToLocFormat`: 0 is a short `loca` counting words, 1 is a long
+        // one counting bytes.
+        let long_loca = i16_at(head, 50)? == 1;
+        let glyf = table(b"loca")
+            .zip(table(b"glyf"))
+            .map(|(loca, glyf)| (loca, glyf, long_loca));
 
         Some(Face {
             data,
@@ -118,6 +132,7 @@ impl<'a> Face<'a> {
             cmap,
             hmtx,
             number_of_h_metrics,
+            glyf,
             ascent,
             descent,
             line_gap,
@@ -174,6 +189,47 @@ impl<'a> Face<'a> {
         // that is what the table's own compression scheme means.
         let index = glyph.min(count - 1) as usize;
         u16_at(self.hmtx, index * 4).unwrap_or(0)
+    }
+
+    /// The box a glyph's outline fills, in font units: `xMin, yMin, xMax,
+    /// yMax`, measured from the pen position and the baseline.
+    ///
+    /// `None` for a glyph with no outline — a space, and every glyph of a face
+    /// whose outlines are CFF rather than `glyf`. A caller that needs the ink
+    /// of a whole string treats a blank glyph as contributing nothing and a
+    /// face that answers nothing at all as one it cannot measure.
+    pub fn glyph_box(&self, glyph: u16) -> Option<[i16; 4]> {
+        let entry = self.glyph_data(glyph)?;
+        Some([
+            i16_at(entry, 2)?,
+            i16_at(entry, 4)?,
+            i16_at(entry, 6)?,
+            i16_at(entry, 8)?,
+        ])
+    }
+
+    /// The bytes of one glyph's entry, empty entries filtered out.
+    fn glyph_data(&self, glyph: u16) -> Option<&'a [u8]> {
+        let (loca, glyf, long) = self.glyf?;
+        let index = glyph as usize;
+        let (start, end) = match long {
+            true => (
+                u32_at(loca, index * 4)? as usize,
+                u32_at(loca, index * 4 + 4)? as usize,
+            ),
+            // A short `loca` states half the offset, which is why a face using
+            // it cannot hold more than 128k of outlines.
+            false => (
+                u16_at(loca, index * 2)? as usize * 2,
+                u16_at(loca, index * 2 + 2)? as usize * 2,
+            ),
+        };
+        // Equal offsets are the table's way of saying "this glyph draws
+        // nothing" — a space, and every unmapped code point.
+        if end <= start.checked_add(9)? {
+            return None;
+        }
+        glyf.get(start..end)
     }
 }
 
@@ -333,6 +389,31 @@ mod tests {
         assert!(face.advance(a) > 0);
         // A space is narrower than an M, in any face anyone ships.
         assert!(face.advance(face.glyph(' ')) < face.advance(face.glyph('M')));
+    }
+
+    #[test]
+    fn a_glyphs_own_box_is_what_it_draws_and_not_what_it_advances() {
+        let Some(bytes) = arial() else { return };
+        let face = Face::parse(&bytes).expect("Arial parses");
+        let em = face.units_per_em();
+
+        let [_, y_low, _, cap] = face.glyph_box(face.glyph('H')).expect("H draws");
+        assert_eq!(y_low, 0, "a capital stands on the baseline");
+        assert!(f64::from(cap) / em > 0.6 && f64::from(cap) / em < 0.8);
+
+        let [_, x_low, _, _] = face.glyph_box(face.glyph('x')).expect("x draws");
+        let [_, _, _, x_high] = face.glyph_box(face.glyph('x')).expect("x draws");
+        assert_eq!(x_low, 0);
+        assert!(x_high < cap, "an x is shorter than an H");
+
+        let [_, below, _, _] = face.glyph_box(face.glyph('g')).expect("g draws");
+        assert!(below < 0, "and a g hangs under the line");
+
+        assert_eq!(
+            face.glyph_box(face.glyph(' ')),
+            None,
+            "a space draws nothing at all"
+        );
     }
 
     #[test]

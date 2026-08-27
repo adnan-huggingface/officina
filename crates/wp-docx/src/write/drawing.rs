@@ -124,6 +124,9 @@ fn author(drawing: &Drawing) -> Vec<u8> {
     let Some(rel) = &drawing.rel else {
         return Vec::new();
     };
+    // The file names a relationship by its bare id — which part's it is has
+    // already been settled by which part the element sits in.
+    let rel = crate::parts::plain_rel(rel);
     let (cx, cy) = (drawing.extent.0 .0.max(1), drawing.extent.1 .0.max(1));
     let name = drawing.name.as_deref().unwrap_or("Picture");
     let name = crate::write::escape_attr(name);
@@ -395,6 +398,7 @@ mod tests {
             position: None,
             behind_text: false,
             text: None,
+            tone: None,
             outline: None,
         }
     }
@@ -542,7 +546,7 @@ mod tests {
         assert!(text.contains("PowerPlusWaterMarkObject"), "{text}");
         assert!(text.contains("_x0000_t136"), "the WordArt shape type");
 
-        let read = crate::pict::words(&out).expect("and it reads back as words");
+        let read = crate::pict::shape(&out).expect("and it reads back as words");
         let shape = read.text.expect("with its words");
         assert_eq!(&*shape.text, "CONFIDENTIAL");
         assert_eq!(shape.font.as_deref(), Some("Verdana"));

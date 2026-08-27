@@ -54,7 +54,13 @@ pub(crate) fn flush(
                 // definition the document part's paragraphs use.
                 let existing = {
                     let mut index = HeaderIndex::default();
-                    let mut ctx = Ctx::of_part(styles, &mut index, part.data());
+                    // Read under the part's own name, exactly as the reader
+                    // did: a picture's relationship key is part of what a
+                    // header *is*, so comparing a scoped model against an
+                    // unscoped re-read would call every header changed and
+                    // rewrite it on a save that touched nothing.
+                    let scope = crate::parts::scope_of(&name);
+                    let mut ctx = Ctx::of_named_part(styles, &mut index, part.data(), &scope);
                     crate::read_header(part.data(), &mut ctx, header.footer)
                 };
                 if existing == header.content {
@@ -103,15 +109,21 @@ pub(crate) fn flush(
     // relationship now get one, so the sectPr the document part writes can
     // say `r:id` — a reference without one is skipped there, and the header
     // would exist in the package while no page used it.
+    //
+    // **Every section, not only the last.** All but one of a document's
+    // sections hang off the paragraph that ends them, and a header made by
+    // unlinking one of those from the section before it is named from there
+    // alone — patching only `Document::section` wrote the part and then left
+    // nothing pointing at it.
     for (id, rel) in assigned {
-        for reference in document
-            .section
-            .headers
-            .iter_mut()
-            .chain(document.section.footers.iter_mut())
-        {
-            if reference.body == id && reference.rel.is_none() {
-                reference.rel = Some(rel.clone());
+        for index in 0.. {
+            let Some(section) = document.section_mut(index) else {
+                break;
+            };
+            for reference in section.headers.iter_mut().chain(section.footers.iter_mut()) {
+                if reference.body == id && reference.rel.is_none() {
+                    reference.rel = Some(rel.clone());
+                }
             }
         }
     }
@@ -218,6 +230,52 @@ mod tests {
         assert!(
             back.section.header_for_page(1, false).is_some(),
             "and the first page uses it"
+        );
+    }
+
+    #[test]
+    fn a_header_a_mid_document_section_names_gets_its_relationship_too() {
+        // What breaking "Link to Previous" makes: a header named from a
+        // paragraph's own `<w:sectPr>` rather than from the body's last one.
+        // Patching only `Document::section` wrote the part into the package
+        // and left nothing pointing at it, so the page came back bare.
+        let mut package = package_with(DOC);
+        let mut document = crate::read(&package).expect("it reads");
+        let mut own = wp_model::SectionProps::new();
+        own.headers.push(HeaderRef {
+            kind: HeaderKind::Default,
+            body: HeaderId(1),
+            rel: None,
+        });
+        let mut opening = Paragraph::of("first section");
+        opening.section = Some(Box::new(own));
+        document.body.insert(0, Block::Paragraph(opening));
+        document.headers.push(HeaderFooter {
+            id: HeaderId(1),
+            part: None,
+            rel: None,
+            footer: false,
+            content: vec![Block::Paragraph(Paragraph::of("SECTION ONE"))],
+        });
+
+        super::super::flush(&mut document, &mut package).expect("it flushes");
+
+        let assigned = document.headers[0].rel.clone().expect("a relationship");
+        let sections = document.section_props();
+        assert_eq!(
+            sections[0].headers[0].rel.as_deref(),
+            Some(assigned.as_ref()),
+            "the paragraph's own section names it"
+        );
+
+        let back = crate::read(&package).expect("it reads back");
+        let shown = back.bands();
+        let body = shown[0]
+            .header(HeaderKind::Default)
+            .expect("the first section shows it");
+        assert_eq!(
+            wp_model::doc::text_of(&back.header(body).expect("read back").content),
+            "SECTION ONE"
         );
     }
 

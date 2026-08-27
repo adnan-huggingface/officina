@@ -12,6 +12,7 @@
 
 use wp_model::doc::{Block, Document, Inline, Paragraph, Piece, Run};
 use wp_model::revision::{Mark, Revision};
+use wp_model::Scope;
 
 use crate::edit::{Caret, Change, History, Selection};
 
@@ -35,6 +36,13 @@ impl Resolve {
 /// Every tracked change in the document, in order, with where it is.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Tracked {
+    /// Which of the document's flows the change is in.
+    ///
+    /// **A header is reviewed like anything else.** Word tracks an edit to a
+    /// running head and comments on one, and a paragraph number alone cannot
+    /// say which body it counts through — every flow starts again at zero — so
+    /// the scope travels with the change all the way to the pane's *Go to*.
+    pub scope: Scope,
     pub paragraph: usize,
     pub mark: Mark,
     /// What the change is, in words a person can read.
@@ -44,14 +52,26 @@ pub struct Tracked {
 }
 
 /// Lists the tracked changes, so they can be walked through one at a time.
+///
+/// Every flow, the text first: a change in a header is still a change, and one
+/// the pane does not list is one nobody can settle.
 pub fn tracked(document: &Document) -> Vec<Tracked> {
     let mut out = Vec::new();
-    for (index, paragraph) in document.paragraphs().iter().enumerate() {
-        walk(&paragraph.content, index, &mut out);
+    for scope in document.flows() {
+        tracked_in(document, scope, &mut out);
+    }
+    out
+}
+
+/// The tracked changes of one flow, appended.
+fn tracked_in(document: &Document, scope: Scope, out: &mut Vec<Tracked>) {
+    for (index, paragraph) in document.paragraphs_in(scope).iter().enumerate() {
+        walk(&paragraph.content, scope, index, out);
         // A paragraph *mark* can be inserted or deleted too — that is what a
         // tracked paragraph split or merge is, and it has no text of its own.
         if let Some(revision) = &paragraph.mark_revision {
             out.push(Tracked {
+                scope,
                 paragraph: index,
                 mark: revision.mark().clone(),
                 what: match revision {
@@ -62,10 +82,9 @@ pub fn tracked(document: &Document) -> Vec<Tracked> {
             });
         }
     }
-    out
 }
 
-fn walk(content: &[Inline], paragraph: usize, out: &mut Vec<Tracked>) {
+fn walk(content: &[Inline], scope: Scope, paragraph: usize, out: &mut Vec<Tracked>) {
     for inline in content {
         match inline {
             Inline::Revised { revision, content } => {
@@ -74,6 +93,7 @@ fn walk(content: &[Inline], paragraph: usize, out: &mut Vec<Tracked>) {
                     collect_text(inner, &mut text);
                 }
                 out.push(Tracked {
+                    scope,
                     paragraph,
                     mark: revision.mark().clone(),
                     what: match revision {
@@ -84,16 +104,17 @@ fn walk(content: &[Inline], paragraph: usize, out: &mut Vec<Tracked>) {
                     },
                     text: text.trim().chars().take(60).collect(),
                 });
-                walk(content, paragraph, out);
+                walk(content, scope, paragraph, out);
             }
-            Inline::Hyperlink(link) => walk(&link.content, paragraph, out),
-            Inline::Structured(sdt) => walk(&sdt.content, paragraph, out),
+            Inline::Hyperlink(link) => walk(&link.content, scope, paragraph, out),
+            Inline::Structured(sdt) => walk(&sdt.content, scope, paragraph, out),
             Inline::Wrapper { content, .. } | Inline::SimpleField { content, .. } => {
-                walk(content, paragraph, out)
+                walk(content, scope, paragraph, out)
             }
             Inline::Run(run) => {
                 if let Some(change) = &run.prop_change {
                     out.push(Tracked {
+                        scope,
                         paragraph,
                         mark: change.mark.clone(),
                         what: "formatting changed",
@@ -137,17 +158,37 @@ fn collect_text(inline: &Inline, out: &mut String) {
     }
 }
 
-/// Settles every tracked change in the document.
+/// Settles every tracked change in the document — in every flow it has.
+///
+/// Flow by flow rather than all at once, because each one is its own run of
+/// paragraphs: a change recorded over the body's numbering would restore the
+/// header's paragraphs into the text.
 pub fn resolve_all(document: &mut Document, history: &mut History, how: Resolve) -> usize {
+    let mut count = 0;
+    for scope in document.flows() {
+        count += resolve_all_in(document, history, scope, how);
+    }
+    count
+}
+
+/// Settles every tracked change of one flow.
+fn resolve_all_in(
+    document: &mut Document,
+    history: &mut History,
+    scope: Scope,
+    how: Resolve,
+) -> usize {
     let before: Vec<Paragraph> = document
-        .paragraphs()
+        .paragraphs_in(scope)
         .iter()
         .map(|paragraph| (*paragraph).clone())
         .collect();
     if before.is_empty() {
         return 0;
     }
-    let count = tracked(document).len();
+    let mut here = Vec::new();
+    tracked_in(document, scope, &mut here);
+    let count = here.len();
     if count == 0 {
         return 0;
     }
@@ -173,7 +214,7 @@ pub fn resolve_all(document: &mut Document, history: &mut History, how: Resolve)
         }
     }
     history.push(
-        wp_model::Scope::Body,
+        scope,
         Change::Range {
             first: 0,
             before: before.clone(),
@@ -182,11 +223,15 @@ pub fn resolve_all(document: &mut Document, history: &mut History, how: Resolve)
             now: resolved.len(),
         },
     );
-    crate::edit::replace_range(document, wp_model::Scope::Body, 0..before.len(), resolved);
+    crate::edit::replace_range(document, scope, 0..before.len(), resolved);
     count
 }
 
 /// Settles one tracked change, named by its mark.
+///
+/// The mark says which flow as well as which paragraph — it is looked up, not
+/// passed in, because the pane that offers the change already knows only the
+/// mark and the caller should not have to carry the answer twice.
 pub fn resolve_one(
     document: &mut Document,
     history: &mut History,
@@ -196,8 +241,13 @@ pub fn resolve_one(
     let Some(found) = tracked(document).into_iter().find(|t| &t.mark == mark) else {
         return false;
     };
+    let scope = found.scope;
     let index = found.paragraph;
-    let Some(before) = document.paragraphs().get(index).map(|p| (*p).clone()) else {
+    let Some(before) = document
+        .paragraphs_in(scope)
+        .get(index)
+        .map(|p| (*p).clone())
+    else {
         return false;
     };
     // A paragraph mark's revision joins two paragraphs, which is a change to the
@@ -208,11 +258,15 @@ pub fn resolve_one(
         .is_some_and(|revision| revision.mark() == mark)
     {
         if !how.keeps(before.mark_revision.as_ref().expect("just checked")) {
-            let Some(next) = document.paragraphs().get(index + 1).map(|p| (*p).clone()) else {
+            let Some(next) = document
+                .paragraphs_in(scope)
+                .get(index + 1)
+                .map(|p| (*p).clone())
+            else {
                 return false;
             };
             history.push(
-                wp_model::Scope::Body,
+                scope,
                 Change::Merge {
                     index,
                     first: Box::new(before.clone()),
@@ -221,16 +275,11 @@ pub fn resolve_one(
             );
             let mut joined = crate::text::merge(&before, &next);
             joined.mark_revision = None;
-            crate::edit::replace_range(
-                document,
-                wp_model::Scope::Body,
-                index..index + 2,
-                vec![joined],
-            );
+            crate::edit::replace_range(document, scope, index..index + 2, vec![joined]);
             return true;
         }
         history.push(
-            wp_model::Scope::Body,
+            scope,
             Change::Paragraph {
                 index,
                 before: Box::new(before.clone()),
@@ -238,29 +287,19 @@ pub fn resolve_one(
         );
         let mut kept = before;
         kept.mark_revision = None;
-        crate::edit::replace_range(
-            document,
-            wp_model::Scope::Body,
-            index..index + 1,
-            vec![kept],
-        );
+        crate::edit::replace_range(document, scope, index..index + 1, vec![kept]);
         return true;
     }
 
     history.push(
-        wp_model::Scope::Body,
+        scope,
         Change::Paragraph {
             index,
             before: Box::new(before.clone()),
         },
     );
     let settled = settle_paragraph(&before, how, Some(mark));
-    crate::edit::replace_range(
-        document,
-        wp_model::Scope::Body,
-        index..index + 1,
-        vec![settled],
-    );
+    crate::edit::replace_range(document, scope, index..index + 1, vec![settled]);
     true
 }
 
@@ -600,6 +639,7 @@ fn cut_run(run: &mut Run, offset: usize) -> Option<Run> {
 pub fn add_comment(
     document: &mut Document,
     history: &mut History,
+    scope: Scope,
     selection: Selection,
     author: &str,
     initials: &str,
@@ -614,14 +654,14 @@ pub fn add_comment(
     let (start, end) = selection.ordered();
 
     let before: Vec<Paragraph> = document
-        .paragraphs()
+        .paragraphs_in(scope)
         .iter()
         .skip(start.paragraph)
         .take(end.paragraph - start.paragraph + 1)
         .map(|p| (*p).clone())
         .collect();
     history.push(
-        wp_model::Scope::Body,
+        scope,
         Change::Range {
             first: start.paragraph,
             before: before.clone(),
@@ -650,7 +690,7 @@ pub fn add_comment(
     }
     crate::edit::replace_range(
         document,
-        wp_model::Scope::Body,
+        scope,
         start.paragraph..start.paragraph + before.len(),
         after,
     );
@@ -658,13 +698,21 @@ pub fn add_comment(
 }
 
 /// Removes a comment and the three marks that anchor it.
+///
+/// The anchors of one comment are all in one flow, so the flow holding its
+/// start is the flow the marks are pulled out of.
 pub fn delete_comment(document: &mut Document, history: &mut History, id: u32) -> bool {
     if !document.comments.iter().any(|comment| comment.id == id) {
         return false;
     }
-    let before: Vec<Paragraph> = document.paragraphs().iter().map(|p| (*p).clone()).collect();
+    let scope = comment_at(document, id).map_or(Scope::Body, |(scope, _)| scope);
+    let before: Vec<Paragraph> = document
+        .paragraphs_in(scope)
+        .iter()
+        .map(|p| (*p).clone())
+        .collect();
     history.push(
-        wp_model::Scope::Body,
+        scope,
         Change::Range {
             first: 0,
             before: before.clone(),
@@ -695,26 +743,32 @@ pub fn delete_comment(document: &mut Document, history: &mut History, id: u32) -
             paragraph
         })
         .collect();
-    crate::edit::replace_range(document, wp_model::Scope::Body, 0..before.len(), after);
+    crate::edit::replace_range(document, scope, 0..before.len(), after);
     true
 }
 
-/// Where a comment is anchored, for drawing it beside its text.
-pub fn comment_at(document: &Document, id: u32) -> Option<Caret> {
-    for (index, paragraph) in document.paragraphs().iter().enumerate() {
-        let mut offset = 0usize;
-        for inline in &paragraph.content {
-            match inline {
-                Inline::Anchor(wp_model::Anchor::CommentStart { id: at }) if *at == id => {
-                    return Some(Caret {
-                        paragraph: index,
-                        offset,
-                    })
-                }
-                other => {
-                    let mut text = String::new();
-                    collect_text(other, &mut text);
-                    offset += text.len();
+/// Where a comment is anchored, for drawing it beside its text — and in which
+/// of the document's flows.
+pub fn comment_at(document: &Document, id: u32) -> Option<(Scope, Caret)> {
+    for scope in document.flows() {
+        for (index, paragraph) in document.paragraphs_in(scope).iter().enumerate() {
+            let mut offset = 0usize;
+            for inline in &paragraph.content {
+                match inline {
+                    Inline::Anchor(wp_model::Anchor::CommentStart { id: at }) if *at == id => {
+                        return Some((
+                            scope,
+                            Caret {
+                                paragraph: index,
+                                offset,
+                            },
+                        ))
+                    }
+                    other => {
+                        let mut text = String::new();
+                        collect_text(other, &mut text);
+                        offset += text.len();
+                    }
                 }
             }
         }
@@ -994,6 +1048,7 @@ mod tests {
         let id = add_comment(
             &mut document,
             &mut history,
+            Scope::Body,
             selection,
             "Adnan Khan",
             "AK",
@@ -1028,6 +1083,7 @@ mod tests {
         let id = add_comment(
             &mut document,
             &mut history,
+            Scope::Body,
             Selection::at(Caret {
                 paragraph: 0,
                 offset: 0,
@@ -1061,6 +1117,7 @@ mod tests {
         let id = add_comment(
             &mut document,
             &mut history,
+            Scope::Body,
             Selection::at(Caret {
                 paragraph: 1,
                 offset: 0,
@@ -1071,10 +1128,13 @@ mod tests {
         );
         assert_eq!(
             comment_at(&document, id),
-            Some(Caret {
-                paragraph: 1,
-                offset: 0
-            })
+            Some((
+                Scope::Body,
+                Caret {
+                    paragraph: 1,
+                    offset: 0
+                }
+            ))
         );
         assert_eq!(comment_at(&document, 99), None);
     }

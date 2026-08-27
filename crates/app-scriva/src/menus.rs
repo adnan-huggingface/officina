@@ -669,7 +669,8 @@ impl Scriva {
                                 )
                                 .clicked()
                             {
-                                chosen = Some(Command::GoTo(heading.paragraph));
+                                chosen =
+                                    Some(Command::GoTo(wp_model::Scope::Body, heading.paragraph));
                             }
                         });
                     }
@@ -682,7 +683,8 @@ impl Scriva {
                                 .add(egui::Button::new(bookmark.name.as_ref()).frame(false))
                                 .clicked()
                             {
-                                chosen = Some(Command::GoTo(bookmark.paragraph));
+                                chosen =
+                                    Some(Command::GoTo(wp_model::Scope::Body, bookmark.paragraph));
                             }
                         }
                     }
@@ -690,6 +692,18 @@ impl Scriva {
             });
         chosen
     }
+}
+
+/// Which flow something is in, for a list that shows more than one of them.
+/// `None` for the text, which needs no saying.
+fn flow_name(document: &wp_model::Document, scope: wp_model::Scope) -> Option<&'static str> {
+    let wp_model::Scope::Chrome(id) = scope else {
+        return None;
+    };
+    Some(match document.header(id)?.footer {
+        true => "footer",
+        false => "header",
+    })
 }
 
 impl Scriva {
@@ -740,8 +754,17 @@ impl Scriva {
                         ui.group(|ui| {
                             ui.label(
                                 egui::RichText::new(format!(
-                                    "{} — {}",
-                                    change.mark.author, change.what
+                                    "{} — {}{}",
+                                    change.mark.author,
+                                    change.what,
+                                    // Which flow, when it is not the text: two
+                                    // entries that read the same and settle
+                                    // different pages are two entries nobody
+                                    // can act on.
+                                    match flow_name(self.document_ref(), change.scope) {
+                                        Some(name) => format!(", in the {name}"),
+                                        None => String::new(),
+                                    }
                                 ))
                                 .strong(),
                             );
@@ -750,7 +773,7 @@ impl Scriva {
                             }
                             ui.horizontal(|ui| {
                                 if ui.small_button("Go to").clicked() {
-                                    chosen = Some(Command::GoTo(change.paragraph));
+                                    chosen = Some(Command::GoTo(change.scope, change.paragraph));
                                 }
                             });
                         });
@@ -764,10 +787,10 @@ impl Scriva {
                             }
                             ui.horizontal(|ui| {
                                 if ui.small_button("Go to").clicked() {
-                                    if let Some(at) =
+                                    if let Some((scope, at)) =
                                         crate::revise::comment_at(self.document_ref(), *id)
                                     {
-                                        chosen = Some(Command::GoTo(at.paragraph));
+                                        chosen = Some(Command::GoTo(scope, at.paragraph));
                                     }
                                 }
                             });
