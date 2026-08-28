@@ -1208,3 +1208,37 @@ about padding: it is that a cut has to leave something worth seeing on both
 sides of it, and a filter written as "not inside a line" admits every boundary
 that is merely outside all of them.
 
+A line is as tall as what is drawn on it, and some of what is in it draws
+nothing.
+
+A field that begins, separates and ends puts three marks in the text and no
+glyph on the page, and a placeholder of no width was standing in for the last of
+them and being measured like type. Every diagram in the document is an `EMBED`
+field, so its end sat on the line under the picture with only the paragraph mark
+beside it, and that line came out at the run's ten points where Word gives it
+the mark's five — eight points under every figure, and two lines pushed off the
+foot of a page. The crate already had this rule for tabs and had written down
+why: Word measures a line by the type on it, and a tab is the gap between type.
+A field's mark is not even that.
+
+The room under a line belongs to the type on it, so a picture with nothing
+beside it takes none.
+
+The rule "a picture sits on the baseline and the run holding it still hangs
+below" was measured, correctly, on a line that also had words. On a line that is
+only a picture there is nothing to hang: eleven inline figures, asked of Word one
+at a time, each made a paragraph exactly as tall as its own picture. A
+measurement is of the case it was made in, and the case it was made in is worth
+writing down beside the number.
+
+Two cells in one row, given the same rule by the file, and the application does
+not treat them the same.
+
+A letterhead's two merged cells both say "centre me": Word centres the one that
+covers two rows and leaves the one that covers four at the top, where centring
+would move it nine points. The same four-row merge built for the purpose, in
+both file formats, Word centres. Whatever tells the two apart is not the row
+count, the format, the paragraph count or the alignment, and the generalisation
+that fixes the first breaks the second by more than it was wrong by. The honest
+answer to a rule that fits one measurement and contradicts another is to keep
+looking, not to ship the half of it that flatters the document in front of you.

@@ -2995,6 +2995,81 @@ against Word on every page, which is a cell's vertical alignment and not this
 work. Five pages hold embedded Visio drawings, which Word draws as text and
 vectors and this draws as one picture.
 
+## A watermark is drawn at the strength it states, and a line is measured by what it draws (2026-08-27)
+
+Three more differences on `table_render_test.doc`, all of them measured against
+Word's own export of the same file.
+
+**A watermark is half transparent, and the shape says so.** OfficeArt's
+`fillOpacity` — property `0x0182`, a sixteen-sixteen fraction — is what Word's
+own watermark carries its half in, and nothing was reading it. Folded toward the
+paper at the point the colour is read, which is what the `.docx` side already
+does with VML's `<v:fill opacity>` and is honest for a watermark in particular:
+it is behind everything and therefore always over the page rather than over
+other ink. Measured against Word's export: the grey that reaches white paper is
+223, where the stated `#C0C0C0` on its own puts down 192 — the stamp was twice
+as dark as Word draws it on all sixteen pages.
+
+**A field's mark does not say how tall a line is.** Every diagram in this
+document is the result of an `EMBED` field, so a field-end mark follows the
+picture, and the picture is a little wider than the measure — which puts the
+mark on a line of its own. Word lays that line at the *paragraph mark's* five
+points; this laid it at the ten points of the run the field is written in,
+because the field's end had been given a placeholder of no width and the
+placeholder was being measured. A field that begins, separates and ends draws
+nothing at those three places, and Word measures a line by what it draws. The
+rule that was already there for tabs is the same rule.
+
+**A picture alone on a line has no descent under it.** The room below a line
+belongs to the type on it: a picture beside words takes the words' descent —
+which is where the rule came from, a 162.15pt picture in a 12pt run on a
+164.74pt line — but a picture with nothing beside it takes none. Measured over
+all eleven inline figures of this document by asking Word for each paragraph's
+own top and the next one's: every one of them came out exactly as tall as its
+picture, to the six tenths of a point Word reports a position in.
+
+Together these took eight points off every figure paragraph. Page ten had been
+pushing its last two lines onto page eleven; it now holds the same lines Word
+holds and every one of them within six tenths of a point, and pages nine, twelve
+and fourteen came in from two and a half points to under one.
+
+**What the earlier note listed as still differing.** The five pages of embedded
+drawings are no longer drawn as one picture — they are played as text and
+vectors and now agree with Word to within six tenths of a point, so that entry
+is retired. What is left of it is smaller and quite specific: a dashed pen
+inside those metafiles is drawn about three times too thick.
+
+**The watermark's eight points, narrowed.** The shape is centred on the middle
+of the page's text area and Word puts it 8.22 points lower, which is where the
+last session left it. Two of the three things it could have been are now ruled
+out. The band is not it: changing the top margin, the bottom margin, the header
+distance and the footer distance each moved Word's watermark by exactly half of
+what it moved the band, so Word measures the same band this does, header and
+footer overflow included. The geometry inside the box is not it either: with the
+shape unturned and pinned to a known rectangle at four different heights, Word's
+pen starts at the box's left edge and its baseline stands `615/2048` of the
+box's height above the box's foot — the rule already written here, to a
+hundredth of a point at every height. What is left is that Word places *this
+stored shape* 8.22 points below the middle of that band, constantly, whatever
+the page is; a shape centred afresh through Word's own object model lands
+exactly on the middle. So it is something Word does when it reads the shape and
+not something in the centring, and it is still not guessed at.
+
+**The letterhead cell, and why it is not fixed.** The `ENGINEERING
+SPECIFICATIONS` cell is merged down two rows and vertically centred, and Word
+centres its line in the whole of what the merge covers: 4.65 points, which is
+exactly half of what those two rows have over the line. This aligns it in the
+first of the rows instead, which is shorter than the line, so the line stays at
+the top. The obvious fix is to align a merged cell in the room the whole span
+gives it — and it breaks the cell beside it, which is merged down all four rows,
+is also centred, and which Word leaves at the top where centring it in the four
+would put it nine and three quarter points down. A four-row merge built for the
+purpose, saved as `.docx` and as `.doc` and exported both ways, Word centres.
+The two cells are in the same row of the same table with the same alignment and
+Word treats them differently, and the condition that tells them apart has not
+been found. A rule that fixes one and breaks the other is not an improvement, so
+nothing was shipped for this.
+
 ## Deferred
 
 - [x] **PDF** — was dropped per Q3; built after ship as `wp-print`. See above.

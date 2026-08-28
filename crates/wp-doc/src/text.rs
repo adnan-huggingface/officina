@@ -413,7 +413,10 @@ impl Reader<'_> {
         // know how to trace, so it draws nothing rather than a wrong outline.
         let outline = (shape.kind == RECTANGLE)
             .then(|| wp_model::doc::ShapeOutline {
-                fill: shape.fill.filter(|_| shape.filled),
+                fill: shape
+                    .fill
+                    .filter(|_| shape.filled)
+                    .map(|fill| over_paper(fill, shape.opacity)),
                 line: shape.lined.then_some(shape.line),
                 line_width: wp_model::Emu(shape.line_width as i64),
             })
@@ -462,7 +465,10 @@ impl Reader<'_> {
                 Box::new(ShapeText {
                     text: text.into(),
                     font: shape.font.as_deref().map(Into::into),
-                    color: shape.fill.filter(|_| shape.filled),
+                    color: shape
+                        .fill
+                        .filter(|_| shape.filled)
+                        .map(|fill| over_paper(fill, shape.opacity)),
                     bold: false,
                     italic: false,
                     stretch: shape.stretch,
@@ -649,6 +655,28 @@ fn pieces(
 
 /// `msosptRectangle` — the one shape geometry this draws as a shape.
 const RECTANGLE: u16 = 1;
+
+/// A shape's colour with a semitransparent fill folded into it.
+///
+/// **The renderers draw a shape's words in one solid colour**, and Word's own
+/// watermark is a light grey at half opacity. Folding it toward the paper here
+/// is what the `.docx` side already does with VML's `<v:fill opacity>`, and it
+/// is honest for a watermark in particular, which is behind everything and so
+/// always over the page rather than over other ink. Measured against Word's
+/// own export of this document: the grey that reaches the paper is 223, where
+/// the stated `#C0C0C0` on its own would put down 192.
+fn over_paper(colour: wp_model::Color, opacity: f64) -> wp_model::Color {
+    let wp_model::Color::Rgb(rgb) = colour else {
+        return colour;
+    };
+    if !(0.0..1.0).contains(&opacity) {
+        return colour;
+    }
+    wp_model::Color::Rgb(rgb.map(|channel| {
+        let over = f64::from(channel) * opacity + 255.0 * (1.0 - opacity);
+        over.round().clamp(0.0, 255.0) as u8
+    }))
+}
 
 /// What the *anchor* measures its rectangle from: `Spa.bx` and `Spa.by`.
 fn frame_of(value: u8, vertical: bool) -> wp_model::doc::RelativeTo {

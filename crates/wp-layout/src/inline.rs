@@ -1732,6 +1732,10 @@ fn finish(
         // Whether any of it was words rather than a label, which is what
         // decides how deep the line goes.
         let mut words = false;
+        // Whether any of it was type at all rather than a picture, and how far
+        // the run holding a picture would hang below the baseline if it were.
+        let mut typed = false;
+        let mut sunk: f64 = 0.0;
         for fragment in &line.fragments {
             // **A tab does not make a line taller.** Word measures a line by
             // the type on it, and a tab is the gap between type: a table of
@@ -1742,6 +1746,18 @@ fn finish(
             // entry on an eight-point line with a twenty-two point tab in the
             // middle of it.
             if matches!(fragment.content, Content::Tab { .. }) {
+                continue;
+            }
+            // **Nor does a field's mark.** A field that begins, separates and
+            // ends carries no glyph at those three places, and Word measures a
+            // line by what it draws: the diagrams of the demonstration document
+            // are the result of an `EMBED` field, so a field-end sits on the
+            // line after the picture with only the paragraph mark for company,
+            // and Word lays that line at the mark's five points rather than at
+            // the ten of the run the field is written in. Measured: Word's own
+            // figure paragraph is 298.2 points tall for a 293.05 point picture,
+            // and the five that are left is one line of the mark's own type.
+            if matches!(&fragment.content, Content::Text { text, .. } if text.is_empty()) {
                 continue;
             }
             measured = true;
@@ -1768,12 +1784,18 @@ fn finish(
             pad = pad.max(fragment.style.border_pad());
             if let Content::Object { height, .. } = &fragment.content {
                 object = object.max(*height);
-                // The picture sits on the baseline, and the type of the run
-                // holding it still hangs below — measured: Word lays a
-                // 162.15pt picture in a 12pt run on a 164.74pt line, the
-                // difference being that face's descent.
-                descent = descent.max(shaper.metrics(&fragment.style.font).descent);
+                // The picture sits on the baseline and the type of the run
+                // holding it hangs below — but only where there is type on the
+                // line to hang. Measured against Word over the eleven inline
+                // figures of the demonstration document, every one of them a
+                // picture alone on its line: each paragraph came out exactly as
+                // tall as its picture, to the six tenths of a point Word
+                // reports positions in. A line with words *and* a picture keeps
+                // the descent, which is the case the rule was first measured
+                // in — a 162.15pt picture in a 12pt run on a 164.74pt line.
+                sunk = sunk.max(shaper.metrics(&fragment.style.font).descent);
             } else {
+                typed = true;
                 let pitch = shaper.pitch(&fragment.style.font);
                 // The pitch a face states includes its line gap, so a document
                 // laid out without leading is short of it by exactly that.
@@ -1794,6 +1816,10 @@ fn finish(
                     );
                 }
             }
+        }
+        // A picture's run hangs below the baseline only beside type of its own.
+        if typed {
+            descent = descent.max(sunk);
         }
         // A bulleted line with no words on it is still as deep as a line of
         // that paragraph's own type: the label lends no depth, so the mark's
@@ -3165,5 +3191,83 @@ mod tests {
         let line = &laid.lines[0];
         assert!(line.height >= 40.0, "{}", line.height);
         assert_eq!(line.fragments[1].width, 50.0);
+    }
+
+    #[test]
+    fn a_picture_alone_on_a_line_is_the_whole_of_it() {
+        // Word, measured over the eleven inline figures of the demonstration
+        // document: a paragraph holding nothing but a picture comes out exactly
+        // as tall as the picture, to the six tenths of a point Word reports a
+        // position in. The descent that a picture beside words does take is the
+        // *words'*, and there are none here.
+        let paragraph = Paragraph {
+            content: vec![Inline::Run(Run {
+                content: vec![Piece::Drawing(Box::new(picture(50.0, 40.0)))],
+                ..Run::new()
+            })],
+            ..Paragraph::new()
+        };
+        let laid = lay_with(paragraph, layers(), 500.0);
+        assert_eq!(laid.lines.len(), 1);
+        assert_eq!(laid.lines[0].height, 40.0);
+    }
+
+    #[test]
+    fn a_fields_mark_does_not_say_how_tall_a_line_is() {
+        // A field that begins, separates and ends draws nothing at those three
+        // places, so it cannot decide a line's height any more than a tab can.
+        // The diagrams of the demonstration document are the result of an
+        // `EMBED` field: its end lands on the line after the picture with only
+        // the paragraph mark beside it, and Word lays that line at the mark's
+        // five points, not at the ten of the run the field is written in.
+        let props = wp_model::prop::RunProps {
+            size: Some(HalfPoint(10)),
+            ..wp_model::prop::RunProps::default()
+        };
+        let paragraph = Paragraph {
+            props: ParaProps {
+                mark: Some(Box::new(props)),
+                ..ParaProps::default()
+            },
+            content: vec![Inline::Run(Run {
+                content: vec![
+                    Piece::FieldStart {
+                        dirty: false,
+                        lock: false,
+                    },
+                    Piece::FieldSeparate,
+                    Piece::FieldEnd,
+                ],
+                ..Run::new()
+            })],
+            ..Paragraph::new()
+        };
+        let laid = lay_with(paragraph, layers(), 500.0);
+        assert_eq!(laid.lines.len(), 1);
+        // The mark's five points, not the run's ten.
+        assert_eq!(laid.lines[0].height, 5.0);
+    }
+
+    /// An inline picture of a stated size, with nothing else about it.
+    fn picture(width: f64, height: f64) -> wp_model::Drawing {
+        wp_model::Drawing {
+            source: Vec::new().into(),
+            anchored: false,
+            extent: (
+                wp_model::Emu::from_points(width),
+                wp_model::Emu::from_points(height),
+            ),
+            rel: None,
+            chart: None,
+            name: None,
+            description: None,
+            wrap: wp_model::Wrap::None,
+            distance: Default::default(),
+            position: None,
+            behind_text: false,
+            tone: None,
+            text: None,
+            outline: None,
+        }
     }
 }

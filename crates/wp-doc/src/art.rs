@@ -122,6 +122,11 @@ pub struct Shape {
     /// `fillColor`, and whether `fFilled` says it is used at all.
     pub fill: Option<wp_model::Color>,
     pub filled: bool,
+    /// `fillOpacity`, one being solid. **Word's own watermark is half of
+    /// one**, and a reader that ignores it stamps the page twice as dark as
+    /// Word does — measured, Word's grey comes out at 223 over white paper
+    /// where the stated `#C0C0C0` alone would give 192.
+    pub opacity: f64,
     /// `rotation`, in degrees clockwise.
     pub rotation: f64,
     /// `posh` with `posrelh`, and `posv` with `posrelv`: how Word places the
@@ -151,6 +156,7 @@ impl Default for Shape {
             name: None,
             fill: None,
             filled: true,
+            opacity: 1.0,
             rotation: 0.0,
             horizontal: None,
             vertical: None,
@@ -411,6 +417,8 @@ fn properties(count: u16, table: &[u8], shape: &mut Shape) {
             // `pib`. Zero is "no picture", which is not picture zero.
             0x0104 => shape.picture = (value != 0).then_some(value),
             0x0181 => shape.fill = colour(value),
+            // `fillOpacity`, a 16.16 fixed-point fraction.
+            0x0182 => shape.opacity = (value as f64 / 65_536.0).clamp(0.0, 1.0),
             0x01C0 => shape.line = colour(value).unwrap_or(shape.line),
             0x01CB => shape.line_width = value as i32,
             // `lineStyleBooleans`: `fLine` is bit 3, and the high half says
@@ -629,6 +637,23 @@ mod tests {
         properties(2, &table, &mut shape);
         assert_eq!(shape.text.as_deref(), Some("DRA"));
         assert_eq!(shape.rotation, 315.0);
+    }
+
+    #[test]
+    fn a_half_transparent_fill_is_read_as_the_half_it_is() {
+        // Word's own watermark states `fillOpacity` as a 16.16 fraction, and a
+        // shape that states nothing is solid.
+        let read = |value: u32| {
+            let mut shape = Shape::default();
+            let mut table = Vec::new();
+            table.extend_from_slice(&0x0182u16.to_le_bytes());
+            table.extend_from_slice(&value.to_le_bytes());
+            properties(1, &table, &mut shape);
+            shape.opacity
+        };
+        assert_eq!(read(0x0000_8000), 0.5);
+        assert_eq!(read(0x0001_0000), 1.0);
+        assert_eq!(Shape::default().opacity, 1.0);
     }
 
     #[test]
