@@ -3,6 +3,8 @@
 **Status:** accepted (2026-08-28). The harness this record decides on **is not
 yet built**; what is recorded here is the decision to build it and the evidence
 that forced it — four days of doing its work by hand.
+**Held out of:** the retrospective of 2026-08-28, kept in full at
+`retrospectives/2026-08-28-the-person-was-the-instrument.md`.
 **Commits paid for by its absence:** `a1b0ed9`, `83ec414`, `303fd69`, `f0b70e0`
 — four sittings, one reported difference each.
 
