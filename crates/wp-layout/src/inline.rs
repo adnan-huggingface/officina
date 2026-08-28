@@ -217,6 +217,9 @@ pub struct Context<'a> {
     /// ask for between lines. A document-wide setting rather than a paragraph
     /// one, and it changes the height of every line in the document.
     pub no_leading: bool,
+    /// `<w:doNotUseIndentAsNumberingTabStop/>` — the hanging indent of a
+    /// numbered paragraph is not a stop for the tab that follows its number.
+    pub no_tab_for_hanging_indent: bool,
     /// The face to use when neither the run nor the theme names one.
     pub fallback_font: &'a str,
     /// Whether the machine truly has a face of this name.
@@ -258,6 +261,7 @@ impl Default for Context<'_> {
             styles: Box::leak(Box::new(wp_model::style::StyleTable::default())),
             default_tab: Twips(720),
             no_leading: false,
+            no_tab_for_hanging_indent: false,
             fallback_font: "Calibri",
             has_face: |_| false,
             show_revisions: true,
@@ -1371,15 +1375,24 @@ fn fill(
             } => {
                 let left = if is_first { start + first } else { start };
                 let here = pen + left;
-                // The tab that follows a list label goes to the paragraph's own
-                // left indent before it considers any tab stop. That is what
+                // The tab that follows a list label goes to the paragraph's
+                // own left indent, ahead of any stop before it — that is what
                 // lines a bullet's first line up with the wrapped lines under
-                // it; sending it to the next default stop instead leaves half
-                // an inch of white between every bullet and its text.
-                let (stop, kind, stop_leader) = if *after_label && start > here + 0.01 {
-                    (start, TabKind::Start, TabLeader::None)
-                } else {
-                    next_tab(here, tabs, ctx.default_tab)
+                // it. Measured against Word on a list indented to 1600 twips
+                // whose label ends at 1400: the text lands on the 1600 and
+                // not on the default stop at 1440 that stands between them.
+                //
+                // **Unless the document has turned that off.** It is the
+                // oldest compatibility flag there is, and the demonstration
+                // document carries it: with it set the indent is not a stop
+                // at all and the tab is an ordinary one. The same list, in a
+                // document that says so, puts its text eighteen points
+                // further along on the next default stop instead.
+                let to_the_indent =
+                    *after_label && !ctx.no_tab_for_hanging_indent && start > here + 0.01;
+                let (stop, kind, stop_leader) = match to_the_indent {
+                    true => (start, TabKind::Start, TabLeader::None),
+                    false => next_tab(here, tabs, ctx.default_tab),
                 };
                 // A centre or right tab does not land the text on the stop: it
                 // lays the text so its middle, or its right edge, sits there.
@@ -2010,6 +2023,7 @@ mod tests {
             contents: Box::leak(Box::new(crate::field::Contents::default())),
             default_tab: Twips(720),
             no_leading: false,
+            no_tab_for_hanging_indent: false,
             fallback_font: "test",
             has_face: |_| false,
             show_revisions: true,
@@ -2937,6 +2951,52 @@ mod tests {
         assert!(
             (text.x - 12.0).abs() < 0.01,
             "the text started at {} rather than at the indent",
+            text.x
+        );
+    }
+
+    #[test]
+    fn a_document_can_say_the_indent_is_not_where_that_tab_stops() {
+        // The same list in a document carrying the oldest compatibility flag
+        // there is. With it, the indent is not a stop at all and the tab is an
+        // ordinary one, so the text carries on to the default stop at 36
+        // points — which is what Word does with the demonstration document,
+        // and twenty-four points from where the line above lands.
+        let label = ListLabel {
+            text: "\u{2022}".to_string(),
+            props: RunProps::default(),
+            suffix: Suffix::Tab,
+            bullet: true,
+            picture: None,
+        };
+        let mut layers = layers();
+        layers.para.indent = Indent {
+            start: Some(Twips(240)),
+            hanging: Some(Twips(240)),
+            ..Indent::default()
+        };
+        let theme = theme();
+        let mut shaper = crate::shape::Fixed;
+        let mut ctx = ctx(&theme);
+        ctx.no_tab_for_hanging_indent = true;
+        let laid = layout(
+            &Paragraph::of("item"),
+            0,
+            &layers,
+            Some(&label),
+            &ctx,
+            500.0,
+            None,
+            &mut shaper,
+        );
+        let text = laid.lines[0]
+            .fragments
+            .iter()
+            .find(|f| matches!(&f.content, Content::Text { text, .. } if text == "item"))
+            .expect("the text is on the line");
+        assert!(
+            (text.x - 36.0).abs() < 0.01,
+            "the text started at {} rather than at the default stop",
             text.x
         );
     }

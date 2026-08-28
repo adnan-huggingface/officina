@@ -121,6 +121,7 @@ impl View {
             table_part: None,
             default_tab: document.settings.default_tab_stop,
             no_leading: document.settings.no_leading,
+            no_tab_for_hanging_indent: document.settings.no_tab_for_hanging_indent,
             // The font of last resort when nothing in the document names one.
             // Word's is Calibri only because every document it writes carries
             // docDefaults saying so; a file whose defaults are silent — the

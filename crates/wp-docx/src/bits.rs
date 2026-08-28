@@ -34,6 +34,9 @@ pub(crate) fn settings(xml: &[u8]) -> Settings {
                 b"zoom" => settings.zoom = attr_u32(&e, b"percent"),
                 b"rsids" => settings.has_rsids = true,
                 b"noLeading" => settings.no_leading = on_off(&e),
+                b"doNotUseIndentAsNumberingTabStop" => {
+                    settings.no_tab_for_hanging_indent = on_off(&e)
+                }
                 _ => {}
             },
             Event::Eof => break,
@@ -224,6 +227,18 @@ mod tests {
             br#"<w:settings><w:compat><w:noLeading/><w:useWord2002TableStyleRules/></w:compat></w:settings>"#,
         );
         assert!(settings.no_leading);
+    }
+
+    #[test]
+    fn a_document_can_say_a_hanging_indent_is_not_a_tab_stop() {
+        // The oldest compatibility flag there is, and it decides where the
+        // first line of every numbered paragraph begins: with it set the tab
+        // after the number carries past the indent to the next real stop.
+        let settings = settings(
+            br#"<w:settings><w:compat><w:doNotUseIndentAsNumberingTabStop/></w:compat></w:settings>"#,
+        );
+        assert!(settings.no_tab_for_hanging_indent);
+        assert!(!super::settings(br#"<w:settings/>"#).no_tab_for_hanging_indent);
     }
 
     #[test]

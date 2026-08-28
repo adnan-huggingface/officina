@@ -3107,6 +3107,42 @@ Nothing else in the document moved. Every table page now agrees with Word
 horizontally to within half a point — which is the letterhead cell below, still
 the largest difference left on any page.
 
+## A list's number is followed by a tab, and this document says a hanging indent is not one (2026-08-28)
+
+The lettered headings of page thirteen — `a) Rx Scan`, `b) Rx Network Packet
+state:` — stood eighteen points right of where Word puts them, and so did the
+`c)` and `d)` that continue on page fifteen, and the `13.1.`–`13.7.` of page
+sixteen, and every bulleted line in the document. All of it is one rule.
+
+**The tab after a list's number was being sent straight to the paragraph's own
+left indent**, ahead of any stop that stood before it. That is right, and
+measured: a list indented to 1600 twips whose label ends at 1400 puts its text
+on the 1600 and not on the default stop at 1440 in between. What it is not is
+unconditional. Word has carried a compatibility flag since Word 6 — "don't add
+automatic tab stop for hanging indent", `Copts60.fNoTabForInd`, the first bit of
+the first byte of the `Copts` a `.doc` keeps at offset 84 of its `Dop`, and
+`<w:doNotUseIndentAsNumberingTabStop/>` in a `.docx` — and this document sets
+it. With it set the indent is not a stop at all and the tab is an ordinary one:
+it goes to the next stop the paragraph states, and failing that to the next of
+the document's default interval.
+
+Measured against Word, five places in the document, all of which now agree with
+it to a twentieth of a point: the `a)` label ends at 1438 twips and its text
+lands on the default stop at 1440, not on the 1620 the paragraph is indented to;
+`13.1.` ends at 1344 and lands on the 1530 its own paragraph states, past both
+the default 1440 and the 1350 of its indent; `7.1.` and the bulleted lines land
+on the stops their paragraphs state at 1080; and the `b)` of page sixteen, whose
+list states no stop at all, carries past its 1800 indent to the default 2160.
+The flag was found by asking Word for both documents' compatibility options and
+diffing the two lists: this one has the first of them and the corpus's own
+`.doc` files do not, and the byte at 84 agrees with Word both ways.
+
+The unflagged rule was checked rather than assumed — a hand-edited copy of
+`corpus/docx/lists-numbering.docx` at three indents, exported by Word each time
+— which is what says the indent really does outrank a nearer stop when nothing
+has turned it off. Page thirteen and page fifteen now hold what Word holds, and
+page sixteen came from fourteen mismatched lines to eight.
+
 ## Deferred
 
 - [x] **PDF** — was dropped per Q3; built after ship as `wp-print`. See above.

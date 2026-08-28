@@ -1135,6 +1135,16 @@ pub struct Settings {
     /// ordinarily and on an 8.94pt one here — a quarter point a line, which is
     /// half an inch down a page of fifty and eventually a page of difference.
     pub no_leading: bool,
+    /// `<w:doNotUseIndentAsNumberingTabStop/>` — whether a list paragraph's own
+    /// hanging indent counts as a tab stop for the tab that follows the number.
+    ///
+    /// **It decides where the first line of every numbered paragraph begins.**
+    /// Ordinarily the indent is one of the places that tab can land, and for a
+    /// list Word makes itself it is the place it does land. Set, the indent is
+    /// no longer a stop at all and the tab carries on to the next real one —
+    /// which in the demonstration document sends a lettered heading's text
+    /// eighteen points past where it would otherwise sit.
+    pub no_tab_for_hanging_indent: bool,
 }
 
 impl Default for Settings {
@@ -1151,6 +1161,7 @@ impl Default for Settings {
             zoom: None,
             has_rsids: false,
             no_leading: false,
+            no_tab_for_hanging_indent: false,
         }
     }
 }

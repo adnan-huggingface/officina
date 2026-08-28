@@ -90,6 +90,7 @@ pub fn document(doc: &Doc) -> (wp_model::Document, Vec<Media>) {
     let (bodies, section_headers, section_footers) = read.header_footers(headers.0);
     document.settings.even_and_odd_headers = facing_pages(&doc.fib, &doc.table);
     document.settings.no_leading = no_leading(&doc.fib, &doc.table);
+    document.settings.no_tab_for_hanging_indent = no_tab_for_hanging_indent(&doc.fib, &doc.table);
     document.numbering = numbering;
     document.headers = bodies;
     document.section.headers = section_headers;
@@ -138,6 +139,29 @@ fn facing_pages(fib: &crate::Fib, table: &[u8]) -> bool {
 fn no_leading(fib: &crate::Fib, table: &[u8]) -> bool {
     fib.slice(table, crate::fib::field::DOP)
         .is_some_and(stated_without_leading)
+}
+
+/// `Copts60.fNoTabForInd` — whether the hanging indent of a numbered
+/// paragraph is a tab stop for the tab that follows its number.
+///
+/// The oldest of the compatibility flags, and the first bit of the `Copts60`
+/// the `Copts` at offset 84 opens with. Measured rather than counted off the
+/// spec: Word reports this document as having "don't add automatic tab stop
+/// for hanging indent" set and the corpus's own `.doc` files as not, and the
+/// byte agrees with it both ways.
+fn no_tab_for_hanging_indent(fib: &crate::Fib, table: &[u8]) -> bool {
+    fib.slice(table, crate::fib::field::DOP)
+        .is_some_and(stated_without_a_tab_for_the_hanging_indent)
+}
+
+/// Where `fNoTabForInd` sits in a `Dop`, apart from the reading of it.
+fn stated_without_a_tab_for_the_hanging_indent(dop: &[u8]) -> bool {
+    /// The first byte of the `Copts60` that the `Copts` at offset 84 opens
+    /// with.
+    const AT: usize = 84;
+    /// `fNoTabForInd`, its first flag.
+    const BIT: u8 = 0x01;
+    dop.get(AT).is_some_and(|byte| byte & BIT != 0)
 }
 
 /// Where `fNoLeading` sits in a `Dop`, apart from the reading of it so the
@@ -1018,6 +1042,27 @@ mod tests {
         dop[86] = 0x18;
         assert!(stated_without_leading(&dop));
         assert!(!stated_without_leading(&[]), "a short DOP is not a panic");
+    }
+
+    #[test]
+    fn the_oldest_compatibility_flag_is_read_from_the_bit_word_writes_it_in() {
+        // Word reports the demonstration document as having "don't add
+        // automatic tab stop for hanging indent" set and the corpus's own
+        // `.doc` files as not, and this bit agrees with it both ways. It moves
+        // the first line of every numbered paragraph.
+        let mut dop = vec![0u8; 694];
+        assert!(!stated_without_a_tab_for_the_hanging_indent(&dop));
+        dop[84] = 0x02;
+        assert!(
+            !stated_without_a_tab_for_the_hanging_indent(&dop),
+            "the flag beside it is not it"
+        );
+        dop[84] = 0x83;
+        assert!(stated_without_a_tab_for_the_hanging_indent(&dop));
+        assert!(
+            !stated_without_a_tab_for_the_hanging_indent(&[]),
+            "a short DOP is not a panic"
+        );
     }
 
     fn row_of(boundaries: Vec<i32>) -> sprm::TableRow {

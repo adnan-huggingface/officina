@@ -1265,3 +1265,15 @@ fix is not to stop shaping: it is to measure the letters of a run that stands on
 its own one at a time, which is the same shaping without the pair adjustment,
 and to leave a joining script shaped, where a letter measured alone is not the
 letter that gets drawn.
+A rule that is right can still be conditional, and Word keeps the condition in a
+flag from 1993.
+
+The tab after a list's number goes to the paragraph's hanging indent — measured,
+and it beats a default stop standing between the two. But Word has carried
+"don't add automatic tab stop for hanging indent" since Word 6, and a document
+that sets it wants the other reading entirely: the indent stops being a tab stop
+and the tab becomes an ordinary one. Both readings look like the whole truth
+from inside a single document. The way the flag was found was not by reading
+about it: it was by asking Word for the compatibility options of the document
+that disagreed and of one that did not, and diffing the two lists — which is
+worth doing the moment two documents of the same shape lay out differently.
