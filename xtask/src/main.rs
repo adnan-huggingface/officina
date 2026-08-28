@@ -64,6 +64,7 @@ cargo xtask <command>
   perf       time reading and laying out every file in corpus/
   compare    where a document differs from Word's own rendering of it,
              ranked (needs Word; see adr/0003)
+             (--check holds the corpus to LAYOUT.md; --record rewrites it)
   help       this message"
     );
 }

@@ -16,12 +16,20 @@ use std::process::Command;
 
 use crate::diff::Word;
 
-/// Where the answer for a document is kept, keyed by what would change it.
+/// Where the two halves of the answer for a document are kept.
 ///
-/// Length and modification time rather than a hash of the contents: this is a
+/// Keyed by everything that would change it, and by nothing that would not.
+/// The rendering depends on the document and on the script that asks Word for
+/// it; the reading depends on those *and* on the script that reads the paper.
+/// Keeping them apart means an improvement to how words are found on a page
+/// re-reads every PDF already on disk and does not ask Word for any of them
+/// again — which is the difference between a minute and an afternoon, and the
+/// reason a stale extraction is never what you are looking at.
+///
+/// Length and modification time rather than a hash of the document: this is a
 /// cache, and reading sixteen megabytes to decide whether to read a cache
-/// defeats the cache.
-fn cached_at(path: &Path) -> Result<PathBuf, String> {
+/// defeats the cache. The scripts are small, so they are hashed outright.
+fn cached_at(path: &Path) -> Result<(PathBuf, PathBuf), String> {
     let meta = std::fs::metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let stamp = meta
         .modified()
@@ -34,15 +42,33 @@ fn cached_at(path: &Path) -> Result<PathBuf, String> {
         .chars()
         .map(|c| if c.is_alphanumeric() { c } else { '-' })
         .collect();
-    Ok(crate::target_dir()
-        .join("compare")
-        .join(format!("{stem}-{}-{stamp}", meta.len())))
+    let dir = crate::target_dir().join("compare");
+    let paper = digest(&probe("topdf.ps1"));
+    let reading = digest(&probe("pdfwords.py"));
+    let base = format!("{stem}-{}-{stamp}-{paper:08x}", meta.len());
+    Ok((
+        dir.join(format!("{base}.pdf")),
+        dir.join(format!("{base}-{reading:08x}.tsv")),
+    ))
+}
+
+/// A small file's contents as one number. FNV-1a, which is enough to notice an
+/// edit and is not being asked to withstand anyone.
+fn digest(path: &Path) -> u32 {
+    let Ok(bytes) = std::fs::read(path) else {
+        return 0;
+    };
+    let mut hash: u32 = 0x811c_9dc5;
+    for byte in bytes {
+        hash ^= u32::from(byte);
+        hash = hash.wrapping_mul(0x0100_0193);
+    }
+    hash
 }
 
 /// Asks Word where every word went, through the cache.
 pub fn read(path: &Path, refresh: bool) -> Result<Vec<Word>, String> {
-    let base = cached_at(path)?;
-    let dump = base.with_extension("tsv");
+    let (pdf, dump) = cached_at(path)?;
     let cached = match refresh {
         true => None,
         false => std::fs::read_to_string(&dump).ok(),
@@ -53,8 +79,9 @@ pub fn read(path: &Path, refresh: bool) -> Result<Vec<Word>, String> {
             if let Some(dir) = dump.parent() {
                 std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
             }
-            let pdf = base.with_extension("pdf");
-            render(path, &pdf)?;
+            if refresh || !pdf.exists() {
+                render(path, &pdf)?;
+            }
             let text = extract(&pdf)?;
             let _ = std::fs::write(&dump, &text);
             text

@@ -5,41 +5,98 @@
 //! the whole worth of this measurement is that it is the page the screen would
 //! have shown, and a stand-in for either would answer for a different document.
 //! No window and no GPU are involved — see [`fonts`].
+//!
+//! Three kinds of type are gathered, because Word's rendering has all three:
+//! the words of a line, the words a shape *is* — a watermark, a piece of
+//! WordArt — and the words inside a pasted diagram, which is a recording of the
+//! calls that drew it and not pixels. The last two are placed by
+//! [`wp_print::ops`] rather than by arithmetic restated here, so a change to
+//! how paper draws them cannot leave this measuring against a page nobody
+//! prints. A chart's labels are the one kind left out: drawing them needs the
+//! plot as well as the page, and the box a chart sits in is compared as a box.
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use ui_kit::egui;
-use wp_layout::block::{Page, Placed, Placement};
+use wp_layout::block::{anchor_position, Page, Placed, Placement};
 use wp_layout::inline::Content;
+use wp_print::ops::Op;
 
 use crate::diff::{Band, Word};
 
+/// A document, and what is needed to find the bytes of the pictures it draws.
+struct Opened {
+    document: wp_model::Document,
+    package: Option<ooxml::Package>,
+    parts: Option<wp_docx::DocumentParts>,
+    loose: HashMap<String, Vec<u8>>,
+}
+
+/// Every metafile the pages draw, played once, by the name a page draws it by.
+type Pictures = HashMap<String, metafile::Picture>;
+
 /// Lays the document out and reports where each of its words landed.
 pub fn read(path: &Path) -> Result<Vec<Word>, String> {
-    let document = open(path)?;
+    let opened = open(path)?;
     let ctx = fonts();
     let mut shaper = scriva::shaper::Egui::new(&ctx);
     let mut view = scriva::view::View::default();
-    view.refresh(&document, &wp_layout::FieldValues::new(), 1, &mut shaper);
+    view.refresh(
+        &opened.document,
+        &wp_layout::FieldValues::new(),
+        1,
+        &mut shaper,
+    );
+
+    // The same map the PDF writer is handed, built by the application's own
+    // code: a picture is either pixels or a recording, and only the second
+    // kind has words in it.
+    let pictures = scriva::publish::metafiles(
+        opened.package.as_ref(),
+        opened.parts.as_ref(),
+        &opened.loose,
+        view.pages(),
+    );
 
     let mut words = Vec::new();
     for page in view.pages() {
-        collect(page, &mut words);
+        collect(page, &pictures, &mut words);
     }
     Ok(words)
 }
 
-fn open(path: &Path) -> Result<wp_model::Document, String> {
+fn open(path: &Path) -> Result<Opened, String> {
     let legacy = path
         .extension()
         .is_some_and(|e| e.eq_ignore_ascii_case("doc"));
     match legacy {
-        true => wp_doc::open(path)
-            .map(|(document, _media)| document)
-            .map_err(|e| format!("{}: {e}", path.display())),
-        false => wp_docx::open(path)
-            .map(|(document, _package)| document)
-            .map_err(|e| format!("{}: {e}", path.display())),
+        true => {
+            let (document, media) =
+                wp_doc::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+            Ok(Opened {
+                document,
+                package: None,
+                parts: None,
+                // A legacy file has no package: its pictures come out of the
+                // stream loose, under the names its drawings ask for.
+                loose: media
+                    .into_iter()
+                    .map(|picture| (picture.rel, picture.data))
+                    .collect(),
+            })
+        }
+        false => {
+            let (document, package) =
+                wp_docx::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+            let parts = wp_docx::DocumentParts::locate_in(&package).ok();
+            Ok(Opened {
+                document,
+                package: Some(package),
+                parts,
+                loose: HashMap::new(),
+            })
+        }
     }
 }
 
@@ -58,7 +115,7 @@ fn fonts() -> egui::Context {
     ctx
 }
 
-fn collect(page: &Page, into: &mut Vec<Word>) {
+fn collect(page: &Page, pictures: &Pictures, into: &mut Vec<Word>) {
     for (band, placements) in [
         (Band::Body, &page.content),
         (Band::Header, &page.header),
@@ -66,7 +123,7 @@ fn collect(page: &Page, into: &mut Vec<Word>) {
         (Band::Note, &page.footnotes),
     ] {
         for placement in placements {
-            words_of(page.number, band, placement, into);
+            words_of(page, band, placement, pictures, into);
         }
     }
 }
@@ -79,51 +136,162 @@ fn collect(page: &Page, into: &mut Vec<Word>) {
 /// one.
 type Ink = (char, f64);
 
-fn words_of(page: u32, band: Band, placement: &Placement, into: &mut Vec<Word>) {
-    let Placed::Line { line, .. } = &placement.kind else {
-        return;
-    };
-
-    let mut ink: Vec<Ink> = Vec::new();
-    for fragment in &line.fragments {
-        // The document's own words and a list's number: both are type, and the
-        // comparison is against a rendered page, which has the number on it. A
-        // leadered tab's dots are deliberately not here — they are a rule that
-        // happens to be made of full stops, both sides draw as many as fit
-        // rather than a number either of them chose, and counting them as
-        // words buries every real difference under them. Everything else — an
-        // inline drawing, a chart — is not type at all, and still separates
-        // the words on either side of it.
-        let (text, advances) = match &fragment.content {
-            Content::Text { text, advances, .. } | Content::Label { text, advances } => {
-                (text, advances)
+fn words_of(
+    page: &Page,
+    band: Band,
+    placement: &Placement,
+    pictures: &Pictures,
+    into: &mut Vec<Word>,
+) {
+    match &placement.kind {
+        Placed::Line { line, .. } => {
+            // The baseline, because that is the one horizontal Word's rendering
+            // can be asked about without either side having to guess at the
+            // other's idea of where a line begins. Same arithmetic as
+            // `wp_print::ops::flatten`.
+            let baseline = placement.y + line.baseline;
+            let mut ink: Vec<Ink> = Vec::new();
+            for fragment in &line.fragments {
+                // The document's own words and a list's number: both are type,
+                // and the comparison is against a rendered page, which has the
+                // number on it. A leadered tab's dots are deliberately not
+                // gathered — they are a rule that happens to be made of full
+                // stops, both sides draw as many as fit rather than a number
+                // either of them chose, and counting them as words buries every
+                // real difference under them.
+                let (text, advances) = match &fragment.content {
+                    Content::Text { text, advances, .. } | Content::Label { text, advances } => {
+                        (text, advances)
+                    }
+                    // A diagram pasted into the run of the text: it sits on the
+                    // baseline like a very large letter, and what is recorded
+                    // inside it is type Word's rendering draws.
+                    Content::Object { height, rel, .. } => {
+                        if let Some(rel) = rel {
+                            inside(
+                                page,
+                                band,
+                                (placement.x + fragment.x, baseline - height),
+                                (fragment.width, *height),
+                                rel,
+                                pictures,
+                                into,
+                            );
+                        }
+                        ink.push((' ', 0.0));
+                        continue;
+                    }
+                    _ => {
+                        ink.push((' ', 0.0));
+                        continue;
+                    }
+                };
+                if text.is_empty() || fragment.style.hidden {
+                    ink.push((' ', 0.0));
+                    continue;
+                }
+                let mut x = placement.x + fragment.x + fragment.lead;
+                for (index, ch) in text.chars().enumerate() {
+                    ink.push((ch, x));
+                    x += advances.get(index).copied().unwrap_or(0.0);
+                }
             }
-            _ => {
-                ink.push((' ', 0.0));
-                continue;
+            emit(page, band, baseline, &ink, into);
+        }
+        Placed::Drawing {
+            rel, anchor, words, ..
+        } => {
+            // An anchored drawing floats: where it sits is a question about the
+            // page, and `anchor_position` is the answer the screen and the
+            // paper both give.
+            let (x, y) = match anchor.as_deref() {
+                Some(drawing) => {
+                    anchor_position(drawing, &page.geometry, (placement.x, placement.y))
+                }
+                None => (placement.x, placement.y),
+            };
+            // A shape's own words are deliberately not gathered, and the
+            // reason is a measurement rather than a preference: Word draws a
+            // WordArt watermark into a PDF as *outlines*, so the rendering has
+            // no such text in it at all. `watermark.docx`, `picture-watermark
+            // .docx` and the demonstration document all export pages whose only
+            // words are the body's. Gathering ours would put sixteen words on
+            // one side of the comparison that nothing on the other side could
+            // ever answer — the leader-dot mistake in the other direction. A
+            // shape whose words Word does export as text would show up as words
+            // Word laid and we did not, which is visible rather than silent.
+            if let Some(rel) = rel.as_ref().filter(|_| words.is_none()) {
+                let (width, height) = (placement.width, placement.height);
+                inside(page, band, (x, y), (width, height), rel, pictures, into);
             }
-        };
-        if text.is_empty() {
-            ink.push((' ', 0.0));
-            continue;
         }
-        if fragment.style.hidden {
-            ink.push((' ', 0.0));
-            continue;
-        }
-        let mut x = placement.x + fragment.x + fragment.lead;
-        for (index, ch) in text.chars().enumerate() {
-            ink.push((ch, x));
-            x += advances.get(index).copied().unwrap_or(0.0);
-        }
+        _ => {}
     }
+}
 
-    // The baseline, because that is the one horizontal Word's rendering can be
-    // asked about without either side having to guess at the other's idea of
-    // where a line begins. Same arithmetic as `wp_print::ops::flatten`.
-    let baseline = placement.y + line.baseline;
-    into.extend(split(&ink).map(|(x, text)| Word {
-        page,
+/// The words of a metafile, in the box the page gave it.
+///
+/// Handed to the paper renderer's own player rather than restating how a
+/// recording is scaled into its box: a diagram that moves on paper has to move
+/// here too, or this measures a page nobody prints.
+///
+/// **Each call of the recording is left where it is.** A recording has no
+/// words in it, only marks, and it is tempting to join the ones that abut into
+/// the word a reader would see. It was tried, and what it produced was a token
+/// neither side could answer: a diagram draws its labels in whatever order it
+/// pleases, so "SPI" was run together with a "Radio" fifty-three points to its
+/// *left*, and the fabricated "SPIRadio" then matched nothing on either side.
+/// Where the two sides cut a word differently, `diff::glued` pairs them.
+/// Nothing here guesses at a boundary neither renderer wrote down.
+fn inside(
+    page: &Page,
+    band: Band,
+    (x, y): (f64, f64),
+    (width, height): (f64, f64),
+    rel: &str,
+    pictures: &Pictures,
+    into: &mut Vec<Word>,
+) {
+    if !pictures.contains_key(rel) {
+        return;
+    }
+    let image = Op::Image {
+        x,
+        y,
+        width,
+        height,
+        rel: rel.to_string(),
+    };
+    for op in wp_print::ops::draw_metafiles(vec![image], pictures) {
+        let Op::Text {
+            x,
+            baseline,
+            text,
+            advances,
+            ..
+        } = op
+        else {
+            continue;
+        };
+        let ink = laid(x, &text, &advances);
+        emit(page, band, baseline, &ink, into);
+    }
+}
+
+/// A run of type as ink, carried along by its own advances.
+fn laid(x: f64, text: &str, advances: &[f64]) -> Vec<Ink> {
+    let mut ink = Vec::with_capacity(text.chars().count());
+    let mut pen = x;
+    for (index, ch) in text.chars().enumerate() {
+        ink.push((ch, pen));
+        pen += advances.get(index).copied().unwrap_or(0.0);
+    }
+    ink
+}
+
+fn emit(page: &Page, band: Band, baseline: f64, ink: &[Ink], into: &mut Vec<Word>) {
+    into.extend(split(ink).map(|(x, text)| Word {
+        page: page.number,
         band: Some(band),
         x,
         baseline,
@@ -133,9 +301,10 @@ fn words_of(page: u32, band: Band, placement: &Placement, into: &mut Vec<Word>) 
 
 /// The ink of one line, cut into words at its whitespace.
 ///
-/// A word keeps the left edge of its *first* character, which is where the pen
-/// was put down — the same thing a rendered page reports as that character's
-/// origin, and so the same thing on both sides of the comparison.
+/// A word is measured at its **left edge** — the leftmost of its characters,
+/// not the first of them. For type set left to right the two are the same
+/// thing; for a right-to-left run they are opposite ends of the same word, and
+/// `pdfwords.py` measures the left edge for exactly the same reason.
 fn split(ink: &[Ink]) -> impl Iterator<Item = (f64, String)> + '_ {
     let mut words = Vec::new();
     let mut text = String::new();
@@ -147,9 +316,10 @@ fn split(ink: &[Ink]) -> impl Iterator<Item = (f64, String)> + '_ {
             }
             continue;
         }
-        if text.is_empty() {
-            start = *x;
-        }
+        start = match text.is_empty() {
+            true => *x,
+            false => start.min(*x),
+        };
         text.push(*ch);
     }
     if !text.is_empty() {
@@ -204,5 +374,15 @@ mod tests {
         assert_eq!(words.len(), 2);
         assert_eq!(words[1].1, "Scope");
         assert!((words[1].0 - 144.0).abs() < 0.001);
+    }
+
+    /// A shape's words and a diagram's arrive as one run and its advances,
+    /// rather than as a line's fragments, and are cut up the same way.
+    #[test]
+    fn a_run_becomes_ink_at_its_own_advances() {
+        let words: Vec<_> = split(&laid(100.0, "ab c", &[6.0, 6.0, 3.0, 6.0])).collect();
+        assert_eq!(words.len(), 2);
+        assert!((words[0].0 - 100.0).abs() < 0.001);
+        assert!((words[1].0 - 115.0).abs() < 0.001, "{}", words[1].0);
     }
 }

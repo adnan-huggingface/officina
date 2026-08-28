@@ -247,3 +247,41 @@ which Scriva draws from a recording rather than from a line. Out-of-place and
 unplaceable are separate columns everywhere they are reported, because one is
 work and the other is mostly what the instrument cannot see, and a single
 number holding both tells you neither.
+
+**Postscript, the same evening: what sharpening the instrument found.** Going
+back over the harness in one sitting turned up more faults in the *measurement*
+than in the layout, and every one of them had been reporting itself as a
+layout fault. A word measured at its first letter rather than its left edge put
+an Arabic word 29.48pt out of place, where the real difference is 0.68pt. A
+fallback that walked both sides in lockstep reported forty unplaceable words on
+a page where nothing had moved as much as a fifth of a point, because Word
+raises a footnote's reference onto its own baseline and this project does not.
+The threshold deciding what counts as one line stood at 3.0pt, and the tightest
+gap between two genuinely separate lines in the whole corpus is 3.00pt exactly.
+The cap on what could be matched paired a page's words off in order and said
+nothing about it. And the 1,217-word floor this record called a floor was not
+one: the type inside a pasted diagram is reachable through the paper
+renderer's own player, and gathering it took the demonstration document from
+3,738 matched words to **4,897**, with the unplaceable count falling from 1,244
+to 161.
+
+The sharpest thing the day taught is what happened in between. As the faults
+were fixed one at a time, the newly-gathered diagrams reported a label 56.78pt
+out of place, then 35.59pt, then nothing: the document's worst is 4.77pt and is
+the justified drift already known. Each of those numbers was the matcher, not
+the page, and each would have been entirely convincing as a layout bug worth an
+afternoon. **A finding from an instrument nobody has measured is a hypothesis
+about the instrument** — which is the same argument this record makes about a
+person, turned on the thing built to replace them.
+
+This is the record's own claim turned on the record's own tool. *A person may
+point at a difference; a person may not be the instrument that measures it* —
+and an instrument nobody has measured is not yet evidence either. It is worth
+being plain that all of this was found by looking at the tool's own output on
+documents whose answers were already known, and none of it by reading the code.
+
+**What made it a gate.** `LAYOUT.md` now records what every corpus document
+measures and `cargo xtask compare --check` fails on any that got worse. Until
+that existed the harness produced a ranked list — which says where to work, and
+says nothing at all about work that has come undone. It is deliberately not
+part of `cargo xtask check`: that has to keep working on a machine with no Word.

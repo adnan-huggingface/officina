@@ -3332,6 +3332,141 @@ none of them. A tab's leader dots are excluded from both sides — they are a
 rule that happens to be made of full stops, and both renderers draw as many as
 fit rather than a number either of them chose.
 
+### The instrument is sharpened, and half of what it reported was itself
+
+The harness of the morning was a first cut, and going back over it in one
+sitting found more wrong with the *measurement* than with the layout. Every one
+of the following was a fault in the tool that was reporting faults.
+
+**A word is not a thing a page has.** Neither renderer writes words down; both
+put marks on paper, and a reader is what finds words in them. Word's export
+breaks `I/O` into three positioning calls against the one this project's own
+playback draws. Two geometric rules for joining marks back into words were
+tried, and both were wrong the same way: they *invent* a token, and a token one
+side has invented can be paired with nothing. A diagram sets its labels in
+whatever order it pleases, so one of them ran `SPI` together with a `Radio`
+fifty-three points to its *left* and produced a `SPIRadio` that was on neither
+page. The rule that survived is to report every mark where it fell and
+reconcile the two tokenisations in the matcher — `glued` in
+`crates/wp-compare/src/diff.rs`. Page 3 of the demonstration document, which
+carried a dozen of these, now reports nothing at all.
+
+**A word is measured at its left edge, not at its first letter.** For type set
+left to right these are the same point. For a right-to-left run they are
+opposite ends of the same word, and the tool had been measuring one end of ours
+against the other end of Word's: `rtl-and-cjk.docx` reported one Arabic word
+**29.48pt** out of place, which is roughly that word's own width. Measuring
+both sides at the left edge collapses it to 0.68pt. The document's real worst
+is 3.34pt, on the English word after it.
+
+**The fallback walked both sides in lockstep, which looks right and is not.**
+Word sets a footnote's reference on its own raised baseline about four points
+above the line; this project sets it on the body's. So Word's page has a line
+ours has not, every line after it stood one place out of step, each pairing
+failed, and both sides advanced together. `footnotes-endnotes.docx` came back
+with **nothing matched at all** — forty words called unplaceable on a page
+whose every word both sides had laid within a fifth of a point. Each of our
+lines now looks a little way ahead among Word's unpaired ones. Forty became
+six, and the worst on that page is 0.58pt.
+
+**The silent cap is gone.** A stretch too large to pair used to be paired off
+in the order it arrived in, and said nothing about having done so — which reads
+exactly like a page that agrees. It now refuses, counts the refusal, and the
+report prints it. The limit is stated as the size of the table rather than as a
+word count, and is three orders of magnitude above anything in the corpus.
+
+**The threshold that decides what is one line was sitting on a measurement.**
+Across every cached reading of Word's own rendering — 2,413 distinct baselines
+— the tightest gap between two genuinely separate lines is **3.00pt exactly**,
+in `file-sample_500kB.docx`, and the constant was 3.0. That is the one place a
+threshold must never be: the two sides fall on opposite sides of it by
+rounding and group a page into lines two different ways. It is 2.0 now — a
+point clear of the tightest real line, three times the widest within-line
+parting (0.60pt, `nested-tables.docx`), and byte-for-byte identical on the
+whole corpus, which is the evidence that nothing is balanced on it.
+
+**The floor is gone.** The 1,217 words the morning's report could not place on
+the demonstration document were the type inside the pasted Visio diagrams. They
+are gathered now, and placed by handing the recording to the paper renderer's
+own player rather than by restating how a diagram is scaled into its box — so a
+diagram that moves on paper moves here too. Matched words went from 3,738 to
+**4,897**, and unplaceable from 1,244 to **161**.
+
+Worth setting down what happened in between, because it is the whole lesson of
+the day in one document. As each of the faults above was fixed, the diagrams
+first reported a label 56.78pt out of place, then 35.59pt, and finally nothing
+at all: the worst on that document is 4.77pt and is the justified-line drift
+that was already known. Both of those alarming numbers were the instrument,
+found and dissolved within the hour, and either would have been perfectly
+convincing as a layout bug to go and chase. **A finding from an instrument
+nobody has measured is a hypothesis about the instrument.**
+
+**And one thing was deliberately *un*-gathered, on a measurement.** A shape's
+own words — a watermark, a piece of WordArt — are not collected, because Word
+draws them into a PDF as **outlines and not as text**. `watermark.docx`,
+`picture-watermark.docx` and the demonstration document all export pages whose
+only words are the body's. Gathering ours would have put sixteen words on one
+side that nothing on the other could ever answer: the leader-dot mistake in the
+other direction.
+
+### The number is a gate now, not a note
+
+`LAYOUT.md` records what every corpus document measures, and
+`cargo xtask compare --check` fails on any that got worse — counts with no
+slack at all, and the worst single shift with half a point of it. That is the
+difference between a tool somebody remembers to run and a gate that catches
+them. It is deliberately *not* part of `cargo xtask check`, which has to keep
+working on a machine with no Word.
+
+Two flags were added for the same reason the harness was: `--page N` for
+working one page at a time, and `--words` for printing both readings
+uncompared. The second exists because the first thing anyone does when a report
+says nothing matched is write a throwaway script to look at both sides, and a
+throwaway written three times is a tool that was never built.
+
+The corpus as it now stands:
+
+```
+file                                         out  unplaced     worst  pages
+---------------------------------------------------------------------------
+character-formatting.doc                       4         0    3.47pt      1
+header-footer-footnote.doc                     8         8    4.42pt      1
+headings-and-list.doc                          9         4    4.64pt      1
+plain-paragraphs.doc                          29         0    6.82pt      1
+simple-table.doc                               6         0    5.38pt      1
+unicode-text.doc                               9         0    4.02pt      1
+comments.docx                                  4         0    1.27pt      1
+content-controls.docx                          0         0    0.23pt      1
+file-sample_100kB.docx                         0         0    0.29pt      2
+file-sample_1MB.docx                           0         0    0.25pt      2
+file-sample_500kB.docx                         0        12    0.26pt      2
+floating-image-wrap.docx                     244       152   50.23pt      1
+footnotes-endnotes.docx                        0         6    0.58pt      1
+headers-footers.docx                         328         0    2.34pt      1
+hyperlinks-bookmarks.docx                      3         0    2.49pt      1
+lists-numbering.docx                           0         2    0.13pt      1
+minimal.docx                                   0         0    0.55pt      1
+nested-tables.docx                            17         0   11.33pt      1
+picture-watermark.docx                       169       140  115.20pt      1
+rtl-and-cjk.docx                               1         0    3.34pt      1
+sections-mixed-orientation.docx                2         0    1.11pt      3
+styles-headings-toc.docx                       8         0    1.89pt      1
+table-spanning-pages.docx                    244        16   25.26pt      3
+tracked-changes.docx                           0        21    0.00pt      1
+watermark.docx                               115       366   67.39pt      1
+---------------------------------------------------------------------------
+                                            1200       727
+```
+
+**Two real findings the sharpening surfaced.** On `watermark.docx` our leading
+is about **15.98pt against Word's 16.94** — six per cent tight, which
+accumulates down the page until the lines stop corresponding at all, and is
+why that document reports both a large shift and a large unplaceable count. And
+`tracked-changes.docx` is not really comparable at all: Word renders a revised
+document as though every change were accepted, and Scriva draws what the file
+stores, so its twenty-one unplaceable words measure that difference and not
+this one. Both are recorded rather than fixed — the remit was the instrument.
+
 ## Deferred
 
 - [x] **PDF** — was dropped per Q3; built after ship as `wp-print`. See above.

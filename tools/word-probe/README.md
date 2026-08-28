@@ -43,6 +43,18 @@ renderers can be compared on without either having to guess at the other's
 idea of where a line begins. Exporting needs a licensed Word, which the COM
 reads above do not.
 
+A word there is what a reader would call one, and it is reported at its **left
+edge** rather than at the character the pen went down on first: a right-to-left
+run is drawn from its right end, and measuring one side of a word against the
+other side of the same word put one Arabic word 29 points out of place in
+`rtl-and-cjk.docx` — a fault that was entirely the instrument’s. Nothing there
+joins two marks that merely abut, either: Word’s export breaks "I/O" into three
+and it is tempting to put them back, but a diagram draws its labels in whatever
+order it likes and the same rule ran "SPI" together with a "Radio" fifty-three
+points to its left. An invented word matches nothing on either side, where a
+split one can still be paired — so where the two sides cut a word differently,
+the matcher pairs them; see `glued` in `crates/wp-compare/src/diff.rs`.
+
 `pdfwords.py` needs PyMuPDF, which is AGPL: a developer's measuring
 instrument on a developer's machine, never linked into either application and
 never redistributed with them — nothing under `tools/` ships. If that is

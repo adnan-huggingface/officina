@@ -17,3 +17,9 @@ wp-model.workspace = true
 wp-layout.workspace = true
 wp-doc.workspace = true
 wp-docx.workspace = true
+# A drawing's own words: a watermark, a piece of WordArt, and the type inside
+# a pasted diagram. Word's rendering has them, so this has to as well, and the
+# arithmetic that places them is the paper renderer's rather than a copy of it.
+wp-print.workspace = true
+metafile.workspace = true
+ooxml.workspace = true

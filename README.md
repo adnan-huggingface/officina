@@ -100,6 +100,8 @@ of it.
 - [LEARNINGS.md](LEARNINGS.md) — what building this taught, written down so the
   next format does not repeat it.
 - [PROGRESS.md](PROGRESS.md) — the work log, chunk by chunk.
+- [LAYOUT.md](LAYOUT.md) — how far each corpus document stands from Word’s
+  own rendering of it, word by word.
 - [adr/](adr/) — the decisions that shaped the code, and the evidence that
   settled each one.
 - [retrospectives/](retrospectives/) — how the work was done, dated, and

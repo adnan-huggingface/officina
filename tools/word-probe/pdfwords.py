@@ -35,7 +35,23 @@ except ImportError:
 
 
 def words(page):
-    """(x, baseline, text) for every word on one page, in the order drawn."""
+    """(x, baseline, text) for every word on one page, in the order drawn.
+
+    A word ends at whitespace, and at the end of one of the PDF's own lines --
+    which is a real boundary even where no space was drawn for it, because a
+    diagram sets each of its labels with its own positioning operator.
+
+    Nothing here joins two marks that merely abut, and the temptation is real:
+    Word's export breaks "I/O" into three of them, against the one this
+    project's own playback draws, and joining by geometry does put those back
+    together. It also produces words that were never on the page. A diagram
+    sets its labels in whatever order it likes, so the same rule ran "SPI"
+    together with a "Radio" fifty-three points to its *left*, and the resulting
+    "SPIRadio" matched nothing on either side -- an invented token is worse
+    than a split one, because a split one can still be paired. So the marks are
+    reported where they fell, and the matcher pairs a word one side cut in
+    three; see ``glued`` in ``crates/wp-compare/src/diff.rs``.
+    """
     text, start, baseline = "", 0.0, 0.0
     for block in page.get_text("rawdict").get("blocks", ()):
         for line in block.get("lines", ()):
@@ -51,8 +67,13 @@ def words(page):
                         continue
                     if not text:
                         start, baseline = origin[0], origin[1]
+                    # The left edge, not the first pen-down: a right-to-left
+                    # run is drawn from its right end, and a word measured at
+                    # the end it happens to be drawn from is measured against
+                    # the other end of the same word on the other side. It came
+                    # out as one Arabic word its own width out of place.
+                    start = min(start, origin[0])
                     text += glyph
-            # A line ends a word even where the PDF drew no space for it.
             if text:
                 yield start, baseline, text
                 text = ""

@@ -13,6 +13,7 @@ cargo xtask check      # fmt + clippy (warnings denied) + entire test suite — 
 cargo xtask fidelity   # round-trip harness over corpus/ (untouched save, then save-after-edit)
 cargo xtask perf       # stopwatch over the corpus and larger files
 cargo xtask compare <file>  # where a page differs from Word's own, ranked (needs Word)
+cargo xtask compare --check # every corpus document, against LAYOUT.md — fails if any got worse
 cargo xtask package    # release zip; regenerates THIRD-PARTY-NOTICES.yml (needs cargo-bundle-licenses)
 cargo test -p wp-docx                          # one crate
 cargo test -p scriva --test charts_on_paper    # one integration-test file (app crates are packages `calx`/`scriva`)
@@ -26,11 +27,18 @@ menus and keystrokes, New through Save As. adr/0002 records why: one afternoon
 of it found a crash and two silent data losses a green suite never touched,
 and the driver rules that keep the exercise safe.
 
-Layout fidelity is judged by measurement, never by eye: lay the document
-through `wp-print` — it takes the same pages the screen paints — export the
-same file from Word, and compare glyph positions. adr/0003 records why: the
-differences that matter are fractions of a point, well under what a screenshot
-resolves, and a person can report only one of them per look.
+Layout fidelity is judged by measurement, never by eye: `cargo xtask compare`
+lays the document with the application's own shaper, exports the same file from
+Word, and reports every word whose pen went down somewhere else — worst first.
+adr/0003 records why it is not a person: the differences that matter are
+fractions of a point, well under what a screenshot resolves, and a person can
+report only one of them per look.
+
+`LAYOUT.md` records what every corpus document measures, and
+`cargo xtask compare --check` fails on any that got worse. Run it after any
+change to shaping, line breaking or pagination; `--record` when the new numbers
+are the ones to keep. It is not part of `cargo xtask check`, which must keep
+working on a machine with no Word.
 
 ## The invariant everything serves
 

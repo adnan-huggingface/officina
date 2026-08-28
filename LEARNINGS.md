@@ -1354,3 +1354,51 @@ The general lesson is about the shape of the check rather than about documents:
 when two orderings of the same thing are aligned by content alone, repetition
 in the content is an unbounded source of confident nonsense, and the guard has
 to come from a quantity the content does not control.
+
+## A measuring instrument is a thing to be measured
+
+Every fault below was in the tool that reports faults, and each of them read
+exactly like a fault in the layout. Half a day of sharpening `cargo xtask
+compare` found more wrong with the measurement than with the thing measured.
+
+**A word is not a thing a page has.** Neither renderer writes words down; both
+put marks on paper, and a reader is what finds words in them. Word's export
+breaks `I/O` into three positioning calls where our playback draws one. Two
+rules for joining marks back together by geometry were tried, and both failed
+the same way: they *invent* a token, and a token one side has invented can be
+paired with nothing. A diagram draws its labels in whatever order it likes, so
+one of those rules ran `SPI` together with a `Radio` fifty-three points to its
+left. An invented word is worse than a split one, because a split one can still
+be paired. Report every mark where it fell, and reconcile the two tokenisations
+in the matcher instead.
+
+**Measure a word at its left edge, never at its first letter.** The two are the
+same point for type set left to right and opposite ends of the same word for a
+run set right to left. Measuring one end of ours against the other end of
+Word's put an Arabic word 29.48pt out of place; the real difference was 0.68pt.
+A convention that is invisible in the common case is exactly the one to state
+explicitly on both sides.
+
+**Two sequences that fall out of step cannot be walked in step.** The line
+matcher's fallback compared our line *i* with Word's line *i*, and advanced
+both whenever they failed. One line that exists on one side only — Word raises
+a footnote's reference onto its own baseline and we do not — put every line
+after it one place out, so every comparison failed and the page came back with
+nothing matched at all. Forty words called unplaceable on a page where nothing
+had moved by more than a fifth of a point. Look ahead a bounded distance, and
+advance only the side that was matched.
+
+**A threshold sitting on a measured value is a coin toss.** The gap that
+decides whether two words share a line was 3.0pt; the tightest gap between two
+genuinely separate lines anywhere in the corpus is 3.00pt exactly. Two
+renderers reporting that gap a hundredth apart then group the same page two
+different ways. Measure the distribution before choosing the number, and put it
+where there is room on both sides.
+
+**A cache must be keyed on everything that would change its answer, including
+the code.** The oracle here is two scripts and a document; keying the cache on
+the document alone means an improvement to the reading is not the thing you are
+looking at. Keyed separately, an improvement to how words are found re-reads
+every rendering already on disk without asking Word for any of them again —
+which is the difference between a minute and an afternoon, and therefore the
+difference between improving it and leaving it alone.
