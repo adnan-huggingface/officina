@@ -3070,6 +3070,43 @@ Word treats them differently, and the condition that tells them apart has not
 been found. A rule that fixes one and breaks the other is not an improvement, so
 nothing was shipped for this.
 
+## A table is ruled where its row says, and a word is measured without the kerning Word never asked for (2026-08-28)
+
+Two more differences on `table_render_test.doc`, page five, both measured
+against Word's own export of the same file.
+
+**A `.doc` states a table's edge, not where its text starts.** Every table in
+section six sat five and two fifths points to the right of where Word rules it.
+The first of a row's `rgdxaCenter` boundaries is the table's leading edge, and
+this was adding half a gap to it before handing it on as `w:tblInd` — which is
+measured to the text inside the first cell, so the padding went on twice. Word
+rules those tables at the 720 twips their rows state and sets their text a cell
+margin further in at 828, and the file carries that 828 itself in the
+`sprmTWidthIndent` beside it. The half-gap had never been checked against
+anything: the two tables it was written for — the letterhead and the revision
+table — are *centred*, and a centred table ignores its indent altogether. So
+`sprmTJc` is read now as well, which is what keeps those two where they are;
+without it they moved half a gap into the margin the moment the double padding
+went.
+
+**Word does not kern, and neither should this.** Word closes up a kerning pair
+only where the run asks it to and nothing in an ordinary document asks; epaint
+shapes through HarfBuzz, which kerns whatever the face offers. The difference is
+a fraction of a point in a line of prose, and twice in this document it was
+enough to pull onto a line a word Word puts on the next — section 6.1's first
+line ended with `media options, message` where Word ends it with `media
+options,`, and the superframe paragraph on page eleven took an `is` the same
+way. Both lines were inside two tenths of a point of the measure, and both come
+right when the kerning goes: 468.04 against a 468.00 measure, and 445.79 against
+445.50. So a run of letters that stand on their own is measured character by
+character, which is the same shaping without the kerning; a script whose letters
+change shape beside each other is left shaped, because taking those characters
+apart would measure forms the reader never sees.
+
+Nothing else in the document moved. Every table page now agrees with Word
+horizontally to within half a point — which is the letterhead cell below, still
+the largest difference left on any page.
+
 ## Deferred
 
 - [x] **PDF** — was dropped per Q3; built after ship as `wp-print`. See above.

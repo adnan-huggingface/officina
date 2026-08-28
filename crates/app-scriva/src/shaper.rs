@@ -25,10 +25,14 @@ const CACHE_LIMIT: usize = 20_000;
 /// A shaper over an egui context.
 pub struct Egui {
     ctx: egui::Context,
-    /// Measured per *string* rather than per character, so the face's kerning is
-    /// kept. The layout engine asks in break units — words — and a document
-    /// repeats its words, so this hits far more often than it misses.
+    /// Measured per *string* rather than per character, because a string is
+    /// where shaping happens. The layout engine asks in break units — words —
+    /// and a document repeats its words, so this hits far more often than it
+    /// misses.
     runs: HashMap<(Key, String), Vec<f64>>,
+    /// What one character advances on its own, which is what a line is
+    /// measured by — see [`Egui::measure`]. Tiny: an alphabet per face.
+    alone: HashMap<(Key, char), f64>,
     /// The ascent and row height epaint reports, per *drawn* face. The line
     /// gap is deliberately not kept here: several names can share one drawn
     /// face, and the gap belongs to the file the name resolves to, so caching
@@ -90,6 +94,7 @@ impl Egui {
         Egui {
             ctx: ctx.clone(),
             runs: HashMap::new(),
+            alone: HashMap::new(),
             rows: HashMap::new(),
             codes: HashMap::new(),
             gaps: HashMap::new(),
@@ -193,8 +198,18 @@ impl Egui {
         self.id_of(key)
     }
 
-    /// The advance of each character of `text`, measured together so the face's
-    /// kerning applies.
+    /// The advance of each character of `text`.
+    ///
+    /// **Not the shaped width of the run.** Word does not close up a kerning
+    /// pair unless the run asks it to, and nothing in an ordinary document
+    /// asks; epaint shapes through HarfBuzz, which kerns whatever the face
+    /// offers. Left alone, a line of prose measures a fraction of a point
+    /// narrower here than there — enough, twice in the demonstration
+    /// document, to pull onto a line a word Word puts on the next. So a run of
+    /// letters that stand on their own is measured character by character,
+    /// which is the same thing without the kerning, and a run of a script
+    /// whose letters change shape beside each other is left shaped, where
+    /// taking the characters apart would measure forms the reader never sees.
     fn measure(&mut self, key: Key, text: &str) -> &[f64] {
         if !self.runs.contains_key(&(key, text.to_owned())) {
             if self.runs.len() >= CACHE_LIMIT {
@@ -221,6 +236,11 @@ impl Egui {
                 let total: f64 = widths.iter().sum();
                 let each = if count > 0 { total / count as f64 } else { 0.0 };
                 widths = vec![each; count];
+            } else if text.chars().all(stands_alone) {
+                widths.clear();
+                for ch in text.chars() {
+                    widths.push(self.on_its_own(key, ch));
+                }
             } else {
                 share_ligatures(text, &mut widths);
             }
@@ -228,6 +248,44 @@ impl Egui {
         }
         &self.runs[&(key, text.to_owned())]
     }
+
+    /// What one character advances with nothing beside it.
+    fn on_its_own(&mut self, key: Key, ch: char) -> f64 {
+        if let Some(&width) = self.alone.get(&(key, ch)) {
+            return width;
+        }
+        // A combining mark is drawn over the letter before it and advances
+        // nothing. On its own epaint has nothing to put it over and gives it
+        // a width, which would push everything after it along.
+        let width = match is_combining(ch) {
+            true => 0.0,
+            false => {
+                let id = self.id_of(key);
+                let galley = self.ctx.fonts_mut(|fonts| {
+                    fonts.layout_no_wrap(ch.to_string(), id, egui::Color32::BLACK)
+                });
+                galley
+                    .rows
+                    .iter()
+                    .flat_map(|row| &row.glyphs)
+                    .map(|glyph| glyph.advance_width as f64)
+                    .sum()
+            }
+        };
+        self.alone.insert((key, ch), width);
+        width
+    }
+}
+
+/// Whether a character keeps its shape whatever stands next to it.
+///
+/// Latin, Greek, Cyrillic and the punctuation among them are drawn one letter
+/// at a time, so the sum of the letters is the width of the word. Past that
+/// come the scripts that join, reorder and combine — Arabic, Hebrew with its
+/// points, the Indic scripts — where a letter measured alone is not the letter
+/// that would be drawn.
+fn stands_alone(ch: char) -> bool {
+    (ch as u32) < 0x0590
 }
 
 /// Shares a ligature's advance out over the characters it stands for.
@@ -661,6 +719,28 @@ mod tests {
         let mut widths = vec![5.0, 0.0, 4.0];
         share_ligatures("e\u{0301}b", &mut widths);
         assert_eq!(widths, vec![5.0, 0.0, 4.0]);
+    }
+
+    #[test]
+    fn a_kerning_pair_measures_as_the_two_letters_it_is_made_of() {
+        // Word closes up a pair only where the run asks it to, and an ordinary
+        // document never asks. The face this context falls back to kerns `AV`
+        // by three points at this size, which is five times what it takes to
+        // pull a word onto a line Word leaves it off.
+        let ctx = context();
+        let mut shaper = Egui::new(&ctx);
+        let font = FontRequest::new("Arial", 64.0);
+        let width = |shaper: &mut Egui, text: &str| {
+            let mut out = Vec::new();
+            shaper.advances(text, &font, &mut out);
+            out.iter().map(|advance| advance.width).sum::<f64>()
+        };
+        let apart = width(&mut shaper, "A") + width(&mut shaper, "V");
+        assert!(
+            (width(&mut shaper, "AV") - apart).abs() < 0.001,
+            "the pair measured {} where its letters measure {apart}",
+            width(&mut shaper, "AV")
+        );
     }
 
     #[test]

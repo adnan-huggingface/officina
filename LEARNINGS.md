@@ -1242,3 +1242,26 @@ count, the format, the paragraph count or the alignment, and the generalisation
 that fixes the first breaks the second by more than it was wrong by. The honest
 answer to a rule that fits one measurement and contradicts another is to keep
 looking, not to ship the half of it that flatters the document in front of you.
+A number that was never checked is not a rule; it is the residue of the two
+things that happened to be in front of it.
+
+A `.doc` states a table's leading edge in the first of its row's boundaries, and
+the reader was adding half the gap between columns to it. That was written for
+the two tables at the top of the demonstration document, and both of them are
+centred — a centred table ignores its indent entirely, so the half-gap could
+have been any number at all and those two would have looked right. Five pages
+in, the first table that is actually placed by its indent sat five and two
+fifths points off. The correction and the thing it was hiding came out together:
+the table justification had never been read either.
+
+Word does not kern, and a modern shaper does.
+
+Kerning in Word is a checkbox, off unless the run turns it on, and nothing in an
+ordinary document turns it on. HarfBuzz closes up every pair the face offers.
+Over a line of prose that is a fraction of a point — and a fraction of a point
+is the whole of the question at the end of a line, where a word either fits or
+does not. Two paragraphs in one document broke a word early because of it. The
+fix is not to stop shaping: it is to measure the letters of a run that stands on
+its own one at a time, which is the same shaping without the pair adjustment,
+and to leave a joining script shaped, where a letter measured alone is not the
+letter that gets drawn.

@@ -479,6 +479,11 @@ pub struct TableRow {
     /// `sprmTCellPaddingDefault` — the table's own cell margins, which a `.doc`
     /// states per row alongside everything else about the row.
     pub padding: Option<CellMargins>,
+    /// `sprmTJc`, which moves the whole table within the text column rather
+    /// than the text within its cells. **A centred table ignores the indent
+    /// its rows state**, so a reader that skips this puts the letterhead and
+    /// the revision table half a gap into the margin.
+    pub justify: Option<wp_model::prop::Justify>,
 }
 
 /// One cell's definition, out of `sprmTDefTable`'s `rgTc80`.
@@ -512,10 +517,27 @@ pub fn table_row(data: &[u8]) -> TableRow {
             0x9602 => row.gap_half = sprm.i16().map(|half| Twips(half as i32)),
             0x9407 => row.height = sprm.i16().map(row_height),
             0xD634 => cell_padding_default(&mut row, sprm.operand),
+            // `sprmTJc` states the logical justification and `sprmTJc90` the
+            // physical one; a `.doc` old enough to be read here writes both
+            // and they can only disagree in a right-to-left table, which is
+            // not a thing this reader has ever been handed.
+            0x548A | 0x5400 => row.justify = sprm.i16().and_then(justification),
             _ => {}
         }
     }
     row
+}
+
+/// `sprmTJc`'s three positions. Anything else is a value this reader does not
+/// know, and moving the table on a guess is worse than leaving it where the
+/// row's own boundaries put it.
+fn justification(value: i16) -> Option<wp_model::prop::Justify> {
+    match value {
+        0 => Some(wp_model::prop::Justify::Start),
+        1 => Some(wp_model::prop::Justify::Center),
+        2 => Some(wp_model::prop::Justify::End),
+        _ => None,
+    }
 }
 
 /// `sprmTDyaRowHeight`, whose sign carries the rule that `<w:trHeight>` spells
@@ -987,5 +1009,24 @@ mod tests {
                 shadow: false,
             })
         );
+    }
+
+    #[test]
+    fn a_row_says_the_whole_table_is_centred() {
+        // sprmTJc90 and sprmTJc, in the order Word writes them, both saying
+        // centred — which is what the demonstration document's letterhead
+        // says, and what keeps it off the indent its own boundaries state.
+        let data = [0x00u8, 0x54, 0x01, 0x00, 0x8A, 0x54, 0x01, 0x00];
+        assert_eq!(
+            table_row(&data).justify,
+            Some(wp_model::prop::Justify::Center)
+        );
+        let left = [0x8Au8, 0x54, 0x00, 0x00];
+        assert_eq!(
+            table_row(&left).justify,
+            Some(wp_model::prop::Justify::Start)
+        );
+        let unknown = [0x8Au8, 0x54, 0x09, 0x00];
+        assert_eq!(table_row(&unknown).justify, None);
     }
 }

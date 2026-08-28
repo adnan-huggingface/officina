@@ -812,6 +812,7 @@ struct Building {
     borders: Option<TableBorders>,
     padding: Option<wp_model::table::CellMargins>,
     gap_half: Option<Twips>,
+    justify: Option<wp_model::prop::Justify>,
 }
 
 impl Building {
@@ -832,6 +833,9 @@ impl Building {
             }
             if props.gap_half.is_some() {
                 self.gap_half = props.gap_half;
+            }
+            if props.justify.is_some() {
+                self.justify = props.justify;
             }
         }
         self.rows.push(row);
@@ -901,6 +905,7 @@ impl Building {
         if let Some(borders) = self.borders {
             table.props.borders = borders;
         }
+        table.props.justify = self.justify;
         if let Some(padding) = self.padding {
             table.props.cell_margins = padding;
         } else if let Some(Twips(half)) = self.gap_half {
@@ -912,15 +917,17 @@ impl Building {
                 ..Default::default()
             };
         }
-        // **The boundaries are not where Word draws them.** A `.doc` states
-        // them half a gap to the left of the edge it rules, which is why a
-        // table flush with the margin says -108 and not zero, and Word puts
-        // every one of them back before it draws. `w:tblInd` then measures to
-        // the text *inside* the first cell rather than to its edge — see
-        // `resolve_table_indent` — so the padding is added a second time, to
-        // the same edge, for a different reason.
+        // **The first boundary is the edge Word rules, not where the text in
+        // the first cell begins.** A `.doc` states it as the indent the user
+        // set less half the gap between columns — that is what
+        // `sprmTDxaGapHalf` is for, and it is why a table flush with the
+        // margin says -108 and hangs its rule that far into it. `w:tblInd`
+        // measures to the text instead (see `resolve_table_indent`), so the
+        // cell's own padding is what turns the one into the other. Measured:
+        // the demonstration document's tables state 720, Word rules them at
+        // 720 with their text a padding further in at 828, and the file says
+        // 828 itself in the `sprmTWidthIndent` it carries alongside.
         if let Some(left) = boundaries.first() {
-            let half = self.gap_half.unwrap_or(Twips(0)).0;
             let padding = table
                 .props
                 .cell_margins
@@ -930,7 +937,7 @@ impl Building {
                     _ => None,
                 })
                 .unwrap_or(0);
-            table.props.indent = Some(Width::Fixed(Twips(left + half + padding)));
+            table.props.indent = Some(Width::Fixed(Twips(left + padding)));
         }
         table.rows = std::mem::take(&mut self.rows);
         table
@@ -1011,6 +1018,49 @@ mod tests {
         dop[86] = 0x18;
         assert!(stated_without_leading(&dop));
         assert!(!stated_without_leading(&[]), "a short DOP is not a panic");
+    }
+
+    fn row_of(boundaries: Vec<i32>) -> sprm::TableRow {
+        sprm::TableRow {
+            boundaries: Some(boundaries),
+            gap_half: Some(Twips(108)),
+            ..Default::default()
+        }
+    }
+
+    fn table_with(props: sprm::TableRow) -> Table {
+        let mut mark = paragraph("", true, true, false);
+        mark.row_props = Some(props);
+        let blocks = assemble(vec![paragraph("a", true, false, true), mark]);
+        match blocks.into_iter().next() {
+            Some(Block::Table(table)) => table,
+            _ => panic!("the marks make a table"),
+        }
+    }
+
+    #[test]
+    fn a_tables_indent_is_measured_to_the_text_in_its_first_cell() {
+        // The demonstration document's tables: the row states 720, Word rules
+        // the table's edge at 720, and its text stands a cell margin further
+        // in at 828 — which is the number the file also carries in
+        // `sprmTWidthIndent`, and the number `w:tblInd` means.
+        let table = table_with(row_of(vec![720, 5000]));
+        assert_eq!(table.props.indent, Some(Width::Fixed(Twips(828))));
+        // A table flush with the margin says half a gap less than nothing, so
+        // that its text lands on the margin and its rule hangs outside it.
+        let flush = table_with(row_of(vec![-108, 5000]));
+        assert_eq!(flush.props.indent, Some(Width::Fixed(Twips(0))));
+    }
+
+    #[test]
+    fn a_centred_table_says_so_whatever_its_boundaries_say() {
+        let mut props = row_of(vec![-108, 5000]);
+        props.justify = Some(wp_model::prop::Justify::Center);
+        assert_eq!(
+            table_with(props).props.justify,
+            Some(wp_model::prop::Justify::Center)
+        );
+        assert_eq!(table_with(row_of(vec![-108, 5000])).props.justify, None);
     }
 
     #[test]
