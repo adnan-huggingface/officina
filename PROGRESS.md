@@ -3068,7 +3068,10 @@ purpose, saved as `.docx` and as `.doc` and exported both ways, Word centres.
 The two cells are in the same row of the same table with the same alignment and
 Word treats them differently, and the condition that tells them apart has not
 been found. A rule that fixes one and breaks the other is not an improvement, so
-nothing was shipped for this.
+nothing was shipped for this. *(Found, later the same week: the cell Word
+leaves at the top is the one the document anchors its page frame and its
+watermark in, and Word does not vertically align a cell that holds a floating
+shape. See the entry below.)*
 
 ## A table is ruled where its row says, and a word is measured without the kerning Word never asked for (2026-08-28)
 
@@ -3142,6 +3145,50 @@ The unflagged rule was checked rather than assumed — a hand-edited copy of
 — which is what says the indent really does outrank a nearer stop when nothing
 has turned it off. Page thirteen and page fifteen now hold what Word holds, and
 page sixteen came from fourteen mismatched lines to eight.
+
+## A cell that holds a floating shape is not aligned, and a merged cell is aligned in all of it (2026-08-28)
+
+`ENGINEERING SPECIFICATIONS` sat four and two thirds of a point high in the
+letterhead of every one of the sixteen pages — the last difference the earlier
+notes left standing, and the one whose obvious fix had been tried twice and
+reverted because it broke the cell beside it. Two rules, both measured, and the
+second is the reason the first kept failing.
+
+**A merged cell is aligned in the whole of what it covers.** `ENGINEERING
+SPECIFICATIONS` covers the first two rows of the letterhead and is centred;
+this centred it in the first row alone, which is shorter than the line, so it
+clamped to the top. The rows below a merge have not been laid out when the row
+that starts it is, so the shift now waits: the lines go down where they fall,
+the room is accumulated row by row (the rule above each of them counts — a merge
+draws no line between its own rows and the room the line would have taken is the
+cell's), and the last row of the span moves them. Measured against Word: the
+merge is 22.71 points of room around a 13.40 point line, and Word puts it 4.68
+points down.
+
+**A cell that holds a floating shape is not vertically aligned at all.** This is
+what made the first rule look wrong: `CHAMBERLAIN GROUP` is centred too, covers
+all four rows, and Word leaves it at the top, where centring it in the span puts
+it nine points lower. The cell is the one the document anchors its page frame
+and its watermark in. Take those two shapes out of that one cell — in a `.docx`
+Word itself converted the file to, so nothing else changed — and Word centres it,
+moving `CHAMBERLAIN GROUP` from 50.16 to 59.04. Every synthetic four-row merge
+built for the earlier attempt was centred by Word because none of them held a
+shape.
+
+The setting named for this, `<w:doNotVertAlignCellWithSp/>`, turns out not to
+govern it: taken out of the same converted copy, and with the document put in
+Word 2013's compatibility mode besides, Word still leaves the cell alone. So the
+rule is applied unconditionally, which is what was measured, rather than gated on
+a flag that does nothing.
+
+Every header line in the document now lands within nine hundredths of a point of
+Word's, and the worst vertical difference on any page is down from the 4.65 that
+stood on all sixteen to under one and a third — which is the metafile text of
+the diagrams, not the text of the document.
+
+While the converted copy was open: the `.docx` reader now takes `<w:noTabHangInd/>`
+for the same rule as `<w:doNotUseIndentAsNumberingTabStop/>`, since a `.doc` of
+this age states the first as a bit and a conversion of one arrives carrying both.
 
 ## Deferred
 

@@ -1277,3 +1277,22 @@ from inside a single document. The way the flag was found was not by reading
 about it: it was by asking Word for the compatibility options of the document
 that disagreed and of one that did not, and diffing the two lists — which is
 worth doing the moment two documents of the same shape lay out differently.
+A cell that holds a floating shape is not vertically aligned, and the document
+that says so is not the reason.
+
+Two cells side by side in one letterhead, both centred, both merged down the
+rows beneath them: Word centres one and leaves the other at the top. Nothing in
+the two cells' own properties tells them apart — the alignment, the merge, the
+row heights and the paragraph formats all match. What tells them apart is that
+one of them is where the document anchors its page frame and its watermark.
+Take the shapes out and Word centres it like the other. The compatibility
+setting named for exactly this behaviour is present in the file and turns out to
+be inert: removing it, even with the document put in a modern compatibility mode,
+changes nothing. So the rule is Word's, not the file's, and the honest thing is
+to apply it unconditionally and to write down that the flag was tried.
+
+The lesson underneath is about how the two rules hid each other. Aligning a
+merged cell in its whole span is right, and every attempt to ship it was reverted
+because it moved the shape's cell nine points. Neither rule can be seen while the
+other is missing, and a synthetic reproduction built to settle it centred both
+cells, because nobody thinks to anchor a page frame in a test table.

@@ -2170,6 +2170,8 @@ fn flow_table(
     // row's own text, where charging the first row for both put it a whole row
     // lower and moved everything below the table with it.
     let mut owed: Vec<Owed> = Vec::new();
+    // Merged cells whose alignment cannot be settled yet — see `Aligning`.
+    let mut aligning: Vec<Aligning> = Vec::new();
     // The bottom rule of the row before this one, which the two rows share.
     let mut rule_from_above: f64 = 0.0;
     // And what that rule was, column by column, because the row below is the
@@ -2293,9 +2295,24 @@ fn flow_table(
             cells.push(CellPlan {
                 x,
                 width: cell_width,
-                align: match cell.props.v_align {
-                    CellVAlign::Top => styled.cell_v_align.unwrap_or(CellVAlign::Top),
-                    stated => stated,
+                align: match holds_a_float(&cell.content) {
+                    // **Word does not vertically align a cell that holds a
+                    // floating shape.** The demonstration document's
+                    // letterhead is the case: the cell its address sits in
+                    // also anchors the page frame and the watermark, and Word
+                    // leaves its three lines at the top of a merge that runs
+                    // the whole table deep, where centring them would put them
+                    // nine points lower. Take the shapes out of that one cell
+                    // and Word centres it. The setting named for this —
+                    // `<w:doNotVertAlignCellWithSp/>`, which the document also
+                    // carries — turns out not to govern it: taken out, and
+                    // with the document put in Word 2013's compatibility mode
+                    // besides, Word still leaves the cell alone.
+                    true => CellVAlign::Top,
+                    false => match cell.props.v_align {
+                        CellVAlign::Top => styled.cell_v_align.unwrap_or(CellVAlign::Top),
+                        stated => stated,
+                    },
                 },
                 // The cell's own fill, then the table's, then whatever the
                 // style gives a cell in this position — the header's green,
@@ -2427,6 +2444,7 @@ fn flow_table(
                 },
                 content: y,
                 spans: table.merge_height(row_index, column),
+                aligning: None,
                 lines,
             });
 
@@ -2546,9 +2564,32 @@ fn flow_table(
             debt.remaining -= inner_height;
         }
         owed.retain(|debt| debt.last > row_index && debt.remaining > 0.0);
+        // A merge already under way is that much taller for this row. The
+        // rule above it counts: there is no line drawn between the rows of a
+        // merge, and the room the line would have taken is the cell's.
+        for pending in aligning.iter_mut().filter(|p| p.started < row_index) {
+            pending.available += height + rule_above;
+        }
         // Vertical alignment is a shift of the cell's lines within the row's
         // final height, which is why it can only be applied once that is known.
-        for cell in &mut cells {
+        for (index, cell) in cells.iter_mut().enumerate() {
+            // **A cell that covers more than one row is aligned in the whole
+            // of what it covers**, and the rows below it have not been laid
+            // out yet. So the shift waits for the last of them; the lines go
+            // down where they are and are moved once the room is known.
+            if cell.spans > 1 && cell.align != CellVAlign::Top {
+                cell.aligning = Some(aligning.len());
+                aligning.push(Aligning {
+                    started: row_index,
+                    last: row_index + cell.spans - 1,
+                    align: cell.align,
+                    content: cell.content,
+                    available: inner_height,
+                    parts: Vec::new(),
+                });
+                let _ = index;
+                continue;
+            }
             let offset = cell_offset(cell.align, cell.content, inner_height);
             if offset > 0.0 {
                 for line in &mut cell.lines {
@@ -2630,6 +2671,11 @@ fn flow_table(
                     }
                     let dy = above + (line.top - top);
                     for part in &line.parts {
+                        if let Some(pending) = cell.aligning {
+                            aligning[pending]
+                                .parts
+                                .push((into.items.len(), parts.len()));
+                        }
                         parts.push(Placement {
                             y: dy + part.y,
                             ..part.clone()
@@ -2654,6 +2700,24 @@ fn flow_table(
                 space_before: 0.0,
             });
         }
+        // The last row of a merge is where its room is finally known, so this
+        // is where the lines it was holding go to their place.
+        for pending in aligning.iter().filter(|p| p.last == row_index) {
+            let offset = cell_offset(pending.align, pending.content, pending.available);
+            if offset <= 0.0 {
+                continue;
+            }
+            for &(item, part) in &pending.parts {
+                if let Some(placement) = into
+                    .items
+                    .get_mut(item)
+                    .and_then(|item| item.parts.get_mut(part))
+                {
+                    placement.y += offset;
+                }
+            }
+        }
+        aligning.retain(|pending| pending.last > row_index);
     }
 }
 
@@ -2737,6 +2801,9 @@ struct CellPlan {
     /// How many rows this cell covers, a vertical merge counted from the cell
     /// that starts it. One for every ordinary cell.
     spans: usize,
+    /// Which entry of the table's `aligning` list this cell's lines belong to,
+    /// for a merge whose alignment is settled once its last row is laid.
+    aligning: Option<usize>,
     lines: Vec<CellLine>,
 }
 
@@ -2751,6 +2818,28 @@ fn closes_a_cell(content: &[Block], at: usize) -> bool {
         && at + 1 == content.len()
         && matches!(content[at - 1], Block::Table(_))
         && matches!(&content[at], Block::Paragraph(p) if p.is_empty())
+}
+
+/// A merged cell waiting to learn how much room it has to be aligned in.
+///
+/// **A cell that covers several rows is aligned in all of them**, and a table
+/// is laid one row at a time, so the room is not known until the last of them
+/// has been measured. The lines are put down where they fall and moved
+/// afterwards: nothing else in the row depends on where they sit, and the
+/// alternative — measuring the rows twice — would flow every cell of the
+/// table a second time.
+struct Aligning {
+    /// The row the merge starts in, so a row already gone by is not counted
+    /// twice into the room.
+    started: usize,
+    /// The last row of the span, which is where the shift happens.
+    last: usize,
+    align: CellVAlign,
+    content: f64,
+    /// The room the merge covers, so far.
+    available: f64,
+    /// Where the cell's lines were put, by item and by part inside it.
+    parts: Vec<(usize, usize)>,
 }
 
 /// A vertically merged cell's content, and where it must have run out.
@@ -3264,6 +3353,20 @@ pub fn anchored(paragraph: &Paragraph) -> Vec<(usize, &wp_model::Drawing)> {
         .collect()
 }
 
+/// Whether a cell holds a shape that floats, at any depth.
+fn holds_a_float(blocks: &[Block]) -> bool {
+    blocks.iter().any(|block| match block {
+        Block::Paragraph(paragraph) => !anchored(paragraph).is_empty(),
+        Block::Table(table) => table
+            .rows
+            .iter()
+            .flat_map(|row| &row.cells)
+            .any(|cell| holds_a_float(&cell.content)),
+        Block::Structured(sdt) => holds_a_float(&sdt.content),
+        _ => false,
+    })
+}
+
 /// The vertical alignment of a cell's content, for a renderer that places it.
 pub fn cell_offset(align: CellVAlign, content: f64, available: f64) -> f64 {
     match align {
@@ -3730,6 +3833,7 @@ mod tests {
                 }),
                 content: heights.iter().sum(),
                 spans: 1,
+                aligning: None,
                 lines: heights
                     .iter()
                     .map(|height| {
@@ -4250,6 +4354,121 @@ mod tests {
             "and the merged cell's second paragraph is beside the second row"
         );
         assert!(at("three") > at("one"));
+    }
+
+    /// A table whose first column is merged down both rows and holds one
+    /// line, beside a second column of one line and then three.
+    fn merged_over_two_rows(content: Vec<Block>, align: CellVAlign) -> Document {
+        let mut merged = Cell {
+            props: CellProps::new(),
+            content,
+        };
+        merged.props.v_merge = Some(VMerge::Restart);
+        merged.props.v_align = align;
+        let mut below = cell("");
+        below.props.v_merge = Some(VMerge::Continue);
+        let tall = Cell {
+            props: CellProps::new(),
+            content: vec![
+                Block::Paragraph(Paragraph::of("a")),
+                Block::Paragraph(Paragraph::of("b")),
+                Block::Paragraph(Paragraph::of("c")),
+            ],
+        };
+        let table = Table {
+            grid: vec![Twips(2880), Twips(2880)],
+            rows: vec![
+                Row {
+                    cells: vec![merged, cell("two")],
+                    ..Row::new()
+                },
+                Row {
+                    cells: vec![below, tall],
+                    ..Row::new()
+                },
+            ],
+            ..Table::new()
+        };
+        document(vec![Block::Table(table)])
+    }
+
+    #[test]
+    fn a_merged_cell_is_centred_in_all_the_rows_it_covers() {
+        // Measured against Word on the demonstration document's letterhead:
+        // its `ENGINEERING SPECIFICATIONS` covers the first two rows of the
+        // table and Word centres it in both of them together, four and two
+        // thirds of a point below where centring it in the first row alone
+        // leaves it. Here the second row is three lines to the first row's
+        // one, so a line centred in all four sits exactly between the second
+        // row's first and second lines.
+        let document = merged_over_two_rows(
+            vec![Block::Paragraph(Paragraph::of("one"))],
+            CellVAlign::Center,
+        );
+        let lines = cell_lines(&document);
+        let at = |want: &str| {
+            lines
+                .iter()
+                .find(|(_, text)| text == want)
+                .map(|(y, _)| *y)
+                .unwrap_or_else(|| panic!("{want} was never drawn: {lines:?}"))
+        };
+        let middle = (at("a") + at("b")) / 2.0;
+        assert!(
+            (at("one") - middle).abs() < 0.01,
+            "the merged line is at {} where the middle of its two rows is {middle}",
+            at("one")
+        );
+    }
+
+    #[test]
+    fn a_cell_that_holds_a_floating_shape_is_not_aligned_at_all() {
+        // Word leaves such a cell's content at the top whatever the cell says
+        // — the demonstration document's letterhead anchors its page frame and
+        // its watermark in the cell its address sits in, and Word leaves the
+        // address at the top of a merge four rows deep. Take the shapes out
+        // of that one cell and Word centres it.
+        let drawing = wp_model::Drawing {
+            source: Vec::new().into(),
+            anchored: true,
+            extent: (
+                wp_model::Emu::from_points(10.0),
+                wp_model::Emu::from_points(10.0),
+            ),
+            rel: Some("rId7".into()),
+            chart: None,
+            name: None,
+            description: None,
+            wrap: wp_model::Wrap::None,
+            distance: Default::default(),
+            position: None,
+            behind_text: true,
+            text: None,
+            tone: None,
+            outline: None,
+        };
+        let paragraph = Paragraph {
+            content: vec![Inline::Run(Run {
+                content: vec![Piece::Text("one".into()), Piece::Drawing(Box::new(drawing))],
+                ..Run::new()
+            })],
+            ..Paragraph::new()
+        };
+        let document = merged_over_two_rows(vec![Block::Paragraph(paragraph)], CellVAlign::Center);
+        let lines = cell_lines(&document);
+        let at = |want: &str| {
+            lines
+                .iter()
+                .find(|(_, text)| text == want)
+                .map(|(y, _)| *y)
+                .unwrap_or_else(|| panic!("{want} was never drawn: {lines:?}"))
+        };
+        assert!(
+            (at("one") - at("two")).abs() < 0.01,
+            "the shape's cell was aligned to {} where the row starts at {}",
+            at("one"),
+            at("two")
+        );
     }
 
     #[test]

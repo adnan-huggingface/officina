@@ -34,8 +34,15 @@ pub(crate) fn settings(xml: &[u8]) -> Settings {
                 b"zoom" => settings.zoom = attr_u32(&e, b"percent"),
                 b"rsids" => settings.has_rsids = true,
                 b"noLeading" => settings.no_leading = on_off(&e),
-                b"doNotUseIndentAsNumberingTabStop" => {
-                    settings.no_tab_for_hanging_indent = on_off(&e)
+                // Two elements for one rule: Word’s dialog has both "don't
+                // add automatic tab stop for hanging indent" and "ignore
+                // hanging indent when creating tab stop after numbering", and
+                // the only tab this lays on an indent is the one after a
+                // number. A `.doc` of the age that sets either carries the
+                // first of them as a bit, so a conversion of one arrives here
+                // with both.
+                b"noTabHangInd" | b"doNotUseIndentAsNumberingTabStop" => {
+                    settings.no_tab_for_hanging_indent |= on_off(&e)
                 }
                 _ => {}
             },
@@ -238,6 +245,11 @@ mod tests {
             br#"<w:settings><w:compat><w:doNotUseIndentAsNumberingTabStop/></w:compat></w:settings>"#,
         );
         assert!(settings.no_tab_for_hanging_indent);
+        assert!(
+            super::settings(br#"<w:settings><w:compat><w:noTabHangInd/></w:compat></w:settings>"#)
+                .no_tab_for_hanging_indent,
+            "the older spelling of the same rule counts too"
+        );
         assert!(!super::settings(br#"<w:settings/>"#).no_tab_for_hanging_indent);
     }
 
