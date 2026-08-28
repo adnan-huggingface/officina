@@ -6,7 +6,7 @@
 //! no fonts and no document.
 
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 
 /// How far apart two words' tops may be and still be called one line.
@@ -14,6 +14,12 @@ use std::fmt;
 /// Smaller than any line this project has seen and larger than the hundredth
 /// of a point the two sides disagree by within one line.
 const SAME_LINE: f64 = 3.0;
+
+/// How far from a page's own idea of its offset a line pairing may sit.
+///
+/// Three lines of ordinary type. Wider than any real disagreement about where
+/// one line goes, narrower than the several lines a repetition can slide by.
+const FAR: f64 = 36.0;
 
 /// Above this many words on one page the table below is not worth building.
 const PAIRWISE_LIMIT: usize = 4_000;
@@ -138,49 +144,39 @@ pub fn compare(ours: &[Word], theirs: &[Word], threshold: f64) -> Report {
 
     for (page, their_words) in &theirs {
         let our_words = ours.get(page).unwrap_or(&empty);
-        let our_order = reading_order(our_words);
-        let their_order = reading_order(their_words);
-        let pairs = pair_up(&our_order, &their_order);
+        let mine = lines_of(our_words);
+        let theirs = lines_of(their_words);
 
-        let mut ours_seen = vec![false; our_order.len()];
-        let mut theirs_seen = vec![false; their_order.len()];
-        for (i, j) in pairs {
-            ours_seen[i] = true;
-            theirs_seen[j] = true;
-            let (mine, theirs) = (our_order[i], their_order[j]);
-            let (dx, dy) = (mine.x - theirs.x, mine.baseline - theirs.baseline);
-            shifts.push((dx, dy));
-            report.matched += 1;
-            let out = dx.abs().max(dy.abs());
-            if out > report.worst {
-                report.worst = out;
-            }
-            if out > threshold {
-                report.over += 1;
-                report.differences.push(Difference {
-                    page: *page,
-                    band: mine.band,
-                    text: mine.text.clone(),
-                    kind: Kind::Moved { dx, dy },
-                });
-            }
+        let (paired, _, _) = pair_lines(&mine, &theirs);
+        let (paired, my_spare, their_spare) = plausible(paired, &mine, &theirs);
+        for (i, j) in paired {
+            in_line(
+                &mine[i],
+                &theirs[j],
+                *page,
+                threshold,
+                &mut shifts,
+                &mut report,
+            );
         }
-        report
-            .differences
-            .extend(unmatched(&their_order, &theirs_seen, *page, Kind::Missing));
-        report
-            .differences
-            .extend(unmatched(&our_order, &ours_seen, *page, Kind::Extra));
+        for index in their_spare {
+            report
+                .differences
+                .extend(all_of(&theirs[index], *page, Kind::Missing));
+        }
+        for index in my_spare {
+            report
+                .differences
+                .extend(all_of(&mine[index], *page, Kind::Extra));
+        }
     }
 
     // A page we laid that Word never reached is every word on it, extra.
     for (page, our_words) in &ours {
         if !theirs.contains_key(page) {
-            let order = reading_order(our_words);
-            let none = vec![false; order.len()];
-            report
-                .differences
-                .extend(unmatched(&order, &none, *page, Kind::Extra));
+            for line in lines_of(our_words) {
+                report.differences.extend(all_of(&line, *page, Kind::Extra));
+            }
         }
     }
 
@@ -201,6 +197,54 @@ pub fn compare(ours: &[Word], theirs: &[Word], threshold: f64) -> Report {
             .then(a.text.cmp(&b.text))
     });
     report
+}
+
+/// One line of Word's against the line of ours it was matched to.
+fn in_line(
+    mine: &[&Word],
+    theirs: &[&Word],
+    page: u32,
+    threshold: f64,
+    shifts: &mut Vec<(f64, f64)>,
+    report: &mut Report,
+) {
+    let my_text: Vec<&str> = mine.iter().map(|w| w.text.as_str()).collect();
+    let their_text: Vec<&str> = theirs.iter().map(|w| w.text.as_str()).collect();
+    let mut mine_seen = vec![false; mine.len()];
+    let mut theirs_seen = vec![false; theirs.len()];
+
+    for (i, j) in pair_up(&my_text, &their_text) {
+        mine_seen[i] = true;
+        theirs_seen[j] = true;
+        let (mine, theirs) = (mine[i], theirs[j]);
+        let (dx, dy) = (mine.x - theirs.x, mine.baseline - theirs.baseline);
+        shifts.push((dx, dy));
+        report.matched += 1;
+        let out = dx.abs().max(dy.abs());
+        if out > report.worst {
+            report.worst = out;
+        }
+        if out > threshold {
+            report.over += 1;
+            report.differences.push(Difference {
+                page,
+                band: mine.band,
+                text: mine.text.clone(),
+                kind: Kind::Moved { dx, dy },
+            });
+        }
+    }
+    report
+        .differences
+        .extend(unmatched(theirs, &theirs_seen, page, Kind::Missing));
+    report
+        .differences
+        .extend(unmatched(mine, &mine_seen, page, Kind::Extra));
+}
+
+fn all_of(line: &[&Word], page: u32, kind: Kind) -> Vec<Difference> {
+    let none = vec![false; line.len()];
+    unmatched(line, &none, page, kind).collect()
 }
 
 fn unmatched<'a>(
@@ -229,13 +273,13 @@ fn by_page(words: &[Word]) -> BTreeMap<u32, Vec<&Word>> {
     pages
 }
 
-/// Words in the order a reader meets them: down the page, then across it.
+/// A page's words gathered into lines, in the order a reader meets them.
 ///
 /// Lines are gathered before anything is sorted across one, because sorting on
-/// the top alone puts two words of the same line in a different order the
-/// moment the two sides report that line's top a hundredth of a point apart —
+/// the baseline alone puts two words of the same line in a different order the
+/// moment the two sides report that baseline a hundredth of a point apart —
 /// and a pair swapped that way is reported as two faults rather than none.
-fn reading_order<'a>(words: &[&'a Word]) -> Vec<&'a Word> {
+fn lines_of<'a>(words: &[&'a Word]) -> Vec<Vec<&'a Word>> {
     let mut sorted: Vec<&Word> = words.to_vec();
     sorted.sort_by(|a, b| {
         a.baseline
@@ -243,32 +287,288 @@ fn reading_order<'a>(words: &[&'a Word]) -> Vec<&'a Word> {
             .unwrap_or(Ordering::Equal)
     });
 
-    let mut out: Vec<&Word> = Vec::with_capacity(sorted.len());
-    let mut line: Vec<&Word> = Vec::new();
+    let mut lines: Vec<Vec<&Word>> = Vec::new();
     for word in sorted {
-        if line
-            .first()
-            .is_some_and(|first| word.baseline - first.baseline > SAME_LINE)
-        {
-            across(&mut line, &mut out);
+        let same = lines
+            .last()
+            .and_then(|line: &Vec<&Word>| line.first())
+            .is_some_and(|first| word.baseline - first.baseline <= SAME_LINE);
+        match same {
+            true => lines
+                .last_mut()
+                .expect("same implies one exists")
+                .push(word),
+            false => lines.push(vec![word]),
         }
-        line.push(word);
     }
-    across(&mut line, &mut out);
-    out
+    for line in &mut lines {
+        line.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(Ordering::Equal));
+    }
+    lines
 }
 
-fn across<'a>(line: &mut Vec<&'a Word>, out: &mut Vec<&'a Word>) {
-    line.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(Ordering::Equal));
-    out.append(line);
-}
-
-/// The longest run of words both sides have, in the same order.
+/// Which of our lines is which of Word's, and what neither side could place.
 ///
-/// An ordinary longest-common-subsequence: it is what keeps one inserted word
-/// from throwing every word after it out of step, which is the whole reason
-/// the two lists cannot simply be walked in parallel.
-fn pair_up(ours: &[&Word], theirs: &[&Word]) -> Vec<(usize, usize)> {
+/// **Neither the words nor the lines can be matched by a plain subsequence,
+/// and finding that out twice is what this shape is for.** A page repeats
+/// itself: the same heading word, the same "the", the same sentence down a
+/// table column — and a subsequence pairs one occurrence with a far away other
+/// at no cost to its own score, the moment one side holds something the other
+/// does not. Word's rendering carries a watermark's words and this gathers
+/// none of them, so `watermark.docx` slid by a repetition and reported three
+/// hundred differences on a page that has none. Matching lines rather than
+/// words fixed the words and left the lines sliding for the same reason: that
+/// document's every line reads `Body text under a watermark.`, so nothing in
+/// the text says which of them the extra one is.
+///
+/// So the lines that *cannot* slide go first. A line whose text appears once
+/// on each side has only one place it can go, and the longest rising run of
+/// those is a set of fixed points down the page. Everything else is matched
+/// only *between* two of them, where there is no room left to slide. This is
+/// patience diff, and the property it is being used for is exactly the one it
+/// was invented for.
+///
+/// Within a region, two passes: exact line text, and then what is left walked
+/// in step and paired wherever two lines still share half their words — a line
+/// that differs by one word is the ordinary case and must not cost the rest of
+/// that line its measurements.
+fn pair_lines(
+    mine: &[Vec<&Word>],
+    theirs: &[Vec<&Word>],
+) -> (Vec<(usize, usize)>, Vec<usize>, Vec<usize>) {
+    let my_text: Vec<String> = mine.iter().map(joined).collect();
+    let their_text: Vec<String> = theirs.iter().map(joined).collect();
+    let my_keys: Vec<&str> = my_text.iter().map(String::as_str).collect();
+    let their_keys: Vec<&str> = their_text.iter().map(String::as_str).collect();
+
+    let mut paired: Vec<(usize, usize)> = Vec::new();
+    let mut from = (0usize, 0usize);
+    let fixed = fixed_points(&my_keys, &their_keys);
+    for (a, b) in fixed.iter().copied().chain([(mine.len(), theirs.len())]) {
+        within(
+            mine,
+            theirs,
+            &my_keys,
+            &their_keys,
+            from,
+            (a, b),
+            &mut paired,
+        );
+        if a < mine.len() && b < theirs.len() {
+            paired.push((a, b));
+            from = (a + 1, b + 1);
+        }
+    }
+
+    let mut mine_taken = vec![false; mine.len()];
+    let mut theirs_taken = vec![false; theirs.len()];
+    for (i, j) in &paired {
+        mine_taken[*i] = true;
+        theirs_taken[*j] = true;
+    }
+    paired.sort_unstable();
+    let spare = |taken: &[bool]| -> Vec<usize> {
+        taken
+            .iter()
+            .enumerate()
+            .filter(|(_, done)| !**done)
+            .map(|(index, _)| index)
+            .collect()
+    };
+    let (my_spare, their_spare) = (spare(&mine_taken), spare(&theirs_taken));
+    (paired, my_spare, their_spare)
+}
+
+/// Pairs the lines lying between two fixed points, where nothing can slide far.
+fn within(
+    mine: &[Vec<&Word>],
+    theirs: &[Vec<&Word>],
+    my_keys: &[&str],
+    their_keys: &[&str],
+    from: (usize, usize),
+    to: (usize, usize),
+    paired: &mut Vec<(usize, usize)>,
+) {
+    if from.0 >= to.0 || from.1 >= to.1 {
+        return;
+    }
+    let mut mine_taken = vec![false; to.0 - from.0];
+    let mut theirs_taken = vec![false; to.1 - from.1];
+    for (i, j) in pair_up(&my_keys[from.0..to.0], &their_keys[from.1..to.1]) {
+        mine_taken[i] = true;
+        theirs_taken[j] = true;
+        paired.push((from.0 + i, from.1 + j));
+    }
+
+    let (mut i, mut j) = (0, 0);
+    while i < mine_taken.len() && j < theirs_taken.len() {
+        if mine_taken[i] {
+            i += 1;
+            continue;
+        }
+        if theirs_taken[j] {
+            j += 1;
+            continue;
+        }
+        if alike(&mine[from.0 + i], &theirs[from.1 + j]) {
+            mine_taken[i] = true;
+            theirs_taken[j] = true;
+            paired.push((from.0 + i, from.1 + j));
+        }
+        i += 1;
+        j += 1;
+    }
+}
+
+/// The lines that have only one place they could possibly go.
+///
+/// A line whose text occurs exactly once on each side cannot be confused with
+/// another; the longest rising run of those is the most fixed points that can
+/// be believed at once, and everything else is matched between them.
+fn fixed_points(mine: &[&str], theirs: &[&str]) -> Vec<(usize, usize)> {
+    let once = |keys: &[&str]| -> HashMap<String, usize> {
+        let mut seen: HashMap<String, usize> = HashMap::new();
+        for key in keys {
+            *seen.entry((*key).to_string()).or_insert(0) += 1;
+        }
+        seen
+    };
+    let (my_count, their_count) = (once(mine), once(theirs));
+    let their_at: HashMap<&str, usize> = theirs
+        .iter()
+        .enumerate()
+        .map(|(index, key)| (*key, index))
+        .collect();
+
+    let candidates: Vec<(usize, usize)> = mine
+        .iter()
+        .enumerate()
+        .filter(|(_, key)| {
+            my_count.get(**key).copied() == Some(1) && their_count.get(**key).copied() == Some(1)
+        })
+        .filter_map(|(index, key)| their_at.get(*key).map(|at| (index, *at)))
+        .collect();
+
+    rising(&candidates)
+}
+
+/// The longest run of pairs that rises on both sides.
+///
+/// Quadratic on purpose: this runs over the handful of lines on one page that
+/// are unique on both sides, and the clear version is worth more here than the
+/// clever one.
+fn rising(pairs: &[(usize, usize)]) -> Vec<(usize, usize)> {
+    if pairs.is_empty() {
+        return Vec::new();
+    }
+    let mut best = vec![1usize; pairs.len()];
+    let mut prev = vec![usize::MAX; pairs.len()];
+    let (mut longest, mut end) = (1usize, 0usize);
+    for index in 1..pairs.len() {
+        for before in 0..index {
+            if pairs[before].1 < pairs[index].1 && best[before] + 1 > best[index] {
+                best[index] = best[before] + 1;
+                prev[index] = before;
+            }
+        }
+        if best[index] > longest {
+            longest = best[index];
+            end = index;
+        }
+    }
+    let mut run = Vec::with_capacity(longest);
+    let mut at = end;
+    while at != usize::MAX {
+        run.push(pairs[at]);
+        at = prev[at];
+    }
+    run.reverse();
+    run
+}
+
+/// Whether two lines are recognisably the same line.
+///
+/// Half their words in common. Enough that one word wrapped away, or one never
+/// laid, still leaves a line worth measuring word by word; not so little that
+/// two unrelated short lines are called the same.
+fn alike(mine: &[&Word], theirs: &[&Word]) -> bool {
+    let mut left: Vec<&str> = mine.iter().map(|w| w.text.as_str()).collect();
+    let common = theirs
+        .iter()
+        .filter(|word| match left.iter().position(|t| *t == word.text) {
+            Some(at) => {
+                left.remove(at);
+                true
+            }
+            None => false,
+        })
+        .count();
+    let most = mine.len().max(theirs.len());
+    most > 0 && common * 2 >= most
+}
+
+/// Drops line pairings that cannot be the same line, whatever their text says.
+///
+/// The last defence, and the one that does not depend on a page saying
+/// anything distinctive. `watermark.docx` is one phrase repeated three times a
+/// line and forty lines down the page: there is not one line on it that occurs
+/// once, so there are no fixed points to hang anything on, and a subsequence
+/// over identical text is free to pair our ninth line with Word's eighteenth.
+/// It reported those as words a hundred and ten points out of place, which is
+/// nine lines — a number about the page's shape rather than about the
+/// document.
+///
+/// A line that is really the same line sits near where Word put it. *Near*
+/// cannot mean "at the same height", because a page may be genuinely and
+/// wholly shifted and that is a finding rather than a reason to give up; so it
+/// means near the middle of what every other pairing on this page says the
+/// offset is. The median carries a page that has really moved, and refuses the
+/// pairing that only the repetition made possible.
+fn plausible(
+    paired: Vec<(usize, usize)>,
+    mine: &[Vec<&Word>],
+    theirs: &[Vec<&Word>],
+) -> (Vec<(usize, usize)>, Vec<usize>, Vec<usize>) {
+    let top = |line: &Vec<&Word>| line.first().map(|word| word.baseline).unwrap_or(0.0);
+    let drift = |(i, j): &(usize, usize)| top(&mine[*i]) - top(&theirs[*j]);
+    let middle = median(paired.iter().map(drift));
+
+    let mut mine_taken = vec![false; mine.len()];
+    let mut theirs_taken = vec![false; theirs.len()];
+    let kept: Vec<(usize, usize)> = paired
+        .into_iter()
+        .filter(|pair| (drift(pair) - middle).abs() <= FAR)
+        .inspect(|(i, j)| {
+            mine_taken[*i] = true;
+            theirs_taken[*j] = true;
+        })
+        .collect();
+
+    let spare = |taken: &[bool]| -> Vec<usize> {
+        taken
+            .iter()
+            .enumerate()
+            .filter(|(_, done)| !**done)
+            .map(|(index, _)| index)
+            .collect()
+    };
+    let (my_spare, their_spare) = (spare(&mine_taken), spare(&theirs_taken));
+    (kept, my_spare, their_spare)
+}
+
+fn joined(line: &Vec<&Word>) -> String {
+    line.iter()
+        .map(|word| word.text.as_str())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The longest run of keys both sides have, in the same order.
+///
+/// An ordinary longest-common-subsequence: it is what keeps one inserted line
+/// from throwing every line after it out of step, which is the whole reason
+/// the two readings cannot simply be walked in parallel.
+fn pair_up(ours: &[&str], theirs: &[&str]) -> Vec<(usize, usize)> {
     let (n, m) = (ours.len(), theirs.len());
     if n > PAIRWISE_LIMIT || m > PAIRWISE_LIMIT {
         // A page this dense is not a page; pair them off in order rather than
@@ -281,7 +581,7 @@ fn pair_up(ours: &[&Word], theirs: &[&Word]) -> Vec<(usize, usize)> {
     let mut table = vec![0u32; (n + 1) * width];
     for i in (0..n).rev() {
         for j in (0..m).rev() {
-            table[at(i, j)] = match ours[i].text == theirs[j].text {
+            table[at(i, j)] = match ours[i] == theirs[j] {
                 true => table[at(i + 1, j + 1)] + 1,
                 false => table[at(i + 1, j)].max(table[at(i, j + 1)]),
             };
@@ -291,7 +591,7 @@ fn pair_up(ours: &[&Word], theirs: &[&Word]) -> Vec<(usize, usize)> {
     let (mut i, mut j) = (0, 0);
     let mut pairs = Vec::new();
     while i < n && j < m {
-        if ours[i].text == theirs[j].text {
+        if ours[i] == theirs[j] {
             pairs.push((i, j));
             i += 1;
             j += 1;
@@ -433,6 +733,69 @@ mod tests {
         let report = compare(&ours, &theirs, 1.0);
         assert_eq!(report.matched, 3);
         assert_eq!(report.scalar(), 0);
+    }
+
+    /// The defect that made the matching go line-first, from `watermark.docx`.
+    ///
+    /// Word's rendering carries the watermark's own words and ours gathers
+    /// none of them, and the body repeats itself. Matching word against word,
+    /// the whole page slid by one repetition and reported every word of it as
+    /// hundreds of points out of place — three hundred differences on a page
+    /// that has none.
+    #[test]
+    fn a_word_only_word_laid_does_not_slide_a_page_of_repeated_text() {
+        let body = |baseline: f64| {
+            line(
+                1,
+                baseline,
+                &[
+                    (72.0, "Body"),
+                    (100.0, "text"),
+                    (130.0, "under"),
+                    (160.0, "a"),
+                    (170.0, "watermark."),
+                ],
+            )
+        };
+        let ours = [body(100.0), body(120.0), body(140.0)].concat();
+        // Word draws the same three lines, and a watermark across them that we
+        // never gather — and its words are words the body uses too.
+        let theirs = [
+            body(100.0),
+            line(1, 110.0, &[(200.0, "Body"), (300.0, "watermark.")]),
+            body(120.0),
+            body(140.0),
+        ]
+        .concat();
+
+        let report = compare(&ours, &theirs, 1.0);
+        assert_eq!(
+            report.over, 0,
+            "no body word has moved: {:?}",
+            report.differences
+        );
+        assert_eq!(report.matched, 15, "every body word is matched");
+        assert_eq!(
+            report.unmatched, 2,
+            "the watermark's two words, and nothing else"
+        );
+        assert!(report.worst < 0.001, "worst was {}", report.worst);
+        assert!(
+            report.middle.0.abs() < 0.001,
+            "a slid page shows up as a middle shift: {:?}",
+            report.middle
+        );
+    }
+
+    /// A line whose words are wholly different is not forced onto some other
+    /// line merely because both are left over.
+    #[test]
+    fn two_unrelated_leftover_lines_are_not_called_the_same_line() {
+        let ours = line(1, 100.0, &[(72.0, "Nothing"), (120.0, "alike")]);
+        let theirs = line(1, 100.0, &[(72.0, "Entirely"), (120.0, "other")]);
+        let report = compare(&ours, &theirs, 1.0);
+        assert_eq!(report.matched, 0);
+        assert_eq!(report.unmatched, 4);
     }
 
     /// A page we lay and Word never reaches is not silently nothing.

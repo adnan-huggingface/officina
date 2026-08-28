@@ -196,19 +196,28 @@ fn corpus(refresh: bool, threshold: f64) -> Result<(), String> {
     }
     paths.sort();
 
-    println!("{:<44} {:>7} {:>9} {:>7}", "file", "out", "worst", "pages");
-    println!("{}", "-".repeat(70));
+    // Out of place and unplaceable are separate columns on purpose: the first
+    // is work and the second is mostly what this cannot see, and one number
+    // holding both tells you neither.
+    println!(
+        "{:<40} {:>7} {:>9} {:>9} {:>6}",
+        "file", "out", "unplaced", "worst", "pages"
+    );
+    println!("{}", "-".repeat(75));
     let mut total = 0usize;
+    let mut unplaced = 0usize;
     let mut failed = 0usize;
     for path in &paths {
         let name = path.file_name().unwrap_or_default().to_string_lossy();
         match measure(path, refresh, threshold) {
             Ok(report) => {
-                total += report.scalar();
+                total += report.over;
+                unplaced += report.unmatched;
                 println!(
-                    "{:<44} {:>7} {:>7.2}pt {:>7}",
-                    truncate(&name, 44),
-                    report.scalar(),
+                    "{:<40} {:>7} {:>9} {:>7.2}pt {:>6}",
+                    truncate(&name, 40),
+                    report.over,
+                    report.unmatched,
                     report.worst,
                     report.pages_ours
                 );
@@ -216,15 +225,15 @@ fn corpus(refresh: bool, threshold: f64) -> Result<(), String> {
             Err(why) => {
                 failed += 1;
                 println!(
-                    "{:<44} {}",
-                    truncate(&name, 44),
+                    "{:<40} {}",
+                    truncate(&name, 40),
                     why.lines().next().unwrap_or("")
                 );
             }
         }
     }
-    println!("{}", "-".repeat(70));
-    println!("{:<44} {:>7}", "everything out of place", total);
+    println!("{}", "-".repeat(75));
+    println!("{:<40} {:>7} {:>9}", "", total, unplaced);
     if failed > 0 {
         println!("{failed} of {} could not be measured", paths.len());
     }

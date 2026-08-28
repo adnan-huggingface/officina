@@ -171,9 +171,8 @@ resolves half a point at best, and reports one defect per look.
 
 ## Postscript: built, and made to agree with a settled case (2026-08-28)
 
-`cargo xtask compare` exists, as `crates/wp-compare`. Two things about it
-differ from what this record decided, and both were forced by measurement
-rather than chosen.
+`cargo xtask compare` exists, as `crates/wp-compare`. Three things about it
+differ from what this record decided, and all three were forced by measurement.
 
 **Word's half goes through paper, not through COM.** The decision above assumed
 `Range.Information(5|6)`, which is how every probe in `tools/word-probe/` has
@@ -183,42 +182,68 @@ seconds — so the sixteen-page document is hours. One `ExportAsFixedFormat` is
 seconds. The rendered page is also the better evidence: it gives each word's
 **baseline**, and a baseline is the one horizontal two renderers can be
 compared on without either having to guess where the other thinks a line
-begins. The measured proof that this is the right frame is that the middle
-shift over the whole document is dx +0.06 and dy +0.30 — the two sides agree
-about the page, so what the tool reports is real.
+begins. The proof that this is the right frame is that the middle shift over
+the whole document is dx +0.06 and dy +0.30 — the two sides agree about the
+page, so what the tool reports is real.
 
 **Words come from the rendering, not from Word's `Words` collection**, which
 turns out not to be a list of words at all: it splits punctuation off and keeps
 the trailing space.
 
-**The acceptance test this record demanded.** Today's harness was run against
-the layout of `a1b0ed9` — before the table indent and the kerning were fixed by
-hand — in a throwaway worktree, and against HEAD:
+**And the matching is by line, not by word — which the first version got wrong
+in a way that no amount of care would have caught by reading it.** Aligning
+words with a subsequence lies on any page that repeats itself, because the
+alignment may pair one occurrence with a far-away other at no cost to its own
+score the moment one side holds something the other does not. On
+`watermark.docx` — one phrase three times a line, forty lines down, with a
+watermark Word renders and this does not gather — it reported 298 words
+hundreds of points out of place on a page whose real fault is sub-point. The
+demonstration document has enough unique lines that it never showed there at
+all, so **one validated document was not enough to trust the instrument**. It
+now matches lines first, anchors on the lines whose text occurs exactly once on
+each side and so cannot slide, and refuses any pairing sitting more than three
+lines from the page's own median offset. The tell, worth keeping: a large
+*median* shift means the matching is wrong, not the layout, and it is now the
+first line of every report.
 
-|                                     | before | at HEAD |
-| ----------------------------------- | -----: | ------: |
-| words more than a point out of place |    644 |     174 |
-| worst single word                    | 444.55pt | 4.77pt |
-| page 5, shifted about 5.4pt          |     58 |       0 |
-| words more than 100pt out            |      9 |       0 |
+**The acceptance test this record demanded.** The finished harness was run
+against the layout of `a1b0ed9` — before the table indent and the kerning were
+fixed by hand — in a throwaway worktree, and against HEAD:
+
+|                                      |   before | at HEAD |
+| ------------------------------------ | -------: | ------: |
+| words more than a point out of place  |      635 |     174 |
+| worst single word                     | 53.63pt  |  4.77pt |
+| page 5, shifted about 5.4pt           |       58 |       0 |
+| words neither side could place        |    1,262 |   1,244 |
 
 The 58 are the demonstration document's table — `0x03`, `Enabled`, `Timer`,
 `CCP1_CCP2_USE_TIMER1` — at the half-gap this project spent an afternoon
-finding by eye. The nine are the line that rewrapped because of the kerning
-Word never asked for: a word that moves to another line pairs against a
-different line and reports hundreds of points, which is the right ranking for
-the wrong-looking reason. **The instrument finds both known answers without
-being told where to look, and says nothing about them once they are fixed.**
-That, and not the code, is what makes it evidence.
+finding by eye. The eighteen extra unplaceable words are the line that
+rewrapped for want of the kerning Word never asked for: a line that breaks
+differently stops being the same line, which is the truthful way for that to
+appear. **The instrument finds both known answers without being told where to
+look, and says nothing about either once they are fixed.** That, and not the
+code, is what makes it evidence.
 
-**What it found that nobody had pointed at.** On its first run at HEAD, the 174
-words still out of place are almost all horizontal drift *inside justified
-lines* on pages 7, 8 and 11: our distribution of the slack a justified line
-spreads between its words is not Word's. Sixteen sittings of looking at these
-pages never surfaced it. One run of the tool ranked it first.
+**What it found that nobody had pointed at.** The 174 words still out of place
+at HEAD are almost all horizontal drift *inside justified lines* on pages 7, 8
+and 11. The corpus then said what causes it: on `watermark.docx` one phrase
+repeated across a line drifts +1.24, +7.93 and +14.62 points over three
+repetitions — about **0.45pt per space**. Our space advance is wider than
+Word's. Sixteen sittings of looking at these pages never surfaced it; two runs
+of the tool did, on two unrelated documents, and agreed.
 
-**The floor, stated plainly.** 1,217 words Word laid and this does not gather:
-the text inside the pasted Visio metafiles, which Scriva draws from a recording
-rather than from a line. The report prints shifts and unmatched separately so
-that the floor cannot bury the ranking — which is the same lesson as "no silent
-caps", learned again on the first day of use.
+**The corpus, measured for the first time.** Twenty-five documents, one number
+each: eight of them are already at zero, and the work is concentrated in five —
+`headers-footers.docx` (328 out), `floating-image-wrap.docx` (244, worst
+50.23pt), `table-spanning-pages.docx` (244, worst 25.26pt),
+`picture-watermark.docx` (169) and `watermark.docx` (115). None of those five
+had a number before today.
+
+**The floor, stated plainly.** 1,217 words on the demonstration document that
+Word laid and this does not gather: the text inside the pasted Visio metafiles,
+which Scriva draws from a recording rather than from a line. Out-of-place and
+unplaceable are separate columns everywhere they are reported, because one is
+work and the other is mostly what the instrument cannot see, and a single
+number holding both tells you neither.

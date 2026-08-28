@@ -1319,3 +1319,38 @@ is two of them and neither is what a reader would point at. A tab's leader dots
 are the same trap from the other end: both renderers draw as many stops as the
 stretch takes, neither count was chosen by anyone, and a comparison that counts
 them as words buries every real difference under a page of full stops.
+
+Two renderings of the same page cannot be matched word by word, and the way
+that fails is silent.
+
+The obvious way to compare two layouts is to line the words up with a longest
+common subsequence and read off the differences. It does not work, because a
+page repeats itself: the same heading word, the same "the", the same sentence
+down a table column. The moment one side holds something the other does not —
+a watermark whose words one renderer gathers and the other does not — the
+subsequence is free to pair one occurrence with a far-away other at no cost to
+its own score. `watermark.docx` is one phrase repeated three times a line and
+forty lines down the page; the first version of the harness reported three
+hundred words hundreds of points out of place on a page whose real fault was
+sub-point. Nothing about the output said it was fiction. The tell, once looked
+for, was the *median* difference being large: two renderings of one page agree
+about the page, so a middle shift of fifty-five points is the matching lying,
+not the layout.
+
+Three things fixed it, and the order matters. **Match lines before words** — a
+line is a far more distinctive token than a word, and words are then only ever
+matched within a line. **Anchor on the lines that cannot slide** — a line whose
+text occurs exactly once on each side has only one place it can go, and the
+longest rising run of those is a set of fixed points; everything else is
+matched only between two of them. That is patience diff, used for the property
+it was invented for. **And refuse a pairing that cannot be true** — where a
+page has no unique line at all, nothing in the text can say which repetition is
+which, so a pair whose baseline sits more than about three lines from what
+every other pairing on the page says the offset is gets dropped rather than
+believed. The median carries a page that has really moved; the outlier is the
+repetition talking.
+
+The general lesson is about the shape of the check rather than about documents:
+when two orderings of the same thing are aligned by content alone, repetition
+in the content is an unbounded source of confident nonsense, and the guard has
+to come from a quantity the content does not control.

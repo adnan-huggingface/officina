@@ -3256,17 +3256,74 @@ thing the tool said.
 
 **It was made to agree with a case already settled by hand before any of that
 was believed.** Today's harness, run in a throwaway worktree against the layout
-of `a1b0ed9` — before the table indent and the kerning were fixed — reports 644
-words out of place against HEAD's 174, a worst of 444.55 points against 4.77,
-**58 words on page 5 shifted about 5.4 points** where HEAD has none, and nine
-words more than a hundred points out where HEAD has none. The 58 are the
-table — `0x03`, `Enabled`, `Timer`, `CCP1_CCP2_USE_TIMER1` — at exactly the
-half-gap that took an afternoon to find by eye. The nine are the line that
-rewrapped for want of the kerning Word never asked for; a word that moves to
-another line pairs against a different line and reports hundreds of points,
-which ranks it right for a misleading-looking reason. A harness that cannot
-find a known answer is not evidence, so this was the acceptance test rather
-than a nicety.
+of `a1b0ed9` — before the table indent and the kerning were fixed — reports 635
+words out of place against HEAD's 174, a worst of 53.63 points against 4.77,
+and **58 words on page 5 shifted about 5.4 points** where HEAD has none. The 58
+are the table — `0x03`, `Enabled`, `Timer`, `CCP1_CCP2_USE_TIMER1` — at exactly the
+half-gap that took an afternoon to find by eye. The kerning shows up as eighteen more words
+neither side can place — a line that breaks differently stops being the same
+line, which is the truthful way for that to appear. A harness that cannot find
+a known answer is not evidence, so this was the acceptance test rather than a
+nicety.
+
+**The first version of the matching was wrong, and one document was not enough
+to find that out.** Words were aligned to words with a longest common
+subsequence, which lies on any page that repeats itself: it will pair one
+occurrence with a far-away other at no cost to its own score the moment one
+side holds something the other does not. `watermark.docx` is one phrase three
+times a line and forty lines down, and Word renders a watermark this does not
+gather; the harness reported 298 words hundreds of points out of place on a
+page whose real fault is under a point. The demonstration document has enough
+unique lines that it never showed there — a green result on the one file it had
+been built against. It now matches lines before words, anchors on the lines
+whose text occurs exactly once on each side and therefore cannot slide, and
+refuses a pairing that sits more than three lines from the page's own median
+offset. HEAD's numbers on the demonstration document did not move by a single
+word, which is how the fix is known not to have cost resolution. The tell to
+remember: a large *median* shift means the matching is wrong rather than the
+layout, and it is the first line of every report for that reason.
+
+**The corpus has a number for the first time.** Twenty-five documents, out of
+place and unplaceable in separate columns:
+
+```
+file                                         out  unplaced     worst  pages
+content-controls.docx                          0         0    0.23pt      1
+file-sample_1MB.docx                           0         0    0.25pt      2
+lists-numbering.docx                           0         2    0.13pt      1
+minimal.docx                                   0         0    0.55pt      1
+tracked-changes.docx                           0        21    0.00pt      1
+hyperlinks-bookmarks.docx                      3         0    2.49pt      1
+character-formatting.doc                       4         0    3.47pt      1
+comments.docx                                  4         0    1.27pt      1
+simple-table.doc                               6         0    5.38pt      1
+header-footer-footnote.doc                     8         8    4.42pt      1
+styles-headings-toc.docx                       8         0    1.89pt      1
+headings-and-list.doc                          9         4    4.64pt      1
+unicode-text.doc                               9         0    4.02pt      1
+nested-tables.docx                            17         0   11.33pt      1
+plain-paragraphs.doc                          29         0    6.82pt      1
+watermark.docx                               115       366   67.39pt      1
+picture-watermark.docx                       169       140  115.20pt      1
+table-spanning-pages.docx                    244        16   25.26pt      3
+floating-image-wrap.docx                     244       152   50.23pt      1
+headers-footers.docx                         328         0    2.34pt      1
+---------------------------------------------------------------------------
+                                            1201       761
+```
+
+Eight files are already at nothing. The work is concentrated in five, and none
+of them had a number before today. `rtl-and-cjk.docx` at a worst of 29.48 with
+only two words out is worth a look on its own terms — one bad word rather than
+a bad page.
+
+**And the corpus said what causes the justified drift.** On `watermark.docx`
+one phrase repeated along a line drifts +1.24, +7.93 and +14.62 points across
+its three repetitions — about 0.45 of a point for every space. Our space
+advance is wider than Word's, which is very probably the same fault as the
+justified-line drift on the demonstration document. Two unrelated documents,
+one cause, and the tool found it on both without being asked.
+
 
 The 1,217 words Word laid and we did not are the floor adr/0003 warned about
 and not a regression: they are the text inside the pasted Visio metafiles,
