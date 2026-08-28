@@ -28,5 +28,26 @@ works on an unlicensed install; exporting and printing do not).
 a *real* document, with paragraph formats alongside — the tool for "where
 exactly does Word put this?" during a fidelity chase.
 
+`topdf.ps1 -Path <doc> -Out <pdf>` and `pdfwords.py <pdf>` are the oracle
+half of `cargo xtask compare`: Word's own rendering of a whole document, and
+every word of it with the baseline it was set on, as TSV for a program rather
+than for a reader. See adr/0003 for why that comparison is a tool rather than
+an afternoon.
+
+**Why that goes through paper when everything else here goes through COM.**
+`Range.Information(5|6)` costs Word a layout pass per call — measured on this
+machine at about 110ms, for every word — so the sixteen-page document behind
+adr/0003 is hours of COM and seconds of export. It is also more honest: a
+rendered page gives the *baseline*, and a baseline is the one horizontal two
+renderers can be compared on without either having to guess at the other's
+idea of where a line begins. Exporting needs a licensed Word, which the COM
+reads above do not.
+
+`pdfwords.py` needs PyMuPDF, which is AGPL: a developer's measuring
+instrument on a developer's machine, never linked into either application and
+never redistributed with them — nothing under `tools/` ships. If that is
+unwelcome, `pypdf` is BSD and can be made to answer the same question with
+more work.
+
 Probe documents are throwaways: generate, measure, delete. They are not
 corpus files and must not become test dependencies.

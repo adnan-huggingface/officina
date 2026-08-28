@@ -1,8 +1,7 @@
 # ADR 0003 — Close the fidelity loop without a person in it
 
-**Status:** accepted (2026-08-28). The harness this record decides on **is not
-yet built**; what is recorded here is the decision to build it and the evidence
-that forced it — four days of doing its work by hand.
+**Status:** accepted (2026-08-28), and **built the same day** — see the
+postscript at the end for what it cost and what it found.
 **Held out of:** the retrospective of 2026-08-28, kept in full at
 `retrospectives/2026-08-28-the-person-was-the-instrument.md`.
 **Commits paid for by its absence:** `a1b0ed9`, `83ec414`, `303fd69`, `f0b70e0`
@@ -167,3 +166,59 @@ knew to ask; a whole-document diff **tells you which questions to ask, and ranks
 them**. That is the difference between an instrument and a search. Until the
 loop closes with nobody inside it, the person is the instrument — and a person
 resolves half a point at best, and reports one defect per look.
+
+---
+
+## Postscript: built, and made to agree with a settled case (2026-08-28)
+
+`cargo xtask compare` exists, as `crates/wp-compare`. Two things about it
+differ from what this record decided, and both were forced by measurement
+rather than chosen.
+
+**Word's half goes through paper, not through COM.** The decision above assumed
+`Range.Information(5|6)`, which is how every probe in `tools/word-probe/` has
+worked since ADR 0001. It cannot do a whole document: each call costs Word a
+layout pass, measured here at about **110ms per word** — 200 words in 22.7
+seconds — so the sixteen-page document is hours. One `ExportAsFixedFormat` is
+seconds. The rendered page is also the better evidence: it gives each word's
+**baseline**, and a baseline is the one horizontal two renderers can be
+compared on without either having to guess where the other thinks a line
+begins. The measured proof that this is the right frame is that the middle
+shift over the whole document is dx +0.06 and dy +0.30 — the two sides agree
+about the page, so what the tool reports is real.
+
+**Words come from the rendering, not from Word's `Words` collection**, which
+turns out not to be a list of words at all: it splits punctuation off and keeps
+the trailing space.
+
+**The acceptance test this record demanded.** Today's harness was run against
+the layout of `a1b0ed9` — before the table indent and the kerning were fixed by
+hand — in a throwaway worktree, and against HEAD:
+
+|                                     | before | at HEAD |
+| ----------------------------------- | -----: | ------: |
+| words more than a point out of place |    644 |     174 |
+| worst single word                    | 444.55pt | 4.77pt |
+| page 5, shifted about 5.4pt          |     58 |       0 |
+| words more than 100pt out            |      9 |       0 |
+
+The 58 are the demonstration document's table — `0x03`, `Enabled`, `Timer`,
+`CCP1_CCP2_USE_TIMER1` — at the half-gap this project spent an afternoon
+finding by eye. The nine are the line that rewrapped because of the kerning
+Word never asked for: a word that moves to another line pairs against a
+different line and reports hundreds of points, which is the right ranking for
+the wrong-looking reason. **The instrument finds both known answers without
+being told where to look, and says nothing about them once they are fixed.**
+That, and not the code, is what makes it evidence.
+
+**What it found that nobody had pointed at.** On its first run at HEAD, the 174
+words still out of place are almost all horizontal drift *inside justified
+lines* on pages 7, 8 and 11: our distribution of the slack a justified line
+spreads between its words is not Word's. Sixteen sittings of looking at these
+pages never surfaced it. One run of the tool ranked it first.
+
+**The floor, stated plainly.** 1,217 words Word laid and this does not gather:
+the text inside the pasted Visio metafiles, which Scriva draws from a recording
+rather than from a line. The report prints shifts and unmatched separately so
+that the floor cannot bury the ranking — which is the same lesson as "no silent
+caps", learned again on the first day of use.

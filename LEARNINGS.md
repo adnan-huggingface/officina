@@ -1296,3 +1296,26 @@ merged cell in its whole span is right, and every attempt to ship it was reverte
 because it moved the shape's cell nine points. Neither rule can be seen while the
 other is missing, and a synthetic reproduction built to settle it centred both
 cells, because nobody thinks to anchor a page frame in a test table.
+
+Asking Word where something is costs Word a layout pass, so a whole document
+cannot be asked one question at a time.
+
+`Range.Information(5|6)` is the oracle every probe here has used since the line
+pitches were fitted, and it is exact to a twentieth of a point. It is also
+about 110 milliseconds a call on this machine — 200 words took 22.7 seconds —
+because Word lays the document out to answer. That is fine for one page read by
+eye and hopeless for five thousand words: the same document exports to PDF in
+seconds, and the export is *better* evidence, because a rendered page reports
+each word's baseline and a baseline is the one horizontal two renderers can be
+compared on without either having to guess where the other thinks a line
+begins. The general shape: an oracle that is exact per question can still be
+the wrong oracle, and the thing to measure before building on it is what one
+question costs.
+
+And the unit an application names is not always the unit it means. Word's
+`Words` collection is not a list of words — it splits punctuation into its own
+entries and hands back the trailing space as part of the token — so "options,"
+is two of them and neither is what a reader would point at. A tab's leader dots
+are the same trap from the other end: both renderers draw as many stops as the
+stretch takes, neither count was chosen by anyone, and a comparison that counts
+them as words buries every real difference under a page of full stops.

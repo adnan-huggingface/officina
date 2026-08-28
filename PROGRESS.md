@@ -3215,6 +3215,66 @@ for fear of the cell beside it.
       file at a time. Estimated at a few hours; adr/0003 has the reasoning, the
       grouping caveats already learned, and what a residual total cannot see.
 
+## The comparison becomes a tool (2026-08-28, after the retrospective)
+
+`cargo xtask compare <file>` — the instrument adr/0003 decided on, built. It
+lays a document with the application's own shaper and view, asks Word for its
+own rendering of the same file, and prints what disagrees: the shifts ranked
+worst first, and one number for the document. No window, no release build, no
+deployment, no screenshot, and nobody looking at two pages side by side.
+
+The crate is `crates/wp-compare`, a binary rather than part of `xtask`, because
+measuring a page with the shaper the screen uses means depending on the
+application, on egui and on wgpu — and `xtask` is the one thing that has to
+keep working when the rest of the workspace does not build. It shells out, the
+way `check` and `dist` already do.
+
+**Word's half goes through paper, and that was not the first plan.** Reading
+positions over COM is what every probe here has done since adr/0001, and it is
+unusable for a whole document: `Range.Information(5|6)` costs Word a layout
+pass per call, measured at about 110ms — 200 words took 22.7 seconds, so the
+sixteen-page document is hours. One `ExportAsFixedFormat` is seconds, and the
+rendered page is better evidence besides: it gives the *baseline* of every
+word, and a baseline is the one horizontal two renderers can be compared on
+without either having to guess where the other thinks a line begins. Word's
+`Words` collection turned out to be the wrong unit too — it splits punctuation
+off and keeps the trailing space — so the words now come from the PDF, split
+where a reader would split them.
+
+The answer is cached against the document's length and modification time, so
+the render is paid once and every later comparison is a file read. A first run
+on the demonstration document is about 45 seconds; the second is a second.
+
+**What it says about the document as it stands.** Sixteen pages both ways,
+3,747 words matched, the middle shift dx +0.06 and dy +0.30 — so the two sides
+agree about the frame, and what is left is real. 174 words sit more than a
+point from where Word put them, the worst 4.77, and they are almost all
+horizontal drift *within justified lines* on pages 7, 8 and 11: our
+distribution of the slack a justified line spreads between its words is not
+Word's. That is a finding this file has never recorded, and it was the first
+thing the tool said.
+
+**It was made to agree with a case already settled by hand before any of that
+was believed.** Today's harness, run in a throwaway worktree against the layout
+of `a1b0ed9` — before the table indent and the kerning were fixed — reports 644
+words out of place against HEAD's 174, a worst of 444.55 points against 4.77,
+**58 words on page 5 shifted about 5.4 points** where HEAD has none, and nine
+words more than a hundred points out where HEAD has none. The 58 are the
+table — `0x03`, `Enabled`, `Timer`, `CCP1_CCP2_USE_TIMER1` — at exactly the
+half-gap that took an afternoon to find by eye. The nine are the line that
+rewrapped for want of the kerning Word never asked for; a word that moves to
+another line pairs against a different line and reports hundreds of points,
+which ranks it right for a misleading-looking reason. A harness that cannot
+find a known answer is not evidence, so this was the acceptance test rather
+than a nicety.
+
+The 1,217 words Word laid and we did not are the floor adr/0003 warned about
+and not a regression: they are the text inside the pasted Visio metafiles,
+which Scriva draws from a recording rather than from a line, so this gathers
+none of them. A tab's leader dots are excluded from both sides — they are a
+rule that happens to be made of full stops, and both renderers draw as many as
+fit rather than a number either of them chose.
+
 ## Deferred
 
 - [x] **PDF** — was dropped per Q3; built after ship as `wp-print`. See above.

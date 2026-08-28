@@ -21,6 +21,7 @@ members = [
     "crates/ui-kit",
     "crates/app-calx",
     "crates/app-scriva",
+    "crates/wp-compare",
     "xtask",
 ]
 
@@ -50,6 +51,9 @@ wp-print = { path = "crates/wp-print" }
 cfb-reader = { path = "crates/cfb" }
 dpi-guard = { path = "crates/dpi-guard" }
 ui-kit = { path = "crates/ui-kit" }
+# The applications themselves, so that the fidelity comparator can measure a
+# page with the very shaper the screen paints with rather than a stand-in.
+scriva = { path = "crates/app-scriva" }
 
 # Release profile: optimize for a small, fast, self-contained binary.
 [profile.release]

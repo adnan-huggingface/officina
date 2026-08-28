@@ -1,0 +1,19 @@
+[package]
+name = "wp-compare"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+# A measuring instrument for this repository, not something to publish or ship:
+# `cargo xtask dist` builds the two applications and not this.
+publish = false
+
+[dependencies]
+# The application itself, because the whole worth of the measurement is that it
+# is the page the screen would have shown — the same shaper, the same view.
+scriva.workspace = true
+ui-kit.workspace = true
+wp-model.workspace = true
+wp-layout.workspace = true
+wp-doc.workspace = true
+wp-docx.workspace = true

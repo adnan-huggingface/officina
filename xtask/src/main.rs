@@ -31,6 +31,7 @@ fn main() -> ExitCode {
         "associate" => associate(),
         "fidelity" => fidelity(rest),
         "perf" => perf(rest),
+        "compare" => compare(rest),
         "check" => check(),
         "help" | "--help" | "-h" => {
             usage();
@@ -61,6 +62,8 @@ cargo xtask <command>
   fidelity   run the round-trip fidelity harness over corpus/
              (--report also writes FIDELITY.md)
   perf       time reading and laying out every file in corpus/
+  compare    where a document differs from Word's own rendering of it,
+             ranked (needs Word; see adr/0003)
   help       this message"
     );
 }
@@ -185,6 +188,18 @@ fn fidelity(args: &[String]) -> Result<(), String> {
     } else {
         Err("fidelity check failed: the rewrite is not faithful to the original".into())
     }
+}
+
+/// Where a document differs from Word's own rendering of it.
+///
+/// Shelled out rather than linked: the comparator measures a page with the
+/// application's own shaper, so it depends on the application, on egui and on
+/// wgpu — and this crate stays the one thing that still runs when the rest of
+/// the workspace does not build.
+fn compare(args: &[String]) -> Result<(), String> {
+    let mut argv = vec!["run", "--release", "-q", "-p", "wp-compare", "--"];
+    argv.extend(args.iter().map(String::as_str));
+    cargo(&argv)
 }
 
 fn cargo(args: &[&str]) -> Result<(), String> {

@@ -12,6 +12,7 @@ Linux code paths exist but are unverified.
 cargo xtask check      # fmt + clippy (warnings denied) + entire test suite — the gate for any change
 cargo xtask fidelity   # round-trip harness over corpus/ (untouched save, then save-after-edit)
 cargo xtask perf       # stopwatch over the corpus and larger files
+cargo xtask compare <file>  # where a page differs from Word's own, ranked (needs Word)
 cargo xtask package    # release zip; regenerates THIRD-PARTY-NOTICES.yml (needs cargo-bundle-licenses)
 cargo test -p wp-docx                          # one crate
 cargo test -p scriva --test charts_on_paper    # one integration-test file (app crates are packages `calx`/`scriva`)
