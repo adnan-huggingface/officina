@@ -3190,6 +3190,31 @@ While the converted copy was open: the `.docx` reader now takes `<w:noTabHangInd
 for the same rule as `<w:doNotUseIndentAsNumberingTabStop/>`, since a `.doc` of
 this age states the first as a bit and a conversion of one arrives carrying both.
 
+## The retrospective, and the tool it names (2026-08-28)
+
+Sixteen pages now match Word closely enough that the remaining differences are
+inside the diagrams rather than in the document, so the question turned to how
+it was done. Four days, four sittings, one reported difference each, roughly
+three quarters of an hour a turn — and every one of those turns ran the same
+comparison by hand, with the probe scripts rewritten from scratch and thrown
+away each time.
+
+The finding is recorded as **adr/0003**: the comparison itself must be a tool.
+`wp-print` already takes the same pages the screen paints, so laying a document
+and diffing its glyph origins against Word's own export needs no window, no
+release build, no deployment and no screenshot — and none of those were ever
+needed to find the faults that were found. What was needed was a ranked list
+and a number, and neither existed, which is why one tab rule shipped wrong
+twice and why the letterhead's 4.65 points sat deferred through two sessions
+for fear of the cell beside it.
+
+- [ ] **`cargo xtask compare <file>`** — lay through `wp-print`, export the same
+      file from Word over COM, compare glyph origins by baseline and
+      insensitive to whitespace, report the worst residuals per page plus one
+      scalar per document, and run it over the whole corpus rather than one
+      file at a time. Estimated at a few hours; adr/0003 has the reasoning, the
+      grouping caveats already learned, and what a residual total cannot see.
+
 ## Deferred
 
 - [x] **PDF** — was dropped per Q3; built after ship as `wp-print`. See above.

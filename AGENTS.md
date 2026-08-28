@@ -25,6 +25,12 @@ menus and keystrokes, New through Save As. adr/0002 records why: one afternoon
 of it found a crash and two silent data losses a green suite never touched,
 and the driver rules that keep the exercise safe.
 
+Layout fidelity is judged by measurement, never by eye: lay the document
+through `wp-print` — it takes the same pages the screen paints — export the
+same file from Word, and compare glyph positions. adr/0003 records why: the
+differences that matter are fractions of a point, well under what a screenshot
+resolves, and a person can report only one of them per look.
+
 ## The invariant everything serves
 
 **Saving never rewrites what wasn't edited.** On open, every OPC package part is
