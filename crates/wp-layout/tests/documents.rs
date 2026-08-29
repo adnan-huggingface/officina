@@ -179,9 +179,19 @@ fn nothing_is_lost_between_the_document_and_the_page() {
         let paragraphs = document.paragraphs();
         let drawn = drawn_by_paragraph(&pages, paragraphs.len());
         for (index, paragraph) in paragraphs.iter().enumerate() {
+            let said = letters(&paragraph.shown_text());
+            let drawn = letters(&drawn[index]);
+            // A table's header row is drawn again at the top of every page the
+            // table continues onto, so one paragraph of the document can be
+            // several on the page. What must not happen is that any of it goes
+            // missing, which is what this asks.
+            let times = match said.is_empty() {
+                true => 1,
+                false => drawn.len() / said.len(),
+            };
             assert_eq!(
-                letters(&paragraph.shown_text()),
-                letters(&drawn[index]),
+                said.repeat(times.max(1)),
+                drawn,
                 "{name}, paragraph {index}: the page does not say what the document says"
             );
         }

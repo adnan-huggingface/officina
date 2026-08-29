@@ -24,6 +24,14 @@ pub struct FontRequest {
     pub size: f64,
     pub bold: bool,
     pub italic: bool,
+    /// Whether the pairs of this run are closed up.
+    ///
+    /// `<w:kern>` names the size at or above which Word kerns, and Word's own
+    /// document defaults name two half-points — so every ordinary run kerns,
+    /// and a shaper told otherwise measures a line of prose a fraction of a
+    /// point wide per pair. Over a paragraph that is enough to move a word to
+    /// the next line.
+    pub kern: bool,
 }
 
 impl FontRequest {
@@ -33,6 +41,7 @@ impl FontRequest {
             size,
             bold: false,
             italic: false,
+            kern: false,
         }
     }
 

@@ -213,6 +213,9 @@ pub fn shape_words(
         size: MEASURED_AT,
         bold: shape.bold,
         italic: shape.italic,
+        // WordArt states its own kerning in the VML, and this measures the ink
+        // of a shape rather than the run of a line, so the pairs are left open.
+        kern: false,
     };
     let ink = shaper.ink(text, &request);
     let metrics = shaper.metrics(&request);
@@ -511,6 +514,19 @@ pub struct Flow {
     /// height, so the following paragraph pays only what its before exceeds it
     /// by.
     pub last_after: f64,
+    /// The style of the paragraph that space-after belongs to, and whether it
+    /// asked for that space to be dropped between paragraphs of its own kind.
+    ///
+    /// `<w:contextualSpacing>` — the setting behind "Don't add space between
+    /// paragraphs of the same style", which is how every list Word writes
+    /// closes its items up. It has to be resolved backwards as well as
+    /// forwards: the space belongs to the paragraph above and has already been
+    /// paid into its height by the time the paragraph below is known, so the
+    /// item that paid it is remembered and refunded.
+    pub last_style: Option<wp_model::style::StyleId>,
+    pub last_contextual: bool,
+    /// Which item of [`Flow::items`] carries that space-after.
+    pub last_after_item: Option<usize>,
 }
 
 /// Everything the block layout needs beyond the document.
@@ -724,12 +740,31 @@ fn layout_once(document: &Document, ctx: &Context<'_>, shaper: &mut dyn Shaper) 
             let column = columns.first().map(|c| c.width.points()).unwrap_or(width);
             let _ = column;
             let slice = &flow.items[placed..*end];
+            let mut y = page.geometry.top;
+            // A table's header rows are drawn again above the rows that
+            // carried onto this page. Pagination already took their height
+            // out of it, so this only has to put the ink there.
+            for index in repeated_rows(&flow.items, placed) {
+                let row = &flow.items[index];
+                for part in &row.parts {
+                    // The repeated row is whole wherever it is drawn, so the
+                    // edges a split row shows are not its.
+                    if matches!(part.kind, Placed::BreakEdge { .. }) {
+                        continue;
+                    }
+                    page.content.push(Placement {
+                        x: page.geometry.start + part.x,
+                        y: y + part.y,
+                        ..part.clone()
+                    });
+                }
+                y += row.height;
+            }
             // The space above the first item is not on this page — the item is
             // started that much higher and everything it holds comes with it.
-            let mut y = page.geometry.top
-                - slice.first().map_or(0.0, |item| {
-                    dropped_space(item, true, opens_document && page_index == 0)
-                });
+            y -= slice.first().map_or(0.0, |item| {
+                dropped_space(item, true, opens_document && page_index == 0)
+            });
             for (offset, item) in slice.iter().enumerate() {
                 // A maybe-edge is real only where the page actually cut its
                 // row: above the first item when the same row continues from
@@ -1741,9 +1776,30 @@ fn push_paragraph(
     };
     // See [`Flow::last_after`]: the gap between paragraphs is the larger of
     // the two spacings, and the previous one's share is already placed.
-    let before = (laid.space_before - into.last_after).max(0.0);
+    let mut before = (laid.space_before - into.last_after).max(0.0);
     let after = laid.space_after;
+    // Two paragraphs of one style, at least one of which asked for it, sit
+    // with no space between them at all. The space above is simply not taken;
+    // the space below was paid by the paragraph before and is taken back out
+    // of the item that paid it.
+    let contextual = layers.para.contextual_spacing.unwrap_or(false);
+    let same_style = into.last_style == paragraph.props.style;
+    if same_style && !into.items.is_empty() {
+        if contextual {
+            before = 0.0;
+        }
+        if into.last_contextual {
+            if let Some(index) = into.last_after_item {
+                if let Some(item) = into.items.get_mut(index) {
+                    item.height -= into.last_after;
+                    item.slack = (item.slack - into.last_after).max(0.0);
+                }
+            }
+        }
+    }
     into.last_after = after;
+    into.last_style = paragraph.props.style;
+    into.last_contextual = contextual;
 
     // Any other anchored drawing is placed on the page rather than in the line,
     // so it rides with the paragraph's first item and is positioned from there.
@@ -1971,6 +2027,9 @@ fn push_paragraph(
                 paragraph: paragraph_index,
             },
         });
+        if is_last {
+            into.last_after_item = Some(into.items.len());
+        }
         into.items.push(Item {
             height,
             parts,
@@ -3027,18 +3086,38 @@ const SEPARATOR_LINES: f64 = 2.0;
 
 /// The height of the header rows that repeat above `start`.
 fn repeated_height(items: &[Item], start: usize) -> f64 {
+    repeated_rows(items, start)
+        .into_iter()
+        .map(|index| items[index].height)
+        .sum()
+}
+
+/// The header rows of the table that `start` continues, if it continues one.
+///
+/// A page that opens part way through a table shows that table's header rows
+/// again above the row it opens with — and they are found by walking back to
+/// the rows of the *same* table that said `<w:tblHeader>`, because the rows on
+/// this page are a different group entirely.
+fn repeated_rows(items: &[Item], start: usize) -> Vec<usize> {
     let Some(item) = items.get(start) else {
-        return 0.0;
+        return Vec::new();
     };
     let Some(table) = item.table else {
-        return 0.0;
+        return Vec::new();
     };
-    items
+    // Nothing repeats above the table's own first row.
+    if items[..start]
         .iter()
-        .take(start)
-        .filter(|earlier| earlier.table == Some(table) && earlier.repeat)
-        .map(|earlier| earlier.height)
-        .sum()
+        .all(|earlier| earlier.table != Some(table))
+    {
+        return Vec::new();
+    }
+    items[..start]
+        .iter()
+        .enumerate()
+        .filter(|(_, earlier)| earlier.table == Some(table) && earlier.repeat)
+        .map(|(index, _)| index)
+        .collect()
 }
 
 /// Moves a page break earlier until it satisfies the keep rules.
@@ -4352,9 +4431,30 @@ mod tests {
         let pages = pages(&document);
         assert!(pages.len() >= 3);
         // The first page holds the header and four rows; the pages after it
-        // hold one fewer, because the repeated header costs its height there.
+        // hold one fewer of the table's own rows, because the repeated header
+        // costs its height there — and is drawn there, so the count is the
+        // same five.
         assert_eq!(pages[0].content.len(), 5);
-        assert_eq!(pages[1].content.len(), 4);
+        assert_eq!(pages[1].content.len(), 5);
+        let text = |page: &Page| -> Vec<String> {
+            page.content
+                .iter()
+                .filter_map(|placement| match &placement.kind {
+                    Placed::Line { line, .. } => Some(
+                        line.fragments
+                            .iter()
+                            .map(|fragment| match &fragment.content {
+                                crate::Content::Text { text, .. } => text.as_str(),
+                                _ => "",
+                            })
+                            .collect::<String>(),
+                    ),
+                    _ => None,
+                })
+                .collect()
+        };
+        assert_eq!(text(&pages[1])[0], "H", "the header row is drawn again");
+        assert!(!text(&pages[1])[1..].contains(&"H".to_owned()));
     }
 
     /// Where the lines of every cell in a table sit, top first.

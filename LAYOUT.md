@@ -16,36 +16,36 @@ These are not targets. They are what is true today, so that what is true tomorro
 
 | | documents | out | >5pt | unplaced | marks | lost | worst |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| totals | 24 | 1289 | 542 | 548 | 89 | 26 | 115.20 |
+| totals | 24 | 325 | 0 | 21 | 0 | 22 | 3.06 |
 
 ## Every document
 
 | file | pages | out | >5pt | unplaced | marks | lost | worst |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| `character-formatting.doc` | 1 | 4 | 0 | 0 | 1 | 0 | 3.47 |
-| `header-footer-footnote.doc` | 1 | 8 | 0 | 8 | 0 | 1 | 4.42 |
-| `headings-and-list.doc` | 1 | 11 | 0 | 0 | 0 | 0 | 4.64 |
-| `plain-paragraphs.doc` | 1 | 29 | 3 | 0 | 0 | 0 | 6.82 |
-| `simple-table.doc` | 1 | 6 | 6 | 0 | 0 | 0 | 5.38 |
-| `unicode-text.doc` | 1 | 9 | 0 | 0 | 0 | 0 | 4.02 |
-| `comments.docx` | 1 | 4 | 0 | 0 | 0 | 0 | 1.27 |
+| `character-formatting.doc` | 1 | 0 | 0 | 0 | 0 | 0 | 0.48 |
+| `header-footer-footnote.doc` | 1 | 0 | 0 | 3 | 0 | 0 | 0.48 |
+| `headings-and-list.doc` | 1 | 11 | 0 | 0 | 0 | 0 | 3.06 |
+| `plain-paragraphs.doc` | 1 | 12 | 0 | 0 | 0 | 0 | 1.94 |
+| `simple-table.doc` | 1 | 0 | 0 | 0 | 0 | 0 | 0.48 |
+| `unicode-text.doc` | 1 | 0 | 0 | 0 | 0 | 0 | 0.68 |
+| `comments.docx` | 1 | 0 | 0 | 0 | 0 | 0 | 0.23 |
 | `content-controls.docx` | 1 | 0 | 0 | 0 | 0 | 0 | 0.23 |
 | `file-sample_100kB.docx` | 2 | 0 | 0 | 0 | 0 | 0 | 0.29 |
 | `file-sample_1MB.docx` | 2 | 0 | 0 | 0 | 0 | 0 | 0.25 |
 | `file-sample_500kB.docx` | 2 | 0 | 0 | 12 | 0 | 7 | 0.26 |
-| `floating-image-wrap.docx` | 1 | 319 | 0 | 0 | 0 | 0 | 4.29 |
-| `footnotes-endnotes.docx` | 1 | 0 | 0 | 6 | 0 | 0 | 0.58 |
-| `headers-footers.docx` | 1 | 328 | 0 | 0 | 0 | 0 | 2.34 |
-| `hyperlinks-bookmarks.docx` | 1 | 3 | 0 | 0 | 0 | 0 | 2.49 |
-| `lists-numbering.docx` | 1 | 0 | 0 | 0 | 0 | 0 | 0.13 |
-| `minimal.docx` | 1 | 0 | 0 | 0 | 0 | 0 | 0.55 |
-| `nested-tables.docx` | 1 | 17 | 17 | 0 | 12 | 2 | 11.33 |
-| `picture-watermark.docx` | 1 | 169 | 166 | 140 | 0 | 0 | 115.20 |
-| `rtl-and-cjk.docx` | 1 | 13 | 5 | 0 | 0 | 0 | 7.12 |
-| `sections-mixed-orientation.docx` | 3 | 2 | 0 | 0 | 0 | 0 | 1.11 |
-| `styles-headings-toc.docx` | 1 | 8 | 0 | 0 | 0 | 0 | 1.89 |
-| `table-spanning-pages.docx` | 3 | 244 | 244 | 16 | 76 | 4 | 25.26 |
-| `watermark.docx` | 1 | 115 | 101 | 366 | 0 | 12 | 67.39 |
+| `floating-image-wrap.docx` | 1 | 296 | 0 | 0 | 0 | 0 | 2.33 |
+| `footnotes-endnotes.docx` | 1 | 0 | 0 | 6 | 0 | 0 | 0.26 |
+| `headers-footers.docx` | 1 | 0 | 0 | 0 | 0 | 0 | 0.68 |
+| `hyperlinks-bookmarks.docx` | 1 | 0 | 0 | 0 | 0 | 0 | 0.23 |
+| `lists-numbering.docx` | 1 | 0 | 0 | 0 | 0 | 0 | 0.08 |
+| `minimal.docx` | 1 | 0 | 0 | 0 | 0 | 0 | 0.23 |
+| `nested-tables.docx` | 1 | 0 | 0 | 0 | 0 | 1 | 0.53 |
+| `picture-watermark.docx` | 1 | 0 | 0 | 0 | 0 | 0 | 0.33 |
+| `rtl-and-cjk.docx` | 1 | 6 | 0 | 0 | 0 | 0 | 2.03 |
+| `sections-mixed-orientation.docx` | 3 | 0 | 0 | 0 | 0 | 0 | 0.23 |
+| `styles-headings-toc.docx` | 1 | 0 | 0 | 0 | 0 | 0 | 0.30 |
+| `table-spanning-pages.docx` | 3 | 0 | 0 | 0 | 0 | 2 | 0.70 |
+| `watermark.docx` | 1 | 0 | 0 | 0 | 0 | 12 | 0.42 |
 
 ## Not compared
 

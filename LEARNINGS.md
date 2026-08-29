@@ -1513,3 +1513,46 @@ stale reading is renewed in seconds and nobody notices. Take the thing away and
 run it: an empty PATH is enough, and it cost one test file. The absent-dependency
 path is the one that rots without a sound, because the machine that would notice
 is the machine nobody develops on.
+
+
+**Word's own default face was not on the machine, and nobody had noticed.**
+Aptos ships with Office rather than with Windows, and Office does not install
+it: it is fetched into `%LOCALAPPDATA%\Microsoft\FontCache\4\CloudFonts`, one
+directory per family, holding files whose names are opaque numbers. Every
+lookup by file name therefore said the machine did not have the face Word had
+just laid the document in, and every document written since 2024 — which is to
+say every document a new Word writes — was measured in a stand-in. One of them
+was a hundred and fifteen points out. The directory name is the family and the
+style is in the file, so reading it is thirty lines; finding it took a search of
+the whole disk, because the question "is this face installed?" had only ever
+been asked of the places faces are installed.
+
+**`<w:kern>` is a threshold and Word's own document defaults set it.** The
+shaper measured a run letter by letter to keep HarfBuzz from closing up pairs
+Word leaves open — sound, except that `docDefaults` says `<w:kern w:val="2"/>`
+in every file Word writes, which means every ordinary run kerns. Three tenths of
+a point per word, invisible in a line and three hundred and twenty-eight words
+out of place over a page.
+
+**A style's `<w:tblInd w:w="0">` is not a stated indent.** Word's built-in
+Normal Table names one, so every ordinary table inherits it; read as an indent
+stated by the table it hangs the table's edge a cell's padding into the margin,
+and the rule down the left of a plain table sits where nothing draws it. What
+the file says and what the *table* says are different questions, and only the
+second moves the table.
+
+**A `.doc` says its default font in the stylesheet's header, not in a style.**
+There is no `docDefaults` in the binary format; `STSHI.rgftcStandardChpStsh`
+holds the three faces — Latin, East Asian, complex — a run falls back to, and
+without it every document Word wrote after 2007 was laid in Times New Roman
+rather than in the Calibri it says right there. The same document then wanted
+`sprmPFContextualSpacing` and `sprmCIss`: a list whose items do not close up and
+a footnote number set full size in the middle of a word are both the same kind
+of miss — a property the modern format has and the reader only implemented on
+that side.
+
+**A repeated table header row was paginated for and never drawn.** The page
+made room for it — the arithmetic was right, and every page after the first held
+one row fewer — and then nothing put the ink there, so a fifty-row table showed
+a blank band at the top of every continuation page and its rows sat a row's
+height too high. Reserving room is half of it; the half that shows is the other.

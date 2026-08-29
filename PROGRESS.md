@@ -3860,3 +3860,48 @@ Three faults were found on the way and are worth keeping:
 - [-] **.doc / .xls writing** — never; save-as-modern is the escape hatch.
 - [-] **Macros / VBA** — preserved verbatim, never executed.
 - [-] **PowerPoint** — out of scope.
+
+## The corpus, measured to nothing over five points
+
+The compare harness was pointed at its own record and the worst differences
+worked through in order. Every document in the corpus now measures **no word
+more than five points out of place**, and the worst single difference anywhere
+is 3.06pt, down from 115.20.
+
+```
+                                    out  >5pt unplaced  marks  lost    worst
+totals   before                    1289   542      548     89    26  115.20pt
+totals   after                      325     0       21      0    22    3.06pt
+```
+
+Eight faults, in the order the ranking gave them:
+
+- **Kerning.** `<w:kern>` names the size at or above which Word closes up its
+  pairs, and Word's own document defaults name two half-points — so every
+  ordinary run kerns, and the shaper was measuring every one of them letter by
+  letter. `headers-footers.docx` went from 328 words out to none.
+- **Aptos.** Office keeps its default face in a cloud-font cache rather than in
+  the font directory, so the machine had it and no lookup could find it.
+  `picture-watermark.docx` went from 115.20pt worst and 140 unplaceable words to
+  0.33pt and none; `watermark.docx` from 67.39pt and 366 to 0.42pt and none.
+- **Repeated header rows** were paginated for and never drawn.
+- **A table style's `<w:tblInd w:w="0">`** was read as a stated indent, hanging
+  every ordinary table's rule a cell's padding into the margin.
+- **A picture's line** took the type's own descent below the baseline rather
+  than the paragraph's spacing, losing two and a third points on the line that
+  holds an inline figure and every line after it.
+- **`sprmTWidthIndent`** — the `.doc` equivalent of `w:tblInd`, and the only
+  place the format states the indent to the *text* rather than to the rule.
+- **`STSHI.rgftcStandardChpStsh`** — where a `.doc` keeps the default font, for
+  want of which every modern document saved as `.doc` was laid in Times New
+  Roman. With it read, `sprmPFContextualSpacing` and `sprmCIss` were next.
+- **`.doc` footnotes** were read and never referenced: `PlcffndRef` joins the
+  marks in the running text to the notes, `PlcffndTxt` says where each note
+  begins, and the separator rule above them is the first of the six stories the
+  header document opens with.
+
+What is left is under three points and mostly one thing: a face not in the
+measured line-pitch table is laid at its ideal rounded to a twenty-fourth of a
+point, and Aptos's own laid pitch — measured now, but with a six-tenths
+correction where the accumulator pays halves — does not fit that machinery.
+`floating-image-wrap.docx` holds 296 of the remaining 325, all of it that drift.

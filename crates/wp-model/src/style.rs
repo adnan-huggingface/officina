@@ -502,6 +502,13 @@ impl StyleTable {
         available: crate::units::Twips,
     ) -> f64 {
         let mut stated = table.props_indent();
+        // Only an indent the table states for itself moves its edge off the
+        // margin. Word's built-in Normal Table names `<w:tblInd w:w="0">`, and
+        // every ordinary table inherits it; read as a stated indent it would
+        // hang the table's edge left of the margin by a cell's padding, which
+        // is measurably not where Word draws it — the rule down the left of a
+        // plain table sits on the margin and the text is padded in from there.
+        let own = stated.is_some();
         if stated.is_none() {
             let styled = table.style.or_else(|| self.default_style(StyleKind::Table));
             if let Some(id) = styled {
@@ -513,6 +520,9 @@ impl StyleTable {
             }
         }
         let Some(indent) = stated else { return 0.0 };
+        if !own {
+            return indent.resolve(available).map(|t| t.points()).unwrap_or(0.0);
+        }
         let indent = indent.resolve(available).map(|t| t.points()).unwrap_or(0.0);
         let padding = self
             .resolve_cell_margins(table)

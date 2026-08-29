@@ -5168,6 +5168,7 @@ impl Scriva {
             size: 100.0,
             bold: false,
             italic: false,
+            kern: false,
         };
         let section = &self.document.section;
         let across = section.text_width().points();

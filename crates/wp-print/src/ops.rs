@@ -553,6 +553,9 @@ fn played(out: &mut Vec<Op>, prim: &metafile::Prim, at: (f64, f64), scale: (f64,
                     size: size * along,
                     bold: *bold,
                     italic: *italic,
+                    // The advances are already measured; this only names the
+                    // face the painter draws with.
+                    kern: false,
                 },
                 rgb: *rgb,
                 rotation: *rotation,

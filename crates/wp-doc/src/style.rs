@@ -43,6 +43,27 @@ pub fn read(
     // writes ten; a later version may write more, and the name is after it.
     let base = read_u16(stsh, 4) as usize;
 
+    // `STSHI.rgftcStandardChpStsh` — the three faces (Latin, East Asian,
+    // complex) a run falls back to when neither it nor its style names one.
+    // A `.doc` has no `docDefaults`; this is where the same answer lives, and
+    // without it every document Word wrote after 2007 was laid in Times New
+    // Roman rather than in the Calibri it says here.
+    if header >= 14 {
+        let standard = |at: usize| {
+            fonts
+                .get(read_u16(stsh, at) as usize)
+                .filter(|name| !name.is_empty())
+                .cloned()
+        };
+        let mut defaults = wp_model::style::DocDefaults::default();
+        let latin = standard(14);
+        defaults.run.fonts.ascii = latin.clone();
+        defaults.run.fonts.high_ansi = latin;
+        defaults.run.fonts.east_asian = standard(16);
+        defaults.run.fonts.complex = standard(18);
+        styles.set_doc_defaults(defaults);
+    }
+
     let mut at = 2 + header;
     for _ in 0..count {
         let length = read_u16(stsh, at) as usize;

@@ -1954,7 +1954,21 @@ fn finish(
             // inline picture is laid at the picture's natural extent instead
             // (measured: a 1.2-spaced paragraph holds its 162.15pt picture on
             // a 164.74pt line, not a 194.6pt one).
-            LineSpacing::Multiple(n) => (base * n.multiple()).max(natural.min(object + descent)),
+            LineSpacing::Multiple(n) => {
+                // The room under a picture's baseline is the room under any
+                // other line of the paragraph: the spacing rule's leading
+                // goes below the type, and a picture standing in a line of
+                // words does not take that away from it. Measured on the
+                // floating-image document, whose 90pt picture shares a
+                // 1.158-spaced line of 12pt type: Word pitches that line at
+                // 95.3, not at the 93.0 the type's own descent alone gives,
+                // and every line after it was two and a third points high.
+                let below = match &top {
+                    Some(top) => (base * n.multiple() - top.above).max(descent),
+                    None => descent,
+                };
+                (base * n.multiple()).max(above.min(object) + below)
+            }
             LineSpacing::AtLeast(t) => natural.max(t.points()),
             // `exact` clips a tall glyph rather than growing the line, which is
             // what makes a document with a pasted large font lose the tops of

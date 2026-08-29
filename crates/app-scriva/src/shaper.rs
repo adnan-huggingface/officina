@@ -74,6 +74,9 @@ struct Key {
     size: u32,
     bold: bool,
     italic: bool,
+    /// Whether the pairs are closed up — part of the key because the same face
+    /// at the same size measures differently on either side of it.
+    kern: bool,
 }
 
 /// Where the named-face codes start.
@@ -151,6 +154,7 @@ impl Egui {
             size: (font.size * 20.0).round().max(1.0) as u32,
             bold: font.bold,
             italic: font.italic,
+            kern: font.kern,
         }
     }
 
@@ -236,7 +240,7 @@ impl Egui {
                 let total: f64 = widths.iter().sum();
                 let each = if count > 0 { total / count as f64 } else { 0.0 };
                 widths = vec![each; count];
-            } else if text.chars().all(stands_alone) {
+            } else if !key.kern && text.chars().all(stands_alone) {
                 widths.clear();
                 for ch in text.chars() {
                     widths.push(self.on_its_own(key, ch));
@@ -506,6 +510,15 @@ fn ink_of(bytes: &[u8], text: &str) -> Option<Ink> {
 /// table is laid at its ideal rounded to a twenty-fourth of a point, and the
 /// half-point accumulator bounds the difference from Word below half a point
 /// either way.
+///
+/// **Aptos is measured and deliberately absent.** Word's default face since
+/// 2024 fits the same law with a base of exactly 1.2 times the size and a
+/// correction of *six* tenths of a point — `tools/word-probe` writes the
+/// probes and `fit.py` returns it to no residual at all — but the accumulator
+/// here pays halves, and entering the measured base with the wrong correction
+/// wobbled every line half a point where the rounded ideal drifts by a
+/// twentieth. Its ideal, the `hhea` sum, is within a thousandth of Word's own
+/// average pitch; the drift that is left is the rounding, not the face.
 fn measured_base(family: &str, half_points: u32) -> Option<f64> {
     const MEASURED: &[(&str, u32, f64)] = &[
         ("verdana", 16, 9.5662),
@@ -558,6 +571,7 @@ mod tests {
             size: 12.0,
             bold: true,
             italic: false,
+            kern: false,
         });
         assert_eq!(id.size, 12.0);
         assert_eq!(
@@ -578,6 +592,7 @@ mod tests {
             size: 10.0,
             bold: false,
             italic: true,
+            kern: false,
         });
         assert_eq!(
             id.family,

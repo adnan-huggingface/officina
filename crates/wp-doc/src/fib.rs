@@ -101,6 +101,10 @@ pub mod field {
     pub const STSHF: usize = 1;
     /// The section table.
     pub const PLCFSED: usize = 6;
+    /// Where each footnote reference stands in the main document.
+    pub const PLCFFND_REF: usize = 2;
+    /// Where each footnote begins in the footnote story.
+    pub const PLCFFND_TXT: usize = 3;
     /// The font table: what every `ftc` in the file is the name of.
     pub const STTBF_FFN: usize = 15;
     /// The header document's story boundaries.

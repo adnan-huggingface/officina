@@ -62,6 +62,7 @@ pub fn document(doc: &Doc) -> (wp_model::Document, Vec<Media>) {
     };
     let body = part(Part::Body);
     let headers = part(Part::Headers);
+    let footnotes = part(Part::Footnotes);
 
     // The font table is read first because everything that names a face names
     // it by an index into this and by nothing else — the styles as much as the
@@ -77,6 +78,7 @@ pub fn document(doc: &Doc) -> (wp_model::Document, Vec<Media>) {
         fonts,
         art: art::read(&doc.fib, &doc.table),
         anchors: anchors(doc, headers.0),
+        notes: note_marks(&doc.fib, &doc.table),
         media: RefCell::new(Vec::new()),
     };
     let blocks = read.blocks(body.0, body.1);
@@ -92,10 +94,46 @@ pub fn document(doc: &Doc) -> (wp_model::Document, Vec<Media>) {
     document.settings.no_leading = no_leading(&doc.fib, &doc.table);
     document.settings.no_tab_for_hanging_indent = no_tab_for_hanging_indent(&doc.fib, &doc.table);
     document.numbering = numbering;
+    document.footnotes = read.footnotes(footnotes.0, headers.0);
     document.headers = bodies;
     document.section.headers = section_headers;
     document.section.footers = section_footers;
     (document, read.media.into_inner())
+}
+
+/// A `Plc`'s character positions: `count + 1` of them, followed by `count`
+/// records of `size` bytes each.
+fn plc_positions(bytes: &[u8], size: usize) -> Vec<u32> {
+    let count = match bytes.len().checked_sub(4) {
+        Some(rest) => rest / (4 + size),
+        None => return Vec::new(),
+    };
+    (0..=count)
+        .filter_map(|index| {
+            let at = index * 4;
+            let chunk = bytes.get(at..at + 4)?;
+            Some(u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+        })
+        .collect()
+}
+
+/// Which note each note mark in the running text refers to, by the character
+/// position of the mark.
+///
+/// `PlcffndRef` numbers its entries in order, and the note at index *n* is the
+/// note the *n*th boundary of `PlcffndTxt` opens — so the join is by position
+/// in the table rather than by anything either side states.
+fn note_marks(fib: &crate::Fib, table: &[u8]) -> HashMap<u32, i32> {
+    let Some(bytes) = fib.slice(table, crate::fib::field::PLCFFND_REF) else {
+        return HashMap::new();
+    };
+    let positions = plc_positions(bytes, 2);
+    positions
+        .iter()
+        .take(positions.len().saturating_sub(1))
+        .enumerate()
+        .map(|(index, cp)| (*cp, index as i32 + 1))
+        .collect()
 }
 
 /// Every floating shape's anchor, by the character position of the `\x08` that
@@ -214,6 +252,11 @@ struct Reader<'a> {
     /// The pictures met so far. Held here rather than returned from every
     /// call because a picture is found in the middle of reading a run, and
     /// threading a sink through the whole walk to say so would be worse.
+    /// Which note each `` in the running text refers to, by the character
+    /// position of the mark. The two live in separate tables — the references
+    /// in the main document, the notes in a story of their own — and nothing
+    /// in the text itself joins them.
+    notes: HashMap<u32, i32>,
     media: RefCell<Vec<Media>>,
 }
 
@@ -297,6 +340,53 @@ impl Reader<'_> {
         }
     }
 
+    /// The footnotes, in the order `PlcffndTxt` names them.
+    ///
+    /// The story is a run of notes end to end, and only that table says where
+    /// one stops and the next begins. Each note's own trailing guard mark is
+    /// dropped, as a header story's is, so a note does not end in an empty
+    /// paragraph Word does not draw.
+    fn footnotes(&self, story_from: u32, header_doc_from: u32) -> Vec<wp_model::Note> {
+        let Some(bytes) = self
+            .doc
+            .fib
+            .slice(&self.doc.table, crate::fib::field::PLCFFND_TXT)
+        else {
+            return Vec::new();
+        };
+        let boundaries = plc_positions(bytes, 2);
+        let mut notes = Vec::new();
+        // The rule above the notes is a story of its own, and the layout draws
+        // it by laying that story out rather than by inventing a rule: without
+        // it the rule lands on the first note's own line, a line too low. It
+        // is the first of the six separator stories the header document opens
+        // with — before the section's headers and footers, which is why those
+        // are read from index six.
+        let acp = plcfhdd(&self.doc.fib, &self.doc.table);
+        if let (Some(&start), Some(&end)) = (acp.first(), acp.get(1)) {
+            if end > start {
+                notes.push(wp_model::Note {
+                    id: 0,
+                    kind: wp_model::NoteKind::Separator,
+                    content: self.blocks(header_doc_from + start, header_doc_from + end - 1),
+                });
+            }
+        }
+        for pair in boundaries.windows(2) {
+            let (start, end) = (pair[0], pair[1]);
+            if end <= start {
+                continue;
+            }
+            let id = notes.iter().filter(|note| note.kind.is_real()).count() as i32 + 1;
+            notes.push(wp_model::Note {
+                id,
+                kind: wp_model::NoteKind::Normal,
+                content: self.blocks(story_from + start, story_from + end - 1),
+            });
+        }
+        notes
+    }
+
     /// The first section's headers and footers: the bodies to add to the
     /// document, and the references that name them.
     ///
@@ -370,6 +460,19 @@ impl Reader<'_> {
         cp: u32,
         exception: Option<&fkp::Exception>,
     ) -> Option<ModelPiece> {
+        if character == mark::NOTE {
+            // The same character does both jobs. In the running text it is the
+            // reference and the table says which note; inside the note story
+            // there is no table entry, and what it stands for is the note's
+            // own number at the head of its text.
+            return Some(match self.notes.get(&cp) {
+                Some(&id) => ModelPiece::FootnoteRef {
+                    id,
+                    custom_mark: false,
+                },
+                None => ModelPiece::NoteMark { endnote: false },
+            });
+        }
         let drawing = match character {
             mark::OBJECT => self.inline_picture(exception?)?,
             mark::SHAPE => self.floating_shape(cp)?,
@@ -662,13 +765,11 @@ fn pieces(
             // A picture, a shape's anchor, a note reference or the mark that
             // ends a cell. The first two stand for something the drawing layer
             // holds; the last two for something that is not in the text at all.
-            mark::OBJECT | mark::SHAPE => {
+            mark::OBJECT | mark::SHAPE | mark::NOTE => {
                 flush(&mut buffer, &mut out, code.last().copied().unwrap_or(false));
                 out.extend(drawing(character, cp));
             }
-            mark::NOTE | mark::CELL => {
-                flush(&mut buffer, &mut out, code.last().copied().unwrap_or(false))
-            }
+            mark::CELL => flush(&mut buffer, &mut out, code.last().copied().unwrap_or(false)),
             '\u{0}' => {}
             other => buffer.push(other),
         }
@@ -951,7 +1052,16 @@ impl Building {
         // the demonstration document's tables state 720, Word rules them at
         // 720 with their text a padding further in at 828, and the file says
         // 828 itself in the `sprmTWidthIndent` it carries alongside.
-        if let Some(left) = boundaries.first() {
+        // The row's own `sprmTWidthIndent`, where it carries one, is the
+        // number `w:tblInd` means and needs no arithmetic at all.
+        if let Some(indent) = self
+            .geometry
+            .iter()
+            .flatten()
+            .find_map(|row| row.width_indent)
+        {
+            table.props.indent = Some(Width::Fixed(indent));
+        } else if let Some(left) = boundaries.first() {
             let padding = table
                 .props
                 .cell_margins

@@ -825,6 +825,7 @@ fn paint_metafile(
                     size: size * along,
                     bold: *bold,
                     italic: *italic,
+                    kern: false,
                 };
                 let font = shaper.font_id(&request);
                 let galley = painter.layout_no_wrap(text.clone(), font, ink(*rgb));

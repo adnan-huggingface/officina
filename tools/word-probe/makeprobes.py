@@ -32,7 +32,12 @@ def save(name, body):
 
 # Plain runs of identical lines: pitch over 29 gaps nails the line height.
 for font, half in [("Verdana", 20), ("Verdana", 28), ("Times New Roman", 20),
-                   ("Arial", 20), ("Calibri", 22)]:
+                   ("Arial", 20), ("Calibri", 22),
+                   # Word's own default face since 2024, and so the face most
+                   # documents this reads are set in. Not installed into the
+                   # font directory: Office fetches it into its cloud-font
+                   # cache, which is why it took a while to be measured at all.
+                   ("Aptos", 22), ("Aptos", 24), ("Aptos", 20)]:
     body = "".join(para(font, half) for _ in range(30))
     save(f"lines-{font.split()[0].lower()}-{half}.docx", body)
 

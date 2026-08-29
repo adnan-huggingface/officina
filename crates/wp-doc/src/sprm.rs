@@ -146,6 +146,18 @@ pub fn apply_run(props: &mut RunProps, data: &[u8], fonts: &[std::sync::Arc<str>
                     color: None,
                 })
             }
+            // `sprmCIss` — superscript, subscript or neither. Word draws a
+            // footnote's reference with it and nothing else says the mark is
+            // raised, so a reader that skips it sets the number full size in
+            // the middle of a word.
+            0x2A48 => {
+                props.vert_align = match sprm.u8() {
+                    Some(1) => Some(wp_model::prop::VertAlign::Superscript),
+                    Some(2) => Some(wp_model::prop::VertAlign::Subscript),
+                    Some(_) => Some(wp_model::prop::VertAlign::Baseline),
+                    None => None,
+                }
+            }
             0x2A42 => props.color = sprm.u8().and_then(ico),
             0x2A0C => props.highlight = sprm.u8().and_then(highlight),
             // The three faces a run can name, one per script. The first is the
@@ -267,6 +279,16 @@ pub fn apply_para(props: &mut ParaProps, data: &[u8]) {
             0x2406 => props.keep_next = sprm.toggle(),
             0x2407 => props.page_break_before = sprm.toggle(),
             0x2431 => props.widow_control = sprm.toggle(),
+            // `sprmPFContextualSpacing` — "don't add space between paragraphs
+            // of the same style", which is how every list Word writes closes
+            // its items up. Without it every bullet after the first sits its
+            // own space-after too far down the page.
+            0x246D => props.contextual_spacing = sprm.toggle(),
+            // `sprmPFContextualSpacing` — "don't add space between paragraphs
+            // of the same style", which is how every list Word writes closes
+            // its items up. Without it a bulleted list stands its own spacing
+            // between each pair of bullets and every item after the first sits
+            // too far down the page.
             // Direct tab stops (PChgTabsOperand) and a style's own tab stops
             // (PChgTabsPapxOperand, found only inside a style's UpxPapx) are
             // different operand shapes for the same idea — the former has a
@@ -476,6 +498,13 @@ pub struct TableRow {
     /// `sprmTDyaRowHeight`: positive is "at least", negative is "exactly", and
     /// zero is "whatever the content needs".
     pub height: Option<RowHeight>,
+    /// `sprmTWidthIndent` — the indent Word measures to the *text* in the first
+    /// cell, which is the number `w:tblInd` also means. Written alongside the
+    /// boundaries and authoritative over them: a table whose first boundary is
+    /// zero and whose width-indent is zero has its text on the margin and its
+    /// rule half a gap out into it, and reading only the boundary puts every
+    /// cell a padding too far right.
+    pub width_indent: Option<Twips>,
     /// `sprmTCellPaddingDefault` — the table's own cell margins, which a `.doc`
     /// states per row alongside everything else about the row.
     pub padding: Option<CellMargins>,
@@ -515,6 +544,7 @@ pub fn table_row(data: &[u8]) -> TableRow {
             0xD608 => def_table(&mut row, sprm.operand),
             0xD605 => row.borders = Some(table_borders_80(sprm.operand)),
             0x9602 => row.gap_half = sprm.i16().map(|half| Twips(half as i32)),
+            0xF661 => row.width_indent = width_indent(sprm.operand),
             0x9407 => row.height = sprm.i16().map(row_height),
             0xD634 => cell_padding_default(&mut row, sprm.operand),
             // `sprmTJc` states the logical justification and `sprmTJc90` the
@@ -526,6 +556,17 @@ pub fn table_row(data: &[u8]) -> TableRow {
         }
     }
     row
+}
+
+/// `sprmTWidthIndent`'s operand: a one-byte `ftsWidth` and a two-byte width.
+/// Only `ftsWidth` 3 — twentieths of a point — is an indent this can use; the
+/// percentage and automatic forms say nothing about where the text lands.
+fn width_indent(op: &[u8]) -> Option<Twips> {
+    let width = i16::from_le_bytes([*op.get(1)?, *op.get(2)?]);
+    match op.first()? {
+        3 => Some(Twips(i32::from(width))),
+        _ => None,
+    }
 }
 
 /// `sprmTJc`'s three positions. Anything else is a value this reader does not

@@ -439,6 +439,68 @@ fn candidates(family: Family, bold: bool, italic: bool) -> Vec<&'static str> {
     all
 }
 
+/// The faces Office downloaded rather than Windows installed.
+///
+/// Word's own default type since 2024 — Aptos — is not shipped with Windows
+/// and is not installed into the font directory: Office fetches it on first
+/// use into `FontCache\4\CloudFonts`, one directory per family, holding files
+/// whose names are opaque numbers. A machine can therefore *have* the face
+/// Word laid a document in while every lookup by file name says it does not,
+/// and the document is then measured in a stand-in whose every line breaks
+/// somewhere else. The directory name is the family; the style is read out of
+/// the file, because the number tells nothing.
+///
+/// Returns `(lowercase family, bold, italic, path)`.
+fn cloud_faces() -> Vec<(String, bool, bool, PathBuf)> {
+    let Some(local) = std::env::var_os("LOCALAPPDATA") else {
+        return Vec::new();
+    };
+    let root = PathBuf::from(local).join("Microsoft/FontCache/4/CloudFonts");
+    let Ok(families) = std::fs::read_dir(&root) else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    for family in families.flatten() {
+        let name = family.file_name().to_string_lossy().to_ascii_lowercase();
+        let Ok(files) = std::fs::read_dir(family.path()) else {
+            continue;
+        };
+        for file in files.flatten() {
+            let path = file.path();
+            let Ok(bytes) = std::fs::read(&path) else {
+                continue;
+            };
+            let Some((bold, italic)) = mac_style(&bytes) else {
+                continue;
+            };
+            found.push((name.clone(), bold, italic, path));
+        }
+    }
+    found
+}
+
+/// The bold and italic bits of a TrueType file's `head` table.
+///
+/// `None` when the bytes are not a single TrueType face this can read — a
+/// collection, or anything truncated.
+fn mac_style(bytes: &[u8]) -> Option<(bool, bool)> {
+    let at = |i: usize| -> Option<u16> {
+        Some(u16::from_be_bytes([*bytes.get(i)?, *bytes.get(i + 1)?]))
+    };
+    let tables = at(4)?;
+    for index in 0..usize::from(tables) {
+        let entry = 12 + 16 * index;
+        if bytes.get(entry..entry + 4)? != b"head" {
+            continue;
+        }
+        let offset =
+            u32::from_be_bytes(bytes.get(entry + 8..entry + 12)?.try_into().ok()?) as usize;
+        let style = at(offset + 44)?;
+        return Some((style & 1 != 0, style & 2 != 0));
+    }
+    None
+}
+
 /// Where to look for a bare font file name.
 pub(crate) fn font_directories() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
@@ -568,6 +630,31 @@ pub fn register(ctx: &egui::Context, dirs: &[PathBuf]) -> Loaded {
             definitions.families.insert(family.clone(), chain);
             named.insert((name.to_string(), bold, italic), family);
         }
+    }
+    // The faces Office downloaded, under the family name the document asks
+    // for. After the shipped table, so a name that is both installed and
+    // cached keeps the file Windows has.
+    for (name, bold, italic, path) in cloud_faces() {
+        if named.contains_key(&(name.clone(), bold, italic)) {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(&path) else {
+            continue;
+        };
+        let key = format!("cloud-{name}-{}{}", bold as u8, italic as u8);
+        let family =
+            egui::FontFamily::Name(format!("{name}-{}{}", bold as u8, italic as u8).into());
+        let mut chain: Vec<String> = definitions
+            .families
+            .get(&face(Family::of(&name), bold, italic))
+            .cloned()
+            .unwrap_or_default();
+        definitions
+            .font_data
+            .insert(key.clone(), Arc::new(egui::FontData::from_owned(bytes)));
+        chain.insert(0, key);
+        definitions.families.insert(family.clone(), chain);
+        named.insert((name, bold, italic), family);
     }
     // A second registration keeps the first process-wide answer — which is
     // fine, because it is also the set of families epaint was actually given.
@@ -707,6 +794,17 @@ pub fn face_file(name: &str, bold: bool, italic: bool) -> Option<(PathBuf, Vec<u
         files.extend(candidates(Family::of(sub), bold, italic));
     }
     files.extend(candidates(Family::of(name), bold, italic));
+    // A cloud face is found by family, not by file name, so it is asked for
+    // separately — and before the generic candidates, because it is the exact
+    // face the document named.
+    if let Some((_, _, _, path)) = cloud_faces()
+        .into_iter()
+        .find(|(family, b, i, _)| *family == lower && *b == bold && *i == italic)
+    {
+        if let Ok(bytes) = std::fs::read(&path) {
+            return Some((path, bytes));
+        }
+    }
     for file in files {
         for dir in &dirs {
             let path = dir.join(file);

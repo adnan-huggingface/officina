@@ -155,6 +155,13 @@ pub fn text_style(props: &RunProps, theme: &Theme, script: Script, fallback: &st
             _ => Toggle::Bold,
         }) || props.toggles.is_on(Toggle::Bold),
         italic: props.toggles.is_on(Toggle::Italic) || props.toggles.is_on(Toggle::ItalicCs),
+        // `<w:kern>` is a threshold, not a switch: it names the size at or
+        // above which Word closes up the pairs, and zero means never. Word's
+        // own document defaults name two half-points, so this is on for
+        // ordinary prose and the exception is a run that turns it off.
+        kern: props
+            .kern
+            .is_some_and(|least| least.0 > 0 && f64::from(least.0) / 2.0 <= size.points()),
     };
 
     // Superscript and subscript are a position, and Word shrinks the glyphs
