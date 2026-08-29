@@ -3944,16 +3944,52 @@ rather than as one producer's dialect. Four documents held real faults.
   its own type was measured in a substitute. Fixed in `wp-compare` rather than
   in the layout, because the layout was never wrong.
 
+Then the largest of them was measured properly rather than set aside.
+
+- **Word closes the spaces of a justified line up to hold one more word.**
+  Found by removing the justification from a copy of the worst document: ragged,
+  it measured 0 out against Word on every one of its eleven pages, which said
+  the widths and the break points were exactly right and the fault was in the
+  justification alone. Measured with a probe — one paragraph of fixed text, the
+  right indent stepped a tenth of a point at a time so the column crosses the
+  line's natural width by a known amount — Word holds the last word until the
+  spaces stand at three quarters of their natural width. With that,
+  `sample-docx-file-for-testing.docx` went from 3755 to 338 and from eleven
+  pages to Word's ten.
+- **It is `compatibilityMode` fifteen that turns it on.** Closing spaces up in
+  every document made three others measurably worse — `file-sample_100kB.docx`
+  from 21 to 167, the `.doc` from 31 to 244 — and the documents that wanted it
+  and the documents that did not divided exactly on whether `settings.xml`
+  declares mode fifteen. The probe had inherited the package of a mode-fifteen
+  document, which is why it measured the new behaviour so cleanly.
+- **A face embedded under a null key is not one Word draws with.** Registering
+  a document's own faces in the harness made `resume.docx` five times worse:
+  it carries plain TrueType under `{00000000-…-000000000000}`, and a symbol
+  face 1.48em tall was then raising every bulleted line by four and three
+  quarter points. Word pitches those lines at the text face's own ascent, so it
+  is substituting; refused at the key, the document went back to 155 with
+  nothing unmatched.
+
+| file | first measured | now |
+|---|---|---|
+| `two_sections.docx` | 0 | 0 |
+| `file-sample_100kB.docx` | 21 | 21 |
+| `file-sample_500kB.docx` | 21 | 21 |
+| `file-sample_1MB.docx` | 21 | 21 |
+| `resume.docx` | 1147 | 155 |
+| `demo.docx` | 1455 | 444 |
+| `table_render_test.doc` | 221 | 221 |
+| `sample-docx-file-for-testing.docx` | 3755 | 338 |
+
 What is left is diagnosed and deliberately not fixed:
 
-- `sample-docx-file-for-testing.docx` (3755, and one page more than Word) is a
-  10.5pt Arial document set justified to a 451pt column. Every unjustified last
-  line lands within three tenths of a point, so the widths are right; the lines
-  that go wrong are the full ones, where a fraction of a point decides whether
-  one more word fits, and the difference then compounds into a whole extra
-  page. A tolerance in the fit test was tried at one twip, a third of a point
-  and a whole point: it improves the count smoothly and never resolves it, so
-  it is drift rather than a threshold Word rounds at.
+- `sample-docx-file-for-testing.docx`'s remaining 338 is the boundary of the
+  rule above: three of its ten pages are exact and the rest hold a handful of
+  lines where Word chose the other way. Word is not simply squeezing whenever
+  it can — the same document has it accept a line needing three quarters and
+  refuse one needing seven eighths, at the same number of spaces — so a second
+  condition is at work that the document itself cannot settle. It would take
+  the probe again, over the shape of the line rather than over the column.
 - `demo.docx`'s remaining 444 is 400 on the two pages that use its embedded
   Ubuntu Mono. Both renderings agree on where the run ends — it is the same
   width in both — and disagree only about where each glyph inside it sits,

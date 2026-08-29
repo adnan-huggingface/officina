@@ -1145,6 +1145,18 @@ pub struct Settings {
     /// which in the demonstration document sends a lettered heading's text
     /// eighteen points past where it would otherwise sit.
     pub no_tab_for_hanging_indent: bool,
+    /// `<w:compatSetting w:name="compatibilityMode">` — which Word's own text
+    /// engine this document is laid out by.
+    ///
+    /// **Fifteen is where Word began closing up the spaces of a justified
+    /// line.** Measured against Word over a paragraph of fixed text and a
+    /// right indent stepped a tenth of a point at a time: a document in mode
+    /// fifteen holds the last word of a line until its spaces stand at three
+    /// quarters of their natural width, and one with no `<w:compat>` at all
+    /// breaks as soon as the word will not fit beside spaces of the width the
+    /// face states. Nothing else about the two documents differs — same face,
+    /// same size, same column — so the mode is the whole of it.
+    pub compatibility_mode: u32,
 }
 
 impl Default for Settings {
@@ -1162,6 +1174,9 @@ impl Default for Settings {
             has_rsids: false,
             no_leading: false,
             no_tab_for_hanging_indent: false,
+            // Word writes no `<w:compat>` at all for a document it is keeping
+            // in an older mode, and the oldest is what that means.
+            compatibility_mode: 0,
         }
     }
 }

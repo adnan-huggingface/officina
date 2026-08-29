@@ -217,6 +217,9 @@ pub struct Context<'a> {
     /// ask for between lines. A document-wide setting rather than a paragraph
     /// one, and it changes the height of every line in the document.
     pub no_leading: bool,
+    /// Whether a justified line may close its spaces up to hold one more word.
+    /// See [`SQUEEZE`]: Word began doing it in compatibility mode fifteen.
+    pub close_up_justified: bool,
     /// `<w:doNotUseIndentAsNumberingTabStop/>` — the hanging indent of a
     /// numbered paragraph is not a stop for the tab that follows its number.
     pub no_tab_for_hanging_indent: bool,
@@ -261,6 +264,7 @@ impl Default for Context<'_> {
             styles: Box::leak(Box::new(wp_model::style::StyleTable::default())),
             default_tab: Twips(720),
             no_leading: false,
+            close_up_justified: false,
             no_tab_for_hanging_indent: false,
             fallback_font: "Calibri",
             has_face: |_| false,
@@ -383,6 +387,13 @@ pub fn layout(
     let first = indent.first_line_offset().points();
 
     let tabs = tab_stops(layers, ctx);
+    // Only a justified paragraph may close its spaces up to take one more
+    // word. Every other kind sets its spaces at their natural width and breaks
+    // when the next word will not fit beside them.
+    let squeeze = match (ctx.close_up_justified, layers.para.justify) {
+        (true, Some(Justify::Both | Justify::Distribute)) => SQUEEZE,
+        _ => 0.0,
+    };
     // Which lines a float narrows cannot be known before the lines exist, and
     // the lines cannot be laid without knowing how wide they are. So it is
     // settled by going round: lay them, see which ones the float actually
@@ -391,7 +402,9 @@ pub fn layout(
     let mut indents: Vec<Gap> = Vec::new();
     let mut lines;
     for _ in 0..4 {
-        lines = fill(&units, width, start, end, first, &tabs, ctx, &indents);
+        lines = fill(
+            &units, width, start, end, first, &tabs, ctx, squeeze, &indents,
+        );
         finish(
             &mut lines, layers, width, start, end, first, &indents, paragraph, ctx, shaper,
         );
@@ -401,7 +414,9 @@ pub fn layout(
         }
         indents = settled;
     }
-    let mut lines = fill(&units, width, start, end, first, &tabs, ctx, &indents);
+    let mut lines = fill(
+        &units, width, start, end, first, &tabs, ctx, squeeze, &indents,
+    );
     finish(
         &mut lines, layers, width, start, end, first, &indents, paragraph, ctx, shaper,
     );
@@ -1380,6 +1395,26 @@ fn push_text(
 
 /// Greedy line filling.
 #[allow(clippy::too_many_arguments)]
+/// How much of its spaces a justified line will give up to hold one more word.
+///
+/// **Word closes the spaces of a justified line up rather than letting a word
+/// it could nearly fit fall to the next line.** Measured against Word over a
+/// paragraph of fixed text and a right indent stepped a tenth of a point at a
+/// time, so that the column crosses the line's natural width by a known
+/// amount: with four spaces on the line Word held the last word until the
+/// spaces stood at 0.7515 of their natural width, and with six until 0.7540,
+/// refusing at 0.7523. Three quarters, in other words, and the same three
+/// quarters whether the line is short of words or full of them.
+///
+/// It is not a nicety. The document this was measured on sets 10.5pt Arial
+/// justified to a 451pt column, and laying every line at its natural width
+/// fitted one word fewer on line after line — enough, by the end, to make a
+/// whole eleventh page that Word does not have. Ragged, the same document had
+/// already measured exactly right, which is what said the fault was in the
+/// justification and not in the type.
+const SQUEEZE: f64 = 0.25;
+
+#[allow(clippy::too_many_arguments)]
 fn fill(
     units: &[Unit],
     width: f64,
@@ -1388,6 +1423,9 @@ fn fill(
     first: f64,
     tabs: &[TabStop],
     ctx: &Context<'_>,
+    // How much of a line's own spaces a justified paragraph may give back in
+    // order to fit one more word on it. See [`SQUEEZE`].
+    squeeze: f64,
     // How far each line stands clear of something beside the paragraph, on
     // the left and on the right. Short or empty means the rest of the lines
     // are unobstructed.
@@ -1406,6 +1444,8 @@ fn fill(
     // hang past the margin instead of counting against it.
     let mut pen = 0.0f64;
     let mut used = 0.0f64;
+    // The natural width of the spaces between the words already on this line.
+    let mut spaces = 0.0f64;
     let gap_at = |line: usize| beside.get(line).copied().unwrap_or_default();
     let available = |is_first: bool, line: usize| {
         let left = if is_first { start + first } else { start };
@@ -1520,7 +1560,11 @@ fn fill(
                 pen = to;
             }
         }
-        let fits = pen + unit.width <= limit + 0.01;
+        // The spaces already on this line are what the line has to give: the
+        // last unit's own trailing space hangs past the margin and is not one
+        // of them, which is why this counts what has been placed rather than
+        // what is about to be.
+        let fits = pen + unit.width <= limit + spaces * squeeze + 0.01;
         if !fits && !fragments.is_empty() {
             // The break belongs at the head of whatever cluster this unit is
             // part of, not between it and the piece it is joined to.
@@ -1543,6 +1587,7 @@ fn fill(
             rewind.clear();
             pen = 0.0;
             used = 0.0;
+            spaces = 0.0;
             is_first = false;
             continue;
         }
@@ -1556,7 +1601,7 @@ fn fill(
                 lines.push(raw_line(std::mem::take(&mut fragments), head.width, None));
                 let mut rest = units[index + 1..].to_vec();
                 rest.insert(0, tail);
-                return continue_fill(lines, &rest, width, start, end, tabs, ctx, beside);
+                return continue_fill(lines, &rest, width, start, end, tabs, ctx, squeeze, beside);
             }
         }
 
@@ -1564,6 +1609,7 @@ fn fill(
         fragments.push(fragment_of(unit, pen));
         used = pen + unit.width;
         pen = used + unit.trailing;
+        spaces += unit.trailing;
         index += 1;
     }
     // The final line — except after a trailing page or column break, where
@@ -1594,11 +1640,12 @@ fn continue_fill(
     end: f64,
     tabs: &[TabStop],
     ctx: &Context<'_>,
+    squeeze: f64,
     beside: &[Gap],
 ) -> Vec<Line> {
     // Every line after the first uses the non-first-line indent, which is what
     // passing `0.0` for the first-line offset says.
-    let rest = fill(units, width, start, end, 0.0, tabs, ctx, beside);
+    let rest = fill(units, width, start, end, 0.0, tabs, ctx, squeeze, beside);
     lines.extend(rest);
     lines
 }
@@ -2001,7 +2048,12 @@ fn finish(
         let gap = beside.get(index).copied().unwrap_or_default();
         let left = gap.indent + if is_first { start + first } else { start };
         let limit = (width - end - left - gap.inset).max(0.0);
-        let slack = (gap.reach(limit) - line.width).max(0.0);
+        // What the line has left over, which a justified line spreads between
+        // its words. It goes negative when the breaker took a word the line
+        // could only hold by closing its spaces up — see [`SQUEEZE`] — and
+        // spreading a negative gap is exactly what closing them up is.
+        let give = gap.reach(limit) - line.width;
+        let slack = give.max(0.0);
         // The last line of a justified paragraph is not stretched, and neither
         // is one ended by an explicit break. `distribute` stretches both, which
         // is the whole difference between it and `both`.
@@ -2025,9 +2077,9 @@ fn finish(
                 _ => 0.0,
             };
 
-        if stretch && line.fragments.len() > 1 && slack > 0.0 {
+        if stretch && line.fragments.len() > 1 && give != 0.0 {
             let gaps = (line.fragments.len() - 1) as f64;
-            let extra = slack / gaps;
+            let extra = give / gaps;
             for (position, fragment) in line.fragments.iter_mut().enumerate() {
                 fragment.x += extra * position as f64;
             }
@@ -2117,6 +2169,7 @@ mod tests {
             contents: Box::leak(Box::new(crate::field::Contents::default())),
             default_tab: Twips(720),
             no_leading: false,
+            close_up_justified: false,
             no_tab_for_hanging_indent: false,
             fallback_font: "test",
             has_face: |_| false,
@@ -2437,6 +2490,46 @@ mod tests {
         layers.para.justify = Some(Justify::End);
         let laid = lay_with(Paragraph::of("abcd"), layers, 100.0);
         assert_eq!(laid.lines[0].x, 80.0);
+    }
+
+    #[test]
+    fn a_justified_line_closes_its_spaces_up_to_hold_one_more_word() {
+        // The fixed shaper sets every character five points wide, space
+        // included, so "aa bb cc" is forty wide with ten points of space in
+        // it. A column of thirty-eight cannot hold it at the spaces' natural
+        // width, and can once they may stand at three quarters of it — which
+        // is what Word does in compatibility mode fifteen and what it does not
+        // do in a document written for an older one.
+        let mut layers = layers();
+        layers.para.justify = Some(Justify::Both);
+        let theme = theme();
+        let mut open = ctx(&theme);
+        open.close_up_justified = true;
+        let mut shaper = crate::shape::Fixed;
+        let closed = layout(
+            &Paragraph::of("aa bb cc"),
+            0,
+            &layers,
+            None,
+            &open,
+            38.0,
+            None,
+            &mut shaper,
+        );
+        assert_eq!(closed.lines.len(), 1, "the whole of it fits, squeezed");
+
+        let older = ctx(&theme);
+        let apart = layout(
+            &Paragraph::of("aa bb cc"),
+            0,
+            &layers,
+            None,
+            &older,
+            38.0,
+            None,
+            &mut shaper,
+        );
+        assert_eq!(apart.lines.len(), 2, "the older mode breaks instead");
     }
 
     #[test]

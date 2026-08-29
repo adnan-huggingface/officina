@@ -91,6 +91,7 @@ fn lay_with(document: &Document, memo: Option<&Memo>) -> Vec<block::Page> {
         table_part: None,
         default_tab: document.settings.default_tab_stop,
         no_leading: document.settings.no_leading,
+        close_up_justified: document.settings.compatibility_mode >= 15,
         no_tab_for_hanging_indent: document.settings.no_tab_for_hanging_indent,
         fallback_font: "test",
         has_face: |_| false,

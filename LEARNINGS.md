@@ -1584,3 +1584,30 @@ machine substitutes — and every line of it came out wrong in a way that looked
 exactly like a shaping error. The application had adopted a document's own
 faces since the day it could open one; the instrument that claims to lay out
 the way the application does had not.
+
+**Word closes the spaces of a justified line up rather than let a word it could
+nearly fit fall to the next line.** Measured with a paragraph of fixed text and
+a right indent stepped a tenth of a point at a time, so the column crosses the
+line's natural width by a known amount: Word holds the last word until the
+spaces stand at three quarters of their natural width. A document set 10.5pt
+Arial justified to a 451pt column lost a word a line without it and grew a
+whole eleventh page that Word does not have; ragged, the same document already
+measured exactly right, which is what said the fault was in the justification
+and not in the type.
+
+**It is `compatibilityMode` fifteen that decides it.** The same experiment run
+on a document with no `<w:compat>` at all breaks as soon as a word will not fit
+beside spaces of the width the face states. Nothing else about the two
+documents differs — same face, same size, same column — so the mode is the
+whole of it, and closing spaces up in a document written for an older Word made
+three of five test documents measurably worse before the mode gated it.
+
+**A face embedded under a null key is not one Word will draw with.** The
+obfuscation ECMA-376 §17.8.1 describes is a XOR, so sixteen zero bytes leave
+the file as itself: a second producer embeds plain TrueType under
+`{00000000-0000-0000-0000-000000000000}` and it reads as a perfectly good face.
+Word substitutes for it. The document that showed this names a symbol face
+1.48em tall for its bullets, and Word pitches every bulleted line at the
+ascent of the *text's* face — which it could not do if it were drawing the
+bullet in the face the file carries.
+

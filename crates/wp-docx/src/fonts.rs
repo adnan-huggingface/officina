@@ -60,6 +60,18 @@ pub fn embedded(package: &Package, parts: &DocumentParts) -> Vec<EmbeddedFace> {
             continue;
         };
         let Some(key) = font_key(&key) else { continue };
+        // **A null key is not a key, and Word will not draw with the face it
+        // unlocks.** The obfuscation is its own undoing, so a font scrambled
+        // with sixteen zero bytes arrives as itself and reads as a perfectly
+        // good face — which is how a second producer comes to embed a plain
+        // TrueType file under a key of all zeros. Word substitutes for it
+        // instead: measured on such a document, whose list levels name a
+        // symbol face 1.48em tall, Word pitches every bulleted line at the
+        // ascent of the *text's* face and not at the symbol's, which it could
+        // not do if it were drawing the bullet in the face the file carries.
+        if key == [0; 16] {
+            continue;
+        }
         let bytes = deobfuscate(font.data(), &key);
         if !is_font(&bytes) {
             continue;
@@ -176,6 +188,21 @@ mod tests {
     fn a_key_of_the_wrong_length_is_refused() {
         assert!(font_key("{3EEE3167}").is_none());
         assert!(font_key("").is_none());
+    }
+
+    #[test]
+    fn a_face_embedded_under_a_null_key_is_not_one_word_will_draw_with() {
+        // The obfuscation is a XOR, so sixteen zero bytes leave the file as
+        // itself: a second producer that writes plain TrueType under a key of
+        // all zeros produces something that reads as a perfectly good face and
+        // that Word nonetheless substitutes for. Taking it made every bulleted
+        // line of such a document as tall as the symbol face's ascent.
+        assert!(font_key("{00000000-0000-0000-0000-000000000000}").is_some());
+        assert_eq!(
+            font_key("{00000000-0000-0000-0000-000000000000}"),
+            Some([0; 16]),
+            "a null key parses, and is refused where it is used rather than here"
+        );
     }
 
     #[test]

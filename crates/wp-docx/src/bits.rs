@@ -44,6 +44,9 @@ pub(crate) fn settings(xml: &[u8]) -> Settings {
                 b"noTabHangInd" | b"doNotUseIndentAsNumberingTabStop" => {
                     settings.no_tab_for_hanging_indent |= on_off(&e)
                 }
+                b"compatSetting" if attr(&e, b"name").as_deref() == Some("compatibilityMode") => {
+                    settings.compatibility_mode = attr_u32(&e, b"val").unwrap_or(0)
+                }
                 _ => {}
             },
             Event::Eof => break,
@@ -222,6 +225,22 @@ mod tests {
         assert!(settings.has_rsids);
         assert!(!settings.protected);
         assert!(!settings.no_leading);
+    }
+
+    #[test]
+    fn the_compatibility_mode_is_read_because_it_decides_how_a_line_is_justified() {
+        // Fifteen is where Word began closing the spaces of a justified line
+        // up to hold one more word; a document with no `<w:compat>` at all is
+        // laid out the older way, and the difference is a word a line.
+        let modern = settings(
+            br#"<w:settings><w:compat><w:compatSetting w:name="compatibilityMode" w:uri="http://schemas.microsoft.com/office/word" w:val="15"/></w:compat></w:settings>"#,
+        );
+        assert_eq!(modern.compatibility_mode, 15);
+        assert_eq!(
+            settings(br#"<w:settings></w:settings>"#).compatibility_mode,
+            0,
+            "no compat at all is the oldest mode"
+        );
     }
 
     #[test]
