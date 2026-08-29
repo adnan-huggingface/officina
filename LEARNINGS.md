@@ -1480,6 +1480,22 @@ crossing short of its neighbour, and unmatchable against the single rule the
 other renderer drew. A break as wide as the rule's own thickness is a break; a
 gap between two boxes is a gap somebody meant.
 
+**A float is a rectangle, and there is only one mechanism.** Word does not
+have one rule for text beside a picture and another for text below it: the
+picture is a rectangle on the page and every line that meets it goes round.
+Reserving a float's height in the flow is a second mechanism, and a second
+mechanism is right only where going round is impossible — a picture as wide as
+the column. Where it was applied to a float with room beside it, the whole
+paragraph started a picture's height too low, its own inline neighbours
+included, and the picture beside the text was correct all along.
+
+**Text goes on *both* sides of a float, on the same line.** Choosing the wider
+side is not a smaller version of the truth, it is a different page: every word
+Word had set in the ninety-one point channel to the picture's left was thrown
+three hundred and twenty points across it. A line does not need a new shape to
+express this — a fragment's x is already a free offset — only a pen that steps
+over the hole instead of through it.
+
 **A cache that repairs itself turns a check into a formality.** The corpus is
 held to Word's committed readings, and a reading names the probe script it came
 from. Change the script — a docstring was enough — and every reading is stale.

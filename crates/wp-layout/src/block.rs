@@ -1145,9 +1145,11 @@ fn flow_drop_cap(
         top += item.height;
     }
     into.obstacle = Some(inline::Obstacle {
+        from: 0.0,
         depth: height,
         indent: extent,
         inset: 0.0,
+        hole: None,
     });
     into.floating_baseline = Some((baseline, lines.max(1)));
 }
@@ -1211,9 +1213,11 @@ fn flow_floating_table(
     }
 
     into.obstacle = Some(inline::Obstacle {
+        from: 0.0,
         depth: height + below,
         indent: extent + gap,
         inset: 0.0,
+        hole: None,
     });
 }
 
@@ -1269,15 +1273,29 @@ pub fn flow_paragraph(
         notes_referenced(paragraph, document, ctx, shaper, counters, width)
     };
     let index = into.paragraphs;
-    // A picture standing at a margin narrows this paragraph as much as a
+    // A picture standing in the column narrows this paragraph as much as a
     // floating table would. Which paragraphs it reaches is knowledge from the
     // pass before this one — see [`Wraps`].
-    if let Some(beside) = ctx.wraps.beside(index) {
+    //
+    // The body's alone. `Wraps` is gathered from `page.content`, so its keys
+    // are body paragraph numbers, and a header, a footer and a note each number
+    // their own from zero: without this the first line of every header on a
+    // page would be narrowed by whatever stands beside the body's first
+    // paragraph. The same reason the memo below is the body's alone.
+    let own_flow = ctx.band.is_none() && ctx.note_mark.is_none() && !into.in_note;
+    if let Some(beside) = ctx.wraps.beside(index).filter(|_| own_flow) {
         into.obstacle = Some(match into.obstacle {
             Some(already) => inline::Obstacle {
+                // The band the two of them cover between them, and the worse
+                // of each side. A hole is kept only where nothing else already
+                // narrows the line: a line cannot be parted twice here, and a
+                // drop cap that also has a float beside it is one line in three
+                // pieces, which nothing measures and nothing draws.
+                from: already.from.min(beside.from),
                 depth: already.depth.max(beside.depth),
                 indent: already.indent.max(beside.indent),
                 inset: already.inset.max(beside.inset),
+                hole: already.hole.or(beside.hole),
             },
             None => beside,
         });
@@ -1619,7 +1637,7 @@ fn push_paragraph(
     let mut displaced: Vec<Item> = Vec::new();
     if anchored(paragraph)
         .iter()
-        .any(|(_, drawing)| displaces(drawing))
+        .any(|(_, drawing)| displaces(drawing, width))
     {
         while into.items.last().is_some_and(is_empty_line) {
             displaced.push(into.items.pop().expect("just checked"));
@@ -1628,7 +1646,7 @@ fn push_paragraph(
     }
     let mut dead: f64 = displaced.iter().map(|item| item.height).sum();
     for (nth, drawing) in anchored(paragraph) {
-        if !displaces(drawing) {
+        if !displaces(drawing, width) {
             continue;
         }
         let (dist_top, _, dist_bottom, _) = drawing.distance;
@@ -1682,7 +1700,9 @@ fn push_paragraph(
     // its lines are turned into items.
     let laid_height: f64 = laid.lines.iter().map(|line| line.height).sum();
     if let Some(obstacle) = &mut into.obstacle {
-        obstacle.depth -= laid_height + laid.space_before;
+        let spent = laid_height + laid.space_before;
+        obstacle.depth -= spent;
+        obstacle.from = (obstacle.from - spent).max(0.0);
         if obstacle.depth <= 0.01 {
             into.obstacle = None;
         }
@@ -1729,7 +1749,7 @@ fn push_paragraph(
     // so it rides with the paragraph's first item and is positioned from there.
     let floats: Vec<Placement> = anchored(paragraph)
         .into_iter()
-        .filter(|(_, drawing)| !displaces(drawing))
+        .filter(|(_, drawing)| !displaces(drawing, width))
         .map(|(nth, drawing)| Placement {
             x: 0.0,
             y: 0.0,
@@ -3101,7 +3121,8 @@ impl Wraps {
                 else {
                     continue;
                 };
-                if !stands_aside(drawing) {
+                let column = page.geometry.width - page.geometry.start - page.geometry.end;
+                if !stands_aside(drawing, column) {
                     continue;
                 }
                 let (x, y) = anchor_position(drawing, &page.geometry, (placement.x, placement.y));
@@ -3116,29 +3137,39 @@ impl Wraps {
                 let bottom = y + drawing.extent.1.points() + below.points();
                 let start = page.geometry.start;
                 let end = page.geometry.width - page.geometry.end;
-                // Which margin it stands at, and so which side of the measure
-                // it takes. A float in the middle of the column would leave
-                // text on both sides of it, which is not modelled: the wider
-                // side keeps the text.
-                let (indent, inset) = if x - start <= end - (x + width) {
-                    ((x + width + right.points() - start).max(0.0), 0.0)
-                } else {
-                    (0.0, (end - x + left.points()).max(0.0))
+                // The stretch of the measure the float covers, standoffs and
+                // all. Where it reaches a margin that is an indent or an inset
+                // — the line is simply narrower — and where it stands clear of
+                // both it is a hole, with text on either side of it. Word sets
+                // both channels of such a line, and choosing the wider side
+                // instead threw every word of the narrow one across the page:
+                // 320 points, on `floating-image-wrap.docx`.
+                let covers = (
+                    (x - left.points() - start).max(0.0),
+                    (x + width + right.points() - start).min(end - start),
+                );
+                let (indent, inset, hole) = match covers {
+                    (from, to) if from <= 0.01 => (to, 0.0, None),
+                    (from, to) if to >= end - start - 0.01 => (0.0, end - start - from, None),
+                    (from, to) => (0.0, 0.0, Some((from, to))),
                 };
                 for &(paragraph, paragraph_top) in &tops {
-                    // A paragraph that began above the float keeps its full
-                    // measure: the obstacle is depth from a paragraph's top,
-                    // and it has no way to say "from the fourth line down".
-                    // Stated rather than approximated.
-                    if paragraph_top < top - 0.01 || paragraph_top >= bottom - 0.01 {
+                    if paragraph_top >= bottom - 0.01 {
                         continue;
                     }
                     wraps.add(
                         paragraph,
                         inline::Obstacle {
+                            // A paragraph may well have begun above the float —
+                            // the picture in `floating-image-wrap.docx` is
+                            // anchored a hundred points into the paragraph that
+                            // holds it — and saying so is what lets the float
+                            // stop reserving its height in the flow.
+                            from: (top - paragraph_top).max(0.0),
                             depth: bottom - paragraph_top,
                             indent,
                             inset,
+                            hole,
                         },
                     );
                 }
@@ -3158,11 +3189,22 @@ impl Wraps {
 
     /// A page may hold one picture at each margin, and the text between them
     /// is narrowed by both.
+    /// Two floats beside one paragraph, as the one band they come to.
+    ///
+    /// Every field, and the entry starts empty — so a field left out here is a
+    /// float's whole effect quietly discarded, which is what happened to the
+    /// band's start and its hole when they were added to [`inline::Obstacle`]
+    /// and not to this.
     fn add(&mut self, paragraph: usize, beside: inline::Obstacle) {
-        let slot = self.beside.entry(paragraph).or_default();
+        let slot = self.beside.entry(paragraph).or_insert(beside);
+        slot.from = slot.from.min(beside.from);
         slot.depth = slot.depth.max(beside.depth);
         slot.indent = slot.indent.max(beside.indent);
         slot.inset = slot.inset.max(beside.inset);
+        // A line cannot be parted twice: nothing here draws a line in three
+        // pieces, and nothing measures one. The first float to ask for a hole
+        // keeps it, and a second alongside it narrows the line instead.
+        slot.hole = slot.hole.or(beside.hole);
     }
 }
 
@@ -3172,9 +3214,9 @@ impl Wraps {
 /// [`displaces`], which is the other half of this decision and the stated
 /// limit above. This is the other case: anchored to the page or to a margin,
 /// where it stays put and the text has to go round.
-fn stands_aside(drawing: &wp_model::Drawing) -> bool {
+fn stands_aside(drawing: &wp_model::Drawing, measure: f64) -> bool {
     use wp_model::doc::Wrap;
-    if drawing.behind_text || displaces(drawing) {
+    if drawing.behind_text || displaces(drawing, measure) {
         return false;
     }
     matches!(drawing.wrap, Wrap::Square | Wrap::Tight)
@@ -3311,18 +3353,28 @@ pub fn anchor_base(drawing: &wp_model::Drawing, page: &PageBox, origin: (f64, f6
 
 /// Whether an anchored drawing takes its height out of the text flow.
 ///
-/// Word wraps text *beside* a square-wrapped float when half an inch of
-/// usable measure remains on a side; setting text beside a float is still a
-/// stated limit here, so every text-anchored square float displaces instead
-/// and the text resumes below it. That is Word's own behaviour for the
-/// commonest float in the wild — the column-wide or centred picture, which
-/// leaves no side worth setting into — and for the rest it is the honest
-/// reading of the limit: a float that stopped reserving its height would sit
-/// *under* the text, which is how shrinking a picture once put the words on
-/// top of it. A float positioned relative to the page or a margin does not
-/// travel with the text, so its space cannot be reserved mid-flow and it
-/// stays an overlay.
-fn displaces(drawing: &wp_model::Drawing) -> bool {
+/// **Only where there is no measure left to set text into.** A square- or
+/// tight-wrapped float is a rectangle the text goes round, which is the one
+/// mechanism Word has and the one this engine now has; reserving its height in
+/// the flow instead is a second mechanism, and it is right only where going
+/// round is impossible. A picture as wide as the column is such a case, and it
+/// is the commonest float in the wild — `file-sample_500kB.docx` fills its 468
+/// point column to the point and Word does set the text below it.
+///
+/// A float that leaves room and reserved anyway put the whole of its paragraph
+/// a picture's height too low, its own inline neighbours included: 120 points,
+/// on `floating-image-wrap.docx`, which is exactly the picture's height.
+///
+/// **Where the boundary really lies is not measured.** The evidence brackets it
+/// and no more: at −18 points of leftover measure Word sets the text below, and
+/// at +290 it sets it beside. Anything between is a guess, so the least is
+/// claimed — any room at all is room — rather than inventing a threshold the
+/// oracle has never been asked about. `tools/word-probe` and a document built
+/// by `corpus/generate.ps1` would settle it.
+///
+/// A float positioned relative to the page or a margin does not travel with the
+/// text, so its space cannot be reserved mid-flow and it stays an overlay.
+fn displaces(drawing: &wp_model::Drawing, measure: f64) -> bool {
     use wp_model::doc::{RelativeTo, Wrap};
     let with_text = match &drawing.position {
         None => true,
@@ -3335,9 +3387,25 @@ fn displaces(drawing: &wp_model::Drawing) -> bool {
         return false;
     }
     match drawing.wrap {
-        Wrap::TopAndBottom | Wrap::Square | Wrap::Tight => true,
+        // Above and below only, whatever room it leaves: that is what the wrap
+        // says, and ECMA-376 Part 1 §20.4.2 keeps it apart from the three that
+        // mean the text goes round.
+        Wrap::TopAndBottom => true,
+        Wrap::Square | Wrap::Tight => !room_beside(drawing, measure),
         Wrap::None => false,
     }
+}
+
+/// Whether a float leaves any measure at all to set text into beside it.
+///
+/// The float's own width and both its standoffs against the measure it stands
+/// in, rather than the room on either particular side of it: a centred picture
+/// leaves half its leftover on each hand, and asking after one side alone
+/// understates it by half. What this answers is the only question
+/// [`displaces`] needs — whether going round is possible.
+fn room_beside(drawing: &wp_model::Drawing, measure: f64) -> bool {
+    let (_, right, _, left) = drawing.distance;
+    measure - drawing.extent.0.points() - left.points() - right.points() > 0.0
 }
 
 /// Whether an item is a single line with nothing on it — an empty paragraph.
@@ -5578,11 +5646,13 @@ mod tests {
     }
 
     #[test]
-    fn a_square_float_resized_narrow_still_holds_the_text_below() {
+    fn a_square_float_with_room_beside_it_keeps_the_text_out_of_it() {
         // The float from file-sample_500kB.docx after the user drags it
-        // smaller. Text cannot be set beside a float yet, so the honest
-        // rendering keeps the text below — the moment the float stopped
-        // reserving its height, the words sat on top of the picture.
+        // smaller, so that there is measure left beside it. It no longer
+        // reserves its height and the text is set alongside — but the fault
+        // this guards has not changed since text went *below* instead: the
+        // moment a float stops reserving its height without narrowing the
+        // lines it stands in, the words are drawn on top of the picture.
         let mut section = SectionProps::new();
         section.page.height = Twips::from_points(2000.0);
         let drawing = wp_model::Drawing {
@@ -5627,11 +5697,21 @@ mod tests {
             .iter()
             .find(|p| matches!(p.kind, Placed::Line { .. }))
             .expect("a line");
+        // Beside it: the line stands within the float's band rather than
+        // below it, which is the height that is no longer reserved.
         assert!(
-            line.y >= drawn.y + drawn.height,
-            "line at {} should sit below the float ending at {}",
+            line.y < drawn.y + drawn.height,
+            "line at {} should stand beside the float, which ends at {}",
             line.y,
             drawn.y + drawn.height
+        );
+        // And clear of it. This is the assertion that matters — a line in the
+        // band that was not narrowed would put every word over the picture.
+        assert!(
+            line.x >= drawn.x + drawn.width - 0.01,
+            "line starts at {} and the float ends at {}",
+            line.x,
+            drawn.x + drawn.width
         );
     }
 

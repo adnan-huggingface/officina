@@ -16,7 +16,7 @@ These are not targets. They are what is true today, so that what is true tomorro
 
 | | documents | out | >5pt | unplaced | marks | lost | worst |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| totals | 24 | 1214 | 786 | 700 | 89 | 28 | 115.20 |
+| totals | 24 | 1289 | 542 | 548 | 89 | 26 | 115.20 |
 
 ## Every document
 
@@ -33,7 +33,7 @@ These are not targets. They are what is true today, so that what is true tomorro
 | `file-sample_100kB.docx` | 2 | 0 | 0 | 0 | 0 | 0 | 0.29 |
 | `file-sample_1MB.docx` | 2 | 0 | 0 | 0 | 0 | 0 | 0.25 |
 | `file-sample_500kB.docx` | 2 | 0 | 0 | 12 | 0 | 7 | 0.26 |
-| `floating-image-wrap.docx` | 1 | 244 | 244 | 152 | 0 | 2 | 50.23 |
+| `floating-image-wrap.docx` | 1 | 319 | 0 | 0 | 0 | 0 | 4.29 |
 | `footnotes-endnotes.docx` | 1 | 0 | 0 | 6 | 0 | 0 | 0.58 |
 | `headers-footers.docx` | 1 | 328 | 0 | 0 | 0 | 0 | 2.34 |
 | `hyperlinks-bookmarks.docx` | 1 | 3 | 0 | 0 | 0 | 0 | 2.49 |

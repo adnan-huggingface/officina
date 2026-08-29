@@ -3794,6 +3794,66 @@ three hundred lines away reads correctly. The two sides were swapped. Nothing in
 the corpus could see it, because every float there stands off its two sides by
 the same amount.
 
+### Text goes round a float, on both sides of it
+
+The first thing the harness found once it could see a page's furniture, and it
+took the engine's line breaker to fix rather than a predicate.
+
+`floating-image-wrap.docx` holds one paragraph with two pictures: an inline one
+and an anchored one, `wrapText="bothSides"`, a hundred points into the column.
+The inline picture sat 120 points below Word's — and 120 points is exactly the
+*anchored* picture's height, which makes "the float is adding its height to the
+line" irresistible. It is also wrong: a float never enters a line at all. The
+120 was a flow item, reserved ahead of the paragraph by `displaces()`, and the
+reservation was the whole fault.
+
+**A float is a rectangle and there is only one mechanism.** Word does not have
+one rule for text beside a picture and another for text below it; every line that
+meets the rectangle goes round it. Reserving the height is a second mechanism and
+it is right only where going round is impossible — a picture as wide as the
+column, which is what `file-sample_500kB.docx` has and why the reservation was
+written. `displaces()` now asks whether any measure is left beside the float, and
+the boundary is deliberately the least the evidence supports: at −18 points of
+leftover Word sets the text below, at +290 it sets it beside, and inventing a
+threshold in between would be a number no oracle was ever asked for.
+
+**And text goes on both sides of one line.** Stopping the reservation alone was
+built and measured before it was believed, and it made the page worse — a 50
+point vertical error traded for a 320 point horizontal one, because the engine
+could narrow a line to one side of a float and Word uses both channels of the
+same line. So `Obstacle` gained where its band *starts*, which is what lets a
+paragraph that began above a float be narrowed from its fourth line down, and a
+*hole*: a stretch out of the middle of the measure that the pen steps over
+rather than through. A line needed no new shape for it — a fragment's x was
+already a free offset from the line's own.
+
+One document moved, and `file-sample_500kB.docx` did not:
+
+```
+                                          out  >5pt unplaced  marks  lost    worst
+floating-image-wrap.docx   before          244   244      152      0     2  50.23pt
+floating-image-wrap.docx   after           319     0        0      0     0   4.29pt
+```
+
+The count of words out of place went *up* while everything else collapsed, which
+is the record doing its job: a hundred and fifty-two words that could not be
+placed at all can now be measured, and they are about two points out. The middle
+shift left is dx +2.03, dy −2.06 — the space advance and the leading this project
+already has recorded from two other documents, showing through now that the wrap
+no longer drowns them.
+
+Three faults were found on the way and are worth keeping:
+
+- `Wraps::add` rebuilt an obstacle field by field from an empty one, so the two
+  new fields were silently dropped and the hole never reached a line. A merge
+  that names its fields is a merge that forgets the next one added.
+- `flow_paragraph` consulted the body's float table for headers, footers and
+  notes, whose paragraphs number from zero in flows of their own — the same
+  hazard the memo three lines below it already guards against.
+- `Wraps::of` destructured the standoffs as top-left-bottom-right where
+  `wp:anchor` states them clockwise, so the two sides were swapped. Latent:
+  every float in the corpus stands off both sides by the same amount.
+
 ## Deferred
 
 - [x] **PDF** — was dropped per Q3; built after ship as `wp-print`. See above.

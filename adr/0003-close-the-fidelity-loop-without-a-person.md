@@ -338,6 +338,35 @@ draws no footnote separator, because it lays no footnote band at all. And on
 same 5.7 and 24.9 points as the words, which is the more useful kind of answer:
 the furniture corroborates the type, and one fault is one fault rather than two.
 
+**What the instrument was for, finally used.** `floating-image-wrap.docx` was
+the first thing the marks column found: an inline picture 120 points below where
+Word puts it, on a document whose words were already so wrong that nothing could
+be read from them. The cause was not where anyone would have guessed — 120 pt is
+exactly the *anchored* picture's height, which makes "the float is contributing
+to the line" irresistible and wrong. A float never enters a line at all. The 120
+was a reserved flow item, and the reservation was the fault.
+
+The fix that follows from that is a feature rather than a repair, and an
+adversarial pass refuted the small version of it by building and measuring it:
+stopping the reservation alone traded a 50 pt vertical error for a 320 pt
+horizontal one, because the engine could only narrow a line to one side of a
+float while Word sets text on both. So both halves landed together — a band that
+knows where it starts, and a hole a line's pen steps over. One document moved:
+
+|                                      | before | after |
+| ------------------------------------ | -----: | ----: |
+| words more than a point out of place  |    244 |   319 |
+| of those, more than five points out   |    244 | **0** |
+| words neither side could place        |    152 | **0** |
+| worst single word                     | 50.23pt| 4.29pt|
+| marks only one side drew              |      2 | **0** |
+
+`out` rising while everything else collapses is the record working as designed:
+a hundred and fifty-two words that could not be placed at all can now be
+measured, and they are two points out. What is left is the space advance and the
+leading this project already knows about — dx +2.03, dy −2.06 in the middle,
+which is the same drift the corpus reported from two other documents.
+
 **And then the check fetched its own evidence, which is the same fault one
 level down.** The test above was written, run, and passed — and the very next
 commit went out broken anyway. A docstring fix to `pdfink.py` landed after

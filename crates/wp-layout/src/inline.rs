@@ -335,12 +335,33 @@ enum UnitKind {
 /// is narrowed from both.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Obstacle {
+    /// How far down from the top of this paragraph the obstacle begins.
+    ///
+    /// Nought for a drop cap and for a floating table, which begin where the
+    /// paragraph does. A float is a rectangle on the page, though, and the
+    /// paragraph it narrows may well have begun above it: until this existed
+    /// there was no way to say *from the fourth line down*, so a float reserved
+    /// its whole height in the flow instead and every line after it — the
+    /// picture in its own first line included — started a picture's height too
+    /// low.
+    pub from: f64,
     /// How far down from the top of this paragraph the obstacle still reaches.
     pub depth: f64,
     /// How much measure it takes away, from the left.
     pub indent: f64,
     /// How much it takes away from the right.
     pub inset: f64,
+    /// A stretch it takes out of the *middle*, as offsets from where the line's
+    /// text begins.
+    ///
+    /// The same fact as [`Obstacle::indent`] and [`Obstacle::inset`] — a float
+    /// is a rectangle and the text goes round it — said for the case where the
+    /// rectangle stands clear of both margins. Word sets text in both channels
+    /// of the same line, and a hole is the one of the three a narrower line
+    /// cannot express: `wrapText="bothSides"` on a picture a hundred points
+    /// into the column leaves ninety-one points of measure to its left and a
+    /// hundred and ninety-nine to its right, and Word uses both.
+    pub hole: Option<(f64, f64)>,
 }
 
 /// Lays a paragraph out into lines of `width` points.
@@ -367,7 +388,7 @@ pub fn layout(
     // settled by going round: lay them, see which ones the float actually
     // reaches, lay them again. Two passes settle every real case; the bound is
     // there so a pathological one cannot spin.
-    let mut indents: Vec<(f64, f64)> = Vec::new();
+    let mut indents: Vec<Gap> = Vec::new();
     let mut lines;
     for _ in 0..4 {
         lines = fill(&units, width, start, end, first, &tabs, ctx, &indents);
@@ -489,19 +510,28 @@ fn push_note_mark(
 /// A line is pushed aside when any part of it lies within the obstacle's depth,
 /// which is what makes the line that straddles the bottom of a floating table
 /// the last narrow one rather than the first wide one.
-fn beside(lines: &[Line], obstacle: Option<Obstacle>) -> Vec<(f64, f64)> {
-    let clear = (0.0, 0.0);
-    let Some(obstacle) = obstacle.filter(|o| o.depth > 0.0 && (o.indent > 0.0 || o.inset > 0.0))
+fn beside(lines: &[Line], obstacle: Option<Obstacle>) -> Vec<Gap> {
+    let clear = Gap::default();
+    let Some(obstacle) =
+        obstacle.filter(|o| o.depth > 0.0 && (o.indent > 0.0 || o.inset > 0.0 || o.hole.is_some()))
     else {
         return Vec::new();
     };
     let mut out = Vec::new();
     let mut y = 0.0;
     for line in lines {
-        out.push(if y < obstacle.depth - 0.01 {
-            (obstacle.indent, obstacle.inset)
-        } else {
-            clear
+        // Any part of the line within the band is enough, at both ends of it:
+        // the line straddling the bottom of a floating table is the last narrow
+        // one rather than the first wide one, and the line straddling the top
+        // of a float is the first narrow one rather than the last wide one.
+        let within = y < obstacle.depth - 0.01 && y + line.height > obstacle.from + 0.01;
+        out.push(match within {
+            true => Gap {
+                indent: obstacle.indent,
+                inset: obstacle.inset,
+                hole: obstacle.hole,
+            },
+            false => clear,
         });
         y += line.height;
     }
@@ -509,6 +539,39 @@ fn beside(lines: &[Line], obstacle: Option<Obstacle>) -> Vec<(f64, f64)> {
         out.pop();
     }
     out
+}
+
+/// What one line of a paragraph has to give up to whatever stands beside it.
+///
+/// [`Obstacle`] says it of the paragraph; this says it of a line, once the
+/// lines exist and it is known which of them the band actually reaches.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+struct Gap {
+    /// Taken off the left of this line.
+    indent: f64,
+    /// Taken off the right.
+    inset: f64,
+    /// Taken out of the middle, as offsets from where the line's text begins.
+    hole: Option<(f64, f64)>,
+}
+
+impl Gap {
+    /// How far the content of a line may reach, given the whole measure.
+    ///
+    /// A hole against the right margin ends the line early; one standing clear
+    /// of it does not, because the text goes on beyond the float.
+    fn reach(&self, limit: f64) -> f64 {
+        match self.hole {
+            Some((from, to)) if to >= limit - 0.01 => from,
+            _ => limit,
+        }
+    }
+
+    /// Whether this line is broken in two by something in the middle of it,
+    /// with text on either side.
+    fn parted(&self, limit: f64) -> bool {
+        matches!(self.hole, Some((from, to)) if from > 0.01 && to < limit - 0.01)
+    }
 }
 
 /// The tab stops in force, the paragraph's own ahead of the document default.
@@ -1328,7 +1391,7 @@ fn fill(
     // How far each line stands clear of something beside the paragraph, on
     // the left and on the right. Short or empty means the rest of the lines
     // are unobstructed.
-    beside: &[(f64, f64)],
+    beside: &[Gap],
 ) -> Vec<Line> {
     let mut lines: Vec<Line> = Vec::new();
     let mut fragments: Vec<Fragment> = Vec::new();
@@ -1343,10 +1406,11 @@ fn fill(
     // hang past the margin instead of counting against it.
     let mut pen = 0.0f64;
     let mut used = 0.0f64;
+    let gap_at = |line: usize| beside.get(line).copied().unwrap_or_default();
     let available = |is_first: bool, line: usize| {
         let left = if is_first { start + first } else { start };
-        let (aside, inset) = beside.get(line).copied().unwrap_or((0.0, 0.0));
-        (width - end - left - aside - inset).max(1.0)
+        let gap = gap_at(line);
+        (width - end - left - gap.indent - gap.inset).max(1.0)
     };
 
     let mut index = 0usize;
@@ -1446,6 +1510,16 @@ fn fill(
             _ => {}
         }
 
+        // A float standing clear of both margins leaves a hole in the middle
+        // of the measure rather than making it narrower. A word that would fall
+        // into the hole steps over it: the pen jumps to the far side and the
+        // line goes on in the channel beyond, which is how Word sets text on
+        // both sides of one picture on one line.
+        if let Some((from, to)) = gap_at(lines.len()).hole {
+            if pen + unit.width > from + 0.01 && pen < to - 0.01 {
+                pen = to;
+            }
+        }
         let fits = pen + unit.width <= limit + 0.01;
         if !fits && !fragments.is_empty() {
             // The break belongs at the head of whatever cluster this unit is
@@ -1520,7 +1594,7 @@ fn continue_fill(
     end: f64,
     tabs: &[TabStop],
     ctx: &Context<'_>,
-    beside: &[(f64, f64)],
+    beside: &[Gap],
 ) -> Vec<Line> {
     // Every line after the first uses the non-first-line indent, which is what
     // passing `0.0` for the first-line offset says.
@@ -1672,7 +1746,7 @@ fn finish(
     start: f64,
     end: f64,
     first: f64,
-    beside: &[(f64, f64)],
+    beside: &[Gap],
     paragraph: &Paragraph,
     ctx: &Context<'_>,
     shaper: &mut dyn Shaper,
@@ -1910,19 +1984,25 @@ fn finish(
         y += line.height;
 
         let is_first = index == usize::from(opens_with_break);
-        let (aside, inset) = beside.get(index).copied().unwrap_or((0.0, 0.0));
-        let left = aside + if is_first { start + first } else { start };
-        let limit = (width - end - left - inset).max(0.0);
-        let slack = (limit - line.width).max(0.0);
+        let gap = beside.get(index).copied().unwrap_or_default();
+        let left = gap.indent + if is_first { start + first } else { start };
+        let limit = (width - end - left - gap.inset).max(0.0);
+        let slack = (gap.reach(limit) - line.width).max(0.0);
         // The last line of a justified paragraph is not stretched, and neither
         // is one ended by an explicit break. `distribute` stretches both, which
         // is the whole difference between it and `both`.
         let is_last = index == last;
-        let stretch = match justify {
-            Justify::Both => !is_last && line.ended_by.is_none(),
-            Justify::Distribute => true,
-            _ => false,
-        };
+        // A line parted by a float is not stretched. Justification spreads
+        // one gap evenly between every pair of fragments, and one of those
+        // pairs straddles the hole — so it would widen the float itself. What
+        // Word does with the two channels of such a line has not been measured;
+        // spreading them is the one answer that is certainly wrong.
+        let stretch = !gap.parted(limit)
+            && match justify {
+                Justify::Both => !is_last && line.ended_by.is_none(),
+                Justify::Distribute => true,
+                _ => false,
+            };
 
         line.x = left
             + match justify {
