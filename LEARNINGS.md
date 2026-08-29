@@ -1480,6 +1480,15 @@ crossing short of its neighbour, and unmatchable against the single rule the
 other renderer drew. A break as wide as the rule's own thickness is a break; a
 gap between two boxes is a gap somebody meant.
 
+**A cache that repairs itself turns a check into a formality.** The corpus is
+held to Word's committed readings, and a reading names the probe script it came
+from. Change the script — a docstring was enough — and every reading is stale.
+On the machine where Word is installed the check then *renewed all twenty-five
+and passed*, and the commit went out with readings stamped for a script that no
+longer existed. It failed on the first machine without Office, which is the only
+kind of machine that could ever have noticed. A check may not fetch the evidence
+it needs in order to pass: where the evidence is stale, that is the finding.
+
 **A claim about what happens when something is missing has to be executed.**
 That the comparison needs no Word — its readings being committed — is the reason
 it may sit inside the gate, and it was written down in three files and had never

@@ -338,6 +338,20 @@ draws no footnote separator, because it lays no footnote band at all. And on
 same 5.7 and 24.9 points as the words, which is the more useful kind of answer:
 the furniture corroborates the type, and one fault is one fault rather than two.
 
+**And then the check fetched its own evidence, which is the same fault one
+level down.** The test above was written, run, and passed — and the very next
+commit went out broken anyway. A docstring fix to `pdfink.py` landed after
+`--record` and before the commit, so all twenty-five committed readings named a
+probe script that no longer existed. `cargo xtask check` passed here, because
+`read()` found them stale, asked Word for twenty-five fresh renderings, and
+measured against those. On a machine without Office every document came back
+"taken from an older probe script". A cache that repairs itself is a cache; a
+*check* that repairs itself is a formality. `--check` is now `Renew::Never` and
+cannot start Word at all: where a reading is stale, that is the finding, and the
+message says to run `--refresh` and commit what it writes. There is a unit test
+for it that runs on a machine that *has* Word, because that is the only machine
+where the fault is invisible.
+
 **And the machine with no Word had never existed.** Everything above rests on
 the corpus being checkable without Office, which is why `--check` may sit inside
 `cargo xtask check`. It is written down in three files and it had never once

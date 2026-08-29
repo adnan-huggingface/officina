@@ -133,17 +133,47 @@ fn paper_at(path: &Path, stamp: &Stamp) -> PathBuf {
     ))
 }
 
+/// Whether a reading may be taken again, and on whose say-so.
+///
+/// **`--check` is [`Renew::Never`], and that is not a convenience.** A check
+/// holds the corpus to evidence somebody committed; a check that quietly makes
+/// the evidence it needs in order to pass is holding the corpus to nothing. The
+/// difference is invisible on a machine with Word installed — the reading is
+/// renewed in seconds and the gate goes green — and it is exactly how a commit
+/// went out with readings stamped for an older probe script, passing here and
+/// failing on any machine without Office. A stale reading under a check is a
+/// fault to be reported, not a thing to repair on the way past.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Renew {
+    /// Never. The reading on disk is the evidence, and if it answers another
+    /// document or another probe script, that is the finding.
+    Never,
+    /// Where there is no reading, or the one there answers something else.
+    IfStale,
+    /// Always, because the document or the probes have deliberately changed.
+    Always,
+}
+
 /// Asks Word where every mark went — or, almost always, reads what it said.
-pub fn read(path: &Path, refresh: bool) -> Result<Reading, String> {
+pub fn read(path: &Path, renew: Renew) -> Result<Reading, String> {
     let stamp = Stamp::of(path)?;
     let kept = reading_at(path)?;
 
-    if !refresh {
+    if renew != Renew::Always {
         if let Ok(text) = std::fs::read_to_string(&kept) {
             if stamp.answers(&text) {
                 return parse(&text);
             }
         }
+    }
+    if renew == Renew::Never {
+        return Err(format!(
+            "{} answers an older {}, or an older probe script. Renewing it needs \
+             Word, and a check will not do that for you: run \
+             `cargo xtask compare --refresh` and commit what it writes.",
+            kept.display(),
+            path.file_name().unwrap_or_default().to_string_lossy()
+        ));
     }
 
     // Both directories, before either is written into. Word reports a missing
@@ -154,7 +184,7 @@ pub fn read(path: &Path, refresh: bool) -> Result<Reading, String> {
     for dir in [paper.parent(), kept.parent()].into_iter().flatten() {
         std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     }
-    if refresh || !paper.exists() {
+    if renew == Renew::Always || !paper.exists() {
         render(path, &paper).map_err(|why| match kept.exists() {
             // The distinction that matters when this fails: a reading that is
             // merely out of date is a document somebody changed, or a probe
@@ -424,5 +454,43 @@ mod tests {
     #[test]
     fn an_empty_answer_is_an_error_rather_than_a_clean_bill() {
         assert!(parse("").is_err());
+    }
+
+    /// The guarantee a check rests on, tested where it is hardest to see: on a
+    /// machine that *has* Word. `tests/without_word.rs` proves the corpus can be
+    /// checked without Office; this proves the check would not have quietly
+    /// fetched it even if it could. A commit went out with readings stamped for
+    /// an older probe script precisely because renewing one is invisible here.
+    #[test]
+    fn a_check_will_not_renew_a_stale_reading_even_where_word_is_installed() {
+        let doc = crate::repo_root()
+            .join("corpus")
+            .join("docx")
+            .join("minimal.docx");
+        let kept = crate::target_dir()
+            .join("compare")
+            .join("never-renewed.docx.tsv");
+        let copy = kept.with_file_name("never-renewed.docx");
+        std::fs::create_dir_all(kept.parent().expect("a reading has a directory"))
+            .expect("target/ is writable");
+        std::fs::copy(&doc, &copy).expect("the corpus holds minimal.docx");
+        std::fs::write(
+            &kept,
+            "# document 00000000  export 00000000  reading 00000000\n\
+             word\t1\t72.000\t72.000\tstale\n",
+        )
+        .expect("target/ is writable");
+
+        let Err(refused) = read(&copy, Renew::Never) else {
+            panic!("the reading answers another document and must be refused");
+        };
+        assert!(refused.contains("--refresh"), "{refused}");
+        // And the reading is still the one that was there: a check that rewrote
+        // it would have made the next check pass for the wrong reason.
+        let after = std::fs::read_to_string(&kept).expect("the reading is still there");
+        assert!(
+            after.contains("stale"),
+            "a check must not rewrite a reading"
+        );
     }
 }

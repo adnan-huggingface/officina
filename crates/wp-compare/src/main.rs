@@ -59,6 +59,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use diff::{Kind, Report};
+use word::Renew;
 
 /// Everything one rendering of a document put on paper.
 ///
@@ -133,14 +134,18 @@ fn run() -> Result<ExitCode, String> {
         }
     }
 
+    let asked = match refresh {
+        true => Renew::Always,
+        false => Renew::IfStale,
+    };
     if let Some(path) = file {
         if record || check {
             return Err("--record and --check are about the whole corpus, not one file".into());
         }
         match (words, lines) {
-            (true, _) => listing(&path, refresh, only)?,
-            (_, true) => grouping(&path, refresh, only)?,
-            _ => one(&path, refresh, top, threshold, only)?,
+            (true, _) => listing(&path, asked, only)?,
+            (_, true) => grouping(&path, asked, only)?,
+            _ => one(&path, asked, top, threshold, only)?,
         }
         return Ok(ExitCode::SUCCESS);
     }
@@ -154,7 +159,17 @@ fn run() -> Result<ExitCode, String> {
              {THRESHOLD:.2}pt; --threshold {threshold:.2} asks something else"
         ));
     }
-    let measured = sweep(refresh, threshold)?;
+    // A check may not ask Word for anything. Its whole worth is that it holds
+    // the corpus to readings somebody committed, and a check that quietly makes
+    // the evidence it needs in order to pass holds it to nothing — see
+    // [`Renew`]. Everything else renews a reading that has gone stale, because
+    // for everything else that is a convenience rather than a hole.
+    let renew = match (check, refresh) {
+        (true, _) => Renew::Never,
+        (_, true) => Renew::Always,
+        _ => Renew::IfStale,
+    };
+    let measured = sweep(renew, threshold)?;
     match (record, check) {
         (true, _) => {
             let path = repo_root().join(REPORT);
@@ -242,12 +257,12 @@ cargo xtask compare [file] [options]
 
 fn one(
     path: &Path,
-    refresh: bool,
+    renew: Renew,
     top: usize,
     threshold: f64,
     only: Option<u32>,
 ) -> Result<(), String> {
-    let laid = measure(path, refresh, threshold)?;
+    let laid = measure(path, renew, threshold)?;
     let report = &laid.words;
     println!("{}", path.display());
     println!(
@@ -387,8 +402,8 @@ fn one(
 /// throwaway that has been written three times is a tool that has not been
 /// built. One line per word, so that two columns of `sort` and `diff` answer
 /// most of what anybody wants to ask of it.
-fn listing(path: &Path, refresh: bool, only: Option<u32>) -> Result<(), String> {
-    let theirs = word::read(path, refresh)?;
+fn listing(path: &Path, renew: Renew, only: Option<u32>) -> Result<(), String> {
+    let theirs = word::read(path, renew)?;
     let ours = ours::read(path)?;
     let mut all: Vec<(&'static str, &diff::Word)> = ours
         .words
@@ -452,8 +467,8 @@ fn listing(path: &Path, refresh: bool, only: Option<u32>) -> Result<(), String> 
 /// What to reach for the moment a report says a page matched nothing: the
 /// comparison works on sequences of words, so two readings cut up differently
 /// disagree about everything, and no amount of staring at positions shows it.
-fn grouping(path: &Path, refresh: bool, only: Option<u32>) -> Result<(), String> {
-    let theirs = word::read(path, refresh)?;
+fn grouping(path: &Path, renew: Renew, only: Option<u32>) -> Result<(), String> {
+    let theirs = word::read(path, renew)?;
     let ours = ours::read(path)?;
     let pages = ours
         .words
@@ -498,7 +513,7 @@ struct Measured {
     outcome: Result<Laid, String>,
 }
 
-fn sweep(refresh: bool, threshold: f64) -> Result<Vec<Measured>, String> {
+fn sweep(renew: Renew, threshold: f64) -> Result<Vec<Measured>, String> {
     let root = repo_root().join("corpus");
     let mut paths: Vec<PathBuf> = Vec::new();
     for kind in ["docx", "doc"] {
@@ -525,7 +540,7 @@ fn sweep(refresh: bool, threshold: f64) -> Result<Vec<Measured>, String> {
                 .unwrap_or_default()
                 .to_string_lossy()
                 .into(),
-            outcome: measure(path, refresh, threshold),
+            outcome: measure(path, renew, threshold),
         })
         .collect())
 }
@@ -861,8 +876,8 @@ fn recorded_in(text: &str) -> std::collections::HashMap<String, Stood> {
     out
 }
 
-fn measure(path: &Path, refresh: bool, threshold: f64) -> Result<Laid, String> {
-    let theirs = word::read(path, refresh)?;
+fn measure(path: &Path, renew: Renew, threshold: f64) -> Result<Laid, String> {
+    let theirs = word::read(path, renew)?;
     let ours = ours::read(path)?;
     Ok(Laid {
         words: diff::compare(&ours.words, &theirs.words, threshold),

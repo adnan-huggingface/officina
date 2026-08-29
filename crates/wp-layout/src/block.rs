@@ -3105,7 +3105,12 @@ impl Wraps {
                     continue;
                 }
                 let (x, y) = anchor_position(drawing, &page.geometry, (placement.x, placement.y));
-                let (above, left, below, right) = drawing.distance;
+                // Clockwise from the top, which is how `wp:anchor` states its
+                // standoffs and how the model keeps them: distT, distR, distB,
+                // distL. Read here as top-left-bottom-right, the two sides came
+                // out swapped — invisible so far only because every float in the
+                // corpus stands off its two sides by the same amount.
+                let (above, right, below, left) = drawing.distance;
                 let width = drawing.extent.0.points();
                 let top = y - above.points();
                 let bottom = y + drawing.extent.1.points() + below.points();

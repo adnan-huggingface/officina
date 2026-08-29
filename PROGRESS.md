@@ -3751,6 +3751,49 @@ watermark.docx                          115   101      366      0    12  67.39pt
                                        1214   786      700     89    28
 ```
 
+### The check was fetching its own evidence
+
+`d53bdd9` shipped broken and the gate said it was fine. A docstring fix to
+`pdfink.py` landed after `cargo xtask compare --record` and before the commit,
+so all twenty-five committed readings named a probe script that no longer
+existed. Here, `read()` found them stale, asked Word for twenty-five fresh
+renderings and measured against those — four silent minutes and a green gate. On
+a machine without Office every document came back "taken from an older probe
+script, and renewing it needs Word". Proved rather than reasoned about: a
+throwaway worktree at `d53bdd9`, `PATH` emptied, twenty-four failures.
+
+A cache that repairs itself is a cache. A *check* that repairs itself is a
+formality — it holds the corpus to evidence it was willing to manufacture.
+`--check` is now `Renew::Never` and cannot start Word at all; a stale reading is
+the finding, and the message says to run `--refresh` and commit what it writes.
+The unit test for it runs on a machine that *has* Word, because that is the only
+machine where the fault cannot be seen.
+
+Two other things came out of the same sitting, both from the workflow that was
+supposed to be diagnosing a misplaced picture:
+
+**The picture's cause was found and the fix was refuted.** The inline picture in
+`floating-image-wrap.docx` sits 120 pt low, and 120 pt is exactly the anchored
+picture's height — which made "the float is contributing its height to the line"
+irresistible and wrong. `units` never sees an anchored drawing at all
+(`inline.rs:1154` guards on `!drawing.anchored`); the 120 pt is a *stacked flow
+item*, pushed by `push_paragraph` because `displaces()` classifies this float as
+one whose height must come out of the flow. 282.013 = 72 + 120 + 90.013, which
+is addition and not a taller line. Patching only that predicate puts the line at
+exactly Word's 72.000 — and makes the page worse: `out 244 to 245, worst 50.23pt
+to 320.45pt`, because `Wraps::of` gives text only the wider side of a float while
+Word sets this document's text on both. The reservation is a second mechanism
+that should not exist — `LEARNINGS.md` already records Word as having one, the
+float being a rectangle every line goes round. Text on both sides of a float is
+the missing work, and it is a feature rather than a repair.
+
+**And a real one-line fault, latent.** `Wraps::of` destructured the standoffs as
+`(above, left, below, right)` where `wp:anchor` states them clockwise and the
+model keeps them that way — `distT, distR, distB, distL`, which `push_paragraph`
+three hundred lines away reads correctly. The two sides were swapped. Nothing in
+the corpus could see it, because every float there stands off its two sides by
+the same amount.
+
 ## Deferred
 
 - [x] **PDF** — was dropped per Q3; built after ship as `wp-print`. See above.
