@@ -1,15 +1,17 @@
-# Word's own rendering of simple-table.doc, as the place every word of it landed.
+# Word's own rendering of simple-table.doc, as the place every mark of it landed.
 # Written by `cargo xtask compare`. Not by hand, and not read by anything
-# but the comparison: `page`, `x`, `baseline`, `text`, in points.
-# document a8de7574  export 67d00bda  reading becf340b
+# but the comparison. In points, one mark to a line, of two kinds:
+#   word  page  x  baseline  text
+#   mark  page  x0  y0  x1  y1
+# document a8de7574  export 67d00bda  reading 1589c59f
 # Stale? `cargo xtask compare --refresh` renews it, and needs Word for that
 # one document. Everything else goes on working without it.
-1	72.024	83.420	Before
-1	106.932	83.420	the
-1	125.880	83.420	table.
-1	72.024	108.380	one
-1	228.050	108.380	two
-1	384.070	108.380	three
-1	72.024	133.340	four
-1	228.050	133.340	five
-1	384.070	133.340	six
+word	1	72.024	83.420	Before
+word	1	106.932	83.420	the
+word	1	125.880	83.420	table.
+word	1	72.024	108.380	one
+word	1	228.050	108.380	two
+word	1	384.070	108.380	three
+word	1	72.024	133.340	four
+word	1	228.050	133.340	five
+word	1	384.070	133.340	six

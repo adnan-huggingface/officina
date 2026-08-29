@@ -1,7 +1,8 @@
-//! Where Word put every word of the same document.
+//! Where Word put every mark of the same document.
 //!
 //! Two steps, both under `tools/word-probe/`: `topdf.ps1` asks Word for its own
-//! rendering of the file, and `pdfwords.py` reads the baselines out of it.
+//! rendering of the file, and `pdfink.py` reads out of it where the words and
+//! the rules landed.
 //!
 //! The route through paper is not a convenience. `Range.Information(5|6)`
 //! answers to a twentieth of a point, but it costs Word a layout pass per call
@@ -25,6 +26,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::diff::Word;
+use crate::marks::{Mark, Rect};
+use crate::Reading;
 
 /// The three things a reading depends on, as one line of a file.
 ///
@@ -48,7 +51,7 @@ impl Stamp {
         Ok(Stamp {
             document: digest(path),
             export: digest(&probe("topdf.ps1")),
-            reading: digest(&probe("pdfwords.py")),
+            reading: digest(&probe("pdfink.py")),
         })
     }
 
@@ -62,9 +65,11 @@ impl Stamp {
     fn header(&self, path: &Path) -> String {
         let name = path.file_name().unwrap_or_default().to_string_lossy();
         format!(
-            "# Word's own rendering of {name}, as the place every word of it landed.\n\
+            "# Word's own rendering of {name}, as the place every mark of it landed.\n\
              # Written by `cargo xtask compare`. Not by hand, and not read by anything\n\
-             # but the comparison: `page`, `x`, `baseline`, `text`, in points.\n\
+             # but the comparison. In points, one mark to a line, of two kinds:\n\
+             #   word  page  x  baseline  text\n\
+             #   mark  page  x0  y0  x1  y1\n\
              {}\n\
              # Stale? `cargo xtask compare --refresh` renews it, and needs Word for that\n\
              # one document. Everything else goes on working without it.\n",
@@ -128,8 +133,8 @@ fn paper_at(path: &Path, stamp: &Stamp) -> PathBuf {
     ))
 }
 
-/// Asks Word where every word went — or, almost always, reads what it said.
-pub fn read(path: &Path, refresh: bool) -> Result<Vec<Word>, String> {
+/// Asks Word where every mark went — or, almost always, reads what it said.
+pub fn read(path: &Path, refresh: bool) -> Result<Reading, String> {
     let stamp = Stamp::of(path)?;
     let kept = reading_at(path)?;
 
@@ -193,7 +198,20 @@ fn render(path: &Path, pdf: &Path) -> Result<(), String> {
         .arg("-Out")
         .arg(pdf)
         .output()
-        .map_err(|e| format!("could not run powershell: {e}"))?;
+        // The message somebody without Office reads, and it has one job: to
+        // say that only *this document* wants Word. The corpus does not — its
+        // readings are committed — and a machine that cannot start powershell
+        // can still run `cargo xtask compare --check` and the whole gate above
+        // it, which is the thing worth knowing here and is easy to doubt when
+        // the tool has just refused to do anything at all.
+        .map_err(|e| {
+            format!(
+                "this document has no reading, and taking one needs Word: {e}.\n\
+                 Only a document from outside `corpus/` ever needs it. The corpus \
+                 is compared against readings committed under `corpus/rendered/`, \
+                 and `--check` asks Word for nothing."
+            )
+        })?;
     if !out.status.success() || !pdf.exists() {
         let why = String::from_utf8_lossy(&out.stderr);
         return Err(format!(
@@ -206,7 +224,7 @@ fn render(path: &Path, pdf: &Path) -> Result<(), String> {
 }
 
 fn extract(pdf: &Path) -> Result<String, String> {
-    let script = probe("pdfwords.py");
+    let script = probe("pdfink.py");
     if !script.exists() {
         return Err(format!("{} is missing", script.display()));
     }
@@ -214,7 +232,13 @@ fn extract(pdf: &Path) -> Result<String, String> {
         .arg(&script)
         .arg(pdf)
         .output()
-        .map_err(|e| format!("could not run python: {e}"))?;
+        .map_err(|e| {
+            format!(
+                "Word's rendering is made but nothing here can read it: {e}.\n\
+                 {} needs Python and PyMuPDF — `python -m pip install pymupdf`.",
+                script.display()
+            )
+        })?;
     if !out.status.success() {
         let why = String::from_utf8_lossy(&out.stderr);
         return Err(format!("reading {} failed:\n{}", pdf.display(), why.trim()));
@@ -244,27 +268,54 @@ fn without_leader(text: &str) -> &str {
     }
 }
 
-fn parse(dump: &str) -> Result<Vec<Word>, String> {
+/// A reading, back from the flat file it is kept in.
+///
+/// A line that is not a measurement is skipped rather than guessed at: the file
+/// carries its own header, and a probe script that grows a third kind of row
+/// must not make every older reading unreadable — it makes them *stale*, which
+/// is a thing this can say.
+fn parse(dump: &str) -> Result<Reading, String> {
     let mut words = Vec::new();
+    let mut marks = Vec::new();
     for line in dump.lines() {
-        let mut fields = line.splitn(4, '\t');
-        let (Some(page), Some(x), Some(baseline), Some(text)) =
-            (fields.next(), fields.next(), fields.next(), fields.next())
-        else {
+        let mut fields = line.split('\t');
+        let (Some(kind), Some(page)) = (fields.next(), fields.next()) else {
             continue;
         };
-        let (Ok(page), Ok(x), Ok(baseline)) = (
-            page.parse::<u32>(),
-            x.parse::<f64>(),
-            baseline.parse::<f64>(),
-        ) else {
+        let Ok(page) = page.parse::<u32>() else {
             continue;
         };
-        let text = without_leader(text);
-        if text.is_empty() {
-            continue;
+        match kind {
+            "word" => words.extend(word(page, fields)),
+            "mark" => marks.extend(mark(page, fields, false)),
+            "picture" => marks.extend(mark(page, fields, true)),
+            _ => continue,
         }
-        words.push(Word {
+    }
+    if words.is_empty() {
+        return Err("Word's rendering held no words at all — is the document empty?".into());
+    }
+    Ok(Reading { words, marks })
+}
+
+fn word<'a>(page: u32, mut fields: impl Iterator<Item = &'a str>) -> Option<Word> {
+    let (Some(x), Some(baseline), Some(text)) = (fields.next(), fields.next(), fields.next())
+    else {
+        return None;
+    };
+    let (Ok(x), Ok(baseline)) = (x.parse::<f64>(), baseline.parse::<f64>()) else {
+        return None;
+    };
+    // The text of a word may hold anything but a tab, so whatever is left of
+    // the line belongs to it.
+    let text: String = std::iter::once(text)
+        .chain(fields)
+        .collect::<Vec<_>>()
+        .join("\t");
+    let text = without_leader(&text);
+    match text.is_empty() {
+        true => None,
+        false => Some(Word {
             page,
             // A rendered page has forgotten which flow drew what. The band a
             // difference is reported under is the one *we* laid it in, and a
@@ -273,36 +324,79 @@ fn parse(dump: &str) -> Result<Vec<Word>, String> {
             x,
             baseline,
             text: crate::diff::spelled(text),
-        });
+        }),
     }
-    if words.is_empty() {
-        return Err("Word's rendering held no words at all — is the document empty?".into());
-    }
-    Ok(words)
+}
+
+/// A rectangle of ink, and whether the rendering said outright that it is a
+/// picture's box.
+///
+/// It says so for a raster picture and for nothing else. Everything else a
+/// picture is made of reaches a rendering as the strokes that draw it, with no
+/// box among them — which is exactly the distinction
+/// [`crate::marks::answered`] turns on.
+fn mark<'a>(page: u32, fields: impl Iterator<Item = &'a str>, picture: bool) -> Option<Mark> {
+    let corners: Vec<f64> = fields.filter_map(|field| field.parse().ok()).collect();
+    let &[x0, y0, x1, y1] = corners.as_slice() else {
+        return None;
+    };
+    Some(Mark {
+        page,
+        rect: Rect::new(x0, y0, x1, y1),
+        picture,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn words(dump: &str) -> Vec<Word> {
+        parse(dump).expect("a well-formed dump parses").words
+    }
+
     #[test]
     fn a_dump_becomes_words_where_word_set_them() {
-        let dump = "5\t72.000\t100.000\tmedia\n5\t100.000\t100.000\toptions,\n";
-        let words = parse(dump).expect("a well-formed dump parses");
-        assert_eq!(words.len(), 2);
-        assert_eq!(words[0].text, "media");
-        assert_eq!(words[0].page, 5);
-        assert_eq!(words[1].text, "options,");
-        assert!((words[1].x - 100.0).abs() < 0.001);
-        assert!(words[0].band.is_none());
+        let read = words(
+            "word\t5\t72.000\t100.000\tmedia\n\
+             word\t5\t100.000\t100.000\toptions,\n",
+        );
+        assert_eq!(read.len(), 2);
+        assert_eq!(read[0].text, "media");
+        assert_eq!(read[0].page, 5);
+        assert_eq!(read[1].text, "options,");
+        assert!((read[1].x - 100.0).abs() < 0.001);
+        assert!(read[0].band.is_none());
     }
 
     #[test]
     fn a_line_that_is_not_a_measurement_is_skipped_rather_than_guessed_at() {
-        let dump = "not a row at all\n5\t72.000\t100.000\tkept\n\n";
-        let words = parse(dump).expect("the one good row is enough");
-        assert_eq!(words.len(), 1);
-        assert_eq!(words[0].text, "kept");
+        let read = words("not a row at all\n# a header\nword\t5\t72.0\t100.0\tkept\n\n");
+        assert_eq!(read.len(), 1);
+        assert_eq!(read[0].text, "kept");
+    }
+
+    /// The page's furniture, which arrives in the same file under its own kind.
+    #[test]
+    fn a_rule_and_a_picture_come_back_as_the_rectangles_they_are() {
+        let dump = "word\t1\t72.0\t100.0\tone\n\
+                    mark\t1\t72.000\t72.000\t540.000\t72.480\n\
+                    picture\t2\t72.000\t72.000\t192.000\t162.000\n";
+        let read = parse(dump).expect("a well-formed dump parses");
+        assert_eq!(read.words.len(), 1);
+        assert_eq!(read.marks.len(), 2);
+        assert!(!read.marks[0].picture);
+        assert!((read.marks[0].rect.width() - 468.0).abs() < 0.001);
+        assert_eq!(read.marks[1].page, 2);
+        assert!(read.marks[1].picture, "a raster picture says so outright");
+    }
+
+    /// A rectangle short of a corner is not a rectangle, and a guess at the
+    /// fourth of them is a measurement nobody took.
+    #[test]
+    fn a_mark_that_is_short_a_corner_is_dropped() {
+        let dump = "word\t1\t72.0\t100.0\tone\nmark\t1\t72.000\t72.000\t540.000\n";
+        assert!(parse(dump).expect("the word still stands").marks.is_empty());
     }
 
     /// A contents entry arrives from a rendered page with the dots attached,
@@ -318,11 +412,13 @@ mod tests {
         assert_eq!(without_leader("Hardware"), "Hardware");
         assert_eq!(without_leader("etc..."), "etc...", "an ellipsis is text");
         assert_eq!(without_leader("well-"), "well-");
-        let dump = "2\t72.000\t100.000\tHardware...........\n2\t500.000\t100.000\t11\n";
-        let words = parse(dump).expect("a well-formed dump parses");
-        assert_eq!(words.len(), 2);
-        assert_eq!(words[0].text, "Hardware");
-        assert_eq!(words[1].text, "11");
+        let read = words(
+            "word\t2\t72.000\t100.000\tHardware...........\n\
+             word\t2\t500.000\t100.000\t11\n",
+        );
+        assert_eq!(read.len(), 2);
+        assert_eq!(read[0].text, "Hardware");
+        assert_eq!(read[1].text, "11");
     }
 
     #[test]

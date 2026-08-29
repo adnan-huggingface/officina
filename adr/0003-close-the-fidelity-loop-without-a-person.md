@@ -283,5 +283,70 @@ documents whose answers were already known, and none of it by reading the code.
 **What made it a gate.** `LAYOUT.md` now records what every corpus document
 measures and `cargo xtask compare --check` fails on any that got worse. Until
 that existed the harness produced a ranked list — which says where to work, and
-says nothing at all about work that has come undone. It is deliberately not
-part of `cargo xtask check`: that has to keep working on a machine with no Word.
+says nothing at all about work that has come undone.
+
+It was kept out of `cargo xtask check` at first, because the gate has to keep
+working on a machine with no Word. That reason stopped being true the moment
+Word's readings of the corpus were committed under `corpus/rendered/`: its
+answer for a document cannot change until the document does, so the check needs
+Word only to renew a reading of something that actually changed. `--check` now
+runs inside `cargo xtask check` with every other gate, which it had to, because
+nothing about a layout regression is noticeable — the tests pass, the document
+opens, and a line sits a point and a half further down the page.
+
+---
+
+## Postscript: the page, and not only the type (2026-08-28)
+
+Two things were still owed, and they were the same kind of debt: a claim the
+tool made that nothing had measured.
+
+**Only the type was compared.** A rule, a shading, a border, a picture — none
+of them moved a number. It was the largest thing the instrument was blind to,
+and the worst kind of blindness, because a page whose whole table has slid half
+a centimetre reads as a page with a handful of words out of place. The fix is
+`crates/wp-compare/src/marks.rs`: every rectangle of ink that is not type,
+compared the same way and counted in its own column of `LAYOUT.md`.
+
+The one thing that made it hard is worth recording, because it is the third
+time the same lesson has arrived. **Neither renderer draws a border the way the
+other does.** Word's export lays a table's top edge as a little filled square at
+each corner with the spans between them; Scriva lays one rule per cell. A page
+of ink the two agree about to a hundredth of a point arrives as thirty
+rectangles against nine, and comparing rectangles as they arrive reports a
+document with nothing wrong as a document with nothing right. So both readings
+are reduced to their ink — duplicates dropped, touching collinear pieces run
+together — by one function that cannot tell which side it is working on. Any
+decision that shapes what is compared has to be taken from both readings at
+once, or one side is held to a convention it never agreed to. The line cutting
+taught that twice already.
+
+There is a second half to it, which the first attempt got wrong: **a rule is
+broken where another rule crosses it.** Word's corner square can be run into the
+horizontal border or into the vertical one but not into both, so whichever pass
+took it left the other with a rule in five pieces, each one crossing short of
+its neighbour — nine rules against one, with nothing wrong on the page at all. A
+break as wide as the rule's own thickness is bridged; a gap between two boxes is
+a gap somebody meant.
+
+What it found on its first run was worth the trouble. `floating-image-wrap.docx`
+puts one of its two images 120 points below where Word puts it, and the other
+exactly right — a fault no word count could name, because the words around a
+floated image were already reported as unplaceable. `header-footer-footnote.doc`
+draws no footnote separator, because it lays no footnote band at all. And on
+`nested-tables.docx` and `table-spanning-pages.docx` the borders are out by the
+same 5.7 and 24.9 points as the words, which is the more useful kind of answer:
+the furniture corroborates the type, and one fault is one fault rather than two.
+
+**And the machine with no Word had never existed.** Everything above rests on
+the corpus being checkable without Office, which is why `--check` may sit inside
+`cargo xtask check`. It is written down in three files and it had never once
+been executed: every run has been on this machine, where a stale reading is
+renewed in seconds and nobody notices. A claim about what happens when something
+is missing is exactly the kind that stops being true quietly. So
+`crates/wp-compare/tests/without_word.rs` runs the tool with **nothing on its
+PATH** — Word is reached only by starting `powershell` and the rendering read
+only by starting `python`, and neither can be found without one. The corpus
+checks clean, and the two ways of genuinely needing Word now say which is which:
+a document nobody has a reading of, and a reading that has gone stale, want
+different things done about them and no longer read alike.

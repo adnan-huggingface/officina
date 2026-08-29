@@ -1460,3 +1460,31 @@ matches first and let the subsequence work between them.
 glyph of whatever face this run names"; Word's PDF export writes the character
 it drew, U+2022. Two names for one mark in one place. Map the ones that actually
 occur, having looked — never guess at what a glyph number might mean.
+
+**Two renderers do not cut the same ink into the same pieces, either.** The
+words taught this and the page's furniture taught it again, harder. Word's
+export lays a table's top border as a small filled square at each corner with
+the spans between them; this project lays one rule per cell. The same border,
+in the same place, to a hundredth of a point — thirty rectangles against nine,
+and a document with nothing wrong reported as a document with nothing right.
+Reduce both readings to the ink they put down, with one function that cannot
+tell which side it is working on. The rule that follows from it is the same one
+the line cutting gave twice: any decision that shapes what is compared has to be
+taken from both readings at once, or one side is being held to a convention it
+never agreed to.
+
+**And a rule is broken where another rule crosses it.** A corner square can be
+run into the horizontal border or into the vertical one but not into both, so
+whichever pass takes it leaves the other with a rule in five pieces — each one
+crossing short of its neighbour, and unmatchable against the single rule the
+other renderer drew. A break as wide as the rule's own thickness is a break; a
+gap between two boxes is a gap somebody meant.
+
+**A claim about what happens when something is missing has to be executed.**
+That the comparison needs no Word — its readings being committed — is the reason
+it may sit inside the gate, and it was written down in three files and had never
+once been run. Every run was on the machine where Word is installed, where a
+stale reading is renewed in seconds and nobody notices. Take the thing away and
+run it: an empty PATH is enough, and it cost one test file. The absent-dependency
+path is the one that rots without a sound, because the machine that would notice
+is the machine nobody develops on.

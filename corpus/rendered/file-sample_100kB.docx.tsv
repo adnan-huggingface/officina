@@ -1,417 +1,420 @@
-# Word's own rendering of file-sample_100kB.docx, as the place every word of it landed.
+# Word's own rendering of file-sample_100kB.docx, as the place every mark of it landed.
 # Written by `cargo xtask compare`. Not by hand, and not read by anything
-# but the comparison: `page`, `x`, `baseline`, `text`, in points.
-# document 1f312a84  export 67d00bda  reading becf340b
+# but the comparison. In points, one mark to a line, of two kinds:
+#   word  page  x  baseline  text
+#   mark  page  x0  y0  x1  y1
+# document 1f312a84  export 67d00bda  reading 1589c59f
 # Stale? `cargo xtask compare --refresh` renews it, and needs Word for that
 # one document. Everything else goes on working without it.
-1	72.024	86.900	A
-1	87.537	86.900	stranger
-1	149.207	86.900	in
-1	166.571	86.900	the
-1	191.947	86.900	corpus
-1	72.024	101.540	This
-1	96.360	101.540	document
-1	146.640	101.540	was
-1	168.252	101.540	not
-1	186.612	101.540	written
-1	223.584	101.540	by
-1	238.584	101.540	Word.
-1	271.908	101.540	It
-1	282.084	101.540	exists
-1	312.564	101.540	to
-1	324.900	101.540	hold
-1	349.260	101.540	the
-1	366.912	101.540	reader
-1	399.708	101.540	to
-1	412.140	101.540	a
-1	420.420	101.540	second
-1	456.768	101.540	producer's
-1	72.024	115.340	dialect:
-1	110.292	115.340	see
-1	128.532	115.340	corpus/strangers.py,
-1	228.240	115.340	which
-1	260.520	115.340	wrote
-1	290.844	115.340	it
-1	300.552	115.340	and
-1	320.940	115.340	can
-1	340.500	115.340	write
-1	368.088	115.340	it
-1	377.796	115.340	again.
-1	72.024	129.140	Aliquip
-1	111.732	129.140	aliquip
-1	148.056	129.140	est
-1	164.388	129.140	cupidatat
-1	211.296	129.140	tempor
-1	248.280	129.140	pariatur
-1	288.612	129.140	exercitation
-1	348.288	129.140	excepteur
-1	397.872	129.140	veniam
-1	436.200	129.140	laboris.
-1	474.852	129.140	Proident
-1	518.496	129.140	elit
-1	72.024	142.940	duis
-1	95.028	142.940	elit
-1	113.388	142.940	consectetur
-1	170.892	142.940	sint
-1	191.280	142.940	aliquip
-1	227.604	142.940	dolore
-1	261.216	142.940	sit
-1	275.604	142.940	cillum
-1	309.300	142.940	id
-1	321.540	142.940	esse
-1	344.484	142.940	est
-1	360.744	142.940	ut
-1	373.128	142.940	minim
-1	407.544	142.940	labore.
-1	443.424	142.940	Culpa
-1	475.116	142.940	cupidatat
-1	521.988	142.940	ut
-1	72.024	156.740	laborum
-1	114.960	156.740	tempor
-1	151.944	156.740	do
-1	166.944	156.740	incididunt
-1	218.616	156.740	mollit
-1	250.404	156.740	veniam
-1	288.684	156.740	quis
-1	311.592	156.740	velit
-1	335.916	156.740	ullamco.
-1	380.568	156.740	Exercitation
-1	442.212	156.740	laborum
-1	485.148	156.740	aliquip
-1	72.024	170.540	aute
-1	94.968	170.540	magna
-1	129.864	170.540	mollit
-1	161.616	170.540	non
-1	182.616	170.540	sunt
-1	205.644	170.540	nostrud
-1	244.668	170.540	eiusmod
-1	288.324	170.540	qui.
-1	72.024	184.340	Tempor
-1	112.956	184.340	lorem
-1	143.880	184.340	reprehenderit
-1	210.936	184.340	exercitation
-1	270.552	184.340	do
-1	285.552	184.340	cupidatat
-1	332.448	184.340	qui
-1	350.820	184.340	irure
-1	376.380	184.340	eiusmod.
-1	423.048	184.340	Eiusmod
-1	468.864	184.340	culpa
-1	497.808	184.340	ipsum
-1	72.024	198.140	anim
-1	99.012	198.140	cillum
-1	132.708	198.140	et
-1	144.324	198.140	nisi
-1	164.700	198.140	proident
-1	207.552	198.140	velit
-1	231.924	198.140	id
-1	244.260	198.140	mollit.
-1	278.928	198.140	Sed
-1	299.916	198.140	voluptate
-1	347.568	198.140	aute
-1	370.488	198.140	occaecat
-1	414.696	198.140	laborum
-1	457.788	198.140	sit
-1	472.164	198.140	reprehenderit
-1	72.024	211.940	et
-1	83.640	211.940	pariatur
-1	123.864	211.940	voluptate
-1	171.600	211.940	cupidatat
-1	218.496	211.940	id
-1	230.868	211.940	commodo
-1	281.856	211.940	pariatur.
-1	325.200	211.940	Nulla
-1	354.792	211.940	in
-1	367.128	211.940	minim
-1	401.544	211.940	consequat
-1	452.424	211.940	fugiat
-1	483.420	211.940	minim
-1	517.824	211.940	duis
-1	72.024	225.740	qui
-1	90.360	225.740	est
-1	106.692	225.740	quis
-1	129.720	225.740	ex
-1	144.012	225.740	exercitation.
-1	72.024	239.540	Sunt
-1	97.068	239.540	adipiscing
-1	149.400	239.540	deserunt
-1	192.984	239.540	enim
-1	219.960	239.540	esse
-1	242.904	239.540	laboris
-1	278.520	239.540	dolore
-1	312.228	239.540	et.
-1	326.844	239.540	Cupidatat
-1	376.512	239.540	deserunt
-1	420.108	239.540	commodo
-1	471.192	239.540	proident
-1	514.152	239.540	ea
-1	72.024	253.370	mollit
-1	103.776	253.370	in
-1	116.148	253.370	dolore
-1	149.748	253.370	do
-1	164.748	253.370	sit
-1	179.112	253.370	fugiat
-1	209.976	253.370	in
-1	222.312	253.370	officia
-1	256.536	253.370	ad.
-1	273.816	253.370	Sit
-1	290.232	253.370	occaecat
-1	334.464	253.370	magna
-1	369.396	253.370	pariatur
-1	409.716	253.370	nulla
-1	436.692	253.370	elit
-1	455.016	253.370	pariatur
-1	495.240	253.370	sit
-1	509.628	253.370	non
-1	72.024	267.170	reprehenderit.
-1	141.840	267.170	Deserunt
-1	188.172	267.170	enim
-1	215.256	267.170	consequat
-1	266.112	267.170	voluptate
-1	313.872	267.170	ut
-1	326.208	267.170	esse
-1	349.152	267.170	proident
-1	392.088	267.170	sint
-1	412.476	267.170	excepteur
-1	462.048	267.170	irure
-1	487.608	267.170	veniam.
-1	72.024	471.070	Aliquip
-1	111.732	471.070	lorem
-1	142.668	471.070	nulla
-1	169.704	471.070	elit
-1	188.004	471.070	ex
-1	202.332	471.070	incididunt
-1	253.992	471.070	sunt
-1	277.020	471.070	consequat
-1	327.900	471.070	elit
-1	346.272	471.070	excepteur
-1	395.856	471.070	reprehenderit
-1	462.744	471.070	ut
-1	475.104	471.070	dolor.
-1	72.024	484.870	Excepteur
-1	123.504	484.870	id
-1	135.972	484.870	adipiscing
-1	188.256	484.870	exercitation
-1	247.884	484.870	fugiat
-1	278.844	484.870	pariatur
-1	319.260	484.870	do
-1	334.260	484.870	voluptate
-1	381.912	484.870	cillum
-1	415.584	484.870	esse
-1	438.528	484.870	ex
-1	452.784	484.870	id
-1	465.120	484.870	duis
-1	488.160	484.870	dolor.
-1	72.024	498.550	Eiusmod
-1	117.732	498.550	sit
-1	132.096	498.550	proident
-1	175.092	498.550	ex
-1	189.360	498.550	officia
-1	223.560	498.550	occaecat
-1	267.792	498.550	sit
-1	282.180	498.550	incididunt
-1	333.876	498.550	id
-1	346.248	498.550	et
-1	357.864	498.550	eiusmod
-1	401.556	498.550	adipiscing
-1	453.840	498.550	dolor
-1	482.208	498.550	sed
-1	501.132	498.550	ut.
-1	516.468	498.550	Elit
-1	72.024	512.350	dolore
-1	105.624	512.350	amet
-1	131.904	512.350	nulla
-1	158.892	512.350	est
-1	175.176	512.350	excepteur
-1	224.868	512.350	exercitation
-1	284.472	512.350	dolor
-1	312.900	512.350	duis.
-1	338.928	512.350	Ex
-1	355.260	512.350	nisi
-1	375.636	512.350	minim
-1	409.920	512.350	nulla
-1	436.812	512.350	aliquip
-1	473.136	512.350	consequat
-1	72.024	526.150	incididunt
-1	123.732	526.150	reprehenderit
-1	190.548	526.150	in
-1	202.908	526.150	qui
-1	221.244	526.150	dolore
-1	254.856	526.150	ullamco
-1	296.508	526.150	do
-1	311.508	526.150	sunt.
-1	72.024	539.950	Culpa
-1	103.716	539.950	ullamco
-1	145.332	539.950	amet
-1	171.612	539.950	id
-1	183.948	539.950	reprehenderit
-1	250.896	539.950	magna
-1	285.816	539.950	exercitation
-1	345.528	539.950	qui
-1	363.900	539.950	dolore
-1	397.500	539.950	culpa
-1	426.444	539.950	pariatur.
-1	469.836	539.950	Incididunt
-1	72.024	553.750	labore
-1	104.904	553.750	sit
-1	119.292	553.750	nostrud
-1	158.316	553.750	laborum
-1	201.324	553.750	magna
-1	236.256	553.750	lorem
-1	267.192	553.750	magna
-1	302.124	553.750	non.
-1	326.232	553.750	Dolor
-1	357.192	553.750	id
-1	369.528	553.750	ipsum
-1	401.928	553.750	sunt
-1	424.956	553.750	aute
-1	447.900	553.750	aliqua
-1	480.144	553.750	labore
-1	72.024	567.550	exercitation
-1	131.520	567.550	lorem
-1	162.588	567.550	esse
-1	185.532	567.550	consectetur
-1	243.096	567.550	labore.
-1	279.084	567.550	Esse
-1	304.152	567.550	esse
-1	327.204	567.550	excepteur
-1	376.764	567.550	velit
-1	401.052	567.550	ipsum
-1	433.452	567.550	qui
-1	451.788	567.550	consectetur
-1	509.292	567.550	sunt
-1	72.024	581.380	in
-1	84.360	581.380	veniam
-1	122.640	581.380	ad
-1	136.968	581.380	fugiat.
-1	170.904	581.380	Dolor
-1	202.008	581.380	excepteur
-1	251.556	581.380	cupidatat
-1	298.548	581.380	tempor
-1	335.628	581.380	mollit
-1	367.368	581.380	consectetur
-1	424.872	581.380	ipsum
-1	457.260	581.380	nulla
-1	484.248	581.380	voluptate
-1	72.024	595.180	qui
-1	90.360	595.180	veniam
-1	128.640	595.180	qui
-1	147.012	595.180	proident
-1	189.948	595.180	aute
-1	212.892	595.180	do.
-1	72.024	608.980	Mollit
-1	105.120	608.980	nulla
-1	132.108	608.980	lorem
-1	163.044	608.980	fugiat
-1	194.040	608.980	sint
-1	214.416	608.980	lorem
-1	245.352	608.980	pariatur
-1	285.576	608.980	ad
-1	299.964	608.980	commodo
-1	351.060	608.980	exercitation.
-1	413.556	608.980	Nostrud
-1	455.316	608.980	nostrud
-1	72.024	622.780	excepteur
-1	121.608	622.780	nisi
-1	141.948	622.780	incididunt
-1	193.644	622.780	ut
-1	206.016	622.780	anim
-1	233.004	622.780	eiusmod
-1	276.672	622.780	reprehenderit
-1	343.488	622.780	culpa.
-1	375.528	622.780	Id
-1	388.368	622.780	magna
-1	423.396	622.780	amet
-1	449.784	622.780	velit
-1	474.108	622.780	aliquip
-1	510.480	622.780	velit
-1	72.024	636.580	sint
-1	92.412	636.580	sed
-1	111.372	636.580	laboris
-1	146.976	636.580	in
-1	159.360	636.580	qui
-1	177.696	636.580	in
-1	189.948	636.580	commodo
-1	240.936	636.580	elit
-1	259.260	636.580	esse
-1	282.204	636.580	enim.
-1	312.192	636.580	Officia
-1	349.140	636.580	elit
-1	367.464	636.580	in
-1	379.836	636.580	voluptate
-1	427.488	636.580	labore
-1	460.344	636.580	sit
-1	474.732	636.580	exercitation
-1	72.024	650.380	proident
-1	114.960	650.380	aliquip
-1	151.332	650.380	laboris.
-1	189.936	650.380	Officia
-1	226.812	650.380	laborum
-1	269.892	650.380	consectetur
-1	327.588	650.380	amet
-1	353.856	650.380	dolor
-1	382.188	650.380	anim
-1	409.164	650.380	nisi
-1	429.552	650.380	ullamco
-1	471.204	650.380	ipsum
-1	503.568	650.380	irure
-1	72.024	664.180	do
-1	87.024	664.180	ex
-1	101.304	664.180	adipiscing.
-1	72.024	677.980	Aliqua
-1	107.688	677.980	velit
-1	131.988	677.980	fugiat
-1	162.984	677.980	adipiscing
-1	215.256	677.980	aute
-1	238.200	677.980	irure
-1	263.868	677.980	culpa
-1	292.812	677.980	laborum
-1	335.868	677.980	do.
-1	353.868	677.980	Laborum
-1	400.788	677.980	occaecat
-1	445.116	677.980	aute
-1	468.060	677.980	in
-1	480.396	677.980	do
-1	495.396	677.980	eiusmod
-1	72.024	691.780	est
-1	88.308	691.780	est
-1	104.640	691.780	veniam
-1	142.920	691.780	sint.
-1	166.308	691.780	Pariatur
-1	207.252	691.780	deserunt
-1	250.812	691.780	excepteur
-1	300.492	691.780	adipiscing
-1	352.872	691.780	esse
-1	375.828	691.780	culpa
-1	404.748	691.780	ea
-1	418.392	691.780	culpa
-1	447.420	691.780	ad
-1	461.700	691.780	elit
-1	480.024	691.780	fugiat
-1	511.020	691.780	anim
-2	72.024	83.180	deserunt
-2	115.596	83.180	non.
-2	139.596	83.180	Anim
-2	169.932	83.180	culpa
-2	198.960	83.180	aliqua
-2	231.228	83.180	labore
-2	264.216	83.180	sint
-2	284.604	83.180	cupidatat
-2	331.500	83.180	cupidatat
-2	378.444	83.180	id
-2	390.780	83.180	veniam
-2	429.060	83.180	labore
-2	462.072	83.180	dolor
-2	490.500	83.180	anim
-2	72.024	96.980	lorem
-2	102.960	96.980	labore
-2	135.960	96.980	commodo.
-2	189.948	96.980	Aute
-2	216.228	96.980	consectetur
-2	273.828	96.980	sed
-2	292.776	96.980	ex
-2	307.164	96.980	velit
-2	331.488	96.980	deserunt
-2	375.084	96.980	sit
-2	389.460	96.980	sint
-2	409.848	96.980	ex.
+word	1	72.024	86.900	A
+word	1	87.537	86.900	stranger
+word	1	149.207	86.900	in
+word	1	166.571	86.900	the
+word	1	191.947	86.900	corpus
+word	1	72.024	101.540	This
+word	1	96.360	101.540	document
+word	1	146.640	101.540	was
+word	1	168.252	101.540	not
+word	1	186.612	101.540	written
+word	1	223.584	101.540	by
+word	1	238.584	101.540	Word.
+word	1	271.908	101.540	It
+word	1	282.084	101.540	exists
+word	1	312.564	101.540	to
+word	1	324.900	101.540	hold
+word	1	349.260	101.540	the
+word	1	366.912	101.540	reader
+word	1	399.708	101.540	to
+word	1	412.140	101.540	a
+word	1	420.420	101.540	second
+word	1	456.768	101.540	producer's
+word	1	72.024	115.340	dialect:
+word	1	110.292	115.340	see
+word	1	128.532	115.340	corpus/strangers.py,
+word	1	228.240	115.340	which
+word	1	260.520	115.340	wrote
+word	1	290.844	115.340	it
+word	1	300.552	115.340	and
+word	1	320.940	115.340	can
+word	1	340.500	115.340	write
+word	1	368.088	115.340	it
+word	1	377.796	115.340	again.
+word	1	72.024	129.140	Aliquip
+word	1	111.732	129.140	aliquip
+word	1	148.056	129.140	est
+word	1	164.388	129.140	cupidatat
+word	1	211.296	129.140	tempor
+word	1	248.280	129.140	pariatur
+word	1	288.612	129.140	exercitation
+word	1	348.288	129.140	excepteur
+word	1	397.872	129.140	veniam
+word	1	436.200	129.140	laboris.
+word	1	474.852	129.140	Proident
+word	1	518.496	129.140	elit
+word	1	72.024	142.940	duis
+word	1	95.028	142.940	elit
+word	1	113.388	142.940	consectetur
+word	1	170.892	142.940	sint
+word	1	191.280	142.940	aliquip
+word	1	227.604	142.940	dolore
+word	1	261.216	142.940	sit
+word	1	275.604	142.940	cillum
+word	1	309.300	142.940	id
+word	1	321.540	142.940	esse
+word	1	344.484	142.940	est
+word	1	360.744	142.940	ut
+word	1	373.128	142.940	minim
+word	1	407.544	142.940	labore.
+word	1	443.424	142.940	Culpa
+word	1	475.116	142.940	cupidatat
+word	1	521.988	142.940	ut
+word	1	72.024	156.740	laborum
+word	1	114.960	156.740	tempor
+word	1	151.944	156.740	do
+word	1	166.944	156.740	incididunt
+word	1	218.616	156.740	mollit
+word	1	250.404	156.740	veniam
+word	1	288.684	156.740	quis
+word	1	311.592	156.740	velit
+word	1	335.916	156.740	ullamco.
+word	1	380.568	156.740	Exercitation
+word	1	442.212	156.740	laborum
+word	1	485.148	156.740	aliquip
+word	1	72.024	170.540	aute
+word	1	94.968	170.540	magna
+word	1	129.864	170.540	mollit
+word	1	161.616	170.540	non
+word	1	182.616	170.540	sunt
+word	1	205.644	170.540	nostrud
+word	1	244.668	170.540	eiusmod
+word	1	288.324	170.540	qui.
+word	1	72.024	184.340	Tempor
+word	1	112.956	184.340	lorem
+word	1	143.880	184.340	reprehenderit
+word	1	210.936	184.340	exercitation
+word	1	270.552	184.340	do
+word	1	285.552	184.340	cupidatat
+word	1	332.448	184.340	qui
+word	1	350.820	184.340	irure
+word	1	376.380	184.340	eiusmod.
+word	1	423.048	184.340	Eiusmod
+word	1	468.864	184.340	culpa
+word	1	497.808	184.340	ipsum
+word	1	72.024	198.140	anim
+word	1	99.012	198.140	cillum
+word	1	132.708	198.140	et
+word	1	144.324	198.140	nisi
+word	1	164.700	198.140	proident
+word	1	207.552	198.140	velit
+word	1	231.924	198.140	id
+word	1	244.260	198.140	mollit.
+word	1	278.928	198.140	Sed
+word	1	299.916	198.140	voluptate
+word	1	347.568	198.140	aute
+word	1	370.488	198.140	occaecat
+word	1	414.696	198.140	laborum
+word	1	457.788	198.140	sit
+word	1	472.164	198.140	reprehenderit
+word	1	72.024	211.940	et
+word	1	83.640	211.940	pariatur
+word	1	123.864	211.940	voluptate
+word	1	171.600	211.940	cupidatat
+word	1	218.496	211.940	id
+word	1	230.868	211.940	commodo
+word	1	281.856	211.940	pariatur.
+word	1	325.200	211.940	Nulla
+word	1	354.792	211.940	in
+word	1	367.128	211.940	minim
+word	1	401.544	211.940	consequat
+word	1	452.424	211.940	fugiat
+word	1	483.420	211.940	minim
+word	1	517.824	211.940	duis
+word	1	72.024	225.740	qui
+word	1	90.360	225.740	est
+word	1	106.692	225.740	quis
+word	1	129.720	225.740	ex
+word	1	144.012	225.740	exercitation.
+word	1	72.024	239.540	Sunt
+word	1	97.068	239.540	adipiscing
+word	1	149.400	239.540	deserunt
+word	1	192.984	239.540	enim
+word	1	219.960	239.540	esse
+word	1	242.904	239.540	laboris
+word	1	278.520	239.540	dolore
+word	1	312.228	239.540	et.
+word	1	326.844	239.540	Cupidatat
+word	1	376.512	239.540	deserunt
+word	1	420.108	239.540	commodo
+word	1	471.192	239.540	proident
+word	1	514.152	239.540	ea
+word	1	72.024	253.370	mollit
+word	1	103.776	253.370	in
+word	1	116.148	253.370	dolore
+word	1	149.748	253.370	do
+word	1	164.748	253.370	sit
+word	1	179.112	253.370	fugiat
+word	1	209.976	253.370	in
+word	1	222.312	253.370	officia
+word	1	256.536	253.370	ad.
+word	1	273.816	253.370	Sit
+word	1	290.232	253.370	occaecat
+word	1	334.464	253.370	magna
+word	1	369.396	253.370	pariatur
+word	1	409.716	253.370	nulla
+word	1	436.692	253.370	elit
+word	1	455.016	253.370	pariatur
+word	1	495.240	253.370	sit
+word	1	509.628	253.370	non
+word	1	72.024	267.170	reprehenderit.
+word	1	141.840	267.170	Deserunt
+word	1	188.172	267.170	enim
+word	1	215.256	267.170	consequat
+word	1	266.112	267.170	voluptate
+word	1	313.872	267.170	ut
+word	1	326.208	267.170	esse
+word	1	349.152	267.170	proident
+word	1	392.088	267.170	sint
+word	1	412.476	267.170	excepteur
+word	1	462.048	267.170	irure
+word	1	487.608	267.170	veniam.
+word	1	72.024	471.070	Aliquip
+word	1	111.732	471.070	lorem
+word	1	142.668	471.070	nulla
+word	1	169.704	471.070	elit
+word	1	188.004	471.070	ex
+word	1	202.332	471.070	incididunt
+word	1	253.992	471.070	sunt
+word	1	277.020	471.070	consequat
+word	1	327.900	471.070	elit
+word	1	346.272	471.070	excepteur
+word	1	395.856	471.070	reprehenderit
+word	1	462.744	471.070	ut
+word	1	475.104	471.070	dolor.
+word	1	72.024	484.870	Excepteur
+word	1	123.504	484.870	id
+word	1	135.972	484.870	adipiscing
+word	1	188.256	484.870	exercitation
+word	1	247.884	484.870	fugiat
+word	1	278.844	484.870	pariatur
+word	1	319.260	484.870	do
+word	1	334.260	484.870	voluptate
+word	1	381.912	484.870	cillum
+word	1	415.584	484.870	esse
+word	1	438.528	484.870	ex
+word	1	452.784	484.870	id
+word	1	465.120	484.870	duis
+word	1	488.160	484.870	dolor.
+word	1	72.024	498.550	Eiusmod
+word	1	117.732	498.550	sit
+word	1	132.096	498.550	proident
+word	1	175.092	498.550	ex
+word	1	189.360	498.550	officia
+word	1	223.560	498.550	occaecat
+word	1	267.792	498.550	sit
+word	1	282.180	498.550	incididunt
+word	1	333.876	498.550	id
+word	1	346.248	498.550	et
+word	1	357.864	498.550	eiusmod
+word	1	401.556	498.550	adipiscing
+word	1	453.840	498.550	dolor
+word	1	482.208	498.550	sed
+word	1	501.132	498.550	ut.
+word	1	516.468	498.550	Elit
+word	1	72.024	512.350	dolore
+word	1	105.624	512.350	amet
+word	1	131.904	512.350	nulla
+word	1	158.892	512.350	est
+word	1	175.176	512.350	excepteur
+word	1	224.868	512.350	exercitation
+word	1	284.472	512.350	dolor
+word	1	312.900	512.350	duis.
+word	1	338.928	512.350	Ex
+word	1	355.260	512.350	nisi
+word	1	375.636	512.350	minim
+word	1	409.920	512.350	nulla
+word	1	436.812	512.350	aliquip
+word	1	473.136	512.350	consequat
+word	1	72.024	526.150	incididunt
+word	1	123.732	526.150	reprehenderit
+word	1	190.548	526.150	in
+word	1	202.908	526.150	qui
+word	1	221.244	526.150	dolore
+word	1	254.856	526.150	ullamco
+word	1	296.508	526.150	do
+word	1	311.508	526.150	sunt.
+word	1	72.024	539.950	Culpa
+word	1	103.716	539.950	ullamco
+word	1	145.332	539.950	amet
+word	1	171.612	539.950	id
+word	1	183.948	539.950	reprehenderit
+word	1	250.896	539.950	magna
+word	1	285.816	539.950	exercitation
+word	1	345.528	539.950	qui
+word	1	363.900	539.950	dolore
+word	1	397.500	539.950	culpa
+word	1	426.444	539.950	pariatur.
+word	1	469.836	539.950	Incididunt
+word	1	72.024	553.750	labore
+word	1	104.904	553.750	sit
+word	1	119.292	553.750	nostrud
+word	1	158.316	553.750	laborum
+word	1	201.324	553.750	magna
+word	1	236.256	553.750	lorem
+word	1	267.192	553.750	magna
+word	1	302.124	553.750	non.
+word	1	326.232	553.750	Dolor
+word	1	357.192	553.750	id
+word	1	369.528	553.750	ipsum
+word	1	401.928	553.750	sunt
+word	1	424.956	553.750	aute
+word	1	447.900	553.750	aliqua
+word	1	480.144	553.750	labore
+word	1	72.024	567.550	exercitation
+word	1	131.520	567.550	lorem
+word	1	162.588	567.550	esse
+word	1	185.532	567.550	consectetur
+word	1	243.096	567.550	labore.
+word	1	279.084	567.550	Esse
+word	1	304.152	567.550	esse
+word	1	327.204	567.550	excepteur
+word	1	376.764	567.550	velit
+word	1	401.052	567.550	ipsum
+word	1	433.452	567.550	qui
+word	1	451.788	567.550	consectetur
+word	1	509.292	567.550	sunt
+word	1	72.024	581.380	in
+word	1	84.360	581.380	veniam
+word	1	122.640	581.380	ad
+word	1	136.968	581.380	fugiat.
+word	1	170.904	581.380	Dolor
+word	1	202.008	581.380	excepteur
+word	1	251.556	581.380	cupidatat
+word	1	298.548	581.380	tempor
+word	1	335.628	581.380	mollit
+word	1	367.368	581.380	consectetur
+word	1	424.872	581.380	ipsum
+word	1	457.260	581.380	nulla
+word	1	484.248	581.380	voluptate
+word	1	72.024	595.180	qui
+word	1	90.360	595.180	veniam
+word	1	128.640	595.180	qui
+word	1	147.012	595.180	proident
+word	1	189.948	595.180	aute
+word	1	212.892	595.180	do.
+word	1	72.024	608.980	Mollit
+word	1	105.120	608.980	nulla
+word	1	132.108	608.980	lorem
+word	1	163.044	608.980	fugiat
+word	1	194.040	608.980	sint
+word	1	214.416	608.980	lorem
+word	1	245.352	608.980	pariatur
+word	1	285.576	608.980	ad
+word	1	299.964	608.980	commodo
+word	1	351.060	608.980	exercitation.
+word	1	413.556	608.980	Nostrud
+word	1	455.316	608.980	nostrud
+word	1	72.024	622.780	excepteur
+word	1	121.608	622.780	nisi
+word	1	141.948	622.780	incididunt
+word	1	193.644	622.780	ut
+word	1	206.016	622.780	anim
+word	1	233.004	622.780	eiusmod
+word	1	276.672	622.780	reprehenderit
+word	1	343.488	622.780	culpa.
+word	1	375.528	622.780	Id
+word	1	388.368	622.780	magna
+word	1	423.396	622.780	amet
+word	1	449.784	622.780	velit
+word	1	474.108	622.780	aliquip
+word	1	510.480	622.780	velit
+word	1	72.024	636.580	sint
+word	1	92.412	636.580	sed
+word	1	111.372	636.580	laboris
+word	1	146.976	636.580	in
+word	1	159.360	636.580	qui
+word	1	177.696	636.580	in
+word	1	189.948	636.580	commodo
+word	1	240.936	636.580	elit
+word	1	259.260	636.580	esse
+word	1	282.204	636.580	enim.
+word	1	312.192	636.580	Officia
+word	1	349.140	636.580	elit
+word	1	367.464	636.580	in
+word	1	379.836	636.580	voluptate
+word	1	427.488	636.580	labore
+word	1	460.344	636.580	sit
+word	1	474.732	636.580	exercitation
+word	1	72.024	650.380	proident
+word	1	114.960	650.380	aliquip
+word	1	151.332	650.380	laboris.
+word	1	189.936	650.380	Officia
+word	1	226.812	650.380	laborum
+word	1	269.892	650.380	consectetur
+word	1	327.588	650.380	amet
+word	1	353.856	650.380	dolor
+word	1	382.188	650.380	anim
+word	1	409.164	650.380	nisi
+word	1	429.552	650.380	ullamco
+word	1	471.204	650.380	ipsum
+word	1	503.568	650.380	irure
+word	1	72.024	664.180	do
+word	1	87.024	664.180	ex
+word	1	101.304	664.180	adipiscing.
+word	1	72.024	677.980	Aliqua
+word	1	107.688	677.980	velit
+word	1	131.988	677.980	fugiat
+word	1	162.984	677.980	adipiscing
+word	1	215.256	677.980	aute
+word	1	238.200	677.980	irure
+word	1	263.868	677.980	culpa
+word	1	292.812	677.980	laborum
+word	1	335.868	677.980	do.
+word	1	353.868	677.980	Laborum
+word	1	400.788	677.980	occaecat
+word	1	445.116	677.980	aute
+word	1	468.060	677.980	in
+word	1	480.396	677.980	do
+word	1	495.396	677.980	eiusmod
+word	1	72.024	691.780	est
+word	1	88.308	691.780	est
+word	1	104.640	691.780	veniam
+word	1	142.920	691.780	sint.
+word	1	166.308	691.780	Pariatur
+word	1	207.252	691.780	deserunt
+word	1	250.812	691.780	excepteur
+word	1	300.492	691.780	adipiscing
+word	1	352.872	691.780	esse
+word	1	375.828	691.780	culpa
+word	1	404.748	691.780	ea
+word	1	418.392	691.780	culpa
+word	1	447.420	691.780	ad
+word	1	461.700	691.780	elit
+word	1	480.024	691.780	fugiat
+word	1	511.020	691.780	anim
+picture	1	72.000	269.780	359.930	459.780
+word	2	72.024	83.180	deserunt
+word	2	115.596	83.180	non.
+word	2	139.596	83.180	Anim
+word	2	169.932	83.180	culpa
+word	2	198.960	83.180	aliqua
+word	2	231.228	83.180	labore
+word	2	264.216	83.180	sint
+word	2	284.604	83.180	cupidatat
+word	2	331.500	83.180	cupidatat
+word	2	378.444	83.180	id
+word	2	390.780	83.180	veniam
+word	2	429.060	83.180	labore
+word	2	462.072	83.180	dolor
+word	2	490.500	83.180	anim
+word	2	72.024	96.980	lorem
+word	2	102.960	96.980	labore
+word	2	135.960	96.980	commodo.
+word	2	189.948	96.980	Aute
+word	2	216.228	96.980	consectetur
+word	2	273.828	96.980	sed
+word	2	292.776	96.980	ex
+word	2	307.164	96.980	velit
+word	2	331.488	96.980	deserunt
+word	2	375.084	96.980	sit
+word	2	389.460	96.980	sint
+word	2	409.848	96.980	ex.

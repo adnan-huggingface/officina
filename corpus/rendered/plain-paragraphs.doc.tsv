@@ -1,37 +1,39 @@
-# Word's own rendering of plain-paragraphs.doc, as the place every word of it landed.
+# Word's own rendering of plain-paragraphs.doc, as the place every mark of it landed.
 # Written by `cargo xtask compare`. Not by hand, and not read by anything
-# but the comparison: `page`, `x`, `baseline`, `text`, in points.
-# document 9bbdc6f0  export 67d00bda  reading becf340b
+# but the comparison. In points, one mark to a line, of two kinds:
+#   word  page  x  baseline  text
+#   mark  page  x0  y0  x1  y1
+# document 9bbdc6f0  export 67d00bda  reading 1589c59f
 # Stale? `cargo xtask compare --refresh` renews it, and needs Word for that
 # one document. Everything else goes on working without it.
-1	72.024	83.420	The
-1	92.892	83.420	first
-1	114.588	83.420	paragraph.
-1	72.024	108.380	The
-1	93.000	108.380	second
-1	130.176	108.380	paragraph,
-1	185.580	108.380	which
-1	217.344	108.380	is
-1	227.424	108.380	deliberately
-1	287.868	108.380	long
-1	311.496	108.380	enough
-1	351.060	108.380	that
-1	373.812	108.380	a
-1	382.200	108.380	layout
-1	415.188	108.380	engine
-1	450.684	108.380	has
-1	470.220	108.380	to
-1	483.060	108.380	break
-1	513.384	108.380	it
-1	72.024	125.300	across
-1	105.252	125.300	more
-1	133.920	125.300	than
-1	158.964	125.300	one
-1	180.300	125.300	line
-1	200.808	125.300	before
-1	235.464	125.300	it
-1	244.812	125.300	reaches
-1	285.336	125.300	the
-1	304.392	125.300	end.
-1	72.024	150.380	The
-1	92.892	150.380	third.
+word	1	72.024	83.420	The
+word	1	92.892	83.420	first
+word	1	114.588	83.420	paragraph.
+word	1	72.024	108.380	The
+word	1	93.000	108.380	second
+word	1	130.176	108.380	paragraph,
+word	1	185.580	108.380	which
+word	1	217.344	108.380	is
+word	1	227.424	108.380	deliberately
+word	1	287.868	108.380	long
+word	1	311.496	108.380	enough
+word	1	351.060	108.380	that
+word	1	373.812	108.380	a
+word	1	382.200	108.380	layout
+word	1	415.188	108.380	engine
+word	1	450.684	108.380	has
+word	1	470.220	108.380	to
+word	1	483.060	108.380	break
+word	1	513.384	108.380	it
+word	1	72.024	125.300	across
+word	1	105.252	125.300	more
+word	1	133.920	125.300	than
+word	1	158.964	125.300	one
+word	1	180.300	125.300	line
+word	1	200.808	125.300	before
+word	1	235.464	125.300	it
+word	1	244.812	125.300	reaches
+word	1	285.336	125.300	the
+word	1	304.392	125.300	end.
+word	1	72.024	150.380	The
+word	1	92.892	150.380	third.

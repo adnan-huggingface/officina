@@ -14,6 +14,10 @@
 //! how paper draws them cannot leave this measuring against a page nobody
 //! prints. A chart's labels are the one kind left out: drawing them needs the
 //! plot as well as the page, and the box a chart sits in is compared as a box.
+//!
+//! And the page's furniture with them — see [`furniture`]. A rule, a shading
+//! and a picture's box are ink too, and until they were gathered a border could
+//! move an inch and no number moved with it.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -24,6 +28,8 @@ use wp_layout::inline::Content;
 use wp_print::ops::Op;
 
 use crate::diff::{Band, Word};
+use crate::marks::{Mark, Rect, HAIRLINE};
+use crate::Reading;
 
 /// A document, and what is needed to find the bytes of the pictures it draws.
 struct Opened {
@@ -36,8 +42,8 @@ struct Opened {
 /// Every metafile the pages draw, played once, by the name a page draws it by.
 type Pictures = HashMap<String, metafile::Picture>;
 
-/// Lays the document out and reports where each of its words landed.
-pub fn read(path: &Path) -> Result<Vec<Word>, String> {
+/// Lays the document out and reports where each of its marks landed.
+pub fn read(path: &Path) -> Result<Reading, String> {
     let opened = open(path)?;
     let ctx = fonts();
     let mut shaper = scriva::shaper::Egui::new(&ctx);
@@ -60,10 +66,77 @@ pub fn read(path: &Path) -> Result<Vec<Word>, String> {
     );
 
     let mut words = Vec::new();
+    let mut marks = Vec::new();
     for page in view.pages() {
         collect(page, &pictures, &mut words);
+        furniture(page, &mut marks);
     }
-    Ok(words)
+    Ok(Reading { words, marks })
+}
+
+/// Every rectangle of ink on a page that is not type.
+///
+/// Straight out of [`wp_print::ops::flatten`], which is the paper renderer's
+/// own account of the page, for the same reason the diagrams' words go through
+/// its metafile player: a border that moves on paper has to move here too, and
+/// a walk of the page restated in this file would sooner or later be measuring
+/// a page nobody prints.
+///
+/// A picture and a chart are the boxes they were put in, and are not opened.
+/// What fills them is not ink the page laid — it is a recording playing, or a
+/// chart drawing itself — and [`crate::marks::answered`] is where the two
+/// renderings are let off answering for each other about it.
+fn furniture(page: &Page, into: &mut Vec<Mark>) {
+    for op in wp_print::ops::flatten(page) {
+        let (rect, picture) = match op {
+            Op::Fill {
+                x,
+                y,
+                width,
+                height,
+                ..
+            } => (Rect::new(x, y, x + width, y + height), false),
+            // A stroke is drawn along its centre and lays ink down on either
+            // side of it, so the rule a page sees is half the thickness wider
+            // than the line the layout asked for — and no longer, because a
+            // stroke's cap stops at its end point. `pdfink.py` reduces Word's
+            // strokes by the same rule.
+            Op::Rule {
+                from,
+                to,
+                thickness,
+                ..
+            } => {
+                let half = thickness.max(HAIRLINE) / 2.0;
+                let (x0, x1) = (from.0.min(to.0), from.0.max(to.0));
+                let (y0, y1) = (from.1.min(to.1), from.1.max(to.1));
+                match x1 - x0 >= y1 - y0 {
+                    true => (Rect::new(x0, y0 - half, x1, y1 + half), false),
+                    false => (Rect::new(x0 - half, y0, x1 + half, y1), false),
+                }
+            }
+            Op::Image {
+                x,
+                y,
+                width,
+                height,
+                ..
+            }
+            | Op::Chart {
+                x,
+                y,
+                width,
+                height,
+                ..
+            } => (Rect::new(x, y, x + width, y + height), true),
+            Op::Text { .. } | Op::Poly { .. } => continue,
+        };
+        into.push(Mark {
+            page: page.number,
+            rect,
+            picture,
+        });
+    }
 }
 
 fn open(path: &Path) -> Result<Opened, String> {
@@ -305,7 +378,7 @@ fn emit(page: &Page, band: Band, baseline: f64, ink: &[Ink], into: &mut Vec<Word
 /// A word is measured at its **left edge** — the leftmost of its characters,
 /// not the first of them. For type set left to right the two are the same
 /// thing; for a right-to-left run they are opposite ends of the same word, and
-/// `pdfwords.py` measures the left edge for exactly the same reason.
+/// `pdfink.py` measures the left edge for exactly the same reason.
 fn split(ink: &[Ink]) -> impl Iterator<Item = (f64, String)> + '_ {
     let mut words = Vec::new();
     let mut text = String::new();

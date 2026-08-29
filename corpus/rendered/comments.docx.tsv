@@ -1,15 +1,17 @@
-# Word's own rendering of comments.docx, as the place every word of it landed.
+# Word's own rendering of comments.docx, as the place every mark of it landed.
 # Written by `cargo xtask compare`. Not by hand, and not read by anything
-# but the comparison: `page`, `x`, `baseline`, `text`, in points.
-# document a55b9843  export 67d00bda  reading becf340b
+# but the comparison. In points, one mark to a line, of two kinds:
+#   word  page  x  baseline  text
+#   mark  page  x0  y0  x1  y1
+# document a55b9843  export 67d00bda  reading 1589c59f
 # Stale? `cargo xtask compare --refresh` renews it, and needs Word for that
 # one document. Everything else goes on working without it.
-1	72.024	83.420	A
-1	81.732	83.420	sentence
-1	128.540	83.420	that
-1	151.196	83.420	reviewers
-1	200.984	83.420	argued
-1	237.788	83.420	about
-1	269.072	83.420	at
-1	281.420	83.420	some
-1	310.796	83.420	length.
+word	1	72.024	83.420	A
+word	1	81.732	83.420	sentence
+word	1	128.540	83.420	that
+word	1	151.196	83.420	reviewers
+word	1	200.984	83.420	argued
+word	1	237.788	83.420	about
+word	1	269.072	83.420	at
+word	1	281.420	83.420	some
+word	1	310.796	83.420	length.

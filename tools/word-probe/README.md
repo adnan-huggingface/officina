@@ -28,11 +28,12 @@ works on an unlicensed install; exporting and printing do not).
 a *real* document, with paragraph formats alongside — the tool for "where
 exactly does Word put this?" during a fidelity chase.
 
-`topdf.ps1 -Path <doc> -Out <pdf>` and `pdfwords.py <pdf>` are the oracle
+`topdf.ps1 -Path <doc> -Out <pdf>` and `pdfink.py <pdf>` are the oracle
 half of `cargo xtask compare`: Word's own rendering of a whole document, and
-every word of it with the baseline it was set on, as TSV for a program rather
-than for a reader. See adr/0003 for why that comparison is a tool rather than
-an afternoon.
+every mark on it, as TSV for a program rather than for a reader. Two kinds of
+row — a `word` with the baseline it was set on, and a `mark` or a `picture`
+with the rectangle of ink it covers. See adr/0003 for why that comparison is a
+tool rather than an afternoon.
 
 **Why that goes through paper when everything else here goes through COM.**
 `Range.Information(5|6)` costs Word a layout pass per call — measured on this
@@ -55,7 +56,15 @@ points to its left. An invented word matches nothing on either side, where a
 split one can still be paired — so where the two sides cut a word differently,
 the matcher pairs them; see `glued` in `crates/wp-compare/src/diff.rs`.
 
-`pdfwords.py` needs PyMuPDF, which is AGPL: a developer's measuring
+The marks are reported the same way, and for the same reason: as the ink each
+drawing operation lays down and nothing more. Word draws one table border as a
+square at each corner with the spans between them, and Scriva draws it as one
+rule per cell; both are reduced to the border they actually draw by `merged` in
+`crates/wp-compare/src/marks.rs`, where the *same* code does it to both sides. A
+rule applied to one reading alone is a rule the other reading never agreed to —
+the lesson the line cutting taught twice over.
+
+`pdfink.py` needs PyMuPDF, which is AGPL: a developer's measuring
 instrument on a developer's machine, never linked into either application and
 never redistributed with them — nothing under `tools/` ships. If that is
 unwelcome, `pypdf` is BSD and can be made to answer the same question with

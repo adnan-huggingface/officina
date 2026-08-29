@@ -24,24 +24,34 @@
 //! `--check` fails on any that got worse — which is what makes a layout
 //! regression arithmetic rather than something somebody has to notice, and is
 //! why it runs inside `cargo xtask check` rather than beside it. Word is not
-//! needed for that: its readings of the corpus are committed. It
-//! fails in four directions, three of which are quiet ones: a document that got
-//! worse, a document nobody recorded, a document that can no longer be measured
-//! at all, and a document the record still holds that the corpus no longer has
-//! — a file renamed or deleted otherwise stops being checked without a word,
-//! while its row sits there looking like coverage.
+//! needed for that: its readings of the corpus are committed, and
+//! `tests/without_word.rs` runs the whole check with nothing on its PATH to
+//! prove it rather than to assert it. It fails in four directions, three of
+//! which are quiet ones: a document that got worse — in its words or in its
+//! furniture — a document nobody recorded, a document that can no longer be
+//! measured at all, and a document the record still holds that the corpus no
+//! longer has, a file renamed or deleted otherwise stopping being checked
+//! without a word while its row sits there looking like coverage.
 //!
-//! **What it cannot see.** Only type is compared: a rule, a shading, a border
-//! and an image all move without moving the number. A chart's labels are drawn
-//! from the plot rather than from a line and are not gathered, so a document
-//! full of charts keeps a floor of words only one side laid. Two further
-//! things are deliberately left out, each for a measured reason rather than a
-//! preference — a leadered tab's dots, which neither renderer chose the number
-//! of, and a shape's own words, which Word draws into a PDF as outlines and
-//! not as text at all. A whole document can be set apart the same way, and one
-//! is: see [`NOT_COMPARED`].
+//! **What it cannot see.** A chart's labels are drawn from the plot rather than
+//! from a line and are not gathered, so a document full of charts keeps a floor
+//! of words only one side laid. Three further things are deliberately left out,
+//! each for a measured reason rather than a preference — a leadered tab's dots,
+//! which neither renderer chose the number of; a shape's own words, which Word
+//! draws into a PDF as outlines and not as text at all; and the inside of a
+//! picture, which reaches a rendering as the several hundred strokes that draw
+//! it and reaches us as one box, so that the most the two can honestly say to
+//! each other is that Word drew into it. A whole document can be set apart the
+//! same way, and one is: see [`NOT_COMPARED`].
+//!
+//! What it *can* see, since [`marks`], is the page's furniture: a rule, a
+//! shading, a border and a picture's box are compared the same way the words
+//! are and counted in their own column. Before that they were the largest thing
+//! the instrument was blind to — a border could move an inch and no number
+//! moved with it, which is the kind of blindness that reads as a clean bill.
 
 mod diff;
+mod marks;
 mod ours;
 mod word;
 
@@ -49,6 +59,25 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use diff::{Kind, Report};
+
+/// Everything one rendering of a document put on paper.
+///
+/// The words and the furniture arrive together and are compared apart: they are
+/// matched by different means — a word by what it says, a rule by where it is —
+/// and they are counted apart in the record for the same reason. A document
+/// whose type is right to a tenth of a point and whose borders are an inch out
+/// is not the same document as one with the fault the other way about, and one
+/// number holding both says neither.
+pub struct Reading {
+    pub words: Vec<diff::Word>,
+    pub marks: Vec<marks::Mark>,
+}
+
+/// What one document came to, both ways.
+pub struct Laid {
+    words: Report,
+    marks: marks::Split,
+}
 
 /// Further out than this and a word is called misplaced.
 ///
@@ -203,7 +232,8 @@ cargo xtask compare [file] [options]
   --record       rewrite LAYOUT.md from what is measured now
   --top N        how many differences to print (default 20)
   --page N       print only what is wrong on one page
-  --words        print both readings instead of comparing them
+  --words        print both readings instead of comparing them — the words,
+                 and then the page's own ink as the matching sees it
   --lines        print how each reading was cut into lines, which is what
                  the matching compares (use with --page)
   --threshold P  points past which a word counts as misplaced (default 1.0)"
@@ -217,7 +247,8 @@ fn one(
     threshold: f64,
     only: Option<u32>,
 ) -> Result<(), String> {
-    let report = measure(path, refresh, threshold)?;
+    let laid = measure(path, refresh, threshold)?;
+    let report = &laid.words;
     println!("{}", path.display());
     println!(
         "  {} pages, Word {} — {} words matched, {} unmatched",
@@ -234,6 +265,26 @@ fn one(
         report.worst, report.middle.0, report.middle.1
     );
     println!("  out by more than {threshold:.2}pt: {}", report.over);
+    let furniture = &laid.marks;
+    println!(
+        "  {} marks matched, {} unmatched, {} out — worst {:.2}pt",
+        furniture.matched, furniture.lost, furniture.out, furniture.worst
+    );
+    if furniture.pictures > 0 {
+        // Not a fault and not a pass: Word answered our box by drawing the
+        // picture into it, which is as much as the two renderings can say to
+        // each other about a diagram. Printed so that the silence is visible.
+        println!(
+            "  {} pictures Word drew into rather than drew a box for",
+            furniture.pictures
+        );
+    }
+    if furniture.refused > 0 {
+        println!(
+            "  {} pages held too many marks to pair, and nothing below accounts for them",
+            furniture.refused
+        );
+    }
     if report.refused > 0 {
         println!(
             "  {} stretches were too large to pair, and nothing below accounts              for the words in them",
@@ -304,6 +355,28 @@ fn one(
             }
         }
     }
+
+    // Last, and apart, because it is a different question. The words say
+    // whether the text is set where Word sets it; these say whether the page
+    // around the text is drawn where Word draws it, and a page can be right
+    // about one and wrong about the other.
+    let furniture: Vec<&diff::Difference> = laid
+        .marks
+        .differences
+        .iter()
+        .filter(|found| only.is_none_or(|page| found.page == page))
+        .collect();
+    if !furniture.is_empty() {
+        println!();
+        println!("  the page's own ink:");
+        for found in furniture.iter().take(top) {
+            println!("  {}", line(found));
+        }
+        let rest = furniture.len().saturating_sub(top);
+        if rest > 0 {
+            println!("  … and {rest} more");
+        }
+    }
     Ok(())
 }
 
@@ -318,9 +391,10 @@ fn listing(path: &Path, refresh: bool, only: Option<u32>) -> Result<(), String> 
     let theirs = word::read(path, refresh)?;
     let ours = ours::read(path)?;
     let mut all: Vec<(&'static str, &diff::Word)> = ours
+        .words
         .iter()
         .map(|word| ("ours", word))
-        .chain(theirs.iter().map(|word| ("word", word)))
+        .chain(theirs.words.iter().map(|word| ("word", word)))
         .filter(|(_, word)| only.is_none_or(|page| word.page == page))
         .collect();
     all.sort_by(|(_, a), (_, b)| {
@@ -337,6 +411,39 @@ fn listing(path: &Path, refresh: bool, only: Option<u32>) -> Result<(), String> 
             word.page, word.x, word.baseline, word.text
         );
     }
+
+    // The furniture as it reaches the matching — which is to say after the
+    // pieces of one rule have been run together, since the raw rectangles are
+    // an account of how each renderer likes to draw a border and not of where
+    // the border went.
+    let mut ink: Vec<(&'static str, marks::Mark)> = marks::merged(&ours.marks)
+        .into_iter()
+        .map(|mark| ("ours", mark))
+        .chain(
+            marks::merged(&theirs.marks)
+                .into_iter()
+                .map(|m| ("word", m)),
+        )
+        .filter(|(_, mark)| only.is_none_or(|page| mark.page == page))
+        .collect();
+    ink.sort_by(|(_, a), (_, b)| {
+        a.page
+            .cmp(&b.page)
+            .then(a.rect.y0.total_cmp(&b.rect.y0))
+            .then(a.rect.x0.total_cmp(&b.rect.x0))
+    });
+    println!();
+    println!("side	page	kind	x0	y0	x1	y1");
+    for (side, mark) in ink {
+        let kind = match mark.picture {
+            true => "picture",
+            false => "mark",
+        };
+        println!(
+            "{side}	{}	{kind}	{:.3}	{:.3}	{:.3}	{:.3}",
+            mark.page, mark.rect.x0, mark.rect.y0, mark.rect.x1, mark.rect.y1
+        );
+    }
     Ok(())
 }
 
@@ -348,13 +455,17 @@ fn listing(path: &Path, refresh: bool, only: Option<u32>) -> Result<(), String> 
 fn grouping(path: &Path, refresh: bool, only: Option<u32>) -> Result<(), String> {
     let theirs = word::read(path, refresh)?;
     let ours = ours::read(path)?;
-    let pages = ours.iter().chain(theirs.iter()).map(|word| word.page);
+    let pages = ours
+        .words
+        .iter()
+        .chain(theirs.words.iter())
+        .map(|word| word.page);
     let pages: std::collections::BTreeSet<u32> = match only {
         Some(page) => [page].into_iter().collect(),
         None => pages.collect(),
     };
     for page in pages {
-        let (mine, said) = diff::grouping(&ours, &theirs, page);
+        let (mine, said) = diff::grouping(&ours.words, &theirs.words, page);
         println!("── page {page} ──");
         for line in &mine {
             println!("ours {line}");
@@ -384,7 +495,7 @@ fn line(found: &diff::Difference) -> String {
 /// because a zero here reads exactly like a document with nothing wrong.
 struct Measured {
     name: String,
-    outcome: Result<Report, String>,
+    outcome: Result<Laid, String>,
 }
 
 fn sweep(refresh: bool, threshold: f64) -> Result<Vec<Measured>, String> {
@@ -424,20 +535,26 @@ fn sweep(refresh: bool, threshold: f64) -> Result<Vec<Measured>, String> {
 /// both tells you neither.
 fn table_of(measured: &[Measured]) -> String {
     let mut out = format!(
-        "{:<40} {:>7} {:>6} {:>9} {:>9} {:>6}\n{}\n",
+        "{:<40} {:>6} {:>5} {:>8} {:>6} {:>5} {:>8} {:>5}\n{}\n",
         "file",
         "out",
         ">5pt",
         "unplaced",
+        "marks",
+        "lost",
         "worst",
         "pages",
-        "-".repeat(82)
+        "-".repeat(90)
     );
     let (mut over, mut badly, mut unplaced, mut failed) = (0usize, 0usize, 0usize, 0usize);
+    let (mut ink, mut lost) = (0usize, 0usize);
     for row in measured {
         let name = truncate(&row.name, 40);
         match &row.outcome {
-            Ok(report) => {
+            Ok(Laid {
+                words: report,
+                marks: furniture,
+            }) => {
                 // Still measured and still shown — they are facts about two
                 // renderings — but kept out of every total, because a figure
                 // that counts towards a score is a figure somebody will try to
@@ -447,12 +564,16 @@ fn table_of(measured: &[Measured]) -> String {
                     over += report.over;
                     badly += report.badly;
                     unplaced += report.unmatched;
+                    ink += furniture.out;
+                    lost += furniture.lost;
                 }
                 out += &format!(
-                    "{name:<40} {:>7} {:>6} {:>9} {:>7.2}pt {:>6}{}\n",
+                    "{name:<40} {:>6} {:>5} {:>8} {:>6} {:>5} {:>6.2}pt {:>5}{}\n",
                     report.over,
                     report.badly,
                     report.unmatched,
+                    furniture.out,
+                    furniture.lost,
                     report.worst,
                     report.pages_ours,
                     match counted {
@@ -468,10 +589,9 @@ fn table_of(measured: &[Measured]) -> String {
         }
     }
     out += &format!(
-        "{}\n{:<40} {over:>7} {:>6} {unplaced:>9}\n",
-        "-".repeat(82),
-        "",
-        badly
+        "{}\n{:<40} {over:>6} {badly:>5} {unplaced:>8} {ink:>6} {lost:>5}\n",
+        "-".repeat(90),
+        ""
     );
     if failed > 0 {
         out += &format!("{failed} of {} could not be measured\n", measured.len());
@@ -486,6 +606,8 @@ struct Stood {
     over: usize,
     badly: usize,
     unplaced: usize,
+    marks: usize,
+    lost: usize,
     worst: f64,
 }
 
@@ -494,6 +616,7 @@ fn report_of(measured: &[Measured]) -> String {
     let mut rows = String::new();
     let mut apart = String::new();
     let (mut over, mut badly, mut unplaced, mut worst) = (0usize, 0usize, 0usize, 0.0f64);
+    let (mut ink, mut lost) = (0usize, 0usize);
     let mut held = 0usize;
     for row in measured {
         if let Some(why) = why_not(&row.name) {
@@ -502,32 +625,40 @@ fn report_of(measured: &[Measured]) -> String {
         }
         held += 1;
         match &row.outcome {
-            Ok(report) => {
+            Ok(Laid {
+                words: report,
+                marks: furniture,
+            }) => {
                 over += report.over;
                 badly += report.badly;
                 unplaced += report.unmatched;
+                ink += furniture.out;
+                lost += furniture.lost;
                 worst = worst.max(report.worst);
                 rows += &format!(
-                    "| `{}` | {} | {} | {} | {} | {:.2} |\n",
+                    "| `{}` | {} | {} | {} | {} | {} | {} | {:.2} |\n",
                     row.name,
                     report.pages_ours,
                     report.over,
                     report.badly,
                     report.unmatched,
+                    furniture.out,
+                    furniture.lost,
                     report.worst
                 );
             }
             // A document that could not be measured is recorded as such rather
             // than left out, so that a corpus which has quietly stopped being
             // measurable cannot read as a corpus with nothing wrong in it.
-            Err(_) => rows += &format!("| `{}` | — | — | — | — | — |\n", row.name),
+            Err(_) => rows += &format!("| `{}` | — | — | — | — | — | — | — |\n", row.name),
         }
     }
     format!(
         "# Layout report\n\n\
 Generated by `cargo xtask compare --record` over `corpus/`. Do not edit by hand — regenerate it.\n\n\
 Every document here is laid out by Scriva and rendered by Word itself, and the two are compared \
-word by word: where each word's pen went down, in points from the top-left of the page. \
+mark by mark: where each word's pen went down, and where each rule and shading and picture was \
+put, in points from the top-left of the page. \
 `cargo xtask compare --check` fails if any document gets worse than this, which is what makes a \
 layout regression arithmetic rather than something a person has to notice. ADR 0003 records why \
 it is not a person.\n\n\
@@ -541,11 +672,25 @@ because a single count cannot see work moving about: a word improving while anot
 size worsens leaves it unchanged.\n\
 - **unplaced** — words only one side laid at all. A chart's labels are drawn from the plot rather \
 than from a line and are not gathered here, so a document full of charts keeps a floor.\n\
-- **worst** — the largest single shift, in points.\n\n\
-| | documents | out | >5pt | unplaced | worst |\n|---|---:|---:|---:|---:|---:|\n\
-| totals | {held} | {over} | {badly} | {unplaced} | {worst:.2} |\n\n\
+- **marks** — rectangles of ink that are not type, further than a point from where Word drew \
+them: a table border, an underline, a shading, a picture's box. Counted apart from the words \
+because a page can be right about one and wrong about the other, and because they are matched \
+by different means — a word by what it says, a rule by where it is.\n\
+- **lost** — marks only one side drew. A picture Word answered by drawing the picture rather \
+than a box is neither counted nor lost; it is set aside, which is as much as the two renderings \
+can say to each other about a diagram. A shape's own words are the standing floor here: Word \
+draws a WordArt watermark into a PDF as *outlines*, so its rendering has a filled shape per \
+letter where ours has type, and neither side can answer the other. That is twelve of them in \
+`watermark.docx`, and they are left in the count rather than set aside because a watermark's box \
+is transparent — the body's own rules pass under it, and setting the box aside would take them \
+with it.\n\
+- **worst** — the largest single shift of a word, in points.\n\n\
+| | documents | out | >5pt | unplaced | marks | lost | worst |\n\
+|---|---:|---:|---:|---:|---:|---:|---:|\n\
+| totals | {held} | {over} | {badly} | {unplaced} | {ink} | {lost} | {worst:.2} |\n\n\
 ## Every document\n\n\
-| file | pages | out | >5pt | unplaced | worst |\n|---|---:|---:|---:|---:|---:|\n{rows}\n\
+| file | pages | out | >5pt | unplaced | marks | lost | worst |\n\
+|---|---:|---:|---:|---:|---:|---:|---:|\n{rows}\n\
 ## Not compared\n\n\
 Two renderings that answer different questions cannot be held to a number, and a number \
 written down anyway is worse than none: it reads like a score, and driving it down would mean \
@@ -589,8 +734,8 @@ fn against_the_record(measured: &[Measured]) -> Result<ExitCode, String> {
             ));
             continue;
         };
-        let report = match &row.outcome {
-            Ok(report) => report,
+        let (report, furniture) = match &row.outcome {
+            Ok(laid) => (&laid.words, &laid.marks),
             Err(why) => {
                 worse.push(format!(
                     "{}: could not be measured — {}",
@@ -615,6 +760,12 @@ fn against_the_record(measured: &[Measured]) -> Result<ExitCode, String> {
         if report.unmatched > was.unplaced {
             faults.push(format!("unplaced {} to {}", was.unplaced, report.unmatched));
         }
+        if furniture.out > was.marks {
+            faults.push(format!("marks {} to {}", was.marks, furniture.out));
+        }
+        if furniture.lost > was.lost {
+            faults.push(format!("marks lost {} to {}", was.lost, furniture.lost));
+        }
         if report.worst > was.worst + SLACK {
             faults.push(format!("worst {:.2}pt to {:.2}pt", was.worst, report.worst));
         }
@@ -623,6 +774,8 @@ fn against_the_record(measured: &[Measured]) -> Result<ExitCode, String> {
                 if report.over < was.over
                     || report.badly < was.badly
                     || report.unmatched < was.unplaced
+                    || furniture.out < was.marks
+                    || furniture.lost < was.lost
                 {
                     better += 1;
                 }
@@ -673,34 +826,21 @@ fn recorded_in(text: &str) -> std::collections::HashMap<String, Stood> {
     let mut out = std::collections::HashMap::new();
     for line in text.lines() {
         let mut cells = line.split('|').map(str::trim);
-        let (
-            Some(""),
-            Some(name),
-            Some(pages),
-            Some(over),
-            Some(badly),
-            Some(unplaced),
-            Some(worst),
-        ) = (
-            cells.next(),
-            cells.next(),
-            cells.next(),
-            cells.next(),
-            cells.next(),
-            cells.next(),
-            cells.next(),
-        )
-        else {
+        let Some("") = cells.next() else { continue };
+        let cells: Vec<&str> = cells.collect();
+        let [name, pages, over, badly, unplaced, marks, lost, worst, ..] = cells.as_slice() else {
             continue;
         };
         let Some(name) = name.strip_prefix('`').and_then(|n| n.strip_suffix('`')) else {
             continue;
         };
-        let (Ok(pages), Ok(over), Ok(badly), Ok(unplaced), Ok(worst)) = (
+        let (Ok(pages), Ok(over), Ok(badly), Ok(unplaced), Ok(marks), Ok(lost), Ok(worst)) = (
             pages.parse(),
             over.parse(),
             badly.parse(),
             unplaced.parse(),
+            marks.parse(),
+            lost.parse(),
             worst.parse(),
         ) else {
             continue;
@@ -712,6 +852,8 @@ fn recorded_in(text: &str) -> std::collections::HashMap<String, Stood> {
                 over,
                 badly,
                 unplaced,
+                marks,
+                lost,
                 worst,
             },
         );
@@ -719,10 +861,13 @@ fn recorded_in(text: &str) -> std::collections::HashMap<String, Stood> {
     out
 }
 
-fn measure(path: &Path, refresh: bool, threshold: f64) -> Result<Report, String> {
+fn measure(path: &Path, refresh: bool, threshold: f64) -> Result<Laid, String> {
     let theirs = word::read(path, refresh)?;
     let ours = ours::read(path)?;
-    Ok(diff::compare(&ours, &theirs, threshold))
+    Ok(Laid {
+        words: diff::compare(&ours.words, &theirs.words, threshold),
+        marks: marks::compare(&ours.marks, &theirs.marks, threshold),
+    })
 }
 
 fn truncate(text: &str, at: usize) -> String {

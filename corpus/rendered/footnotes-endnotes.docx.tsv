@@ -1,26 +1,30 @@
-# Word's own rendering of footnotes-endnotes.docx, as the place every word of it landed.
+# Word's own rendering of footnotes-endnotes.docx, as the place every mark of it landed.
 # Written by `cargo xtask compare`. Not by hand, and not read by anything
-# but the comparison: `page`, `x`, `baseline`, `text`, in points.
-# document 7b083c7c  export 67d00bda  reading becf340b
+# but the comparison. In points, one mark to a line, of two kinds:
+#   word  page  x  baseline  text
+#   mark  page  x0  y0  x1  y1
+# document 7b083c7c  export 67d00bda  reading 1589c59f
 # Stale? `cargo xtask compare --refresh` renews it, and needs Word for that
 # one document. Everything else goes on working without it.
-1	72.024	83.420	A
-1	81.732	83.420	claim
-1	110.400	83.420	requiring
-1	157.284	83.420	a
-1	165.792	83.420	footnote.
-1	214.130	79.460	1And
-1	240.506	83.420	another
-1	282.002	83.420	requiring
-1	329.006	83.420	an
-1	343.754	83.420	endniote.
-1	72.024	117.740	i
-1	75.744	121.220	The
-1	92.985	121.220	supporting
-1	139.179	121.220	endnote
-1	175.583	121.220	text.
-1	72.024	713.976	1
-1	77.544	717.456	The
-1	94.785	717.456	supporting
-1	140.979	717.456	footnote
-1	178.698	717.456	text.
+word	1	72.024	83.420	A
+word	1	81.732	83.420	claim
+word	1	110.400	83.420	requiring
+word	1	157.284	83.420	a
+word	1	165.792	83.420	footnote.
+word	1	214.130	79.460	1And
+word	1	240.506	83.420	another
+word	1	282.002	83.420	requiring
+word	1	329.006	83.420	an
+word	1	343.754	83.420	endniote.
+word	1	72.024	117.740	i
+word	1	75.744	121.220	The
+word	1	92.985	121.220	supporting
+word	1	139.179	121.220	endnote
+word	1	175.583	121.220	text.
+word	1	72.024	713.976	1
+word	1	77.544	717.456	The
+word	1	94.785	717.456	supporting
+word	1	140.979	717.456	footnote
+word	1	178.698	717.456	text.
+mark	1	72.024	105.380	216.044	106.220
+mark	1	72.024	701.616	216.044	702.456

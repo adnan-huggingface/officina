@@ -29,10 +29,13 @@ and the driver rules that keep the exercise safe.
 
 Layout fidelity is judged by measurement, never by eye: `cargo xtask compare`
 lays the document with the application's own shaper, exports the same file from
-Word, and reports every word whose pen went down somewhere else — worst first.
-adr/0003 records why it is not a person: the differences that matter are
-fractions of a point, well under what a screenshot resolves, and a person can
-report only one of them per look.
+Word, and reports every mark whose pen went down somewhere else — worst first.
+Words and the page's furniture both: a rule, a shading, a border and a picture's
+box are compared the same way and counted in their own column, because until
+they were, a border could move an inch and no number moved with it. adr/0003
+records why it is not a person: the differences that matter are fractions of a
+point, well under what a screenshot resolves, and a person can report only one
+of them per look.
 
 `LAYOUT.md` records what every corpus document measures, and
 `cargo xtask compare --check` fails on any that got worse. **It runs inside
@@ -46,7 +49,9 @@ That check needs **no Word**: Word's readings of the corpus are committed under
 `corpus/rendered/`, because its answer for a document cannot change until the
 document does. Word is needed only to renew the reading of a document that
 actually changed — `cargo xtask compare --refresh` — and the file it renews says
-so plainly when it is out of date.
+so plainly when it is out of date. `crates/wp-compare/tests/without_word.rs`
+runs the whole check with nothing on its PATH, so that this is measured rather
+than merely designed.
 
 ## The invariant everything serves
 

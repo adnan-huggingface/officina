@@ -1,11 +1,14 @@
-# Word's own rendering of character-formatting.doc, as the place every word of it landed.
+# Word's own rendering of character-formatting.doc, as the place every mark of it landed.
 # Written by `cargo xtask compare`. Not by hand, and not read by anything
-# but the comparison: `page`, `x`, `baseline`, `text`, in points.
-# document 035d8456  export 67d00bda  reading becf340b
+# but the comparison. In points, one mark to a line, of two kinds:
+#   word  page  x  baseline  text
+#   mark  page  x0  y0  x1  y1
+# document 035d8456  export 67d00bda  reading 1589c59f
 # Stale? `cargo xtask compare --refresh` renews it, and needs Word for that
 # one document. Everything else goes on working without it.
-1	72.024	94.820	Plain
-1	98.544	94.820	bold
-1	123.620	94.820	italic
-1	149.540	94.820	underlined
-1	205.490	94.820	big
+word	1	72.024	94.820	Plain
+word	1	98.544	94.820	bold
+word	1	123.620	94.820	italic
+word	1	149.540	94.820	underlined
+word	1	205.490	94.820	big
+mark	1	149.540	96.140	202.724	96.980

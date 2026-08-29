@@ -1,20 +1,22 @@
-# Word's own rendering of rtl-and-cjk.docx, as the place every word of it landed.
+# Word's own rendering of rtl-and-cjk.docx, as the place every mark of it landed.
 # Written by `cargo xtask compare`. Not by hand, and not read by anything
-# but the comparison: `page`, `x`, `baseline`, `text`, in points.
-# document 086906b7  export 67d00bda  reading becf340b
+# but the comparison. In points, one mark to a line, of two kinds:
+#   word  page  x  baseline  text
+#   mark  page  x0  y0  x1  y1
+# document 086906b7  export 67d00bda  reading 1589c59f
 # Stale? `cargo xtask compare --refresh` renews it, and needs Word for that
 # one document. Everything else goes on working without it.
-1	72.024	83.300	English
-1	112.068	83.300	baseline
-1	158.628	83.300	text.
-1	72.024	108.260	مرحبا
-1	96.984	108.260	(Arabic)
-1	72.024	133.220	שלום
-1	98.424	133.220	(Hebrew)
-1	72.024	159.020	你好世界
-1	122.420	159.020	(Chinese)
-1	72.024	185.060	こんにちは
-1	134.420	185.060	(Japanese)
-1	72.024	210.260	Mixed
-1	105.020	210.260	مرحبا
-1	129.980	210.260	inline.
+word	1	72.024	83.300	English
+word	1	112.068	83.300	baseline
+word	1	158.628	83.300	text.
+word	1	72.024	108.260	مرحبا
+word	1	96.984	108.260	(Arabic)
+word	1	72.024	133.220	שלום
+word	1	98.424	133.220	(Hebrew)
+word	1	72.024	159.020	你好世界
+word	1	122.420	159.020	(Chinese)
+word	1	72.024	185.060	こんにちは
+word	1	134.420	185.060	(Japanese)
+word	1	72.024	210.260	Mixed
+word	1	105.020	210.260	مرحبا
+word	1	129.980	210.260	inline.

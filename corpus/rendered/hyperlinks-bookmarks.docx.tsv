@@ -1,15 +1,18 @@
-# Word's own rendering of hyperlinks-bookmarks.docx, as the place every word of it landed.
+# Word's own rendering of hyperlinks-bookmarks.docx, as the place every mark of it landed.
 # Written by `cargo xtask compare`. Not by hand, and not read by anything
-# but the comparison: `page`, `x`, `baseline`, `text`, in points.
-# document 37585cb7  export 67d00bda  reading becf340b
+# but the comparison. In points, one mark to a line, of two kinds:
+#   word  page  x  baseline  text
+#   mark  page  x0  y0  x1  y1
+# document 37585cb7  export 67d00bda  reading 1589c59f
 # Stale? `cargo xtask compare --refresh` renews it, and needs Word for that
 # one document. Everything else goes on working without it.
-1	72.024	83.420	See
-1	92.304	83.420	internal
-1	132.840	83.420	linkrget
-1	172.088	83.420	section
-1	210.092	83.420	for
-1	226.640	83.420	detail.
-1	259.736	83.420	Target
-1	292.484	83.420	section
-1	330.260	83.420	here.
+word	1	72.024	83.420	See
+word	1	92.304	83.420	internal
+word	1	132.840	83.420	linkrget
+word	1	172.088	83.420	section
+word	1	210.092	83.420	for
+word	1	226.640	83.420	detail.
+word	1	259.736	83.420	Target
+word	1	292.484	83.420	section
+word	1	330.260	83.420	here.
+mark	1	92.304	84.740	150.024	85.580

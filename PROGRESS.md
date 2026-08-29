@@ -3653,6 +3653,104 @@ document as though every change were accepted, and Scriva draws what the file
 stores, so its twenty-one unplaceable words measure that difference and not
 this one. Both are recorded rather than fixed — the remit was the instrument.
 
+### The page around the type, and the machine with no Word
+
+Two debts of the same kind, both of them a claim the tool made that nothing had
+measured.
+
+**Only the type was compared.** A rule, a shading, a border, a picture — none of
+them moved a number. It was the largest thing the instrument was blind to and
+the worst kind of blindness: a page whose whole table has slid half a centimetre
+reads as a page with a handful of words out of place. `wp-compare` now gathers
+every rectangle of ink that is not type, on both sides, and compares them the
+same way — a word by what it says, a rule by where it is — with two columns of
+their own in `LAYOUT.md`.
+
+The hard part was that **neither renderer draws a border the way the other
+does.** Word's export lays a table's top edge as a little filled square at each
+corner with the spans between them; Scriva lays one rule per cell. A page of ink
+the two agree about to a hundredth of a point arrives as thirty rectangles
+against nine. So both readings are reduced to their ink — duplicates dropped,
+touching collinear pieces run together — by one function that cannot tell which
+side it is working on. The third time that lesson has arrived.
+
+There is a second half, which the first attempt got wrong. **A rule is broken
+where another rule crosses it.** Word's corner square can be run into the
+horizontal border or into the vertical one but not into both, and whichever pass
+takes it leaves the other with a rule in five pieces, each one crossing short of
+its neighbour: nine rules against one, with nothing wrong on the page. A break as
+wide as the rule's own thickness is bridged now; a gap between two boxes is a gap
+somebody meant, and is left alone.
+
+**What it found on its first run.** `floating-image-wrap.docx` puts one of its
+two images 120 points below where Word puts it and the other exactly right — a
+fault no word count could name, because the words around a floated image were
+already being reported as unplaceable. `header-footer-footnote.doc` draws no
+footnote separator, because it lays no footnote band at all, and the missing rule
+and the eight unplaced words are one fault rather than two. `file-sample_500kB
+.docx` has a framed box on page two that Scriva does not draw at all. And on
+`nested-tables.docx` and `table-spanning-pages.docx` the borders are out by the
+same 5.7 and 24.9 points as the words — the furniture corroborating the type,
+which is the most useful thing a second measurement can do.
+
+Every word column in `LAYOUT.md` came back byte for byte identical after the
+probe was rewritten, which is the check that the rewrite measured the same
+document it used to.
+
+**The standing floor is `watermark.docx`, twelve marks.** Word draws a WordArt
+watermark into a PDF as *outlines*, so its rendering has a filled shape per
+letter where ours has type. A picture's box is set aside when Word draws into it
+— that is as much as the two can honestly say to each other about a diagram —
+but a watermark's box is *transparent*, the body's own rules run under it, and
+setting it aside would take them with it. So those are left in the count and
+named in the record as what they are.
+
+**The machine with no Word had never existed.** Everything rests on the corpus
+being checkable without Office, which is why `--check` may sit inside `cargo
+xtask check`; it is written down in three files and had never once been
+executed. Every run has been here, where Word is installed, a stale reading is
+renewed in seconds, and nobody notices. `crates/wp-compare/tests/without_word.rs`
+now runs the tool with **nothing on its PATH** — Word is reached only by starting
+`powershell` and the rendering read only by starting `python`, and neither can be
+found without one. The corpus checks clean. The two ways of genuinely needing
+Word have also been made to say which is which: a document nobody has a reading
+of, and a reading that has gone stale, want different things done about them and
+no longer read alike.
+
+The corpus as it now stands, with the two new columns:
+
+```
+file                                    out  >5pt unplaced  marks  lost    worst pages
+--------------------------------------------------------------------------------------
+character-formatting.doc                  4     0        0      1     0   3.47pt     1
+header-footer-footnote.doc                8     0        8      0     1   4.42pt     1
+headings-and-list.doc                    11     0        0      0     0   4.64pt     1
+plain-paragraphs.doc                     29     3        0      0     0   6.82pt     1
+simple-table.doc                          6     6        0      0     0   5.38pt     1
+unicode-text.doc                          9     0        0      0     0   4.02pt     1
+comments.docx                             4     0        0      0     0   1.27pt     1
+content-controls.docx                     0     0        0      0     0   0.23pt     1
+file-sample_100kB.docx                    0     0        0      0     0   0.29pt     2
+file-sample_1MB.docx                      0     0        0      0     0   0.25pt     2
+file-sample_500kB.docx                    0     0       12      0     7   0.26pt     2
+floating-image-wrap.docx                244   244      152      0     2  50.23pt     1
+footnotes-endnotes.docx                   0     0        6      0     0   0.58pt     1
+headers-footers.docx                    328     0        0      0     0   2.34pt     1
+hyperlinks-bookmarks.docx                 3     0        0      0     0   2.49pt     1
+lists-numbering.docx                      0     0        0      0     0   0.13pt     1
+minimal.docx                              0     0        0      0     0   0.55pt     1
+nested-tables.docx                       17    17        0     12     2  11.33pt     1
+picture-watermark.docx                  169   166      140      0     0 115.20pt     1
+rtl-and-cjk.docx                         13     5        0      0     0   7.12pt     1
+sections-mixed-orientation.docx           2     0        0      0     0   1.11pt     3
+styles-headings-toc.docx                  8     0        0      0     0   1.89pt     1
+table-spanning-pages.docx               244   244       16     76     4  25.26pt     3
+tracked-changes.docx                      0     0       21      0     0   0.00pt     1  not compared
+watermark.docx                          115   101      366      0    12  67.39pt     1
+--------------------------------------------------------------------------------------
+                                       1214   786      700     89    28
+```
+
 ## Deferred
 
 - [x] **PDF** — was dropped per Q3; built after ship as `wp-print`. See above.
