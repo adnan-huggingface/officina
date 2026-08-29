@@ -6,40 +6,42 @@ Every document here is laid out by Scriva and rendered by Word itself, and the t
 
 These are not targets. They are what is true today, so that what is true tomorrow can be held against it.
 
+- **pages** — how many pages Scriva laid it in. Any change at all has to be recorded deliberately: pagination moving is the largest layout event there is.
 - **out** — words both sides laid, further than a point from where Word put them.
+- **>5pt** — how many of those are further out than five points. Two counts rather than one, because a single count cannot see work moving about: a word improving while another of the same size worsens leaves it unchanged.
 - **unplaced** — words only one side laid at all. A chart's labels are drawn from the plot rather than from a line and are not gathered here, so a document full of charts keeps a floor.
 - **worst** — the largest single shift, in points.
 
-| | documents | out | unplaced | worst |
-|---|---:|---:|---:|---:|
-| totals | 25 | 1200 | 727 | 115.20 |
+| | documents | out | >5pt | unplaced | worst |
+|---|---:|---:|---:|---:|---:|
+| totals | 25 | 1212 | 786 | 727 | 115.20 |
 
 ## Every document
 
-| file | out | unplaced | worst |
-|---|---:|---:|---:|
-| `character-formatting.doc` | 4 | 0 | 3.47 |
-| `header-footer-footnote.doc` | 8 | 8 | 4.42 |
-| `headings-and-list.doc` | 9 | 4 | 4.64 |
-| `plain-paragraphs.doc` | 29 | 0 | 6.82 |
-| `simple-table.doc` | 6 | 0 | 5.38 |
-| `unicode-text.doc` | 9 | 0 | 4.02 |
-| `comments.docx` | 4 | 0 | 1.27 |
-| `content-controls.docx` | 0 | 0 | 0.23 |
-| `file-sample_100kB.docx` | 0 | 0 | 0.29 |
-| `file-sample_1MB.docx` | 0 | 0 | 0.25 |
-| `file-sample_500kB.docx` | 0 | 12 | 0.26 |
-| `floating-image-wrap.docx` | 244 | 152 | 50.23 |
-| `footnotes-endnotes.docx` | 0 | 6 | 0.58 |
-| `headers-footers.docx` | 328 | 0 | 2.34 |
-| `hyperlinks-bookmarks.docx` | 3 | 0 | 2.49 |
-| `lists-numbering.docx` | 0 | 2 | 0.13 |
-| `minimal.docx` | 0 | 0 | 0.55 |
-| `nested-tables.docx` | 17 | 0 | 11.33 |
-| `picture-watermark.docx` | 169 | 140 | 115.20 |
-| `rtl-and-cjk.docx` | 1 | 0 | 3.34 |
-| `sections-mixed-orientation.docx` | 2 | 0 | 1.11 |
-| `styles-headings-toc.docx` | 8 | 0 | 1.89 |
-| `table-spanning-pages.docx` | 244 | 16 | 25.26 |
-| `tracked-changes.docx` | 0 | 21 | 0.00 |
-| `watermark.docx` | 115 | 366 | 67.39 |
+| file | pages | out | >5pt | unplaced | worst |
+|---|---:|---:|---:|---:|---:|
+| `character-formatting.doc` | 1 | 4 | 0 | 0 | 3.47 |
+| `header-footer-footnote.doc` | 1 | 8 | 0 | 8 | 4.42 |
+| `headings-and-list.doc` | 1 | 9 | 0 | 4 | 4.64 |
+| `plain-paragraphs.doc` | 1 | 29 | 3 | 0 | 6.82 |
+| `simple-table.doc` | 1 | 6 | 6 | 0 | 5.38 |
+| `unicode-text.doc` | 1 | 9 | 0 | 0 | 4.02 |
+| `comments.docx` | 1 | 4 | 0 | 0 | 1.27 |
+| `content-controls.docx` | 1 | 0 | 0 | 0 | 0.23 |
+| `file-sample_100kB.docx` | 2 | 0 | 0 | 0 | 0.29 |
+| `file-sample_1MB.docx` | 2 | 0 | 0 | 0 | 0.25 |
+| `file-sample_500kB.docx` | 2 | 0 | 0 | 12 | 0.26 |
+| `floating-image-wrap.docx` | 1 | 244 | 244 | 152 | 50.23 |
+| `footnotes-endnotes.docx` | 1 | 0 | 0 | 6 | 0.58 |
+| `headers-footers.docx` | 1 | 328 | 0 | 0 | 2.34 |
+| `hyperlinks-bookmarks.docx` | 1 | 3 | 0 | 0 | 2.49 |
+| `lists-numbering.docx` | 1 | 0 | 0 | 2 | 0.13 |
+| `minimal.docx` | 1 | 0 | 0 | 0 | 0.55 |
+| `nested-tables.docx` | 1 | 17 | 17 | 0 | 11.33 |
+| `picture-watermark.docx` | 1 | 169 | 166 | 140 | 115.20 |
+| `rtl-and-cjk.docx` | 1 | 13 | 5 | 0 | 7.12 |
+| `sections-mixed-orientation.docx` | 3 | 2 | 0 | 0 | 1.11 |
+| `styles-headings-toc.docx` | 1 | 8 | 0 | 0 | 1.89 |
+| `table-spanning-pages.docx` | 3 | 244 | 244 | 16 | 25.26 |
+| `tracked-changes.docx` | 1 | 0 | 0 | 21 | 0.00 |
+| `watermark.docx` | 1 | 115 | 101 | 366 | 67.39 |

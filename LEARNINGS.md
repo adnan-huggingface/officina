@@ -1402,3 +1402,20 @@ looking at. Keyed separately, an improvement to how words are found re-reads
 every rendering already on disk without asking Word for any of them again —
 which is the difference between a minute and an afternoon, and therefore the
 difference between improving it and leaving it alone.
+
+**A corpus file is not evidence of what its name says.** The document named
+`rtl-and-cjk.docx` contained no CJK for months, and a reader test had been
+written to assert what was actually in it — which made the gap permanent and
+documented rather than permanent and hidden. It surfaced only when a *different*
+tool asked a question of the whole corpus at once ("is there any CJK anywhere in
+this?") and got `none` back. Ask the corpus what it holds, not what it is
+called; a sweep over all of it answers questions no per-file test is shaped to
+ask.
+
+**Assigning to a fresh paragraph's `Range.Text` deletes the paragraph.** In Word
+COM, `Paragraphs.Add()` gives a paragraph whose range *includes its own
+paragraph mark*, so `$p.Range.Text = $line` writes that mark away and merges the
+paragraph into the next one. A loop that adds six paragraphs and sets each one's
+text leaves a document holding the sixth. Set the whole content once with
+carriage returns between the lines instead. Three corpus documents are thinner
+than their generators read.

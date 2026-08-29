@@ -3409,6 +3409,66 @@ only words are the body's. Gathering ours would have put sixteen words on one
 side that nothing on the other could ever answer: the leader-dot mistake in the
 other direction.
 
+### Four more, after a second look
+
+**The gate had a hole the shape of the one it was built to close.** `--check`
+walked what it measured and looked each document up in the record; nothing
+walked the record looking for names that no longer turn up. Delete or rename a
+corpus file and it silently stopped being checked, while its row sat in
+`LAYOUT.md` looking like coverage — the same failure as the silent cap, in the
+half of the tool written to prevent it. It now fails in four directions: worse,
+unrecorded, unmeasurable, and gone.
+
+**The record holds page counts.** Pagination moving is the largest layout event
+there is and it reached the gate only indirectly, as words that stopped
+matching. Any change at all, in either direction, now has to be recorded
+deliberately.
+
+**And a second, coarser count.** Three numbers that only say *how many* cannot
+see work moving about: one word going from three points out to half a point
+while another goes the other way leaves every one of them unchanged. `>5pt`
+sits beside `out` and separates a word that is slightly out from one that is
+somewhere else. It paid for itself on the first run — `headers-footers.docx` is
+328 words out of place and **none** of them past five points, which is a
+systematic sub-point drift and not 328 broken words, while
+`floating-image-wrap.docx` is 244 out and 244 past five. One number had been
+saying the same thing about both.
+
+`--check` also now refuses a `--threshold` other than the one the record was
+written with, which would otherwise pass or fail for that reason alone.
+
+### The corpus had no CJK in it at all
+
+Checked properly: not one glyph in the CJK, Hangul or fullwidth ranges across
+every document — in a corpus containing a file named `rtl-and-cjk.docx`. That
+file held one Arabic word and three lines' worth of nothing else.
+
+The generator's intent was six lines in five scripts. `wp-docx/tests/corpus.rs`
+had recorded the cause months ago — PowerShell's `+` on two `[char]`s is
+addition, not concatenation — and that had since been fixed with `-join`. The
+artefact was never regenerated, and regenerating it produced the same one line,
+because there was a *second* bug underneath: the loop did `$p =
+$d.Paragraphs.Add()` and then `$p.Range.Text = $line`, and a fresh paragraph's
+range includes its own paragraph mark, so each assignment wrote the mark away
+and merged the paragraph into the next. Six lines in, one line out. One
+`$d.Content.Text = ($lines -join "`r")` fixes it.
+
+The document now carries Chinese, Japanese, Hebrew and Arabic, the reader test
+asserts the scripts it is named for rather than the accident it contained, and
+fidelity still passes 32/32 twice. **Text with no spaces between its words is
+the one case where "what is a word" has no easy answer, and it had never once
+been measured.** It matched cleanly on the first run — 0 unplaced, which is the
+real test of `glued` — and immediately reported two findings: a vertical drift
+accumulating about a point per line down a page of mixed scripts (-1.02, -2.00,
+-3.83, -5.89, -7.12), and CJK runs about 2.3pt wider than Word's, which pushes
+everything after them along. The document measured one word out of place this
+morning; it measures thirteen now, and all thirteen are real.
+
+The same paragraph-merging bug is why `lists-numbering.docx` has one bullet and
+`styles-headings-toc.docx` has no headings. Those are left alone deliberately —
+regenerating them churns the corpus further than this was scoped for — but they
+are the same one-line fix when somebody wants the depth.
+
 ### The number is a gate now, not a note
 
 `LAYOUT.md` records what every corpus document measures, and

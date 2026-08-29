@@ -22,7 +22,12 @@
 //! work; only a committed record tells you when work already done has come
 //! undone. `LAYOUT.md` holds what every document in the corpus measured, and
 //! `--check` fails on any that got worse — which is what makes a layout
-//! regression arithmetic rather than something somebody has to notice.
+//! regression arithmetic rather than something somebody has to notice. It
+//! fails in four directions, three of which are quiet ones: a document that got
+//! worse, a document nobody recorded, a document that can no longer be measured
+//! at all, and a document the record still holds that the corpus no longer has
+//! — a file renamed or deleted otherwise stops being checked without a word,
+//! while its row sits there looking like coverage.
 //!
 //! **What it cannot see.** Only type is compared: a rule, a shading, a border
 //! and an image all move without moving the number. A chart's labels are drawn
@@ -108,6 +113,15 @@ fn run() -> Result<ExitCode, String> {
         return Ok(ExitCode::SUCCESS);
     }
 
+    if check && threshold != THRESHOLD {
+        // The record counts words past one point. Checking it against a count
+        // of words past some other number compares two different questions and
+        // would pass or fail for that reason alone.
+        return Err(format!(
+            "--check holds the corpus to {REPORT}, which counts words past \
+             {THRESHOLD:.2}pt; --threshold {threshold:.2} asks something else"
+        ));
+    }
     let measured = sweep(refresh, threshold)?;
     match (record, check) {
         (true, _) => {
@@ -334,24 +348,26 @@ fn sweep(refresh: bool, threshold: f64) -> Result<Vec<Measured>, String> {
 /// both tells you neither.
 fn table_of(measured: &[Measured]) -> String {
     let mut out = format!(
-        "{:<40} {:>7} {:>9} {:>9} {:>6}\n{}\n",
+        "{:<40} {:>7} {:>6} {:>9} {:>9} {:>6}\n{}\n",
         "file",
         "out",
+        ">5pt",
         "unplaced",
         "worst",
         "pages",
-        "-".repeat(75)
+        "-".repeat(82)
     );
-    let (mut over, mut unplaced, mut failed) = (0usize, 0usize, 0usize);
+    let (mut over, mut badly, mut unplaced, mut failed) = (0usize, 0usize, 0usize, 0usize);
     for row in measured {
         let name = truncate(&row.name, 40);
         match &row.outcome {
             Ok(report) => {
                 over += report.over;
+                badly += report.badly;
                 unplaced += report.unmatched;
                 out += &format!(
-                    "{name:<40} {:>7} {:>9} {:>7.2}pt {:>6}\n",
-                    report.over, report.unmatched, report.worst, report.pages_ours
+                    "{name:<40} {:>7} {:>6} {:>9} {:>7.2}pt {:>6}\n",
+                    report.over, report.badly, report.unmatched, report.worst, report.pages_ours
                 );
             }
             Err(why) => {
@@ -360,32 +376,53 @@ fn table_of(measured: &[Measured]) -> String {
             }
         }
     }
-    out += &format!("{}\n{:<40} {over:>7} {unplaced:>9}\n", "-".repeat(75), "");
+    out += &format!(
+        "{}\n{:<40} {over:>7} {:>6} {unplaced:>9}\n",
+        "-".repeat(82),
+        "",
+        badly
+    );
     if failed > 0 {
         out += &format!("{failed} of {} could not be measured\n", measured.len());
     }
     out
 }
 
+/// What the record holds for one document.
+#[derive(Clone, Copy, PartialEq)]
+struct Stood {
+    pages: usize,
+    over: usize,
+    badly: usize,
+    unplaced: usize,
+    worst: f64,
+}
+
 /// The record the corpus is held to, as it will be committed.
 fn report_of(measured: &[Measured]) -> String {
     let mut rows = String::new();
-    let (mut over, mut unplaced, mut worst) = (0usize, 0usize, 0.0f64);
+    let (mut over, mut badly, mut unplaced, mut worst) = (0usize, 0usize, 0usize, 0.0f64);
     for row in measured {
         match &row.outcome {
             Ok(report) => {
                 over += report.over;
+                badly += report.badly;
                 unplaced += report.unmatched;
                 worst = worst.max(report.worst);
                 rows += &format!(
-                    "| `{}` | {} | {} | {:.2} |\n",
-                    row.name, report.over, report.unmatched, report.worst
+                    "| `{}` | {} | {} | {} | {} | {:.2} |\n",
+                    row.name,
+                    report.pages_ours,
+                    report.over,
+                    report.badly,
+                    report.unmatched,
+                    report.worst
                 );
             }
             // A document that could not be measured is recorded as such rather
             // than left out, so that a corpus which has quietly stopped being
             // measurable cannot read as a corpus with nothing wrong in it.
-            Err(_) => rows += &format!("| `{}` | — | — | — |\n", row.name),
+            Err(_) => rows += &format!("| `{}` | — | — | — | — | — |\n", row.name),
         }
     }
     format!(
@@ -398,14 +435,19 @@ layout regression arithmetic rather than something a person has to notice. ADR 0
 it is not a person.\n\n\
 These are not targets. They are what is true today, so that what is true tomorrow can be held \
 against it.\n\n\
+- **pages** — how many pages Scriva laid it in. Any change at all has to be recorded \
+deliberately: pagination moving is the largest layout event there is.\n\
 - **out** — words both sides laid, further than a point from where Word put them.\n\
+- **>5pt** — how many of those are further out than five points. Two counts rather than one, \
+because a single count cannot see work moving about: a word improving while another of the same \
+size worsens leaves it unchanged.\n\
 - **unplaced** — words only one side laid at all. A chart's labels are drawn from the plot rather \
 than from a line and are not gathered here, so a document full of charts keeps a floor.\n\
 - **worst** — the largest single shift, in points.\n\n\
-| | documents | out | unplaced | worst |\n|---|---:|---:|---:|---:|\n\
-| totals | {} | {over} | {unplaced} | {worst:.2} |\n\n\
+| | documents | out | >5pt | unplaced | worst |\n|---|---:|---:|---:|---:|---:|\n\
+| totals | {} | {over} | {badly} | {unplaced} | {worst:.2} |\n\n\
 ## Every document\n\n\
-| file | out | unplaced | worst |\n|---|---:|---:|---:|\n{rows}",
+| file | pages | out | >5pt | unplaced | worst |\n|---|---:|---:|---:|---:|---:|\n{rows}",
         measured.len()
     )
 }
@@ -414,8 +456,10 @@ than from a line and are not gathered here, so a document full of charts keeps a
 ///
 /// The whole point of the record: something that gets worse is caught by
 /// arithmetic rather than by somebody remembering what the number used to be.
-/// A document nobody has recorded, and a document that can no longer be
-/// measured at all, are both failures — the second especially.
+/// A document nobody has recorded, one that can no longer be measured, and one
+/// the record has that the corpus no longer does are all failures. The last of
+/// those especially: a file renamed or deleted otherwise stops being checked
+/// without a word, while its row sits in the record looking like coverage.
 fn against_the_record(measured: &[Measured]) -> Result<ExitCode, String> {
     let path = repo_root().join(REPORT);
     let text = std::fs::read_to_string(&path).map_err(|e| {
@@ -429,7 +473,7 @@ fn against_the_record(measured: &[Measured]) -> Result<ExitCode, String> {
     let mut worse: Vec<String> = Vec::new();
     let mut better = 0usize;
     for row in measured {
-        let Some(&(was_over, was_unplaced, was_worst)) = recorded.get(&row.name) else {
+        let Some(&was) = recorded.get(&row.name) else {
             // Either it was never recorded, or it was recorded as a document
             // that could not be measured. Both mean the same thing here: it is
             // being held to nothing.
@@ -451,22 +495,42 @@ fn against_the_record(measured: &[Measured]) -> Result<ExitCode, String> {
             }
         };
         let mut faults: Vec<String> = Vec::new();
-        if report.over > was_over {
-            faults.push(format!("out {was_over} to {}", report.over));
+        // Pagination is checked in both directions. A page fewer is as much a
+        // change as a page more, and neither should pass unremarked.
+        if report.pages_ours != was.pages {
+            faults.push(format!("pages {} to {}", was.pages, report.pages_ours));
         }
-        if report.unmatched > was_unplaced {
-            faults.push(format!("unplaced {was_unplaced} to {}", report.unmatched));
+        if report.over > was.over {
+            faults.push(format!("out {} to {}", was.over, report.over));
         }
-        if report.worst > was_worst + SLACK {
-            faults.push(format!("worst {was_worst:.2}pt to {:.2}pt", report.worst));
+        if report.badly > was.badly {
+            faults.push(format!(">5pt {} to {}", was.badly, report.badly));
+        }
+        if report.unmatched > was.unplaced {
+            faults.push(format!("unplaced {} to {}", was.unplaced, report.unmatched));
+        }
+        if report.worst > was.worst + SLACK {
+            faults.push(format!("worst {:.2}pt to {:.2}pt", was.worst, report.worst));
         }
         match faults.is_empty() {
             true => {
-                if report.over < was_over || report.unmatched < was_unplaced {
+                if report.over < was.over
+                    || report.badly < was.badly
+                    || report.unmatched < was.unplaced
+                {
                     better += 1;
                 }
             }
             false => worse.push(format!("{}: {}", row.name, faults.join(", "))),
+        }
+    }
+
+    // And the other direction, which nothing else here would ever look at.
+    for name in recorded.keys() {
+        if !measured.iter().any(|row| &row.name == name) {
+            worse.push(format!(
+                "{name}: in {REPORT} but no longer in the corpus — it has stopped being checked"
+            ));
         }
     }
 
@@ -477,6 +541,7 @@ fn against_the_record(measured: &[Measured]) -> Result<ExitCode, String> {
         }
         return Ok(ExitCode::SUCCESS);
     }
+    worse.sort();
     println!("{} of {} got worse:", worse.len(), measured.len());
     for fault in &worse {
         println!("  {fault}");
@@ -488,27 +553,52 @@ fn against_the_record(measured: &[Measured]) -> Result<ExitCode, String> {
 ///
 /// Read out of the table a person reads rather than out of a format of its
 /// own, because a record nobody can read is a record nobody checks.
-fn recorded_in(text: &str) -> std::collections::HashMap<String, (usize, usize, f64)> {
+fn recorded_in(text: &str) -> std::collections::HashMap<String, Stood> {
     let mut out = std::collections::HashMap::new();
     for line in text.lines() {
         let mut cells = line.split('|').map(str::trim);
-        let (Some(""), Some(name), Some(over), Some(unplaced), Some(worst)) = (
+        let (
+            Some(""),
+            Some(name),
+            Some(pages),
+            Some(over),
+            Some(badly),
+            Some(unplaced),
+            Some(worst),
+        ) = (
             cells.next(),
             cells.next(),
             cells.next(),
             cells.next(),
             cells.next(),
-        ) else {
+            cells.next(),
+            cells.next(),
+        )
+        else {
             continue;
         };
         let Some(name) = name.strip_prefix('`').and_then(|n| n.strip_suffix('`')) else {
             continue;
         };
-        let (Ok(over), Ok(unplaced), Ok(worst)) = (over.parse(), unplaced.parse(), worst.parse())
-        else {
+        let (Ok(pages), Ok(over), Ok(badly), Ok(unplaced), Ok(worst)) = (
+            pages.parse(),
+            over.parse(),
+            badly.parse(),
+            unplaced.parse(),
+            worst.parse(),
+        ) else {
             continue;
         };
-        out.insert(name.to_string(), (over, unplaced, worst));
+        out.insert(
+            name.to_string(),
+            Stood {
+                pages,
+                over,
+                badly,
+                unplaced,
+                worst,
+            },
+        );
     }
     out
 }

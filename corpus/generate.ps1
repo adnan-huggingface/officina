@@ -478,10 +478,14 @@ if ($doWord) {
             "$japanese (Japanese)",
             "Mixed $arabic inline."
         )
-        foreach ($line in $lines) {
-            $p = $d.Paragraphs.Add()
-            $p.Range.Text = $line
-        }
+        # One assignment, carriage returns between the lines — *not* a loop of
+        # `Paragraphs.Add()` with `$p.Range.Text = $line`. A new paragraph's
+        # range includes its own paragraph mark, so assigning text to it writes
+        # the mark away and merges the paragraph into the next one: the loop
+        # this replaces left the document holding its last line and nothing
+        # else, which is why a corpus file named for Chinese and Japanese
+        # contained neither and said so in `wp-docx/tests/corpus.rs` for months.
+        $d.Content.Text = ($lines -join "`r")
         $d.SaveAs2($path, 12)
         $d.Close(0)
     }

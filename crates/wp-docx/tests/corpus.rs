@@ -4,14 +4,20 @@
 //! which is the only thing that catches a misunderstanding. `LEARNINGS.md` §5.
 //!
 //! **The corpus is thinner than its file names suggest.** Most of these
-//! documents are a single paragraph: `lists-numbering.docx` has one bullet,
+//! documents are a single paragraph: `lists-numbering.docx` has one bullet and
 //! `styles-headings-toc.docx` has a table-of-contents field and no headings at
-//! all, and `rtl-and-cjk.docx` has the Arabic and no CJK — the generator's
-//! PowerShell built that string with `+` on two `[char]`s, which is addition.
-//! The assertions below say what the files actually contain rather than what
-//! they were meant to; a test that asserts more than the corpus holds is a test
-//! that fails for the wrong reason. `office_templates.rs` is where the depth
-//! comes from.
+//! all. The generator writes several lines into each and Word keeps only the
+//! last, because assigning to a fresh paragraph's `Range.Text` writes away the
+//! paragraph mark that range includes and merges it into the next one. The
+//! assertions below say what the files actually contain rather than what they
+//! were meant to; a test that asserts more than the corpus holds is a test that
+//! fails for the wrong reason. `office_templates.rs` is where the depth comes
+//! from.
+//!
+//! `rtl-and-cjk.docx` was the same story and is no longer: it held one Arabic
+//! word and neither of the scripts it is named for until the layout comparison
+//! went looking for CJK across the whole corpus and found not one glyph of it.
+//! It now carries all six of its lines.
 
 use std::path::{Path, PathBuf};
 
@@ -478,10 +484,6 @@ fn a_content_control_keeps_its_identity() {
 
 #[test]
 fn right_to_left_text_arrives_whole_and_names_its_own_direction() {
-    // The corpus generator's PowerShell built the CJK string with `+` on two
-    // `[char]`s, which is addition, so this document has the Arabic and not the
-    // Chinese. Recorded in PROGRESS.md; asserted here for what is actually in
-    // the file rather than for what was intended.
     let document = open("rtl-and-cjk.docx");
     let text = document.text();
     assert!(
@@ -496,6 +498,28 @@ fn right_to_left_text_arrives_whole_and_names_its_own_direction() {
     assert!(
         complex_face,
         "an Arabic run names a complex-script face or marks itself right-to-left"
+    );
+}
+
+/// The scripts this document is named for, which for a long time it did not
+/// hold: the generator wrote six lines and Word kept the last. Asserted here so
+/// that a corpus file cannot quietly stop containing the thing it exists for —
+/// text with no spaces between its words is the one case where "what is a word"
+/// has no easy answer, and nothing else in the corpus asks the question.
+#[test]
+fn the_document_named_for_cjk_contains_cjk() {
+    let text = open("rtl-and-cjk.docx").text();
+    let han = text
+        .chars()
+        .filter(|c| ('\u{4E00}'..='\u{9FFF}').contains(c));
+    assert!(han.count() >= 4, "Chinese: {text:?}");
+    let kana = text
+        .chars()
+        .filter(|c| ('\u{3040}'..='\u{30FF}').contains(c));
+    assert!(kana.count() >= 5, "Japanese: {text:?}");
+    assert!(
+        text.chars().any(|c| ('\u{0590}'..='\u{05FF}').contains(&c)),
+        "Hebrew: {text:?}"
     );
 }
 

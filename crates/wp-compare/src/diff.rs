@@ -44,6 +44,13 @@ const SAME_LINE: f64 = 2.0;
 /// what it is.
 const FAR: f64 = 36.0;
 
+/// Past this a word is not merely out of place, it is somewhere else.
+///
+/// Five points is about a word's own width at the sizes documents are set in,
+/// and about half a line. Nothing chose it but the wish for a second number
+/// coarse enough that ordinary drift never reaches it.
+pub const BADLY: f64 = 5.0;
+
 /// The most cells the table below will be asked to hold.
 ///
 /// Sixteen million, which is sixty-four megabytes and about a second. No line
@@ -133,6 +140,15 @@ pub struct Report {
     pub matched: usize,
     /// Matched words further out than the threshold.
     pub over: usize,
+    /// Matched words further out than [`BADLY`].
+    ///
+    /// A second, coarser count, because three numbers that only ever say *how
+    /// many* are blind to work moving about: one word going from three points
+    /// out to half a point while another goes the other way leaves every one of
+    /// them where it was. A word crossing five points is a different kind of
+    /// event from a word crossing one, and counting both makes that trade
+    /// visible.
+    pub badly: usize,
     pub unmatched: usize,
     /// The largest shift among the words that matched.
     pub worst: f64,
@@ -277,6 +293,9 @@ fn in_line(
         let out = dx.abs().max(dy.abs());
         if out > report.worst {
             report.worst = out;
+        }
+        if out > BADLY {
+            report.badly += 1;
         }
         if out > threshold {
             report.over += 1;
@@ -1060,6 +1079,19 @@ mod tests {
         assert!(report.refused > 0);
         assert_eq!(report.matched, 0);
         assert_eq!(report.unmatched, 4_001 * 2);
+    }
+
+    /// Two counts rather than one, so that work moving about is visible. A
+    /// single count of what is out of place says the same thing whether a word
+    /// sits a point out or half a line out.
+    #[test]
+    fn a_word_far_out_is_counted_twice_and_a_word_barely_out_once() {
+        let theirs = line(1, 100.0, &[(72.0, "near"), (120.0, "far"), (200.0, "same")]);
+        let ours = line(1, 100.0, &[(74.0, "near"), (128.0, "far"), (200.0, "same")]);
+        let report = compare(&ours, &theirs, 1.0);
+        assert_eq!(report.over, 2, "both are past a point");
+        assert_eq!(report.badly, 1, "only one is past five");
+        assert!((report.worst - 8.0).abs() < 0.001);
     }
 
     /// A convention difference between the two sides is one number, not a
