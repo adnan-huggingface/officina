@@ -1042,36 +1042,34 @@ impl Building {
                 ..Default::default()
             };
         }
-        // **The first boundary is the edge Word rules, not where the text in
-        // the first cell begins.** A `.doc` states it as the indent the user
-        // set less half the gap between columns — that is what
-        // `sprmTDxaGapHalf` is for, and it is why a table flush with the
-        // margin says -108 and hangs its rule that far into it. `w:tblInd`
-        // measures to the text instead (see `resolve_table_indent`), so the
-        // cell's own padding is what turns the one into the other. Measured:
-        // the demonstration document's tables state 720, Word rules them at
-        // 720 with their text a padding further in at 828, and the file says
-        // 828 itself in the `sprmTWidthIndent` it carries alongside.
-        // The row's own `sprmTWidthIndent`, where it carries one, is the
-        // number `w:tblInd` means and needs no arithmetic at all.
+        // **The first boundary is the edge Word rules, and it is the number
+        // `w:tblInd` means.** A `.doc` states it as the indent the user set
+        // less half the gap between columns — that is what `sprmTDxaGapHalf`
+        // is for, and it is why a table flush with the margin says -108 and
+        // hangs its rule that far into it. `sprmTWidthIndent`, where a row
+        // carries one, says the same edge measured to the *text* instead, so
+        // the cell's own padding is what turns the one into the other.
+        // Measured: the demonstration document's tables state 720, Word rules
+        // them at 720 with their text a padding further in at 828, and the
+        // file says 828 itself in the `sprmTWidthIndent` alongside.
+        let padding = table
+            .props
+            .cell_margins
+            .start
+            .and_then(|width| match width {
+                Width::Fixed(twips) => Some(twips.0),
+                _ => None,
+            })
+            .unwrap_or(0);
         if let Some(indent) = self
             .geometry
             .iter()
             .flatten()
             .find_map(|row| row.width_indent)
         {
-            table.props.indent = Some(Width::Fixed(indent));
+            table.props.indent = Some(Width::Fixed(Twips(indent.0 - padding)));
         } else if let Some(left) = boundaries.first() {
-            let padding = table
-                .props
-                .cell_margins
-                .start
-                .and_then(|width| match width {
-                    Width::Fixed(twips) => Some(twips.0),
-                    _ => None,
-                })
-                .unwrap_or(0);
-            table.props.indent = Some(Width::Fixed(Twips(left + padding)));
+            table.props.indent = Some(Width::Fixed(Twips(*left)));
         }
         table.rows = std::mem::take(&mut self.rows);
         table
@@ -1194,17 +1192,19 @@ mod tests {
     }
 
     #[test]
-    fn a_tables_indent_is_measured_to_the_text_in_its_first_cell() {
+    fn a_tables_indent_is_the_edge_word_rules_and_not_where_its_text_begins() {
         // The demonstration document's tables: the row states 720, Word rules
         // the table's edge at 720, and its text stands a cell margin further
-        // in at 828 — which is the number the file also carries in
-        // `sprmTWidthIndent`, and the number `w:tblInd` means.
+        // in at 828. It is the edge that `w:tblInd` means, so the boundary is
+        // the indent unchanged — and 828 is what the file carries alongside in
+        // `sprmTWidthIndent`, which measures the same edge to the text and is
+        // turned back into this one by the padding.
         let table = table_with(row_of(vec![720, 5000]));
-        assert_eq!(table.props.indent, Some(Width::Fixed(Twips(828))));
+        assert_eq!(table.props.indent, Some(Width::Fixed(Twips(720))));
         // A table flush with the margin says half a gap less than nothing, so
         // that its text lands on the margin and its rule hangs outside it.
         let flush = table_with(row_of(vec![-108, 5000]));
-        assert_eq!(flush.props.indent, Some(Width::Fixed(Twips(0))));
+        assert_eq!(flush.props.indent, Some(Width::Fixed(Twips(-108))));
     }
 
     #[test]

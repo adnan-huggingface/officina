@@ -1534,12 +1534,16 @@ in every file Word writes, which means every ordinary run kerns. Three tenths of
 a point per word, invisible in a line and three hundred and twenty-eight words
 out of place over a page.
 
-**A style's `<w:tblInd w:w="0">` is not a stated indent.** Word's built-in
-Normal Table names one, so every ordinary table inherits it; read as an indent
-stated by the table it hangs the table's edge a cell's padding into the margin,
-and the rule down the left of a plain table sits where nothing draws it. What
-the file says and what the *table* says are different questions, and only the
-second moves the table.
+**`w:tblInd` measures to the edge Word rules, and it was the binary format
+saying otherwise.** A rule that took the cell's padding off a stated indent was
+fitted to make one `.doc` come out right and then applied to every table in
+every format, where it stood a second producer's whole document nearly six
+points to the left — its style pads each cell by 115 twips and its tables state
+an indent of -7, so the edge came out at -122 instead. The padding is inside
+the table, not before it. What the *binary* format states is the other
+measurement, to the text, which is what `sprmTWidthIndent` is for, and turning
+one into the other belongs in the reader that knows which format it is looking
+at rather than in the resolver that does not.
 
 **A `.doc` says its default font in the stylesheet's header, not in a style.**
 There is no `docDefaults` in the binary format; `STSHI.rgftcStandardChpStsh`
@@ -1556,3 +1560,27 @@ made room for it — the arithmetic was right, and every page after the first he
 one row fewer — and then nothing put the ink there, so a fifty-row table showed
 a blank band at the top of every continuation page and its rows sat a row's
 height too high. Reserving room is half of it; the half that shows is the other.
+
+**`<w:rPr/>` in a list level cost a document every list after the first.** An
+element written empty has no end tag, and a reader that descended into it went
+looking for one — finding the *next* level's, and swallowing every definition in
+between. The first list then had the second's levels, the second list had none
+at all, and its paragraphs drew no bullet while keeping the hanging indent that
+made room for one. A start tag has a body and an empty tag does not; every
+reader that descends has to ask which it is holding, and the ones that had
+already been made to ask were the ones a Word-written file happened to exercise.
+
+**Word keeps the space above a paragraph that forced its own page break.** The
+rule that a paragraph does not space itself away from the top of a page is only
+about a page that ran out of room. `<w:pageBreakBefore/>` makes the break part
+of the paragraph, and the space before it follows the break as it would follow
+anything else — the layout said so in its own comment and then dropped it
+anyway, which stood a heading and the seven pages under it 24 points too high.
+
+**An instrument that reads a document in the wrong type reports a fault in the
+layout.** The comparison harness registered the machine's faces and not the
+package's, so a document that embeds Ubuntu was measured in whatever the
+machine substitutes — and every line of it came out wrong in a way that looked
+exactly like a shaping error. The application had adopted a document's own
+faces since the day it could open one; the instrument that claims to lay out
+the way the application does had not.

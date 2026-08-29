@@ -45,7 +45,7 @@ type Pictures = HashMap<String, metafile::Picture>;
 /// Lays the document out and reports where each of its marks landed.
 pub fn read(path: &Path) -> Result<Reading, String> {
     let opened = open(path)?;
-    let ctx = fonts();
+    let ctx = fonts(&opened);
     let mut shaper = scriva::shaper::Egui::new(&ctx);
     let mut view = scriva::view::View::default();
     view.refresh(
@@ -173,16 +173,28 @@ fn open(path: &Path) -> Result<Opened, String> {
     }
 }
 
-/// An egui context with the machine's real faces and nothing else.
+/// An egui context with the machine's real faces, and the document's own.
 ///
 /// The same preparation the `anchors` test does, and for the same reason: a
 /// position is a statement about metrics, so the faces have to be the ones the
-/// application draws with. egui has no fonts until a frame has run, and the
-/// texture deltas of that frame have to be dropped deliberately because there
-/// is no GPU here to apply them to.
-fn fonts() -> egui::Context {
+/// application draws with. That includes the type the package carries: a
+/// document that embeds Ubuntu Mono is set in it by the application and by
+/// Word alike, and an instrument that read it in whatever the machine
+/// substitutes would report a fault in the layout that is really a fault in
+/// the measuring. egui has no fonts until a frame has run, and the texture
+/// deltas of that frame have to be dropped deliberately because there is no
+/// GPU here to apply them to.
+fn fonts(opened: &Opened) -> egui::Context {
     let ctx = egui::Context::default();
     ui_kit::fonts::install(&ctx);
+    if let (Some(package), Some(parts)) = (&opened.package, &opened.parts) {
+        let faces: Vec<_> = wp_docx::embedded(package, parts)
+            .into_iter()
+            .map(|face| (face.family, face.bold, face.italic, face.bytes))
+            .collect();
+        let named = scriva::app::font_names(&opened.document);
+        ui_kit::fonts::embed_document(&ctx, &faces, &named);
+    }
     let mut out = ctx.run_ui(egui::RawInput::default(), |_| {});
     out.textures_delta.clear();
     ctx

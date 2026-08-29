@@ -487,28 +487,25 @@ impl StyleTable {
         out
     }
 
-    /// Where a table starts, and what its own leading edge does about it.
+    /// Where a table starts: the offset from the text margin to its leading
+    /// edge.
     ///
-    /// Measured against Word over three cell margins and three indents: an
-    /// indent that is *stated at all* — even as zero, which is what every
-    /// built-in table style states — is measured to the text inside the first
-    /// cell, so the table's edge hangs left of it by the cell's left margin.
-    /// An indent nobody states leaves the edge on the margin itself.
-    ///
-    /// Answers the offset from the text margin to the table's leading edge.
+    /// `w:tblInd` measures to the edge Word rules, not to the text inside the
+    /// first cell — the padding is inside the table, not before it. The
+    /// binary format states the same edge the other way round, to the text,
+    /// and its reader turns one into the other rather than making this ask
+    /// which format it is looking at. Measured against a second producer's
+    /// tables, whose styles pad every cell by 115 twips and whose tables
+    /// state an indent of -7: Word rules them seven twips into the margin and
+    /// sets their text a padding further in, so an edge computed with the
+    /// padding taken off it stands nearly six points wrong on every line of
+    /// the document.
     pub fn resolve_table_indent(
         &self,
         table: &crate::table::TableProps,
         available: crate::units::Twips,
     ) -> f64 {
         let mut stated = table.props_indent();
-        // Only an indent the table states for itself moves its edge off the
-        // margin. Word's built-in Normal Table names `<w:tblInd w:w="0">`, and
-        // every ordinary table inherits it; read as a stated indent it would
-        // hang the table's edge left of the margin by a cell's padding, which
-        // is measurably not where Word draws it — the rule down the left of a
-        // plain table sits on the margin and the text is padded in from there.
-        let own = stated.is_some();
         if stated.is_none() {
             let styled = table.style.or_else(|| self.default_style(StyleKind::Table));
             if let Some(id) = styled {
@@ -520,17 +517,7 @@ impl StyleTable {
             }
         }
         let Some(indent) = stated else { return 0.0 };
-        if !own {
-            return indent.resolve(available).map(|t| t.points()).unwrap_or(0.0);
-        }
-        let indent = indent.resolve(available).map(|t| t.points()).unwrap_or(0.0);
-        let padding = self
-            .resolve_cell_margins(table)
-            .start
-            .and_then(|w| w.resolve(available))
-            .map(|t| t.points())
-            .unwrap_or(0.0);
-        indent - padding
+        indent.resolve(available).map(|t| t.points()).unwrap_or(0.0)
     }
 
     pub fn resolve_run(&self, paragraph: &Layers, direct: &RunProps) -> RunProps {

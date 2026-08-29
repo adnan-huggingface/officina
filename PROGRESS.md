@@ -3905,3 +3905,61 @@ measured line-pitch table is laid at its ideal rounded to a twenty-fourth of a
 point, and Aptos's own laid pitch — measured now, but with a six-tenths
 correction where the accumulator pays halves — does not fit that machinery.
 `floating-image-wrap.docx` holds 296 of the remaining 325, all of it that drift.
+
+## Documents from outside the corpus, measured the same way
+
+Eight `.doc` and `.docx` files in `C:\Adnan\test` — none of them written by
+the same producer as the corpus, several written by no version of Word at all
+— put through `cargo xtask compare`. They were worth measuring precisely
+because the corpus is self-made: everything in it was written by this machine's
+Word, so every habit that Word has and nobody else shares reads as the format
+rather than as one producer's dialect. Four documents held real faults.
+
+| file | before | after |
+|---|---|---|
+| `two_sections.docx` | 0 | 0 |
+| `file-sample_100kB/500kB/1MB.docx` | 21 | 21 — all chart labels, the harness's stated blind spot |
+| `resume.docx` | 1147 | 155 |
+| `demo.docx` | 1455 | 444 |
+| `table_render_test.doc` | 221 | 221 |
+| `sample-docx-file-for-testing.docx` | 3755 | 3755 |
+
+- **`w:tblInd` was being measured to the text.** A rule fitted to one binary
+  document had the cell's padding taken off every stated indent in every
+  format; a second producer that pads 115 twips and indents -7 came out nearly
+  six points left on every line of the document. The measurement to the text is
+  the binary format's, and turning it into the other one now happens in the
+  reader that knows the format.
+- **`<w:rPr/>` inside a list level swallowed every list definition after it.**
+  An empty element has no end tag; the reader went looking for one and found
+  the next level's. One document's second list drew no bullets at all and kept
+  the hanging indent that had made room for them.
+- **A paragraph that forced its own page break lost the space above it.** The
+  rule about not spacing away from the top of a page is about a page that ran
+  out of room, not one the writer asked for — a heading style pairing
+  `<w:pageBreakBefore/>` with 24 points before stood every page of `demo.docx`
+  that far up.
+- **The instrument was reading documents in the wrong type.** The harness
+  registered the machine's faces and not the package's, so a document embedding
+  its own type was measured in a substitute. Fixed in `wp-compare` rather than
+  in the layout, because the layout was never wrong.
+
+What is left is diagnosed and deliberately not fixed:
+
+- `sample-docx-file-for-testing.docx` (3755, and one page more than Word) is a
+  10.5pt Arial document set justified to a 451pt column. Every unjustified last
+  line lands within three tenths of a point, so the widths are right; the lines
+  that go wrong are the full ones, where a fraction of a point decides whether
+  one more word fits, and the difference then compounds into a whole extra
+  page. A tolerance in the fit test was tried at one twip, a third of a point
+  and a whole point: it improves the count smoothly and never resolves it, so
+  it is drift rather than a threshold Word rounds at.
+- `demo.docx`'s remaining 444 is 400 on the two pages that use its embedded
+  Ubuntu Mono. Both renderings agree on where the run ends — it is the same
+  width in both — and disagree only about where each glyph inside it sits,
+  which is Word's PDF export substituting glyphs inside an embedded subset.
+  The plain Ubuntu around it matches to a fortieth of a point.
+- `table_render_test.doc`'s 221 is all under five points, and its 179 unmatched
+  marks are the eleven pictures Word draws into rather than drawing a box for —
+  the blind spot `NOT_COMPARED` already names.
+

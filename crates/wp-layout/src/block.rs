@@ -3065,7 +3065,7 @@ pub fn paginate(items: &[Item], height: f64, opens_document: bool) -> Vec<usize>
 /// The space above an item that this page will not give it. See
 /// [`Item::space_before`].
 fn dropped_space(item: &Item, opens_page: bool, opens_document: bool) -> f64 {
-    match opens_page && !opens_document {
+    match opens_page && !opens_document && !item.break_before {
         true => item.space_before,
         false => 0.0,
     }
@@ -3851,6 +3851,33 @@ mod tests {
         let pages = pages(&document);
         assert_eq!(pages.len(), 2);
         assert_eq!(pages[1].content.len(), 1);
+    }
+
+    #[test]
+    fn a_paragraph_that_forced_its_own_break_keeps_the_space_above_it() {
+        // A page nobody asked for takes the space above the paragraph that
+        // fell onto it; a page the writer asked for does not, because the
+        // break is then part of the paragraph and the space follows it as it
+        // would follow anything else. Measured on a heading style that pairs
+        // `<w:pageBreakBefore/>` with 24 points before: Word sets it 24 points
+        // down every page it opens, and a layout that dropped them stood the
+        // whole page and every page after it that far up.
+        let mut blocks = paragraphs(2);
+        let mut breaking = Paragraph::of("new page");
+        breaking.props.page_break_before = Some(true);
+        breaking.props.spacing.before = Some(Twips::from_points(24.0));
+        blocks.push(Block::Paragraph(breaking));
+        let mut document = document(blocks);
+        document.section = page_of(20);
+        let pages = pages(&document);
+        assert_eq!(pages.len(), 2);
+        let top = pages[1].geometry.top;
+        let first = pages[1].content.first().expect("the page has its line");
+        assert!(
+            (first.y - top - 24.0).abs() < 0.01,
+            "the forced break keeps its 24 points: {} against a top of {top}",
+            first.y
+        );
     }
 
     #[test]

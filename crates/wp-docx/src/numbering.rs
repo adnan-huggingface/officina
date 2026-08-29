@@ -125,24 +125,36 @@ fn read_abstract(reader: &mut Reader<&[u8]>, ctx: &mut Ctx<'_>, id: u32) -> Abst
     let mut definition = AbstractNum::new(id);
     while let Ok(event) = reader.read_event() {
         match event {
-            Event::Start(e) | Event::Empty(e) => match local_name(&e) {
-                b"nsid" => definition.nsid = val(&e).map(Into::into),
-                b"tmpl" => definition.template = val(&e).map(Into::into),
-                b"name" => definition.name = val(&e).map(Into::into),
-                b"multiLevelType" => {
-                    definition.multi_level = val(&e)
-                        .as_deref()
-                        .and_then(MultiLevel::from_val)
-                        .unwrap_or_default()
+            Event::Start(_) | Event::Empty(_) => {
+                let empty = matches!(event, Event::Empty(_));
+                let (Event::Start(e) | Event::Empty(e)) = event else {
+                    unreachable!()
+                };
+                match local_name(&e) {
+                    b"nsid" => definition.nsid = val(&e).map(Into::into),
+                    b"tmpl" => definition.template = val(&e).map(Into::into),
+                    b"name" => definition.name = val(&e).map(Into::into),
+                    b"multiLevelType" => {
+                        definition.multi_level = val(&e)
+                            .as_deref()
+                            .and_then(MultiLevel::from_val)
+                            .unwrap_or_default()
+                    }
+                    b"numStyleLink" => definition.num_style_link = val(&e).map(Into::into),
+                    b"styleLink" => definition.style_link = val(&e).map(Into::into),
+                    // Only a start tag has a body to read. An element written
+                    // empty — `<w:lvl/>`, `<w:rPr/>` — has no end tag, and a
+                    // reader that went looking for one would swallow everything
+                    // up to the next unrelated one: a second producer's
+                    // `<w:rPr/>` inside a list level cost the document every
+                    // numbering definition after the first.
+                    b"lvl" if !empty => {
+                        let index = attr_u32(&e, b"ilvl").unwrap_or(0).min(8) as u8;
+                        definition.set_level(read_level(reader, ctx, index));
+                    }
+                    _ => {}
                 }
-                b"numStyleLink" => definition.num_style_link = val(&e).map(Into::into),
-                b"styleLink" => definition.style_link = val(&e).map(Into::into),
-                b"lvl" => {
-                    let index = attr_u32(&e, b"ilvl").unwrap_or(0).min(8) as u8;
-                    definition.set_level(read_level(reader, ctx, index));
-                }
-                _ => {}
-            },
+            }
             Event::End(e) if end_local_name(&e) == b"abstractNum" => break,
             Event::Eof => break,
             _ => {}
@@ -160,39 +172,45 @@ fn read_level(reader: &mut Reader<&[u8]>, ctx: &mut Ctx<'_>, index: u8) -> Level
     let mut stated_text = false;
     while let Ok(event) = reader.read_event() {
         match event {
-            Event::Start(e) | Event::Empty(e) => match local_name(&e) {
-                b"start" => level.start = attr_i32(&e, b"val").unwrap_or(1),
-                b"numFmt" => {
-                    level.format = val(&e)
-                        .as_deref()
-                        .map(NumFormat::from_val)
-                        .unwrap_or_default()
-                }
-                b"lvlText" => {
-                    if let Some(text) = val(&e) {
-                        level.text = text.into();
-                        stated_text = true;
+            Event::Start(_) | Event::Empty(_) => {
+                let empty = matches!(event, Event::Empty(_));
+                let (Event::Start(e) | Event::Empty(e)) = event else {
+                    unreachable!()
+                };
+                match local_name(&e) {
+                    b"start" => level.start = attr_i32(&e, b"val").unwrap_or(1),
+                    b"numFmt" => {
+                        level.format = val(&e)
+                            .as_deref()
+                            .map(NumFormat::from_val)
+                            .unwrap_or_default()
                     }
+                    b"lvlText" => {
+                        if let Some(text) = val(&e) {
+                            level.text = text.into();
+                            stated_text = true;
+                        }
+                    }
+                    b"lvlJc" => {
+                        level.justify = val(&e)
+                            .as_deref()
+                            .and_then(Justify::from_val)
+                            .unwrap_or_default()
+                    }
+                    b"lvlRestart" => level.restart = attr_u32(&e, b"val").map(|v| v.min(9) as u8),
+                    b"suff" => {
+                        level.suffix = val(&e)
+                            .as_deref()
+                            .and_then(Suffix::from_val)
+                            .unwrap_or_default()
+                    }
+                    b"isLgl" => level.legal = on_off(&e),
+                    b"lvlPicBulletId" => level.picture_bullet = attr_u32(&e, b"val"),
+                    b"pPr" if !empty => level.para = props::para_props(reader, ctx).props,
+                    b"rPr" if !empty => level.run = props::run_props(reader, ctx).props,
+                    _ => {}
                 }
-                b"lvlJc" => {
-                    level.justify = val(&e)
-                        .as_deref()
-                        .and_then(Justify::from_val)
-                        .unwrap_or_default()
-                }
-                b"lvlRestart" => level.restart = attr_u32(&e, b"val").map(|v| v.min(9) as u8),
-                b"suff" => {
-                    level.suffix = val(&e)
-                        .as_deref()
-                        .and_then(Suffix::from_val)
-                        .unwrap_or_default()
-                }
-                b"isLgl" => level.legal = on_off(&e),
-                b"lvlPicBulletId" => level.picture_bullet = attr_u32(&e, b"val"),
-                b"pPr" => level.para = props::para_props(reader, ctx).props,
-                b"rPr" => level.run = props::run_props(reader, ctx).props,
-                _ => {}
-            },
+            }
             Event::End(e) if end_local_name(&e) == b"lvl" => break,
             Event::Eof => break,
             _ => {}
@@ -209,14 +227,20 @@ fn read_num(reader: &mut Reader<&[u8]>, ctx: &mut Ctx<'_>, id: u32) -> Option<Nu
     let mut overrides = Vec::new();
     while let Ok(event) = reader.read_event() {
         match event {
-            Event::Start(e) | Event::Empty(e) => match local_name(&e) {
-                b"abstractNumId" => abstract_id = attr_u32(&e, b"val"),
-                b"lvlOverride" => {
-                    let index = attr_u32(&e, b"ilvl").unwrap_or(0).min(8) as u8;
-                    overrides.push(read_override(reader, ctx, index));
+            Event::Start(_) | Event::Empty(_) => {
+                let empty = matches!(event, Event::Empty(_));
+                let (Event::Start(e) | Event::Empty(e)) = event else {
+                    unreachable!()
+                };
+                match local_name(&e) {
+                    b"abstractNumId" => abstract_id = attr_u32(&e, b"val"),
+                    b"lvlOverride" if !empty => {
+                        let index = attr_u32(&e, b"ilvl").unwrap_or(0).min(8) as u8;
+                        overrides.push(read_override(reader, ctx, index));
+                    }
+                    _ => {}
                 }
-                _ => {}
-            },
+            }
             Event::End(e) if end_local_name(&e) == b"num" => break,
             Event::Eof => break,
             _ => {}
@@ -240,14 +264,21 @@ fn read_override(reader: &mut Reader<&[u8]>, ctx: &mut Ctx<'_>, index: u8) -> Le
     };
     while let Ok(event) = reader.read_event() {
         match event {
-            Event::Start(e) | Event::Empty(e) => match local_name(&e) {
-                b"startOverride" => over.start = attr_i32(&e, b"val"),
-                b"lvl" => {
-                    let level_index = attr_u32(&e, b"ilvl").unwrap_or(index as u32).min(8) as u8;
-                    over.level = Some(Box::new(read_level(reader, ctx, level_index)));
+            Event::Start(_) | Event::Empty(_) => {
+                let empty = matches!(event, Event::Empty(_));
+                let (Event::Start(e) | Event::Empty(e)) = event else {
+                    unreachable!()
+                };
+                match local_name(&e) {
+                    b"startOverride" => over.start = attr_i32(&e, b"val"),
+                    b"lvl" if !empty => {
+                        let level_index =
+                            attr_u32(&e, b"ilvl").unwrap_or(index as u32).min(8) as u8;
+                        over.level = Some(Box::new(read_level(reader, ctx, level_index)));
+                    }
+                    _ => {}
                 }
-                _ => {}
-            },
+            }
             Event::End(e) if end_local_name(&e) == b"lvlOverride" => break,
             Event::Eof => break,
             _ => {}
@@ -371,6 +402,34 @@ mod tests {
         assert_eq!(
             counters.advance(&numbering, at(1, 0)).as_deref(),
             Some("\u{2022}")
+        );
+    }
+
+    #[test]
+    fn an_empty_run_property_inside_a_level_does_not_eat_the_definitions_after_it() {
+        // A second producer writes `<w:rPr/>` for a level that formats its
+        // glyph no differently. It has no end tag, so a reader that went
+        // looking for one ran on to the *next* level's, swallowing every
+        // definition after the first: the document then drew the second
+        // list's bullets nowhere and gave the first list the second's levels.
+        let numbering = numbering_of(
+            r#"<w:numbering>
+              <w:abstractNum w:abstractNumId="1"><w:lvl w:ilvl="0"><w:numFmt w:val="bullet"/><w:lvlText w:val="-"/><w:rPr/></w:lvl></w:abstractNum>
+              <w:abstractNum w:abstractNumId="2"><w:lvl w:ilvl="0"><w:numFmt w:val="bullet"/><w:lvlText w:val="*"/><w:rPr/></w:lvl></w:abstractNum>
+              <w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num>
+              <w:num w:numId="2"><w:abstractNumId w:val="2"/></w:num>
+            </w:numbering>"#,
+        );
+        let mut counters = Counters::new();
+        assert_eq!(
+            counters.advance(&numbering, at(1, 0)).as_deref(),
+            Some("-"),
+            "the first list keeps its own glyph"
+        );
+        assert_eq!(
+            counters.advance(&numbering, at(2, 0)).as_deref(),
+            Some("*"),
+            "and the second list exists at all"
         );
     }
 
