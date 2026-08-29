@@ -36,10 +36,8 @@
 //! things are deliberately left out, each for a measured reason rather than a
 //! preference — a leadered tab's dots, which neither renderer chose the number
 //! of, and a shape's own words, which Word draws into a PDF as outlines and
-//! not as text at all. And a document under revision is not really comparable:
-//! Word renders it as though every change were accepted, and Scriva draws what
-//! the file stores, so `tracked-changes.docx` measures that difference and not
-//! this one.
+//! not as text at all. A whole document can be set apart the same way, and one
+//! is: see [`NOT_COMPARED`].
 
 mod diff;
 mod ours;
@@ -141,6 +139,35 @@ fn run() -> Result<ExitCode, String> {
 
 /// What the corpus is held to, and where the record of it lives.
 const REPORT: &str = "LAYOUT.md";
+
+/// The documents this comparison cannot answer for, and why.
+///
+/// **Not a list of documents that are hard.** A hard document is the whole
+/// point: it is where the work is, and its number is large and stays large
+/// until somebody fixes it. This is the other thing — documents where the two
+/// renderings are answering different questions, so that any figure at all
+/// would be a figure about *that*, and driving it to zero would mean making
+/// Scriva draw something it should not.
+///
+/// Kept in code rather than in the record so that an exclusion has to be
+/// argued for in a place where it is reviewed, and written into the record as
+/// its own section so that it is loud. A quiet zero in a table of numbers is
+/// how a thing stops being measured without anybody deciding that it should.
+const NOT_COMPARED: [(&str, &str); 1] = [(
+    "tracked-changes.docx",
+    "Word renders a document under revision as though every change had been \
+     accepted. Scriva lays out what the file stores, deletions and all. The two \
+     are not the same page, and what stands between them is not a layout \
+     difference — this document held a baseline of 21 unplaceable words that \
+     read like a score and measured nothing.",
+)];
+
+fn why_not(name: &str) -> Option<&'static str> {
+    NOT_COMPARED
+        .iter()
+        .find(|(file, _)| *file == name)
+        .map(|(_, why)| *why)
+}
 
 /// How much worse the largest single shift may get before that alone is a
 /// regression.
@@ -362,12 +389,27 @@ fn table_of(measured: &[Measured]) -> String {
         let name = truncate(&row.name, 40);
         match &row.outcome {
             Ok(report) => {
-                over += report.over;
-                badly += report.badly;
-                unplaced += report.unmatched;
+                // Still measured and still shown — they are facts about two
+                // renderings — but kept out of every total, because a figure
+                // that counts towards a score is a figure somebody will try to
+                // drive down.
+                let counted = why_not(&row.name).is_none();
+                if counted {
+                    over += report.over;
+                    badly += report.badly;
+                    unplaced += report.unmatched;
+                }
                 out += &format!(
-                    "{name:<40} {:>7} {:>6} {:>9} {:>7.2}pt {:>6}\n",
-                    report.over, report.badly, report.unmatched, report.worst, report.pages_ours
+                    "{name:<40} {:>7} {:>6} {:>9} {:>7.2}pt {:>6}{}\n",
+                    report.over,
+                    report.badly,
+                    report.unmatched,
+                    report.worst,
+                    report.pages_ours,
+                    match counted {
+                        true => "",
+                        false => "  not compared",
+                    }
                 );
             }
             Err(why) => {
@@ -401,8 +443,15 @@ struct Stood {
 /// The record the corpus is held to, as it will be committed.
 fn report_of(measured: &[Measured]) -> String {
     let mut rows = String::new();
+    let mut apart = String::new();
     let (mut over, mut badly, mut unplaced, mut worst) = (0usize, 0usize, 0usize, 0.0f64);
+    let mut held = 0usize;
     for row in measured {
+        if let Some(why) = why_not(&row.name) {
+            apart += &format!("| `{}` | {why} |\n", row.name);
+            continue;
+        }
+        held += 1;
         match &row.outcome {
             Ok(report) => {
                 over += report.over;
@@ -445,10 +494,15 @@ size worsens leaves it unchanged.\n\
 than from a line and are not gathered here, so a document full of charts keeps a floor.\n\
 - **worst** — the largest single shift, in points.\n\n\
 | | documents | out | >5pt | unplaced | worst |\n|---|---:|---:|---:|---:|---:|\n\
-| totals | {} | {over} | {badly} | {unplaced} | {worst:.2} |\n\n\
+| totals | {held} | {over} | {badly} | {unplaced} | {worst:.2} |\n\n\
 ## Every document\n\n\
-| file | pages | out | >5pt | unplaced | worst |\n|---|---:|---:|---:|---:|---:|\n{rows}",
-        measured.len()
+| file | pages | out | >5pt | unplaced | worst |\n|---|---:|---:|---:|---:|---:|\n{rows}\n\
+## Not compared\n\n\
+Two renderings that answer different questions cannot be held to a number, and a number \
+written down anyway is worse than none: it reads like a score, and driving it down would mean \
+making Scriva draw something it should not. These are still laid out, still measured, and still \
+noticed if they leave the corpus — they are simply not held to anything.\n\n\
+| file | why |\n|---|---|\n{apart}"
     )
 }
 
@@ -473,6 +527,9 @@ fn against_the_record(measured: &[Measured]) -> Result<ExitCode, String> {
     let mut worse: Vec<String> = Vec::new();
     let mut better = 0usize;
     for row in measured {
+        if why_not(&row.name).is_some() {
+            continue;
+        }
         let Some(&was) = recorded.get(&row.name) else {
             // Either it was never recorded, or it was recorded as a document
             // that could not be measured. Both mean the same thing here: it is
@@ -526,10 +583,20 @@ fn against_the_record(measured: &[Measured]) -> Result<ExitCode, String> {
     }
 
     // And the other direction, which nothing else here would ever look at.
+    // A document set apart from the comparison is still watched for *presence*:
+    // not being held to a number is not the same as not being there.
+    let present = |name: &str| measured.iter().any(|row| row.name == name);
     for name in recorded.keys() {
-        if !measured.iter().any(|row| &row.name == name) {
+        if !present(name) {
             worse.push(format!(
                 "{name}: in {REPORT} but no longer in the corpus — it has stopped being checked"
+            ));
+        }
+    }
+    for (name, _) in NOT_COMPARED {
+        if !present(name) {
+            worse.push(format!(
+                "{name}: set apart from the comparison in the code, but no longer in the corpus"
             ));
         }
     }

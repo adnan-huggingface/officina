@@ -3469,6 +3469,31 @@ The same paragraph-merging bug is why `lists-numbering.docx` has one bullet and
 regenerating them churns the corpus further than this was scoped for — but they
 are the same one-line fix when somebody wants the depth.
 
+### A document set apart, rather than given a figure that meant nothing
+
+`tracked-changes.docx` stood in the record at 21 unplaceable words. Every part
+of that was true and none of it meant anything: Word renders a document under
+revision as though every change had been accepted, Scriva lays out what the
+file stores, and the twenty-one words are the difference between those two
+positions rather than between two attempts at the same page. A number like that
+is worse than no number, because it reads as a score — and the only way to
+drive it down would be to make Scriva draw something it should not.
+
+It is now named in `NOT_COMPARED` in the code, with the reason, and written
+into `LAYOUT.md` as its own section rather than as a row among the figures. It
+is still laid out, still measured, still printed in the table with `not
+compared` beside it — and still watched: taking the file out of the corpus
+fails `--check` just as a deleted recorded document does. What it is not is
+counted. The corpus totals went from 25 documents to 24, and the unplaceable
+total from 727 to 706.
+
+The distinction worth keeping: a document that is *hard* belongs in the table
+with a large number, because that is where the work is. A document where the
+two sides are answering different questions belongs out of it, argued for in
+code where somebody reviews the argument. The failure this guards against is
+not a wrong number, it is a quiet zero — the way a thing stops being measured
+without anybody deciding that it should.
+
 ### The number is a gate now, not a note
 
 `LAYOUT.md` records what every corpus document measures, and

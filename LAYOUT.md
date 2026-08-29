@@ -14,7 +14,7 @@ These are not targets. They are what is true today, so that what is true tomorro
 
 | | documents | out | >5pt | unplaced | worst |
 |---|---:|---:|---:|---:|---:|
-| totals | 25 | 1212 | 786 | 727 | 115.20 |
+| totals | 24 | 1212 | 786 | 706 | 115.20 |
 
 ## Every document
 
@@ -43,5 +43,12 @@ These are not targets. They are what is true today, so that what is true tomorro
 | `sections-mixed-orientation.docx` | 3 | 2 | 0 | 0 | 1.11 |
 | `styles-headings-toc.docx` | 1 | 8 | 0 | 0 | 1.89 |
 | `table-spanning-pages.docx` | 3 | 244 | 244 | 16 | 25.26 |
-| `tracked-changes.docx` | 1 | 0 | 0 | 21 | 0.00 |
 | `watermark.docx` | 1 | 115 | 101 | 366 | 67.39 |
+
+## Not compared
+
+Two renderings that answer different questions cannot be held to a number, and a number written down anyway is worse than none: it reads like a score, and driving it down would mean making Scriva draw something it should not. These are still laid out, still measured, and still noticed if they leave the corpus — they are simply not held to anything.
+
+| file | why |
+|---|---|
+| `tracked-changes.docx` | Word renders a document under revision as though every change had been accepted. Scriva lays out what the file stores, deletions and all. The two are not the same page, and what stands between them is not a layout difference — this document held a baseline of 21 unplaceable words that read like a score and measured nothing. |
