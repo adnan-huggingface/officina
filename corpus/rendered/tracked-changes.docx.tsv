@@ -1,0 +1,12 @@
+# Word's own rendering of tracked-changes.docx, as the place every word of it landed.
+# Written by `cargo xtask compare`. Not by hand, and not read by anything
+# but the comparison: `page`, `x`, `baseline`, `text`, in points.
+# document a5de7085  export 67d00bda  reading becf340b
+# Stale? `cargo xtask compare --refresh` renews it, and needs Word for that
+# one document. Everything else goes on working without it.
+1	72.024	83.420	This
+1	94.332	83.420	paragraph
+1	146.844	83.420	was
+1	168.432	83.420	inserted
+1	211.116	83.420	with
+1	235.452	83.420	re

@@ -1,0 +1,18 @@
+# Word's own rendering of unicode-text.doc, as the place every word of it landed.
+# Written by `cargo xtask compare`. Not by hand, and not read by anything
+# but the comparison: `page`, `x`, `baseline`, `text`, in points.
+# document f65a2555  export 67d00bda  reading becf340b
+# Stale? `cargo xtask compare --refresh` renews it, and needs Word for that
+# one document. Everything else goes on working without it.
+1	72.024	83.420	Greek
+1	103.800	83.420	alpha
+1	133.308	83.420	beta
+1	157.884	83.420	and
+1	178.980	83.420	an
+1	193.608	83.420	em
+1	211.956	83.420	dash
+1	237.612	83.420	follow:
+1	273.708	83.420	α
+1	283.284	83.420	β
+1	292.490	83.420	—
+1	306.050	83.420	end

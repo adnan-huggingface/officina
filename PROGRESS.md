@@ -3494,6 +3494,43 @@ code where somebody reviews the argument. The failure this guards against is
 not a wrong number, it is a quiet zero — the way a thing stops being measured
 without anybody deciding that it should.
 
+### The gate runs itself, and Word is no longer in the loop
+
+The layout check was a gate only in the sense that somebody might run it. It
+could not join `cargo xtask check`, because that has to work on a machine with
+no Word — and driving Word over 25 documents is half an hour, not eight
+seconds.
+
+The way out was to notice what is actually true of the oracle: **Word's reading
+of a document cannot change until the document does.** So the readings are
+committed, under `corpus/rendered/` — one TSV per corpus document, 157K for the
+lot, our own Word reading our own files, the same provenance as the corpus
+itself. The comparison then needs no Word at all. It is pure arithmetic over
+two lists of positions, it runs in **3.8 seconds with no PDFs on disk**, and it
+now sits inside `cargo xtask check` alongside fmt, clippy and the tests.
+
+Two things had to change to make a committed reading honest:
+
+**The key became the document's contents, not its timestamp.** Length and mtime
+were fine for a cache under `target/`; they are worthless for a file in git,
+which records content and not when anything was written, so every fresh clone
+would have missed. It is an FNV digest of the document and of both probe
+scripts now, written into the file's own header — a reading states what it is a
+reading *of*, so one that has gone stale says so instead of being quietly
+believed. Renaming `topdf.ps1` away, the comparison reports that the reading
+"was taken from an older minimal.docx, or with older probe scripts, and
+renewing it needs Word" rather than failing as though Office were missing.
+
+**Only `corpus/` is kept this way.** A reading holds every word of the document
+it read, so a reading of somebody's real document *is* that document's text.
+Those still go to `target/`. It is the `manual_examples/` rule, one step
+further along, and it is worth stating because the tempting version of this
+change commits everything.
+
+Word is now needed for exactly one thing: renewing the reading of a document
+that actually changed, with `--refresh`. Everything else — every check, every
+ranked list, every run of the gate — goes on without it.
+
 ### The number is a gate now, not a note
 
 `LAYOUT.md` records what every corpus document measures, and

@@ -1,0 +1,7 @@
+# Word's own rendering of content-controls.docx, as the place every word of it landed.
+# Written by `cargo xtask compare`. Not by hand, and not read by anything
+# but the comparison: `page`, `x`, `baseline`, `text`, in points.
+# document 2a7f4da3  export 67d00bda  reading becf340b
+# Stale? `cargo xtask compare --refresh` renews it, and needs Word for that
+# one document. Everything else goes on working without it.
+1	72.024	83.420	Date:

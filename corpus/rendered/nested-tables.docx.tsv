@@ -1,0 +1,23 @@
+# Word's own rendering of nested-tables.docx, as the place every word of it landed.
+# Written by `cargo xtask compare`. Not by hand, and not read by anything
+# but the comparison: `page`, `x`, `baseline`, `text`, in points.
+# document 0d2db5c3  export 67d00bda  reading becf340b
+# Stale? `cargo xtask compare --refresh` renews it, and needs Word for that
+# one document. Everything else goes on working without it.
+1	77.664	83.900	R1
+1	93.012	83.900	C1
+1	233.690	83.900	R1
+1	249.038	83.900	C2
+1	389.710	83.900	R1
+1	405.058	83.900	C3
+1	77.664	109.340	R2
+1	93.012	109.340	C1
+1	239.330	109.940	inner
+1	389.710	109.340	R2
+1	405.058	109.340	C3
+1	77.664	161.300	R3
+1	93.012	161.300	C1
+1	233.690	161.300	R3
+1	249.038	161.300	C2
+1	389.710	161.300	R3
+1	405.058	161.300	C3

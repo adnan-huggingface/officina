@@ -1,0 +1,27 @@
+# Word's own rendering of styles-headings-toc.docx, as the place every word of it landed.
+# Written by `cargo xtask compare`. Not by hand, and not read by anything
+# but the comparison: `page`, `x`, `baseline`, `text`, in points.
+# document aa7618a7  export 67d00bda  reading becf340b
+# Stale? `cargo xtask compare --refresh` renews it, and needs Word for that
+# one document. Everything else goes on working without it.
+1	72.024	83.420	No
+1	89.160	83.420	table
+1	117.204	83.420	of
+1	130.260	83.420	contents
+1	175.956	83.420	entries
+1	213.240	83.420	found.Body
+1	273.266	83.420	text
+1	294.854	83.420	under
+1	326.618	83.420	Results.
+1	367.034	83.420	Body
+1	394.370	83.420	text
+1	415.958	83.420	under
+1	447.722	83.420	Results.
+1	488.138	83.420	Body
+1	515.474	83.420	text
+1	72.024	100.340	under
+1	103.788	100.340	Results.
+1	144.324	100.340	Body
+1	171.660	100.340	text
+1	193.140	100.340	under
+1	224.904	100.340	Results.

@@ -1,0 +1,24 @@
+# Word's own rendering of header-footer-footnote.doc, as the place every word of it landed.
+# Written by `cargo xtask compare`. Not by hand, and not read by anything
+# but the comparison: `page`, `x`, `baseline`, `text`, in points.
+# document 8b93b365  export 67d00bda  reading becf340b
+# Stale? `cargo xtask compare --refresh` renews it, and needs Word for that
+# one document. Everything else goes on working without it.
+1	72.024	47.400	Running
+1	114.936	47.400	header
+1	72.024	752.880	Running
+1	114.936	752.880	footer
+1	72.024	83.420	The
+1	92.892	83.420	b1ody
+1	124.076	83.420	of
+1	136.784	83.420	the
+1	155.732	83.420	document.
+1	72.024	108.380	A
+1	81.732	108.380	second
+1	119.028	108.380	paragraph.
+1	72.024	713.976	1
+1	77.544	717.456	A
+1	85.562	717.456	footnote
+1	123.181	717.456	about
+1	149.435	717.456	the
+1	165.232	717.456	body.

@@ -29,6 +29,25 @@ Rerun `python strangers.py` to rebuild them byte-for-byte.
 Drop files anywhere under `docx/` or `xlsx/`; the harness walks recursively and
 picks up `.docx`, `.docm`, `.dotx`, `.xlsx`, `.xlsm`, `.xltx`.
 
+## `rendered/`
+
+Word's own rendering of each document above, as the place every word of it
+landed: page, x, baseline, text, in points. Written by `cargo xtask compare`,
+never by hand.
+
+**They are committed because Word's answer for a document cannot change until
+the document does.** That is what lets `cargo xtask check` hold the layout of
+every document here to `LAYOUT.md` on a machine that has never had Office
+installed — the comparison becomes a few seconds of arithmetic rather than
+half an hour of driving Word. Each file names the digests of the document and
+of both probe scripts it was taken with, so one that no longer answers for what
+it claims to says so and asks for `--refresh` rather than quietly being wrong.
+
+Same provenance as everything else here: our own Word, reading our own
+documents. A reading holds every word of the document it read, which is why
+only `corpus/` is kept this way — a reading of a real document from
+`manual_examples/` is that document's text, and goes to `target/`.
+
 ## Generating it
 
 `generate.ps1` drives Word and Excel through COM to produce most of the list

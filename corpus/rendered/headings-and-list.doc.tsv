@@ -1,0 +1,18 @@
+# Word's own rendering of headings-and-list.doc, as the place every word of it landed.
+# Written by `cargo xtask compare`. Not by hand, and not read by anything
+# but the comparison: `page`, `x`, `baseline`, `text`, in points.
+# document 7fb69049  export 67d00bda  reading becf340b
+# Stale? `cargo xtask compare --refresh` renews it, and needs Word for that
+# one document. Everything else goes on working without it.
+1	72.024	109.100	A
+1	87.836	109.100	Heading
+1	72.024	133.700	Body
+1	99.360	133.700	text
+1	120.960	133.700	under
+1	152.832	133.700	it.
+1	90.024	159.380	•
+1	108.020	159.380	First
+1	131.636	159.380	item
+1	90.024	177.020	•
+1	108.020	177.020	Second
+1	146.252	177.020	item

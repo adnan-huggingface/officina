@@ -22,7 +22,9 @@
 //! work; only a committed record tells you when work already done has come
 //! undone. `LAYOUT.md` holds what every document in the corpus measured, and
 //! `--check` fails on any that got worse — which is what makes a layout
-//! regression arithmetic rather than something somebody has to notice. It
+//! regression arithmetic rather than something somebody has to notice, and is
+//! why it runs inside `cargo xtask check` rather than beside it. Word is not
+//! needed for that: its readings of the corpus are committed. It
 //! fails in four directions, three of which are quiet ones: a document that got
 //! worse, a document nobody recorded, a document that can no longer be measured
 //! at all, and a document the record still holds that the corpus no longer has

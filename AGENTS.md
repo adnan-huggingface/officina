@@ -9,7 +9,7 @@ Linux code paths exist but are unverified.
 ## Commands
 
 ```bash
-cargo xtask check      # fmt + clippy (warnings denied) + entire test suite — the gate for any change
+cargo xtask check      # fmt + clippy (warnings denied) + tests + layout — the gate for any change
 cargo xtask fidelity   # round-trip harness over corpus/ (untouched save, then save-after-edit)
 cargo xtask perf       # stopwatch over the corpus and larger files
 cargo xtask compare <file>  # where a page differs from Word's own, ranked (needs Word)
@@ -35,10 +35,18 @@ fractions of a point, well under what a screenshot resolves, and a person can
 report only one of them per look.
 
 `LAYOUT.md` records what every corpus document measures, and
-`cargo xtask compare --check` fails on any that got worse. Run it after any
-change to shaping, line breaking or pagination; `--record` when the new numbers
-are the ones to keep. It is not part of `cargo xtask check`, which must keep
-working on a machine with no Word.
+`cargo xtask compare --check` fails on any that got worse. **It runs inside
+`cargo xtask check`**, so a layout regression fails the gate like any other —
+which it has to, because nothing about a layout regression is noticeable: the
+tests pass, the document opens, and a line sits a point and a half further down
+the page. When the new numbers are the ones to keep, `--record` and commit the
+change to `LAYOUT.md` deliberately.
+
+That check needs **no Word**: Word's readings of the corpus are committed under
+`corpus/rendered/`, because its answer for a document cannot change until the
+document does. Word is needed only to renew the reading of a document that
+actually changed — `cargo xtask compare --refresh` — and the file it renews says
+so plainly when it is out of date.
 
 ## The invariant everything serves
 

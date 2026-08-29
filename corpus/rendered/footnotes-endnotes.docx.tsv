@@ -1,0 +1,26 @@
+# Word's own rendering of footnotes-endnotes.docx, as the place every word of it landed.
+# Written by `cargo xtask compare`. Not by hand, and not read by anything
+# but the comparison: `page`, `x`, `baseline`, `text`, in points.
+# document 7b083c7c  export 67d00bda  reading becf340b
+# Stale? `cargo xtask compare --refresh` renews it, and needs Word for that
+# one document. Everything else goes on working without it.
+1	72.024	83.420	A
+1	81.732	83.420	claim
+1	110.400	83.420	requiring
+1	157.284	83.420	a
+1	165.792	83.420	footnote.
+1	214.130	79.460	1And
+1	240.506	83.420	another
+1	282.002	83.420	requiring
+1	329.006	83.420	an
+1	343.754	83.420	endniote.
+1	72.024	117.740	i
+1	75.744	121.220	The
+1	92.985	121.220	supporting
+1	139.179	121.220	endnote
+1	175.583	121.220	text.
+1	72.024	713.976	1
+1	77.544	717.456	The
+1	94.785	717.456	supporting
+1	140.979	717.456	footnote
+1	178.698	717.456	text.

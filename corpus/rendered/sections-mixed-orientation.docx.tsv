@@ -1,0 +1,18 @@
+# Word's own rendering of sections-mixed-orientation.docx, as the place every word of it landed.
+# Written by `cargo xtask compare`. Not by hand, and not read by anything
+# but the comparison: `page`, `x`, `baseline`, `text`, in points.
+# document 983a4350  export 67d00bda  reading becf340b
+# Stale? `cargo xtask compare --refresh` renews it, and needs Word for that
+# one document. Everything else goes on working without it.
+1	72.024	83.420	Portrait
+1	111.720	83.420	section.
+2	72.000	83.420	Landscape
+2	125.832	83.420	section
+2	163.608	83.420	with
+2	187.944	83.420	different
+2	232.572	83.420	page
+2	258.948	83.420	setup.
+3	144.020	83.420	Third
+3	172.064	83.420	section,
+3	212.840	83.420	wider
+3	243.296	83.420	margins.

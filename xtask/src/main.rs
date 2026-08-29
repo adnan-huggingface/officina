@@ -54,7 +54,8 @@ fn usage() {
         "\
 cargo xtask <command>
 
-  check      fmt --check, clippy -D warnings, and the test suite
+  check      fmt --check, clippy -D warnings, the test suite, and the
+             layout of every corpus document against LAYOUT.md
   dist       release build of both apps
   package    dist, then a versioned zip in target/dist/
   install    dist, then copy binaries to ~/.local/bin
@@ -63,8 +64,8 @@ cargo xtask <command>
              (--report also writes FIDELITY.md)
   perf       time reading and laying out every file in corpus/
   compare    where a document differs from Word's own rendering of it,
-             ranked (needs Word; see adr/0003)
-             (--check holds the corpus to LAYOUT.md; --record rewrites it)
+             ranked (--check runs inside `check` and needs no Word; only
+             --refresh does, and only for a document that changed)
   help       this message"
     );
 }
@@ -80,6 +81,14 @@ fn check() -> Result<(), String> {
         "warnings",
     ])?;
     cargo(&["test", "--workspace"])?;
+    // Where the document lands on the page, against Word's own rendering of the
+    // same file — held to `LAYOUT.md`. It belongs here rather than beside it
+    // because a layout regression is not a thing anybody notices: the tests all
+    // pass, the document opens, and a line is a point and a half further down
+    // the page than it was. Word is *not* needed for this — its readings of the
+    // corpus are committed — so this still runs on a machine that has never had
+    // Office on it. Eight seconds, in debug, on the build the tests just made.
+    cargo(&["run", "-q", "-p", "wp-compare", "--", "--check"])?;
     Ok(())
 }
 

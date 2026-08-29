@@ -1419,3 +1419,17 @@ paragraph into the next one. A loop that adds six paragraphs and sets each one's
 text leaves a document holding the sixth. Set the whole content once with
 carriage returns between the lines instead. Three corpus documents are thinner
 than their generators read.
+
+**An oracle's answer is worth committing when it cannot change without the
+question changing.** Word's rendering of a document is fixed until the document
+is edited, so keeping it in the repository turns a check that needed Office and
+half an hour into four seconds of arithmetic that runs anywhere. Two conditions
+make it honest rather than a trap: key the answer on the *contents* of
+everything it depends on, never on a timestamp — git records content, so an
+mtime-keyed cache misses on every clone — and have the stored answer state what
+it is an answer *to*, so that one which has gone stale says so instead of being
+quietly believed.
+
+**A cached measurement of somebody's document is that document.** A reading
+holds every word in it. The rule that keeps real documents out of the
+repository has to follow them into the derived files, or it is not a rule.

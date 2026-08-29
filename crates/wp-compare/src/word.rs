@@ -1,55 +1,82 @@
 //! Where Word put every word of the same document.
 //!
 //! Two steps, both under `tools/word-probe/`: `topdf.ps1` asks Word for its own
-//! rendering of the file, and `pdfwords.py` reads the baselines out of it. The
-//! answer is **cached** — the render costs seconds and the extraction costs
-//! more, and neither changes until the document does, which is what lets the
-//! comparison sit inside an edit loop.
+//! rendering of the file, and `pdfwords.py` reads the baselines out of it.
 //!
 //! The route through paper is not a convenience. `Range.Information(5|6)`
 //! answers to a twentieth of a point, but it costs Word a layout pass per call
 //! — measured here at about 110ms, per word — so a sixteen-page document is
 //! hours. `wordmap.ps1` still uses it, for one page at a time, by eye.
+//!
+//! **The answers for the corpus are committed, and that is what lets the check
+//! be a check.** Word's reading of a document does not change until the
+//! document does, so it is written to `corpus/rendered/` and kept: the
+//! comparison then needs no Word at all, runs in a few seconds, and can sit
+//! inside `cargo xtask check` on a machine that has never had Office installed.
+//! Word is needed again only to renew the reading of a document that has
+//! actually changed, and the file says plainly when that is so.
+//!
+//! Only documents under `corpus/` are kept this way. A reading holds every word
+//! of the document it read, so a reading of somebody's real document is that
+//! document's text, and those are looked at from `manual_examples/` and never
+//! committed — the same rule, for the same reason, one step further along.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::diff::Word;
 
-/// Where the two halves of the answer for a document are kept.
+/// The three things a reading depends on, as one line of a file.
 ///
-/// Keyed by everything that would change it, and by nothing that would not.
-/// The rendering depends on the document and on the script that asks Word for
-/// it; the reading depends on those *and* on the script that reads the paper.
-/// Keeping them apart means an improvement to how words are found on a page
-/// re-reads every PDF already on disk and does not ask Word for any of them
-/// again — which is the difference between a minute and an afternoon, and the
-/// reason a stale extraction is never what you are looking at.
-///
-/// Length and modification time rather than a hash of the document: this is a
-/// cache, and reading sixteen megabytes to decide whether to read a cache
-/// defeats the cache. The scripts are small, so they are hashed outright.
-fn cached_at(path: &Path) -> Result<(PathBuf, PathBuf), String> {
-    let meta = std::fs::metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let stamp = meta
-        .modified()
-        .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let stem = path.file_stem().unwrap_or_default().to_string_lossy();
-    let stem: String = stem
-        .chars()
-        .map(|c| if c.is_alphanumeric() { c } else { '-' })
-        .collect();
-    let dir = crate::target_dir().join("compare");
-    let paper = digest(&probe("topdf.ps1"));
-    let reading = digest(&probe("pdfwords.py"));
-    let base = format!("{stem}-{}-{stamp}-{paper:08x}", meta.len());
-    Ok((
-        dir.join(format!("{base}.pdf")),
-        dir.join(format!("{base}-{reading:08x}.tsv")),
-    ))
+/// The document, and both scripts: an improvement to how words are found on a
+/// page has to invalidate every reading, or the next comparison silently
+/// measures against the old rule. Hashed rather than timestamped because a
+/// reading is committed and a clone has no timestamps worth anything — git
+/// records content, not when a file was written, and a cache keyed on mtime
+/// misses on every fresh checkout.
+struct Stamp {
+    document: u32,
+    export: u32,
+    reading: u32,
+}
+
+impl Stamp {
+    fn of(path: &Path) -> Result<Stamp, String> {
+        if !path.exists() {
+            return Err(format!("{} is not there", path.display()));
+        }
+        Ok(Stamp {
+            document: digest(path),
+            export: digest(&probe("topdf.ps1")),
+            reading: digest(&probe("pdfwords.py")),
+        })
+    }
+
+    fn line(&self) -> String {
+        format!(
+            "# document {:08x}  export {:08x}  reading {:08x}",
+            self.document, self.export, self.reading
+        )
+    }
+
+    fn header(&self, path: &Path) -> String {
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        format!(
+            "# Word's own rendering of {name}, as the place every word of it landed.\n\
+             # Written by `cargo xtask compare`. Not by hand, and not read by anything\n\
+             # but the comparison: `page`, `x`, `baseline`, `text`, in points.\n\
+             {}\n\
+             # Stale? `cargo xtask compare --refresh` renews it, and needs Word for that\n\
+             # one document. Everything else goes on working without it.\n",
+            self.line()
+        )
+    }
+
+    /// Whether a reading on disk is a reading of *this*.
+    fn answers(&self, text: &str) -> bool {
+        let wanted = self.line();
+        text.lines().any(|line| line.trim_end() == wanted)
+    }
 }
 
 /// A small file's contents as one number. FNV-1a, which is enough to notice an
@@ -66,28 +93,76 @@ fn digest(path: &Path) -> u32 {
     hash
 }
 
-/// Asks Word where every word went, through the cache.
+/// Where a document's reading is kept, and whether it is kept at all.
+///
+/// Under `corpus/`, beside the documents it reads and committed with them.
+/// Anywhere else — a real document being looked at by hand — it goes to
+/// `target/`, because a reading is the document's own words and those are not
+/// ours to commit.
+fn reading_at(path: &Path) -> Result<PathBuf, String> {
+    let corpus = crate::repo_root().join("corpus");
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    match path.canonicalize().ok().is_some_and(|full| {
+        corpus
+            .canonicalize()
+            .is_ok_and(|corpus| full.starts_with(&corpus))
+    }) {
+        true => Ok(corpus.join("rendered").join(format!("{name}.tsv"))),
+        false => Ok(crate::target_dir()
+            .join("compare")
+            .join(format!("{name}.tsv"))),
+    }
+}
+
+/// Where the rendering itself is kept, which is never committed: it is large,
+/// it is binary, and the reading taken from it is the part anything here wants.
+fn paper_at(path: &Path, stamp: &Stamp) -> PathBuf {
+    let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+    let stem: String = stem
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '-' })
+        .collect();
+    crate::target_dir().join("compare").join(format!(
+        "{stem}-{:08x}-{:08x}.pdf",
+        stamp.document, stamp.export
+    ))
+}
+
+/// Asks Word where every word went — or, almost always, reads what it said.
 pub fn read(path: &Path, refresh: bool) -> Result<Vec<Word>, String> {
-    let (pdf, dump) = cached_at(path)?;
-    let cached = match refresh {
-        true => None,
-        false => std::fs::read_to_string(&dump).ok(),
-    };
-    let text = match cached {
-        Some(text) => text,
-        None => {
-            if let Some(dir) = dump.parent() {
-                std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let stamp = Stamp::of(path)?;
+    let kept = reading_at(path)?;
+
+    if !refresh {
+        if let Ok(text) = std::fs::read_to_string(&kept) {
+            if stamp.answers(&text) {
+                return parse(&text);
             }
-            if refresh || !pdf.exists() {
-                render(path, &pdf)?;
-            }
-            let text = extract(&pdf)?;
-            let _ = std::fs::write(&dump, &text);
-            text
         }
-    };
-    parse(&text)
+    }
+
+    let paper = paper_at(path, &stamp);
+    if refresh || !paper.exists() {
+        render(path, &paper).map_err(|why| match kept.exists() {
+            // The distinction that matters when this fails: a reading that is
+            // merely out of date is a document somebody changed, or a probe
+            // script somebody improved, and it should say so rather than read
+            // as a machine without Word on it.
+            true => format!(
+                "{} was taken from an older {}, or with older probe scripts, \
+                 and renewing it needs Word.\n{why}",
+                kept.display(),
+                path.file_name().unwrap_or_default().to_string_lossy()
+            ),
+            false => why,
+        })?;
+    }
+    let body = extract(&paper)?;
+    if let Some(dir) = kept.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    }
+    let _ = std::fs::write(&kept, stamp.header(path) + &body);
+    parse(&body)
 }
 
 fn probe(name: &str) -> PathBuf {
