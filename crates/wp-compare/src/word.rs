@@ -141,7 +141,14 @@ pub fn read(path: &Path, refresh: bool) -> Result<Vec<Word>, String> {
         }
     }
 
+    // Both directories, before either is written into. Word reports a missing
+    // output directory as "the directory name isn't valid" from somewhere deep
+    // inside the export, which reads like a fault in the document — and on a
+    // fresh clone `target/` is exactly what does not exist yet.
     let paper = paper_at(path, &stamp);
+    for dir in [paper.parent(), kept.parent()].into_iter().flatten() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    }
     if refresh || !paper.exists() {
         render(path, &paper).map_err(|why| match kept.exists() {
             // The distinction that matters when this fails: a reading that is
@@ -158,9 +165,6 @@ pub fn read(path: &Path, refresh: bool) -> Result<Vec<Word>, String> {
         })?;
     }
     let body = extract(&paper)?;
-    if let Some(dir) = kept.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    }
     let _ = std::fs::write(&kept, stamp.header(path) + &body);
     parse(&body)
 }
@@ -268,7 +272,7 @@ fn parse(dump: &str) -> Result<Vec<Word>, String> {
             band: None,
             x,
             baseline,
-            text: text.to_string(),
+            text: crate::diff::spelled(text),
         });
     }
     if words.is_empty() {

@@ -3531,6 +3531,70 @@ Word is now needed for exactly one thing: renewing the reading of a document
 that actually changed, with `--refresh`. Everything else — every check, every
 ranked list, every run of the gate — goes on without it.
 
+### The 161 unaccounted words, accounted for
+
+Down to 31, and every one of the 130 was the instrument again. Four causes, in
+the order they came out:
+
+**A symbol font's glyph number is not a character — 54 words.** A bulleted list
+stores its bullet as Symbol 0xB7, which reaches the document as U+F0B7 in the
+private use area: a codepoint meaning nothing but "the 0xB7th glyph of whatever
+face this run names". Word's PDF export writes down the character it *drew*,
+U+2022. Both put the same ink in the same place to a tenth of a point, and
+comparing the names rather than the marks made 27 words on each side that only
+one side had laid. One mapping, and only one, because U+F0B7 is the only
+private-use character anywhere in the corpus or in the demonstration document —
+checked rather than assumed.
+
+**Both sides must cut the page into lines the same way — 65 words.** The
+threshold that decides what is one line was 2.0pt. Word's diagram on page 8
+puts two rows of labels 2.1pt apart; ours puts the same two rows 1.9pt apart.
+Word saw two lines, we saw one, nothing could be paired with anything, and
+forty-seven words each side had laid within half a point of the other were each
+reported as a word only one side had. This is the same fault as the 3.00pt
+collision found this morning, and moving the number again would only have moved
+where it strikes. **The cuts are now made once, over both readings' baselines
+together, and both sides are cut in the same places** — the partition stops
+being a property of one rendering and becomes a property of the page.
+
+**And so must the order words are read in.** A shared cut sometimes puts two
+rows of a tight diagram in one group, and sorting such a group by `x` alone
+shuffles the rows into each other: Word draws `network_ook_sm.c` as one word
+from 370.3 and we draw it in seven pieces from 370.7, with a `Manager` from the
+row above at 377.5 landing in the middle of our filename. Rows first, then `x`
+— and the rows cut jointly too, for exactly the same reason. Cutting them per
+side, which is the version this had first, put four of our words on a row of
+their own and made things worse.
+
+**The strongest evidence in a line has to be read first — 19 words.** Several
+words running together into exactly the other side's one word is not something
+a page does by accident; two identical short words in different places is
+something every page does. Left to itself the subsequence pairs the second and
+destroys the first: on page 9 Word draws `RX_` where we draw `RX` and `_`, and
+the subsequence paired our `RX` with a *different* `RX` thirty-two points away,
+which cost it nothing and left nothing that could be welded. Welds are found
+first now, and the subsequence runs between them.
+
+**What is left is 31 words, all in one diagram on page 4**, from two causes
+worth naming rather than chasing. A label set vertically — `Interrupt`, drawn
+one character at a time up the page — arrives as nine words on nine baselines,
+and nothing here has a notion of a line running downwards. And three rows of
+that diagram stand 0.7 to 0.9pt apart while the two renderers disagree about
+their baselines by up to 0.9pt, so no threshold whatever separates them: ours
+reads `radio_test.c Radio API Library API/` and Word's reads `radio_test.c
+Library API/ Radio API`. That is the floor for that diagram, and it is a floor
+of about half a per cent of the document.
+
+**Two more things came out of it.** `--lines` is now a flag: it prints how each
+reading was cut into lines, which is the first thing to look at when a report
+says a page matched nothing, and which I reached for twice through a temporary
+hack before building it. And the corpus gained two findings the bullet fix
+uncovered — `headings-and-list.doc` has four bullets 2.7 to 4.6pt out
+vertically, which had been hiding as unplaceable words rather than as the
+misplacement they are. `--check` refused to pass until that was recorded, which
+is the workflow working: the count of words out of place went *up* because
+words that could not be placed at all can now be measured.
+
 ### The number is a gate now, not a note
 
 `LAYOUT.md` records what every corpus document measures, and

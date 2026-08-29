@@ -1433,3 +1433,30 @@ quietly believed.
 **A cached measurement of somebody's document is that document.** A reading
 holds every word in it. The rule that keeps real documents out of the
 repository has to follow them into the derived files, or it is not a rule.
+
+**Any decision that shapes both sides of a comparison must be taken from both
+sides at once.** Two renderings of one page are cut into lines by the gaps
+between baselines, and the two report those baselines a few tenths of a point
+apart — so *any* fixed threshold eventually has a real gap sitting across it,
+and then the two sides cut the same page differently and agree about nothing.
+Moving the number only moves where it strikes; it was moved twice and struck
+twice. Cutting once, over both readings' baselines together, ends the class of
+bug: the partition stops being a property of one rendering and becomes a
+property of the page. The same then applies to the order words are read in,
+which is a second decision of the same kind and was got wrong once more before
+being cut jointly too.
+
+**Read the strongest evidence first, or a cheap match will destroy it.** Several
+words running together into exactly the other side's one word is not a
+coincidence a page produces; two identical short words in different places is
+what every page produces. A longest-common-subsequence sees only equality and
+will happily spend a short word on a distant twin, leaving the real
+correspondence with nothing to build from — it paired an `RX` with another `RX`
+thirty-two points away and cost nineteen words on that page. Find the composite
+matches first and let the subsequence work between them.
+
+**A symbol font's glyph number is not a character.** A bullet stored as Symbol
+0xB7 arrives as U+F0B7 in the private use area, which means only "the 0xB7th
+glyph of whatever face this run names"; Word's PDF export writes the character
+it drew, U+2022. Two names for one mark in one place. Map the ones that actually
+occur, having looked — never guess at what a glyph number might mean.

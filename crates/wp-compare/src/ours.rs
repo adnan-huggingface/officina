@@ -295,7 +295,8 @@ fn emit(page: &Page, band: Band, baseline: f64, ink: &[Ink], into: &mut Vec<Word
         band: Some(band),
         x,
         baseline,
-        text,
+        // A symbol font's glyph number is not a character — see `diff::spelled`.
+        text: crate::diff::spelled(&text),
     }));
 }
 

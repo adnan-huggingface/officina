@@ -9,27 +9,24 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 
-/// How far apart two words' baselines may be and still be called one line.
+/// How far apart two baselines may be and still belong to one line.
 ///
-/// **Measured, because there is no gap in the distribution to put it in.**
-/// Over every reading of Word's own rendering of the corpus — 2,413 distinct
-/// baselines — the tightest space between two consecutive ones that really are
-/// separate lines is 3.00 pt exactly, in `file-sample_500kB.docx`; and within a
-/// single line the two sides part by as much as 0.60 pt in `nested-tables.docx`
-/// where a line carries two sizes. Three points, the number this began at, sits
-/// exactly on the first of those, which is the one place a threshold must never
-/// be: the two sides would then fall on opposite sides of it by rounding, and
-/// group one page's words into lines two different ways.
+/// **Measured, because there is no gap in the distribution to put it in — and
+/// the two sides do not have to agree about which side of it a gap falls on.**
+/// Within one line the two partings observed are hundredths of a point, up to
+/// 0.60pt in `nested-tables.docx` where a line carries two sizes. Between
+/// genuinely separate lines: 3.00pt at the tightest in the corpus, and 2.1pt
+/// between two rows of labels in a diagram on page 8 of the demonstration
+/// document — where *our* rendering of the same two rows puts them 1.9pt apart.
 ///
-/// Two points is a point clear of the tightest real line and three times the
-/// widest within-line parting. It also makes no difference to any document in
-/// the corpus — both values give byte-identical reports — which is the evidence
-/// that nothing here is balanced on it.
-///
-/// A raised footnote reference stands about 4 pt above its line and so becomes
-/// a line of its own, on Word's side and not on ours. That is not what this
-/// number is for; `within` is what copes with it.
-const SAME_LINE: f64 = 2.0;
+/// That pair is the whole story. At 3.0 and at 2.0 the two sides fell on
+/// opposite sides of the threshold and cut the page into lines two different
+/// ways, and forty-seven words that both sides had laid within half a point of
+/// each other were reported as words only one side had. One point sits clear of
+/// both: three times the widest parting within a line, and half the narrowest
+/// gap between two. But no number is *safe*, which is why [`cuts`] no longer
+/// lets either side answer the question alone.
+const SAME_LINE: f64 = 1.0;
 
 /// How far from a page's own idea of its offset a line pairing may sit.
 ///
@@ -80,6 +77,38 @@ impl fmt::Display for Band {
     }
 }
 
+/// The same mark, spelled the same way on both sides.
+///
+/// **A symbol font has no Unicode, only glyph numbers.** A bulleted list stores
+/// its bullet as Symbol 0xB7, which reaches a document as U+F0B7 in the private
+/// use area — a codepoint that means nothing except "the 0xB7th glyph of
+/// whatever face this run names". Word's own PDF export writes down the
+/// character it *drew* instead, U+2022, and so the two sides name the same ink
+/// two ways. Both put it in the same place to a tenth of a point, and comparing
+/// the names rather than the marks reported fifty-four of them, on one document,
+/// as words only one side had laid.
+///
+/// One entry, because one is what occurs: U+F0B7 is the only private-use
+/// character anywhere in the corpus or in the documents this has been run
+/// against. Anything else that turns up belongs here too, with the same kind of
+/// evidence — never a guess at what a glyph number might mean.
+pub fn spelled(text: &str) -> String {
+    const SAME: [(char, char); 1] = [('\u{f0b7}', '\u{2022}')];
+    match text
+        .chars()
+        .any(|c| SAME.iter().any(|(from, _)| c == *from))
+    {
+        false => text.to_owned(),
+        true => text
+            .chars()
+            .map(|c| match SAME.iter().find(|(from, _)| c == *from) {
+                Some((_, to)) => *to,
+                None => c,
+            })
+            .collect(),
+    }
+}
+
 /// One word, and where a page put it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Word {
@@ -115,6 +144,11 @@ pub struct Difference {
     pub page: u32,
     /// The flow that laid it, where that is known — see [`Word::band`].
     pub band: Option<Band>,
+    /// Where the word is, on whichever side laid it. Carried because "we did
+    /// not lay this" is not a finding anybody can act on: the question is
+    /// always *where on the page*, and answering it meant reaching for
+    /// `--words` and reading two sorted lists by eye.
+    pub at: (f64, f64),
     pub text: String,
     pub kind: Kind,
 }
@@ -197,8 +231,14 @@ pub fn compare(ours: &[Word], theirs: &[Word], threshold: f64) -> Report {
 
     for (page, their_words) in &theirs {
         let our_words = ours.get(page).unwrap_or(&empty);
-        let mine = lines_of(our_words);
-        let theirs = lines_of(their_words);
+        // Twice over, and both times from the two readings together: the
+        // coarse cuts say which words are compared with which, and the fine
+        // ones say what order they are read in. Neither may be decided by one
+        // side alone — see [`cuts`] and [`order`].
+        let coarse = cuts(our_words, their_words, SAME_LINE);
+        let fine = cuts(our_words, their_words, OWN_ROW);
+        let mine = lines_of(our_words, &coarse, &fine);
+        let theirs = lines_of(their_words, &coarse, &fine);
 
         let (paired, _, _) = pair_lines(&mine, &theirs, &mut refused);
         let (paired, my_spare, their_spare) = plausible(paired, &mine, &theirs);
@@ -228,7 +268,11 @@ pub fn compare(ours: &[Word], theirs: &[Word], threshold: f64) -> Report {
     // A page we laid that Word never reached is every word on it, extra.
     for (page, our_words) in &ours {
         if !theirs.contains_key(page) {
-            for line in lines_of(our_words) {
+            let alone = (
+                cuts(our_words, &[], SAME_LINE),
+                cuts(our_words, &[], OWN_ROW),
+            );
+            for line in lines_of(our_words, &alone.0, &alone.1) {
                 report.differences.extend(all_of(&line, *page, Kind::Extra));
             }
         }
@@ -254,6 +298,33 @@ pub fn compare(ours: &[Word], theirs: &[Word], threshold: f64) -> Report {
     report
 }
 
+/// How the two readings of a page were cut into lines, and what each line says.
+///
+/// The first question to ask when a report claims nothing matched, and the
+/// reason it is part of the tool: everything downstream compares *sequences*,
+/// so two readings that were cut up differently cannot agree about anything,
+/// and the way that shows up is a page of words each side supposedly laid
+/// alone. Twice in one afternoon the answer was here and nowhere else.
+///
+/// Returns the lines of each side, in reading order, as the text the matching
+/// actually sees.
+pub fn grouping(ours: &[Word], theirs: &[Word], page: u32) -> (Vec<String>, Vec<String>) {
+    let by_page = |words: &[Word]| -> Vec<Word> {
+        words.iter().filter(|w| w.page == page).cloned().collect()
+    };
+    let (mine, theirs) = (by_page(ours), by_page(theirs));
+    let (mine, theirs): (Vec<&Word>, Vec<&Word>) = (mine.iter().collect(), theirs.iter().collect());
+    let coarse = cuts(&mine, &theirs, SAME_LINE);
+    let fine = cuts(&mine, &theirs, OWN_ROW);
+    let said = |words: &[&Word]| -> Vec<String> {
+        lines_of(words, &coarse, &fine)
+            .iter()
+            .map(|line| format!("{:8.2}  {}", line[0].baseline, joined(line)))
+            .collect()
+    };
+    (said(&mine), said(&theirs))
+}
+
 /// One line of Word's against the line of ours it was matched to.
 fn in_line(
     mine: &[&Word],
@@ -269,8 +340,36 @@ fn in_line(
     let mut mine_seen = vec![false; mine.len()];
     let mut theirs_seen = vec![false; theirs.len()];
 
+    // What one side cut into several words and the other did not, found first
+    // and matched between. See [`welded`].
+    let welds = welded(&my_text, &their_text);
+    let mut pairs: Vec<(usize, usize)> = Vec::new();
+    let mut from = (0usize, 0usize);
     let asked = *refused;
-    let mut pairs = pair_up(&my_text, &their_text, refused);
+    for weld in welds
+        .iter()
+        .copied()
+        .chain([((mine.len(), theirs.len()), (0, 0))])
+    {
+        let (start, end) = weld;
+        for (i, j) in pair_up(
+            &my_text[from.0..start.0],
+            &their_text[from.1..start.1],
+            refused,
+        ) {
+            pairs.push((from.0 + i, from.1 + j));
+        }
+        if start.0 < mine.len() {
+            pairs.push(start);
+            for seen in mine_seen.iter_mut().take(end.0).skip(start.0) {
+                *seen = true;
+            }
+            for seen in theirs_seen.iter_mut().take(end.1).skip(start.1) {
+                *seen = true;
+            }
+            from = end;
+        }
+    }
     // Only where there was a subsequence to repair. Gluing a refusal would
     // pair a page's words off in the order they arrived in, which is the guess
     // the refusal exists to avoid.
@@ -283,6 +382,7 @@ fn in_line(
             &mut theirs_seen,
         );
     }
+    pairs.sort_unstable();
     for (i, j) in pairs {
         mine_seen[i] = true;
         theirs_seen[j] = true;
@@ -302,6 +402,7 @@ fn in_line(
             report.differences.push(Difference {
                 page,
                 band: mine.band,
+                at: (mine.x, mine.baseline),
                 text: mine.text.clone(),
                 kind: Kind::Moved { dx, dy },
             });
@@ -313,6 +414,56 @@ fn in_line(
     report
         .differences
         .extend(unmatched(mine, &mine_seen, page, Kind::Extra));
+}
+
+/// The stretches one side wrote as several words and the other as one.
+///
+/// **Found before anything else, because they are the strongest evidence a
+/// line holds.** Several words running together into exactly the other side's
+/// one word is not a coincidence a page produces by accident; two identical
+/// short words in different places are produced by every page there is. Left to
+/// itself the subsequence pairs the latter and destroys the former: on page 9
+/// of the demonstration document Word draws `RX_` and we draw `RX` and `_`, and
+/// the subsequence paired our `RX` with a *different* `RX` thirty-two points
+/// away — which was free, as far as it could see, and left nothing that could
+/// be welded. Nineteen words on a page where nothing had moved.
+///
+/// Greedy, left to right, and only ever recording a match that consumes more
+/// than one word on one of the two sides. A single word equal to a single word
+/// is exactly what the subsequence is good at and is left to it.
+type Weld = ((usize, usize), (usize, usize));
+
+fn welded(mine: &[&str], theirs: &[&str]) -> Vec<Weld> {
+    let mut found: Vec<Weld> = Vec::new();
+    let (mut i, mut j) = (0usize, 0usize);
+    while i < mine.len() && j < theirs.len() {
+        let (mut left, mut right) = (mine[i].to_string(), theirs[j].to_string());
+        let (mut end_i, mut end_j) = (i + 1, j + 1);
+        while left != right {
+            if left.len() < right.len() && end_i < mine.len() {
+                left.push_str(mine[end_i]);
+                end_i += 1;
+            } else if right.len() < left.len() && end_j < theirs.len() {
+                right.push_str(theirs[end_j]);
+                end_j += 1;
+            } else {
+                break;
+            }
+        }
+        let welded = left == right && (end_i > i + 1 || end_j > j + 1);
+        match welded {
+            true => {
+                found.push(((i, j), (end_i, end_j)));
+                i = end_i;
+                j = end_j;
+            }
+            false => {
+                i += 1;
+                j += 1;
+            }
+        }
+    }
+    found
 }
 
 /// Pairs what the two sides cut into words differently.
@@ -405,6 +556,7 @@ fn unmatched<'a>(
         .map(move |(_, word)| Difference {
             page,
             band: word.band,
+            at: (word.x, word.baseline),
             text: word.text.clone(),
             kind,
         })
@@ -418,38 +570,98 @@ fn by_page(words: &[Word]) -> BTreeMap<u32, Vec<&Word>> {
     pages
 }
 
+/// Where a page's lines end, decided from *both* readings of it at once.
+///
+/// **Neither side may answer this alone.** Each renderer reports its own
+/// baselines, and the two differ by a few tenths of a point; any fixed gap that
+/// decides where one line ends and the next begins will eventually have a real
+/// gap sitting across it, and then the two sides cut the same page into
+/// different lines. Word's diagram on page 8 of the demonstration document puts
+/// two rows of labels 2.1pt apart and ours puts them 1.9pt apart: at a
+/// threshold of 2.0 Word saw two lines and we saw one, no line could be paired
+/// with any other, and forty-seven words that both had laid within half a point
+/// of each other were each reported as a word only one side had.
+///
+/// So the cuts are made once, over every baseline on the page from both
+/// readings together, and both are then cut in the same places. The partition
+/// stops being a property of one rendering and becomes a property of the page,
+/// which is the only thing the two have in common. A gap that is genuine on
+/// both sides still cuts; a gap either side reports differently now cuts both
+/// or neither.
+fn cuts(ours: &[&Word], theirs: &[&Word], gap: f64) -> Vec<f64> {
+    let mut all: Vec<f64> = ours
+        .iter()
+        .chain(theirs.iter())
+        .map(|word| word.baseline)
+        .collect();
+    all.sort_by(|a, b| a.total_cmp(b));
+    let mut cuts = Vec::new();
+    for pair in all.windows(2) {
+        if pair[1] - pair[0] > gap {
+            cuts.push((pair[0] + pair[1]) / 2.0);
+        }
+    }
+    cuts
+}
+
 /// A page's words gathered into lines, in the order a reader meets them.
 ///
 /// Lines are gathered before anything is sorted across one, because sorting on
 /// the baseline alone puts two words of the same line in a different order the
 /// moment the two sides report that baseline a hundredth of a point apart —
 /// and a pair swapped that way is reported as two faults rather than none.
-fn lines_of<'a>(words: &[&'a Word]) -> Vec<Vec<&'a Word>> {
-    let mut sorted: Vec<&Word> = words.to_vec();
-    sorted.sort_by(|a, b| {
-        a.baseline
-            .partial_cmp(&b.baseline)
-            .unwrap_or(Ordering::Equal)
-    });
-
+fn lines_of<'a>(words: &[&'a Word], cuts: &[f64], fine: &[f64]) -> Vec<Vec<&'a Word>> {
     let mut lines: Vec<Vec<&Word>> = Vec::new();
+    let mut at = usize::MAX;
+    let mut sorted: Vec<&Word> = words.to_vec();
+    sorted.sort_by(|a, b| a.baseline.total_cmp(&b.baseline));
     for word in sorted {
-        let same = lines
-            .last()
-            .and_then(|line: &Vec<&Word>| line.first())
-            .is_some_and(|first| word.baseline - first.baseline <= SAME_LINE);
-        match same {
-            true => lines
-                .last_mut()
-                .expect("same implies one exists")
-                .push(word),
-            false => lines.push(vec![word]),
+        let which = cuts.partition_point(|cut| *cut <= word.baseline);
+        if which != at {
+            lines.push(Vec::new());
+            at = which;
         }
+        lines.last_mut().expect("just pushed one").push(word);
     }
     for line in &mut lines {
-        line.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(Ordering::Equal));
+        order(line, fine);
     }
     lines
+}
+
+/// Two baselines this far apart are two rows, for the purpose of reading order.
+///
+/// Wider than the 0.60pt a single line parts by when it carries two sizes, and
+/// narrower than the gap between two rows of labels in the tightest diagram
+/// seen. It decides only the order words are read in, never which of them are
+/// compared with which — but it is still cut from *both* readings at once,
+/// because it too settles what sequence each side presents, and a sequence one
+/// side arrives at alone is a sequence the other need not agree with. Splitting
+/// each side by its own rows, which is the version this had first, put four of
+/// our words on a row of their own and reordered the line around them.
+const OWN_ROW: f64 = 0.75;
+
+/// A line's words, in the order this side would read them.
+///
+/// **By each side's own rows first, and only then across.** A group is cut from
+/// the baselines of both readings together, so it sometimes holds two rows of a
+/// diagram whose labels stand a point apart — and sorting such a group by `x`
+/// alone shuffles the two rows into each other. Word draws `network_ook_sm.c`
+/// as one word beginning at 370.3 and we draw it in seven pieces from 370.7,
+/// with a `Manager` from the row above at 377.5: sorted across, that `Manager`
+/// lands in the middle of our filename, the two readings of the group cease to
+/// be the same sequence of words at all, and eight words nobody had moved were
+/// reported as words only one side laid.
+///
+/// Sorting by the raw baseline is what this must not do either — that is what
+/// swaps two words of one line the moment the two sides report their baseline a
+/// hundredth of a point apart. So the rows are found first, by the gaps in this
+/// side's own baselines, and the sort is by row and then by `x`.
+fn order(line: &mut [&Word], fine: &[f64]) {
+    line.sort_by(|a, b| {
+        let row = |word: &Word| fine.partition_point(|cut| *cut <= word.baseline);
+        row(a).cmp(&row(b)).then(a.x.total_cmp(&b.x))
+    });
 }
 
 /// Which of our lines is which of Word's, and what neither side could place.

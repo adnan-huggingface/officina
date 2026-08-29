@@ -14,7 +14,7 @@ These are not targets. They are what is true today, so that what is true tomorro
 
 | | documents | out | >5pt | unplaced | worst |
 |---|---:|---:|---:|---:|---:|
-| totals | 24 | 1212 | 786 | 706 | 115.20 |
+| totals | 24 | 1214 | 786 | 700 | 115.20 |
 
 ## Every document
 
@@ -22,7 +22,7 @@ These are not targets. They are what is true today, so that what is true tomorro
 |---|---:|---:|---:|---:|---:|
 | `character-formatting.doc` | 1 | 4 | 0 | 0 | 3.47 |
 | `header-footer-footnote.doc` | 1 | 8 | 0 | 8 | 4.42 |
-| `headings-and-list.doc` | 1 | 9 | 0 | 4 | 4.64 |
+| `headings-and-list.doc` | 1 | 11 | 0 | 0 | 4.64 |
 | `plain-paragraphs.doc` | 1 | 29 | 3 | 0 | 6.82 |
 | `simple-table.doc` | 1 | 6 | 6 | 0 | 5.38 |
 | `unicode-text.doc` | 1 | 9 | 0 | 0 | 4.02 |
@@ -35,7 +35,7 @@ These are not targets. They are what is true today, so that what is true tomorro
 | `footnotes-endnotes.docx` | 1 | 0 | 0 | 6 | 0.58 |
 | `headers-footers.docx` | 1 | 328 | 0 | 0 | 2.34 |
 | `hyperlinks-bookmarks.docx` | 1 | 3 | 0 | 0 | 2.49 |
-| `lists-numbering.docx` | 1 | 0 | 0 | 2 | 0.13 |
+| `lists-numbering.docx` | 1 | 0 | 0 | 0 | 0.13 |
 | `minimal.docx` | 1 | 0 | 0 | 0 | 0.55 |
 | `nested-tables.docx` | 1 | 17 | 17 | 0 | 11.33 |
 | `picture-watermark.docx` | 1 | 169 | 166 | 140 | 115.20 |

@@ -75,6 +75,7 @@ fn run() -> Result<ExitCode, String> {
     let mut refresh = false;
     let mut record = false;
     let mut words = false;
+    let mut lines = false;
     let mut check = false;
     let mut top = TOP;
     let mut threshold = THRESHOLD;
@@ -87,6 +88,7 @@ fn run() -> Result<ExitCode, String> {
             "--refresh" => refresh = true,
             "--record" => record = true,
             "--words" => words = true,
+            "--lines" => lines = true,
             "--check" => check = true,
             "--top" => top = next(&mut rest, "--top")?,
             "--page" => only = Some(next(&mut rest, "--page")?),
@@ -106,9 +108,10 @@ fn run() -> Result<ExitCode, String> {
         if record || check {
             return Err("--record and --check are about the whole corpus, not one file".into());
         }
-        match words {
-            true => listing(&path, refresh, only)?,
-            false => one(&path, refresh, top, threshold, only)?,
+        match (words, lines) {
+            (true, _) => listing(&path, refresh, only)?,
+            (_, true) => grouping(&path, refresh, only)?,
+            _ => one(&path, refresh, top, threshold, only)?,
         }
         return Ok(ExitCode::SUCCESS);
     }
@@ -201,6 +204,8 @@ cargo xtask compare [file] [options]
   --top N        how many differences to print (default 20)
   --page N       print only what is wrong on one page
   --words        print both readings instead of comparing them
+  --lines        print how each reading was cut into lines, which is what
+                 the matching compares (use with --page)
   --threshold P  points past which a word counts as misplaced (default 1.0)"
         .into()
 }
@@ -276,12 +281,28 @@ fn one(
             "  {missing} words Word laid and we did not, {} the other way:",
             absent.len() - missing
         );
-        let sample: Vec<String> = absent
-            .iter()
-            .take(if only.is_some() { top } else { 8 })
-            .map(|f| format!("p{} {:?}", f.page, f.text))
-            .collect();
-        println!("  {}", sample.join("  "));
+        // One page at a time, they are printed where they are: an unplaced
+        // word is only ever acted on by going and looking at that part of the
+        // page, and a bare list of texts sends you to `--words` every time.
+        match only {
+            Some(_) => {
+                for found in absent.iter().take(top) {
+                    println!("  {}", line(found));
+                }
+                let rest = absent.len().saturating_sub(top);
+                if rest > 0 {
+                    println!("  … and {rest} more");
+                }
+            }
+            None => {
+                let sample: Vec<String> = absent
+                    .iter()
+                    .take(8)
+                    .map(|f| format!("p{} {:?}", f.page, f.text))
+                    .collect();
+                println!("  {}", sample.join("  "));
+            }
+        }
     }
     Ok(())
 }
@@ -319,11 +340,37 @@ fn listing(path: &Path, refresh: bool, only: Option<u32>) -> Result<(), String> 
     Ok(())
 }
 
+/// How the two readings were cut into lines, side by side.
+///
+/// What to reach for the moment a report says a page matched nothing: the
+/// comparison works on sequences of words, so two readings cut up differently
+/// disagree about everything, and no amount of staring at positions shows it.
+fn grouping(path: &Path, refresh: bool, only: Option<u32>) -> Result<(), String> {
+    let theirs = word::read(path, refresh)?;
+    let ours = ours::read(path)?;
+    let pages = ours.iter().chain(theirs.iter()).map(|word| word.page);
+    let pages: std::collections::BTreeSet<u32> = match only {
+        Some(page) => [page].into_iter().collect(),
+        None => pages.collect(),
+    };
+    for page in pages {
+        let (mine, said) = diff::grouping(&ours, &theirs, page);
+        println!("── page {page} ──");
+        for line in &mine {
+            println!("ours {line}");
+        }
+        for line in &said {
+            println!("word {line}");
+        }
+    }
+    Ok(())
+}
+
 fn line(found: &diff::Difference) -> String {
     let what = match found.kind {
         Kind::Moved { dx, dy } => format!("dx={dx:+6.2} dy={dy:+6.2}"),
-        Kind::Missing => "not laid at all ".into(),
-        Kind::Extra => "laid, Word has none".into(),
+        Kind::Missing => format!("Word alone, at {:6.1},{:6.1}", found.at.0, found.at.1),
+        Kind::Extra => format!("ours alone, at {:6.1},{:6.1}", found.at.0, found.at.1),
     };
     let text: String = found.text.chars().take(28).collect();
     // A word only Word laid has no band: its rendering has forgotten which
