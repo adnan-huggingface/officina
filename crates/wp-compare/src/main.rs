@@ -110,6 +110,7 @@ fn run() -> Result<ExitCode, String> {
     let mut top = TOP;
     let mut threshold = THRESHOLD;
     let mut only: Option<u32> = None;
+    let mut paper: Option<PathBuf> = None;
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut rest = args.iter();
@@ -123,6 +124,11 @@ fn run() -> Result<ExitCode, String> {
             "--top" => top = next(&mut rest, "--top")?,
             "--page" => only = Some(next(&mut rest, "--page")?),
             "--threshold" => threshold = next(&mut rest, "--threshold")?,
+            "--paper" => {
+                paper = Some(PathBuf::from(
+                    rest.next().ok_or("--paper wants a file to write")?,
+                ))
+            }
             "--help" | "-h" => {
                 println!("{}", usage());
                 return Ok(ExitCode::SUCCESS);
@@ -141,6 +147,15 @@ fn run() -> Result<ExitCode, String> {
     if let Some(path) = file {
         if record || check {
             return Err("--record and --check are about the whole corpus, not one file".into());
+        }
+        // Printing our own page asks nothing of the other application, so it
+        // works for a document that has no reading and on a machine that could
+        // not take one.
+        if let Some(out) = paper {
+            let pdf = ours::paper(&path)?;
+            std::fs::write(&out, pdf).map_err(|e| format!("{}: {e}", out.display()))?;
+            println!("{}", out.display());
+            return Ok(ExitCode::SUCCESS);
         }
         match (words, lines) {
             (true, _) => listing(&path, asked, only)?,
@@ -252,7 +267,10 @@ cargo xtask compare [file] [options]
                  and then the page's own ink as the matching sees it
   --lines        print how each reading was cut into lines, which is what
                  the matching compares (use with --page)
-  --threshold P  points past which a word counts as misplaced (default 1.0)"
+  --threshold P  points past which a word counts as misplaced (default 1.0)
+  --paper FILE   write our own rendering of the document to FILE as a PDF,
+                 through the application's own paper renderer, so that the
+                 two pages can be looked at rather than only counted"
         .into()
 }
 

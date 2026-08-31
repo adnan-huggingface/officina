@@ -1606,13 +1606,17 @@ fn paint_line(
             .map(|rgb| egui::Color32::from_rgb(rgb[0], rgb[1], rgb[2]))
             // `auto` is the page's own foreground, and the page is paper.
             .unwrap_or(egui::Color32::BLACK);
-        let mut font = shaper.font_id(&style.font);
+        // The face the glyphs go in, which for small capitals is not the one
+        // the style names. Both the size and the ascent below come from it, or
+        // the letters are drawn at one size and anchored by another's.
+        let drawn = style.drawn_font();
+        let mut font = shaper.font_id(&drawn);
         font.size *= zoom;
         // Anchored by the glyph box's *top*, at baseline minus the face's own
         // ascent. Anchoring the bottom at the baseline — the obvious thing —
         // draws everything a descent too high, because a galley's bottom is
         // baseline plus descent. That was the text poking through table rules.
-        let ascent = shaper.metrics(&style.font).ascent;
+        let ascent = shaper.metrics(&drawn).ascent;
         let top = baseline - style.raise - ascent;
         let pos = page + egui::vec2(x as f32 * zoom, top as f32 * zoom);
         painter.text(pos, egui::Align2::LEFT_TOP, text, font.clone(), color);

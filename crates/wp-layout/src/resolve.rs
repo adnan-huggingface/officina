@@ -74,6 +74,23 @@ impl TextStyle {
             ..self.font.clone()
         }
     }
+
+    /// **The face this run's glyphs are actually drawn in**, which is not
+    /// always the face it names.
+    ///
+    /// One function rather than a rule each renderer remembers, because for a
+    /// while they did not remember it: the line was *measured* with the smaller
+    /// face and both the screen and the paper drew the letters at the size the
+    /// style named, so every small-capped heading in every document was set a
+    /// quarter too large on advances computed for something smaller. It was
+    /// invisible to a comparison that only counts where a word begins, and
+    /// obvious the first time anybody put the two pages side by side.
+    pub fn drawn_font(&self) -> FontRequest {
+        match self.small_caps {
+            true => self.small_cap_font(),
+            false => self.font.clone(),
+        }
+    }
 }
 
 /// Which of a run's four faces draws a character.

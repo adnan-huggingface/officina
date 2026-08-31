@@ -76,6 +76,53 @@ pub fn read(path: &Path) -> Result<Reading, String> {
     Ok(Reading { words, marks })
 }
 
+/// The same pages, as paper.
+///
+/// **The comparison could count and could not show.** Every number this tool
+/// prints is a difference between two renderings, and the only one of them a
+/// person could ever look at was the other side's. A page that is wrong in a
+/// way the arithmetic under-reports — a picture missing, a shape not drawn —
+/// reads here as a modest count and there is nothing to hold it against.
+///
+/// So the same view that is measured is also printed, through the very code the
+/// application's own PDF export uses. Put ours beside theirs and the question
+/// "is this rendering properly" stops being a matter of interpreting a scalar.
+pub fn paper(path: &Path) -> Result<Vec<u8>, String> {
+    let opened = open(path)?;
+    let ctx = fonts(&opened);
+    let mut shaper = scriva::shaper::Egui::new(&ctx);
+    let mut view = scriva::view::View::default();
+    view.refresh(
+        &opened.document,
+        &wp_layout::FieldValues::new(),
+        1,
+        &mut shaper,
+    );
+    let package = opened.package.as_ref();
+    let parts = opened.parts.as_ref();
+    let images = scriva::publish::rasters(package, parts, &opened.loose, view.pages());
+    let metafiles = scriva::publish::metafiles(package, parts, &opened.loose, view.pages());
+    let plots = scriva::publish::plots(package, parts, view.pages());
+    let mut faces = scriva::publish::SystemFaces::new();
+    let mut charts = Some(wp_print::ops::Charts {
+        plots: &plots,
+        shaper: &mut shaper,
+    });
+    let stem = path
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
+    Ok(wp_print::pdf::export(
+        view.pages(),
+        &mut faces,
+        &images,
+        &metafiles,
+        charts.as_mut(),
+        Some(&stem),
+    ))
+}
+
 /// Every rectangle of ink on a page that is not type.
 ///
 /// Straight out of [`wp_print::ops::flatten`], which is the paper renderer's

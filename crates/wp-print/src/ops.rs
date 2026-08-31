@@ -263,7 +263,7 @@ pub fn flatten(page: &Page) -> Vec<Op> {
                         baseline: baseline - style.raise,
                         text: text.clone(),
                         advances: advances.clone(),
-                        font: style.font.clone(),
+                        font: style.drawn_font(),
                         rgb,
                         rotation: 0.0,
                         stretch: 1.0,
@@ -282,7 +282,7 @@ pub fn flatten(page: &Page) -> Vec<Op> {
                         });
                     }
                     if style.strike || style.double_strike {
-                        let middle = base - style.font.size * 0.3;
+                        let middle = base - style.drawn_font().size * 0.3;
                         ops.push(Op::Rule {
                             from: (ink, middle),
                             to: (ink_end, middle),

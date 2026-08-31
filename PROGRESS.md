@@ -4108,3 +4108,27 @@ holds it to that beside the other thirty-three documents. What is missing is the
 splicing writer for `content.xml`. Until it exists an edited `.odt` is saved as
 a `.docx` and the application says so on open, because reprinting the part whole
 would pass the test that the edit came back and fail the one that matters.
+
+### Looking at the page, not only at the number
+
+The comparison could count and could not show. Asked whether the reader was
+rendering a real `.odt` properly, there was no way to answer but to interpret a
+scalar — so `cargo xtask compare <file> --paper <out.pdf>` now prints *our* page
+through the application's own paper renderer. Put it beside the reference's PDF
+and the question stops being a matter of interpretation. It asks nothing of the
+other application, so it works for a document that has no reading and on a
+machine that could not take one.
+
+The first document put through it found a defect the numbers had been carrying
+quietly for as long as there have been numbers: **small capitals were measured
+at four fifths and drawn at full size**, by the screen and by the PDF export
+alike. Every small-capped heading in every document, `.docx` as much as `.odt`,
+was set a quarter too large on advances computed for something smaller. It
+scored a handful of word-shifts because a heading is four words and the scalar
+counts words.
+
+Fixed in one place — `TextStyle::drawn_font()`, so measuring and drawing can no
+longer disagree — and then finished: a change of case is now a unit boundary, so
+`Scope` is set as an `S` at 14pt and `COPE` at 11.2, which is span for span and
+size for size what the reference does. One corpus document got better; none got
+worse.

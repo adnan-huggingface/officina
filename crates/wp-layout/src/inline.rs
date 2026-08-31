@@ -1283,11 +1283,7 @@ fn style_for(c: char, props: &RunProps, ctx: &Context<'_>) -> TextStyle {
 }
 
 fn measure(text: &str, style: &TextStyle, shaper: &mut dyn Shaper, into: &mut Vec<f64>) -> f64 {
-    let font = if style.small_caps {
-        style.small_cap_font()
-    } else {
-        style.font.clone()
-    };
+    let font = style.drawn_font();
     let mut raw = Vec::new();
     shaper.advances(text, &font, &mut raw);
     let mut total = 0.0;
@@ -1328,6 +1324,21 @@ fn push_text(
         }
         previous_script = Some(script);
     }
+    // **Small capitals are two sizes and not one.** A letter that was already a
+    // capital keeps the run's own size; one that was not is drawn as a capital
+    // at four fifths of it. So a change of case is a unit boundary exactly as a
+    // change of script is. Measured against the reference, which sets `Scope`
+    // as an `S` at 14pt followed by `COPE` at 11.2.
+    if style_for(text.chars().next().unwrap_or(' '), props, ctx).small_caps {
+        let mut previous = None;
+        for (offset, c) in text.char_indices() {
+            let reduced = c.is_lowercase();
+            if previous.is_some_and(|before| before != reduced) && offset > 0 {
+                bounds.push(offset);
+            }
+            previous = Some(reduced);
+        }
+    }
     bounds.push(text.len());
     bounds.sort_unstable();
     bounds.dedup();
@@ -1348,7 +1359,14 @@ fn push_text(
         let lead = if start == first_bound { pad } else { 0.0 };
         let tail = if end == last_bound { pad } else { 0.0 };
         let first = slice.chars().next().unwrap_or(' ');
-        let style = style_for(first, props, ctx);
+        let mut style = style_for(first, props, ctx);
+        // This piece is one side of that boundary. A capital, a digit or a
+        // space is drawn at the run's own size, and clearing the flag is what
+        // says so: it takes the smaller face away and leaves the upper-casing
+        // with nothing to do, the text being upper-case already.
+        if style.small_caps && !first.is_lowercase() {
+            style.small_caps = false;
+        }
         let drawn = style.transform(slice);
         let drawn = drawn.as_deref().unwrap_or(slice);
 

@@ -1667,3 +1667,14 @@ serif and was drawn in Times, six per cent narrow: enough to move the last word
 of a heading nine points. Windows ships its regular weight inside a `.ttc`
 collection rather than as a file of its own, which is the likely reason it was
 never named — and the collection loads perfectly well.
+
+**Small capitals are two sizes, and a harness that counts cannot see one size.**
+The layout *measured* a small-capped run with a face four fifths the size and
+both renderers drew the letters at the size the style named — so every heading
+in every document with small caps was set a quarter too large, on advances
+computed for something smaller. The comparison scored the document that showed
+it 215, because a heading is four words and the scalar counts words. It took
+printing our own page beside the reference's to see it at all, and the
+reference settled the rest: it sets `Scope` as an `S` at 14pt followed by
+`COPE` at 11.2, so a change of case is a unit boundary exactly as a change of
+script is.
