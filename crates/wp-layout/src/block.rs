@@ -1052,6 +1052,24 @@ fn band(
     let mut y = 0.0;
     let mut trailing = 0.0;
     for item in flow.items {
+        // Everything below the last of this item's ink: the space after the
+        // paragraph, and the part of the last line's height that lies under the
+        // letters. A line is measured to its letters and everything else to its
+        // own box — a rule under a paragraph is ink, and so is the clear space
+        // its border keeps above itself. An item that drew nothing at all is
+        // measured to its own bottom.
+        let ink = item
+            .parts
+            .iter()
+            .map(|part| match &part.kind {
+                Placed::Line { line, .. } => part.y + line.baseline + line.descent,
+                _ => part.y + part.height,
+            })
+            .fold(f64::NEG_INFINITY, f64::max);
+        trailing = match ink.is_finite() {
+            true => (item.height - ink).max(0.0),
+            false => 0.0,
+        };
         for part in item.parts {
             // A band is never cut by a page, so a maybe-edge never fires.
             if matches!(part.kind, Placed::BreakEdge { .. }) {
@@ -1063,7 +1081,6 @@ fn band(
             });
         }
         y += item.height;
-        trailing = item.slack;
     }
     // What the band takes from the body is not always what it draws. See
     // `Settings::bands_keep_trailing_space`.

@@ -4036,8 +4036,10 @@ the point and is not ours to publish.
 
 | | at first | now |
 |---|---:|---:|
-| `second-producer.odt` | 1039 | 788 |
-| `word-odf-export.odt` | 779 | 215 |
+| `second-producer.odt` | 1039 | 607 |
+| `word-odf-export.odt` | 779 | 213 |
+
+(The scalar is `out + unplaced`; the table in `LAYOUT.md` splits the two.)
 
 - A table wider than the column overhangs it, on both sides if it is centred.
   Clamping the two edges to the margin was worth 37.5 points on the first page
@@ -4056,25 +4058,44 @@ the point and is not ours to publish.
   It is now named, with the `.ttc` its regular weight ships inside.
 - A filled path is one piece of ink. One page of one document was being read as
   seventeen hundred rules, which is the watermark and its shadow.
+- A band is measured to the bottom of its last line's *letters*. Not to the
+  bottom of the line's box, and not past the paragraph's own space after it —
+  eight probes said so, including one whose line spacing went from 100% to 150%
+  and moved the body by nothing at all while separating two body lines
+  perfectly well.
+- A page number is a *run of field marks*, not one element. ODF states it as one
+  element with the text it last showed inside; the layout evaluates the
+  WordprocessingML shape — begin, instruction, separate, cached result, end —
+  and reading it any other way makes a header read out the page number the file
+  was last saved with. `6 do 0` where the page says `1 of 5`.
+- A paragraph is numbered by the list it is inside and by nothing else. Word's
+  ODF export names a list style on the automatic style of every heading in a
+  document whose headings carry no numbers, and writes an outline style whose
+  every level states a number format for the same headings. Trusting either put
+  a counter and a hanging indent in front of every heading; the reference draws
+  neither.
 
-None of the six moved a single number in the 24-document `.docx` and `.doc`
+None of the nine moved a single number in the 24-document `.docx` and `.doc`
 corpus. They were latent gaps that only a second format's documents exercised.
 
 **What is left, and why.**
 
 - `word-odf-export.odt` still lays in four pages where the reference lays five,
-  and its 470 unplaced words are mostly that. The remaining per-page shortfall
-  is around twenty-eight points; the watermark is not drawn at all (a
-  `<draw:custom-shape>`, which this reader does not model and the container
-  keeps whole), and `PAGE`/`NUMPAGES` inside an ODF field are shown from the
-  cached text rather than computed, so a header reads the page number the file
-  was last saved with.
-- `second-producer.odt`'s 788 is one systematic point of vertical offset
-  crossing a one-point threshold. The offset is the leading below the last line
-  of a header: the reference measures a band to the bottom of the last line's
-  *text* and this measures it to the bottom of the line's box, which differs by
-  the proportional part of a 115% line. Under the threshold the count would be
-  about fifty.
+  and its 457 unplaced words are all of the fifth. Its first two pages now hold
+  the same words as the reference's, to one; every page after that sits ten and
+  a half points high, and the cause is traced: the last paragraph of its header
+  is the one holding the watermark, this reader empties that paragraph (a
+  `<draw:custom-shape>` it does not model, which the container keeps whole), and
+  a band measured to its last line's letters is then measured to an *empty*
+  line's letters. The reference's header is sixteen points taller than ours for
+  that reason and its body starts there. Drawing the shape, or giving an empty
+  last line the height of its own face, would settle it; both are the next
+  sitting's work rather than this one's.
+- `second-producer.odt`'s 607 is one and two tenths of a point of vertical
+  offset crossing a one-point threshold, and nearly every word of the document
+  is inside it. The residue is a paragraph border in a header: the reference
+  keeps its clear space under the *letters* and this keeps it under the line.
+  Under the threshold the count would be about fifty.
 - A line ended by an explicit break is justified by LibreOffice and not by
   Word. Four words of the count are that, and it is left in the corpus
   deliberately: it is a difference worth having written down.

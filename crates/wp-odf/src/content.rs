@@ -292,29 +292,23 @@ fn paragraph(
             .unwrap_or(1)
             .clamp(1, 9);
         props.outline_level = Some(level - 1);
-        if let Some(num_id) = ctx.styles.outline {
-            props.numbering = Some(NumRef {
-                num_id,
-                level: level - 1,
-            });
-        }
     }
 
-    // Inside a list, the depth of the stack is the level. A paragraph style may
-    // also carry a list of its own, which is how a document numbers headings
-    // without wrapping them in anything.
+    // **A paragraph is numbered by the list it is inside, and by nothing else.**
+    // Two other things look as though they number one and do not. A paragraph
+    // style may name a list style, and Word's ODF export names one on the
+    // automatic style of every heading in a document whose headings carry no
+    // numbers at all; a document may define an outline style, and the same
+    // export writes one whose every level states a number format for the same
+    // headings. Trusting either puts a counter and a 0.3in hanging indent in
+    // front of every heading, which is neither what the file means nor what the
+    // reference draws — it draws no number at all. So the enclosing
+    // `<text:list>` is the whole of it, and its depth is the level.
     if let Some(num_id) = lists.iter().rev().flatten().next().copied() {
         props.numbering = Some(NumRef {
             num_id,
             level: (lists.len() as u8).saturating_sub(1).min(8),
         });
-    } else if let Some(num_id) = style_name
-        .as_deref()
-        .and_then(|name| ctx.styles.list_of_style.get(name))
-        .and_then(|list| ctx.styles.lists.get(list))
-        .copied()
-    {
-        props.numbering = Some(NumRef { num_id, level: 0 });
     }
 
     // ODF spells a section break as a property of the paragraph after it: the
@@ -471,21 +465,46 @@ fn inlines(
                             pieces.push(Piece::Drawing(Box::new(drawing)));
                         }
                     }
-                    // A field whose value the page decides. Everything else
-                    // that is a field arrives with the text it last showed, and
-                    // that text is what a rendering has, so it is read as text
-                    // rather than as a thing to recompute.
+                    // A field whose value the page decides, and the one place
+                    // this reader builds something the file does not spell out.
+                    //
+                    // ODF states a page number as one element with the text it
+                    // last showed inside it. WordprocessingML states the same
+                    // thing as a *run* of marks — begin, instruction, separate,
+                    // the cached result, end — and that is the shape the layout
+                    // evaluates, because a page number cannot be known until the
+                    // page exists and the cached result is what is drawn until
+                    // it is. Written any other way, a header reads out the page
+                    // number the file was last saved with: `6 do 0` where the
+                    // page says `1 of 5`.
+                    //
+                    // Everything else that is a field arrives with the text it
+                    // last showed, and that text is what a rendering has, so it
+                    // is read as text rather than as a thing to recompute.
                     b"page-number" | b"page-count" if !empty => {
                         flush_run!();
                         let instruction = match name.as_slice() {
-                            b"page-number" => "PAGE",
-                            _ => "NUMPAGES",
+                            b"page-number" => " PAGE ",
+                            _ => " NUMPAGES ",
                         };
-                        let content = inlines(reader, &name, ctx, inherited);
-                        out.push(Inline::SimpleField {
-                            instruction: instruction.into(),
-                            content,
-                        });
+                        out.push(Inline::Run(Run {
+                            props: inherited.clone(),
+                            content: vec![
+                                Piece::FieldStart {
+                                    dirty: false,
+                                    lock: false,
+                                },
+                                Piece::Instruction(instruction.into()),
+                                Piece::FieldSeparate,
+                            ],
+                            prop_change: None,
+                        }));
+                        out.extend(inlines(reader, &name, ctx, inherited));
+                        out.push(Inline::Run(Run {
+                            props: inherited.clone(),
+                            content: vec![Piece::FieldEnd],
+                            prop_change: None,
+                        }));
                     }
                     // **A drawing's words are not the paragraph's words.** A
                     // shape carries its label as paragraphs of its own, and the
