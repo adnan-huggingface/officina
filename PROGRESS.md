@@ -4037,7 +4037,7 @@ the point and is not ours to publish.
 | | at first | now |
 |---|---:|---:|
 | `second-producer.odt` | 1039 | 607 |
-| `word-odf-export.odt` | 779 | 213 |
+| `word-odf-export.odt` | 779 | 215 |
 
 (The scalar is `out + unplaced`; the table in `LAYOUT.md` splits the two.)
 
@@ -4087,10 +4087,11 @@ corpus. They were latent gaps that only a second format's documents exercised.
   is the one holding the watermark, this reader empties that paragraph (a
   `<draw:custom-shape>` it does not model, which the container keeps whole), and
   a band measured to its last line's letters is then measured to an *empty*
-  line's letters. The reference's header is sixteen points taller than ours for
-  that reason and its body starts there. Drawing the shape, or giving an empty
-  last line the height of its own face, would settle it; both are the next
-  sitting's work rather than this one's.
+  line's. Measuring a line with no letters to its box instead — which is what it
+  now does, since a line with no letters has none to measure to — recovered a
+  point of it and not the other ten, so the account is right and the arithmetic
+  is not yet. The reference's header is some sixteen points taller than ours and
+  its body starts there. It is the next sitting's work.
 - `second-producer.odt`'s 607 is one and two tenths of a point of vertical
   offset crossing a one-point threshold, and nearly every word of the document
   is inside it. The residue is a paragraph border in a header: the reference

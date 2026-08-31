@@ -16,7 +16,7 @@ These are not targets. They are what is true today, so that what is true tomorro
 
 | | documents | out | >5pt | unplaced | marks | lost | worst |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| totals | 26 | 1145 | 398 | 525 | 60 | 122 | 202.50 |
+| totals | 26 | 1147 | 400 | 521 | 60 | 122 | 201.59 |
 
 ## Every document
 
@@ -47,7 +47,7 @@ These are not targets. They are what is true today, so that what is true tomorro
 | `table-spanning-pages.docx` | 3 | 0 | 0 | 0 | 0 | 2 | 0.70 |
 | `watermark.docx` | 1 | 0 | 0 | 0 | 0 | 12 | 0.42 |
 | `second-producer.odt` | 3 | 607 | 205 | 47 | 12 | 8 | 187.96 |
-| `word-odf-export.odt` | 4 | 213 | 193 | 457 | 48 | 92 | 202.50 |
+| `word-odf-export.odt` | 4 | 215 | 195 | 453 | 48 | 92 | 201.59 |
 
 ## Not compared
 

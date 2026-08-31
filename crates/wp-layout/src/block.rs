@@ -1058,11 +1058,18 @@ fn band(
         // own box — a rule under a paragraph is ink, and so is the clear space
         // its border keeps above itself. An item that drew nothing at all is
         // measured to its own bottom.
+        //
+        // **A line with no letters is measured to its box**, because it has no
+        // letters to measure to and its height is the whole of what it is. An
+        // empty paragraph at the end of a header is not a header four points
+        // tall; it is a blank line, and the body begins under it.
         let ink = item
             .parts
             .iter()
             .map(|part| match &part.kind {
-                Placed::Line { line, .. } => part.y + line.baseline + line.descent,
+                Placed::Line { line, .. } if !line.fragments.is_empty() => {
+                    part.y + line.baseline + line.descent
+                }
                 _ => part.y + part.height,
             })
             .fold(f64::NEG_INFINITY, f64::max);
