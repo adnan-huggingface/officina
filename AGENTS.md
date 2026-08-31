@@ -60,6 +60,33 @@ Which application answers for a document is decided by the document: Word for
 `.docx` and `.doc`, LibreOffice for `.odt`. Word reads ODF through a converter
 it wrote for a format it does not own, and is not the standard for it.
 
+## When the work is finished
+
+**"Done" is a command here, not a paragraph.** `python .claude/hooks/gate.py`
+exits zero when every gate passes and `PLAN.md` — if there is one — has no
+unticked boxes, and non-zero with the reason when it does not. Prose loses to
+fatigue; an exit code does not.
+
+`.claude/hooks/stop_gate.py` is a `Stop` hook that runs it and refuses to let a
+session end while it says no, handing the reason back. **It is off by default,
+and should be**: a hook that will not let a session end changes every session in
+the project, including the ones that were only ever a question. Switch it on in
+`.claude/settings.json`:
+
+```json
+{ "hooks": { "Stop": [ { "matcher": "*", "hooks": [
+  { "type": "command", "command": "python .claude/hooks/stop_gate.py", "timeout": 3600 }
+] } ] } }
+```
+
+Two refusals it deliberately does *not* make, each of which would be worse than
+the problem it solves. It stands down when `stop_hook_active` says it has
+already refused once, because a gate that can never pass must reach a person
+rather than spend the budget in a circle. And it stands down when the gate
+cannot be *asked* at all — a missing toolchain is not unfinished work, and the
+first version of it reported one as the other and would have held every session
+in this project open.
+
 ## The invariant everything serves
 
 **Saving never rewrites what wasn't edited.** On open, every OPC package part is
