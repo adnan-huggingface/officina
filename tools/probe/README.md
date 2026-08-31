@@ -1,12 +1,24 @@
-# word-probe — measuring Word's layout behaviour
+# probe — measuring what the applications this one answers to actually do
 
-The oracle loop behind ADR 0001. Word's laid line pitches are hinted,
-per-ppem quantities that no formula over the font's tables reproduces; when a
-face or size needs exact parity, it is measured, and the measured base goes
-into `measured_base()` in `crates/app-scriva/src/shaper.rs`.
+The oracle loop behind ADR 0001 and the reference half of `cargo xtask
+compare`. Word's laid line pitches are hinted, per-ppem quantities that no
+formula over the font's tables reproduces; when a face or size needs exact
+parity, it is measured, and the measured base goes into `measured_base()` in
+`crates/app-scriva/src/shaper.rs`.
+
+**Two applications, because two formats.** Word owns `.docx` and `.doc` and is
+the only honest oracle for them. LibreOffice is the implementation ODF is
+defined against in practice, and Word reads `.odt` through a converter it wrote
+for a format it does not own — so an `.odt` is measured against LibreOffice.
+Which one answers for a document is decided by the document's extension and by
+nothing else; there is no flag.
+
+Both are used as black boxes: asked to render, and never read. Nothing here is
+ported from either, and nothing here ships.
 
 Requires a machine with Word installed (any license state — COM reading
-works on an unlicensed install; exporting and printing do not).
+works on an unlicensed install; exporting and printing do not), and, for the
+ODF half, LibreOffice.
 
 1. **`makeprobes.py`** — writes minimal probe `.docx` files: N identical
    single-spaced lines of one face at one size, and bordered-table variants.
@@ -28,9 +40,13 @@ works on an unlicensed install; exporting and printing do not).
 a *real* document, with paragraph formats alongside — the tool for "where
 exactly does Word put this?" during a fidelity chase.
 
-`topdf.ps1 -Path <doc> -Out <pdf>` and `pdfink.py <pdf>` are the oracle
-half of `cargo xtask compare`: Word's own rendering of a whole document, and
-every mark on it, as TSV for a program rather than for a reader. Two kinds of
+`topdf.ps1 -Path <doc> -Out <pdf>`, `toodf-pdf.ps1 -Path <doc> -Out <pdf>` and
+`pdfink.py <pdf>` are the oracle half of `cargo xtask compare`: the owning
+application's own rendering of a whole document — Word's for a `.docx`,
+LibreOffice's for an `.odt` — and every mark on it, as TSV for a program
+rather than for a reader. `pdfink.py` neither knows nor cares which of them
+drew the page it is reading, which is the whole reason a second renderer cost
+one script and not a rewrite. Two kinds of
 row — a `word` with the baseline it was set on, and a `mark` or a `picture`
 with the rectangle of ink it covers. See adr/0003 for why that comparison is a
 tool rather than an afternoon.

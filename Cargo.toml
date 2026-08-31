@@ -14,6 +14,7 @@ members = [
     "crates/wp-layout",
     "crates/wp-doc",
     "crates/wp-docx",
+    "crates/wp-odf",
     "crates/wp-text",
     "crates/wp-print",
     "crates/cfb",
@@ -46,6 +47,7 @@ wp-model = { path = "crates/wp-model" }
 wp-layout = { path = "crates/wp-layout" }
 wp-doc = { path = "crates/wp-doc" }
 wp-docx = { path = "crates/wp-docx" }
+wp-odf = { path = "crates/wp-odf" }
 wp-text = { path = "crates/wp-text" }
 wp-print = { path = "crates/wp-print" }
 cfb-reader = { path = "crates/cfb" }

@@ -3,7 +3,7 @@
 # but the comparison. In points, one mark to a line, of two kinds:
 #   word  page  x  baseline  text
 #   mark  page  x0  y0  x1  y1
-# document 1f312a84  export 67d00bda  reading 49cf81e9
+# document 1f312a84  export 67d00bda  reading bcd125f9
 # Stale? `cargo xtask compare --refresh` renews it, and needs Word for that
 # one document. Everything else goes on working without it.
 word	1	72.024	86.900	A
@@ -18,16 +18,16 @@ word	1	168.252	101.540	not
 word	1	186.612	101.540	written
 word	1	223.584	101.540	by
 word	1	238.584	101.540	Word.
-word	1	271.908	101.540	It
-word	1	282.084	101.540	exists
-word	1	312.564	101.540	to
-word	1	324.900	101.540	hold
-word	1	349.260	101.540	the
-word	1	366.912	101.540	reader
-word	1	399.708	101.540	to
-word	1	412.140	101.540	a
-word	1	420.420	101.540	second
-word	1	456.768	101.540	producer's
+word	1	271.836	101.540	It
+word	1	282.096	101.540	exists
+word	1	312.576	101.540	to
+word	1	324.912	101.540	hold
+word	1	349.272	101.540	the
+word	1	366.924	101.540	reader
+word	1	399.720	101.540	to
+word	1	412.152	101.540	a
+word	1	420.432	101.540	second
+word	1	456.780	101.540	producer's
 word	1	72.024	115.340	dialect:
 word	1	110.292	115.340	see
 word	1	128.532	115.340	corpus/strangers.py,
@@ -253,7 +253,7 @@ word	1	345.528	539.950	qui
 word	1	363.900	539.950	dolore
 word	1	397.500	539.950	culpa
 word	1	426.444	539.950	pariatur.
-word	1	469.836	539.950	Incididunt
+word	1	469.740	539.950	Incididunt
 word	1	72.024	553.750	labore
 word	1	104.904	553.750	sit
 word	1	119.292	553.750	nostrud
@@ -321,12 +321,12 @@ word	1	206.016	622.780	anim
 word	1	233.004	622.780	eiusmod
 word	1	276.672	622.780	reprehenderit
 word	1	343.488	622.780	culpa.
-word	1	375.528	622.780	Id
-word	1	388.368	622.780	magna
-word	1	423.396	622.780	amet
-word	1	449.784	622.780	velit
-word	1	474.108	622.780	aliquip
-word	1	510.480	622.780	velit
+word	1	375.444	622.780	Id
+word	1	388.380	622.780	magna
+word	1	423.408	622.780	amet
+word	1	449.796	622.780	velit
+word	1	474.120	622.780	aliquip
+word	1	510.492	622.780	velit
 word	1	72.024	636.580	sint
 word	1	92.412	636.580	sed
 word	1	111.372	636.580	laboris

@@ -46,7 +46,7 @@ was never possible — none of it is in the file.
 
 **Word itself is the oracle, and the unit of progress is a measured law.**
 
-The measurement loop, now part of the repository (`tools/word-probe/`):
+The measurement loop, now part of the repository (`tools/probe/`):
 
 1. **Generate probe documents** — minimal synthetic `.docx` files isolating
    one variable: thirty to fifty-five identical lines of one face at one

@@ -513,7 +513,7 @@ fn ink_of(bytes: &[u8], text: &str) -> Option<Ink> {
 ///
 /// **Aptos is measured and deliberately absent.** Word's default face since
 /// 2024 fits the same law with a base of exactly 1.2 times the size and a
-/// correction of *six* tenths of a point — `tools/word-probe` writes the
+/// correction of *six* tenths of a point — `tools/probe` writes the
 /// probes and `fit.py` returns it to no residual at all — but the accumulator
 /// here pays halves, and entering the measured base with the wrong correction
 /// wobbled every line half a point where the rounded ideal drifts by a

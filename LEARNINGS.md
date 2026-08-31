@@ -1611,3 +1611,59 @@ Word substitutes for it. The document that showed this names a symbol face
 ascent of the *text's* face — which it could not do if it were drawing the
 bullet in the face the file carries.
 
+**An OpenDocument manifest is not the advisory listing content types are.** An
+entry that is in the package and not in `META-INF/manifest.xml` makes
+LibreOffice refuse to open the *package* — not the entry, the package, with
+nothing more than "source file could not be loaded". OPC treats an undeclared
+part as one of the default type and reads on. So the awkward case a corpus can
+actually hold is not an unlisted entry but a listed one with an empty media
+type, which is what Word's own ODF export leaves behind and is still exactly the
+case a reader is most likely to drop.
+
+**ODF measures a page's margins from the header and Word measures them from the
+body.** Word's `w:top` is the distance to the *body* and `w:header` the distance
+to the header, so the header lives inside the margin; ODF's `fo:margin-top` is
+the distance to the *header*, and the body begins below whatever the header
+takes up. Measured on eight probes varying the least height, the gap and the
+paragraph's own margins, the reference puts the body at
+`margin-top + max(min-height, header content + gap)` — and the header
+paragraph's own bottom margin is not part of "content": a header paragraph set a
+quarter inch after moved the body by nothing at all. Reading one format's
+margins as the other's put every line of a document seven and a half points out.
+
+**A relative table width outranks the absolute one beside it, and is clamped.**
+A producer writes both — `style:width` as the measurement, `style:rel-width` as
+the intent — and where they disagree the intent wins: a table stating 7.31in and
+112.8% is drawn at the column's own 6.5in. A table that hangs into the left
+margin does not thereby gain room on the right either. Reading the absolute
+width alone made a five-column table an inch and a quarter too wide, which is
+enough that no cell wrapped, which is enough that a five-page document came out
+in four.
+
+**A cell that states its own padding is padded by it.** WordprocessingML puts
+the padding on the table and treats a cell's own as the exception, so one pair
+of numbers for a whole table was very nearly right; OpenDocument has no
+table-level padding at all and states it on every cell, so one pair of numbers
+is zero and every cell's text runs to its own edge. The layout had been
+resolving the table's and ignoring the cell's since it was written, and no
+`.docx` in the corpus had ever noticed.
+
+**A filled path is one piece of ink and a stroked path is rules.** A renderer
+drew a watermark and its shadow as seventeen hundred filled line segments each,
+which the reading turned into seventeen hundred rules — and no merging
+afterwards can put them back together, because merging only ever joins pieces
+that share an extent and every segment of an outline has a different one. The
+distinction has to be made where the marks are read, and it has to be made for
+both renderings by the same code.
+
+**A drawing's words are not the paragraph's words.** A reader that harvests the
+text of any element it does not recognise will harvest a shape's label into the
+line the shape is anchored in. That put a watermark's word at the left margin of
+a header, in the header's face and size, where the reference draws it as
+outlines across the whole page and no reader would call it a word at all.
+
+**Naming a face is worth more than classifying it.** Cambria classified as a
+serif and was drawn in Times, six per cent narrow: enough to move the last word
+of a heading nine points. Windows ships its regular weight inside a `.ttc`
+collection rather than as a file of its own, which is the likely reason it was
+never named — and the collection loads perfectly well.

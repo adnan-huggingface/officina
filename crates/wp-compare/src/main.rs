@@ -53,13 +53,13 @@
 mod diff;
 mod marks;
 mod ours;
-mod word;
+mod reference;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use diff::{Kind, Report};
-use word::Renew;
+use reference::Renew;
 
 /// Everything one rendering of a document put on paper.
 ///
@@ -241,8 +241,9 @@ fn usage() -> String {
     "\
 cargo xtask compare [file] [options]
 
-  no file        every .docx in corpus/docx
-  --refresh      ask Word again rather than using the cached answer
+  no file        every document under corpus/docx, corpus/doc and corpus/odt
+  --refresh      ask the reference application again rather than using the
+                 cached answer — Word for .docx and .doc, LibreOffice for .odt
   --check        fail if any document is worse than LAYOUT.md records
   --record       rewrite LAYOUT.md from what is measured now
   --top N        how many differences to print (default 20)
@@ -264,12 +265,13 @@ fn one(
 ) -> Result<(), String> {
     let laid = measure(path, renew, threshold)?;
     let report = &laid.words;
+    let who = reference::Renderer::of(path).name();
     println!("{}", path.display());
     println!(
-        "  {} pages, Word {} — {} words matched, {} unmatched",
-        report.pages_ours, report.pages_word, report.matched, report.unmatched
+        "  {} pages, {who} {} — {} words matched, {} unmatched",
+        report.pages_ours, report.pages_theirs, report.matched, report.unmatched
     );
-    if report.pages_ours != report.pages_word {
+    if report.pages_ours != report.pages_theirs {
         println!(
             "  the two do not agree on how many pages this is; everything below \
              is measured against the pages that do line up."
@@ -286,11 +288,11 @@ fn one(
         furniture.matched, furniture.lost, furniture.out, furniture.worst
     );
     if furniture.pictures > 0 {
-        // Not a fault and not a pass: Word answered our box by drawing the
-        // picture into it, which is as much as the two renderings can say to
-        // each other about a diagram. Printed so that the silence is visible.
+        // Not a fault and not a pass: the other rendering answered our box by
+        // drawing the picture into it, which is as much as the two renderings
+        // can say to each other about a diagram. Printed so the silence shows.
         println!(
-            "  {} pictures Word drew into rather than drew a box for",
+            "  {} pictures {who} drew into rather than drew a box for",
             furniture.pictures
         );
     }
@@ -344,7 +346,7 @@ fn one(
         let missing = absent.iter().filter(|f| f.kind == Kind::Missing).count();
         println!();
         println!(
-            "  {missing} words Word laid and we did not, {} the other way:",
+            "  {missing} words {who} laid and we did not, {} the other way:",
             absent.len() - missing
         );
         // One page at a time, they are printed where they are: an unplaced
@@ -372,9 +374,9 @@ fn one(
     }
 
     // Last, and apart, because it is a different question. The words say
-    // whether the text is set where Word sets it; these say whether the page
-    // around the text is drawn where Word draws it, and a page can be right
-    // about one and wrong about the other.
+    // whether the text is set where the other rendering sets it; these say
+    // whether the page around the text is drawn where it draws it, and a page
+    // can be right about one and wrong about the other.
     let furniture: Vec<&diff::Difference> = laid
         .marks
         .differences
@@ -403,7 +405,7 @@ fn one(
 /// built. One line per word, so that two columns of `sort` and `diff` answer
 /// most of what anybody wants to ask of it.
 fn listing(path: &Path, renew: Renew, only: Option<u32>) -> Result<(), String> {
-    let theirs = word::read(path, renew)?;
+    let theirs = reference::read(path, renew)?;
     let ours = ours::read(path)?;
     let mut all: Vec<(&'static str, &diff::Word)> = ours
         .words
@@ -468,7 +470,7 @@ fn listing(path: &Path, renew: Renew, only: Option<u32>) -> Result<(), String> {
 /// comparison works on sequences of words, so two readings cut up differently
 /// disagree about everything, and no amount of staring at positions shows it.
 fn grouping(path: &Path, renew: Renew, only: Option<u32>) -> Result<(), String> {
-    let theirs = word::read(path, renew)?;
+    let theirs = reference::read(path, renew)?;
     let ours = ours::read(path)?;
     let pages = ours
         .words
@@ -495,18 +497,18 @@ fn grouping(path: &Path, renew: Renew, only: Option<u32>) -> Result<(), String> 
 fn line(found: &diff::Difference) -> String {
     let what = match found.kind {
         Kind::Moved { dx, dy } => format!("dx={dx:+6.2} dy={dy:+6.2}"),
-        Kind::Missing => format!("Word alone, at {:6.1},{:6.1}", found.at.0, found.at.1),
+        Kind::Missing => format!("theirs alone, at {:6.1},{:6.1}", found.at.0, found.at.1),
         Kind::Extra => format!("ours alone, at {:6.1},{:6.1}", found.at.0, found.at.1),
     };
     let text: String = found.text.chars().take(28).collect();
-    // A word only Word laid has no band: its rendering has forgotten which
+    // A word only they laid has no band: their rendering has forgotten which
     // flow drew what, and inventing one would be the report making it up.
     let band = found.band.map(|b| b.to_string()).unwrap_or_default();
     format!("page {:>3} {band:<6} {what}  {text:?}", found.page)
 }
 
 /// What one document came to, for a table, a record, or a comparison against
-/// one. A document Word would not render keeps its reason rather than a zero,
+/// one. A document that would not render keeps its reason rather than a zero,
 /// because a zero here reads exactly like a document with nothing wrong.
 struct Measured {
     name: String,
@@ -516,7 +518,7 @@ struct Measured {
 fn sweep(renew: Renew, threshold: f64) -> Result<Vec<Measured>, String> {
     let root = repo_root().join("corpus");
     let mut paths: Vec<PathBuf> = Vec::new();
-    for kind in ["docx", "doc"] {
+    for kind in ["docx", "doc", "odt"] {
         let dir = root.join(kind);
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
@@ -671,9 +673,10 @@ fn report_of(measured: &[Measured]) -> String {
     format!(
         "# Layout report\n\n\
 Generated by `cargo xtask compare --record` over `corpus/`. Do not edit by hand — regenerate it.\n\n\
-Every document here is laid out by Scriva and rendered by Word itself, and the two are compared \
-mark by mark: where each word's pen went down, and where each rule and shading and picture was \
-put, in points from the top-left of the page. \
+Every document here is laid out by Scriva and rendered by the application that owns its format \
+— Word for `.docx` and `.doc`, LibreOffice for `.odt` — and the two are compared mark by \
+mark: where each word's pen went down, and where each rule and shading and picture was put, in \
+points from the top-left of the page. \
 `cargo xtask compare --check` fails if any document gets worse than this, which is what makes a \
 layout regression arithmetic rather than something a person has to notice. ADR 0003 records why \
 it is not a person.\n\n\
@@ -681,17 +684,17 @@ These are not targets. They are what is true today, so that what is true tomorro
 against it.\n\n\
 - **pages** — how many pages Scriva laid it in. Any change at all has to be recorded \
 deliberately: pagination moving is the largest layout event there is.\n\
-- **out** — words both sides laid, further than a point from where Word put them.\n\
+- **out** — words both sides laid, further than a point from where the reference put them.\n\
 - **>5pt** — how many of those are further out than five points. Two counts rather than one, \
 because a single count cannot see work moving about: a word improving while another of the same \
 size worsens leaves it unchanged.\n\
 - **unplaced** — words only one side laid at all. A chart's labels are drawn from the plot rather \
 than from a line and are not gathered here, so a document full of charts keeps a floor.\n\
-- **marks** — rectangles of ink that are not type, further than a point from where Word drew \
+- **marks** — rectangles of ink that are not type, further than a point from where the reference drew \
 them: a table border, an underline, a shading, a picture's box. Counted apart from the words \
 because a page can be right about one and wrong about the other, and because they are matched \
 by different means — a word by what it says, a rule by where it is.\n\
-- **lost** — marks only one side drew. A picture Word answered by drawing the picture rather \
+- **lost** — marks only one side drew. A picture the reference answered by drawing the picture rather \
 than a box is neither counted nor lost; it is set aside, which is as much as the two renderings \
 can say to each other about a diagram. A shape's own words are the standing floor here: Word \
 draws a WordArt watermark into a PDF as *outlines*, so its rendering has a filled shape per \
@@ -877,7 +880,7 @@ fn recorded_in(text: &str) -> std::collections::HashMap<String, Stood> {
 }
 
 fn measure(path: &Path, renew: Renew, threshold: f64) -> Result<Laid, String> {
-    let theirs = word::read(path, renew)?;
+    let theirs = reference::read(path, renew)?;
     let ours = ours::read(path)?;
     Ok(Laid {
         words: diff::compare(&ours.words, &theirs.words, threshold),

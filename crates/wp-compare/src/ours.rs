@@ -36,6 +36,8 @@ struct Opened {
     document: wp_model::Document,
     package: Option<ooxml::Package>,
     parts: Option<wp_docx::DocumentParts>,
+    /// The faces the document carries, whichever format carried them.
+    faces: Vec<(String, bool, bool, Vec<u8>)>,
     loose: HashMap<String, Vec<u8>>,
 }
 
@@ -140,17 +142,19 @@ fn furniture(page: &Page, into: &mut Vec<Mark>) {
 }
 
 fn open(path: &Path) -> Result<Opened, String> {
-    let legacy = path
+    let extension = path
         .extension()
-        .is_some_and(|e| e.eq_ignore_ascii_case("doc"));
-    match legacy {
-        true => {
+        .map(|e| e.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    match extension.as_str() {
+        "doc" => {
             let (document, media) =
                 wp_doc::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
             Ok(Opened {
                 document,
                 package: None,
                 parts: None,
+                faces: Vec::new(),
                 // A legacy file has no package: its pictures come out of the
                 // stream loose, under the names its drawings ask for.
                 loose: media
@@ -159,14 +163,43 @@ fn open(path: &Path) -> Result<Opened, String> {
                     .collect(),
             })
         }
-        false => {
+        "odt" => {
+            let (document, media, container) =
+                wp_odf::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+            // An ODF package holds its pictures under paths rather than
+            // relationships, so the reader mints the names and hands the bytes
+            // out beside the document — the same shape a `.doc` arrives in, and
+            // the reason `publish::metafiles` needs no third case.
+            Ok(Opened {
+                document,
+                package: None,
+                parts: None,
+                faces: wp_odf::embedded(&container)
+                    .into_iter()
+                    .map(|face| (face.family, face.bold, face.italic, face.bytes))
+                    .collect(),
+                loose: media
+                    .into_iter()
+                    .map(|picture| (picture.rel, picture.data))
+                    .collect(),
+            })
+        }
+        _ => {
             let (document, package) =
                 wp_docx::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
             let parts = wp_docx::DocumentParts::locate_in(&package).ok();
+            let faces = match parts.as_ref() {
+                Some(parts) => wp_docx::embedded(&package, parts)
+                    .into_iter()
+                    .map(|face| (face.family, face.bold, face.italic, face.bytes))
+                    .collect(),
+                None => Vec::new(),
+            };
             Ok(Opened {
                 document,
                 package: Some(package),
                 parts,
+                faces,
                 loose: HashMap::new(),
             })
         }
@@ -187,13 +220,9 @@ fn open(path: &Path) -> Result<Opened, String> {
 fn fonts(opened: &Opened) -> egui::Context {
     let ctx = egui::Context::default();
     ui_kit::fonts::install(&ctx);
-    if let (Some(package), Some(parts)) = (&opened.package, &opened.parts) {
-        let faces: Vec<_> = wp_docx::embedded(package, parts)
-            .into_iter()
-            .map(|face| (face.family, face.bold, face.italic, face.bytes))
-            .collect();
+    if !opened.faces.is_empty() {
         let named = scriva::app::font_names(&opened.document);
-        ui_kit::fonts::embed_document(&ctx, &faces, &named);
+        ui_kit::fonts::embed_document(&ctx, &opened.faces, &named);
     }
     let mut out = ctx.run_ui(egui::RawInput::default(), |_| {});
     out.textures_delta.clear();

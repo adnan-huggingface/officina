@@ -1157,6 +1157,20 @@ pub struct Settings {
     /// face states. Nothing else about the two documents differs — same face,
     /// same size, same column — so the mode is the whole of it.
     pub compatibility_mode: u32,
+    /// Whether the space after a band's last paragraph counts toward how much
+    /// room the band takes from the body.
+    ///
+    /// **The two formats answer this differently and neither states it.** Word
+    /// measures a header to the bottom of its last paragraph, trailing space
+    /// and all, and the body begins below that. LibreOffice measures an ODF
+    /// header to the bottom of the last *line* and ignores the space after it —
+    /// measured on a probe whose header paragraph was set a quarter inch after:
+    /// the body did not move by so much as a point. Without this, every line of
+    /// every ODF document with a header sits some points too low.
+    ///
+    /// True by default, because the format this model was shaped by is the one
+    /// that counts it.
+    pub bands_keep_trailing_space: bool,
 }
 
 impl Default for Settings {
@@ -1177,6 +1191,7 @@ impl Default for Settings {
             // Word writes no `<w:compat>` at all for a document it is keeping
             // in an older mode, and the oldest is what that means.
             compatibility_mode: 0,
+            bands_keep_trailing_space: true,
         }
     }
 }

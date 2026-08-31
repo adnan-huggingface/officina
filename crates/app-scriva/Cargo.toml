@@ -25,6 +25,7 @@ wp-model.workspace = true
 wp-layout.workspace = true
 wp-doc.workspace = true
 wp-docx.workspace = true
+wp-odf.workspace = true
 wp-text.workspace = true
 wp-print.workspace = true
 ooxml.workspace = true

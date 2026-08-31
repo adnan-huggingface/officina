@@ -165,6 +165,8 @@ pub enum Format {
     Docx,
     /// Word 97-2003. Read-only: see `wp_doc`.
     Doc,
+    /// OpenDocument text. Read-only for now: see `wp_odf`.
+    Odt,
     Markdown,
     Text,
 }
@@ -180,6 +182,7 @@ impl Format {
             Some("md") | Some("markdown") => Format::Markdown,
             Some("txt") | Some("text") => Format::Text,
             Some("doc") | Some("dot") => Format::Doc,
+            Some("odt") | Some("ott") => Format::Odt,
             _ => Format::Docx,
         }
     }
@@ -194,8 +197,16 @@ impl Format {
     /// A `.doc` is a memory image with a fast-save log on the end: writing one
     /// back means rebuilding every byte offset in it, and one wrong offset makes
     /// a file Word opens as something else. So it is read and saved as `.docx`.
+    ///
+    /// An `.odt` is not written for a different reason and only for now: the
+    /// container preserves every part of one and is checked doing so, but
+    /// nothing yet rewrites `content.xml` a paragraph at a time, and reprinting
+    /// it whole would drop everything in the file this reader does not model.
+    /// A save that quietly loses the parts of a document it did not understand
+    /// is the one thing this project exists to prevent, so until the writer
+    /// splices, an edited `.odt` is saved as a `.docx`.
     pub fn is_writable(self) -> bool {
-        !matches!(self, Format::Doc)
+        !matches!(self, Format::Doc | Format::Odt)
     }
 }
 
@@ -753,6 +764,7 @@ impl Scriva {
         match Format::of(path) {
             Format::Docx => self.open_docx(path),
             Format::Doc => self.open_doc(path),
+            Format::Odt => self.open_odt(path),
             other => self.open_text(path, other),
         }
     }
@@ -803,6 +815,61 @@ impl Scriva {
     /// There is no package: the file is not one. The document is read whole and
     /// saving authors a `.docx` around it, which is why the path is dropped —
     /// Ctrl+S must not offer to write back over a file this cannot write.
+    /// Opens an `.odt`.
+    ///
+    /// The same shape as a `.doc`: read, shown, and saved as a `.docx`, because
+    /// nothing here writes an OpenDocument package yet. The difference is that
+    /// this one is a decision about the writer rather than about the format —
+    /// the container reads and rewrites every part of an `.odt` faithfully, and
+    /// `cargo xtask fidelity` holds it to that; what is missing is the splicing
+    /// writer for `content.xml`, and until it exists an edited save would have
+    /// to reprint the part and drop whatever this reader does not model.
+    fn open_odt(&mut self, path: &Path) {
+        match wp_odf::open(path) {
+            Ok((document, media, _container)) => {
+                self.document = document;
+                self.package = None;
+                self.parts = None;
+                self.adopt_document_fonts();
+                self.pictures.clear();
+                // ODF names a picture by the path it sits at in the package
+                // rather than by a relationship, so the reader mints the names
+                // and the bytes arrive beside the document.
+                self.pictures
+                    .adopt(media.into_iter().map(|picture| (picture.rel, picture.data)));
+                self.path = Some(path.with_extension("docx"));
+                self.dirty = true;
+                self.history.clear();
+                self.selection = Selection::default();
+                self.scope = wp_model::Scope::Body;
+                self.left_behind = None;
+                self.band_page = None;
+                self.picked = None;
+                self.scroll = 0.0;
+                self.stamp = self.stamp.wrapping_add(1);
+                self.view.invalidate();
+                self.recent.remember(SCRIVA, path);
+                self.refresh_fields();
+                self.message = Some((
+                    "Opened as a copy".to_owned(),
+                    "OpenDocument text is read but not yet written, so this one will be saved as a .docx. Its styles, lists, tables, headers and pictures come with it, and the original file is left exactly as it was."
+                        .to_owned(),
+                ));
+            }
+            Err(error) => {
+                self.message = Some((
+                    "Cannot open".to_owned(),
+                    format!(
+                        "{}
+
+{error}",
+                        path.display()
+                    ),
+                ));
+            }
+        }
+    }
+
     fn open_doc(&mut self, path: &Path) {
         match wp_doc::open(path) {
             Ok((document, media)) => {
@@ -1203,10 +1270,13 @@ impl Scriva {
                 let mut chooser = rfd::FileDialog::new()
                     .add_filter(
                         "All documents",
-                        &["docx", "docm", "dotx", "doc", "dot", "md", "txt"],
+                        &[
+                            "docx", "docm", "dotx", "doc", "dot", "odt", "ott", "md", "txt",
+                        ],
                     )
                     .add_filter("Word documents", &["docx", "docm", "dotx"])
                     .add_filter("Word 97-2003", &["doc", "dot"])
+                    .add_filter("OpenDocument text", &["odt", "ott"])
                     .add_filter("Markdown", &["md", "markdown"])
                     .add_filter("Plain text", &["txt"]);
                 if let Some(directory) = self.recent.directory() {

@@ -61,7 +61,8 @@ spirit (no DLL hell, no runtime, copy-and-run) better than one bloated one.
 
 The mechanism behind the fidelity guarantee, and the first thing built.
 
-When an OPC package is opened, every part is classified:
+When a package is opened — an OPC one, or the OpenDocument one `wp-odf` reads
+— every part is classified:
 
 - **Modeled** — we parse it into our document model and re-serialize from the model
   on save (`document.xml`, `sheet1.xml`, `styles.xml`, …).
@@ -69,7 +70,8 @@ When an OPC package is opened, every part is classified:
   byte-identically (custom XML, embedded OLE objects, ink annotations, unknown
   extensions, vendor namespaces).
 - **Derived** — regenerated from scratch every save (`[Content_Types].xml`, relationship
-  files, `app.xml` statistics).
+  files, `app.xml` statistics; `META-INF/manifest.xml` for OpenDocument, which is the
+  seat content types occupy there).
 
 Within a *modeled* part, unknown elements and attributes are captured into the model as
 opaque nodes attached to their parent, and re-emitted in document order. This is what
@@ -77,6 +79,15 @@ makes "we don't support feature X" mean *X survives the round trip untouched* ra
 than *X is gone*.
 
 The invariant is machine-checked (§7), not a promise in a README.
+
+**The container is not shared between the two package formats, and the discipline
+is.** An ODF package differs from an OPC one in two places that are both stated in
+zip terms: `mimetype` comes first and uncompressed so a file can be identified from
+a fixed offset, and the parts are listed in a manifest rather than declared by
+content type, with no relationship graph at all. `ooxml::Package` can express
+neither, so `wp_odf::Container` is its twin rather than its client — but the
+*comparison* that decides whether a rewrite was faithful is shared, so that
+"faithful" has one definition in this repository and not two.
 
 ## 4. Calx — the spreadsheet
 

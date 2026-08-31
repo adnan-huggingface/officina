@@ -942,13 +942,19 @@ fn band_margins(
     if let Some(body) = shown.header(HeaderKind::Default) {
         if let Some(header) = document.header(body) {
             let (_, height) = band(&header.content, document, ctx, shaper, width);
-            top = top.max(section.margins.header.points() + height);
+            // The gap belongs to the header, not to the body: the body starts
+            // below the band *and* whatever clear space the band keeps under
+            // itself, and `margins.top` already holds the case where the band's
+            // stated minimum is the larger of the two.
+            let gap = section.header_gap.points();
+            top = top.max(section.margins.header.points() + height + gap);
         }
     }
     if let Some(body) = shown.footer(HeaderKind::Default) {
         if let Some(footer) = document.header(body) {
             let (_, height) = band(&footer.content, document, ctx, shaper, width);
-            bottom = bottom.max(section.margins.footer.points() + height);
+            let gap = section.footer_gap.points();
+            bottom = bottom.max(section.margins.footer.points() + height + gap);
         }
     }
     (top, bottom)
@@ -1044,6 +1050,7 @@ fn band(
         );
     }
     let mut y = 0.0;
+    let mut trailing = 0.0;
     for item in flow.items {
         for part in item.parts {
             // A band is never cut by a page, so a maybe-edge never fires.
@@ -1056,8 +1063,14 @@ fn band(
             });
         }
         y += item.height;
+        trailing = item.slack;
     }
-    (out, y)
+    // What the band takes from the body is not always what it draws. See
+    // `Settings::bands_keep_trailing_space`.
+    if !document.settings.bands_keep_trailing_space {
+        y -= trailing;
+    }
+    (out, y.max(0.0))
 }
 
 /// Turns one block into items.
@@ -2177,11 +2190,10 @@ fn flow_table(
     // The style chain is heard from: a table whose margins live in its style —
     // where Google Docs puts them — pads its cells all the same.
     let margins = document.styles.resolve_cell_margins(&table.props);
-    let pad_start = margins
-        .start
-        .and_then(|w| w.resolve(Twips::from_points(available)))
-        .map(|t| t.points())
-        .unwrap_or(5.4);
+    // What every cell falls back to where it states no padding of its own.
+    // WordprocessingML is where this lives — `<w:tblCellMar>`, or the Table
+    // Normal style's 0.08in — and OpenDocument has no such thing, which is why
+    // the fallback is nothing rather than a guess.
     let pad_end = margins
         .end
         .and_then(|w| w.resolve(Twips::from_points(available)))
@@ -2200,7 +2212,11 @@ fn flow_table(
     // demonstration document's widest table at its grid's 478.8pt in a 468pt
     // column, and asked over COM for its columns answers with the grid to the
     // twip.
-    let room = (available - indent + pad_end).max(1.0);
+    // A table that hangs into the left margin does not thereby gain room on
+    // the right: the reference lays a table indented a negative four tenths of
+    // an inch at the column's own width and not at the column's width plus the
+    // hang. Only an indent that pushes the table *in* takes room from it.
+    let room = (available - indent.max(0.0) + pad_end).max(1.0);
     let widths = column_widths(table, room);
     // `<w:jc>` on a table moves the whole table within the text column rather
     // than the text within its cells. A centred table is what the
@@ -2210,14 +2226,21 @@ fn flow_table(
     // not from the indent: Word centres the demonstration document's nested
     // table on 306, the middle of the column, with no sign of the hang that
     // `w:tblInd` otherwise gives it.
+    //
+    // **A table wider than the column overhangs it, on both sides if it is
+    // centred.** The two edges are not clamped to the margin, and clamping them
+    // was worth thirty-seven and a half points on the first page of a document
+    // whose header table is 7.55in wide in a 6.5in column: half the excess to
+    // each side is where both Word and LibreOffice draw it, and the margin is
+    // not a wall a table may not cross.
     let indent = match table.props.justify {
         Some(wp_model::prop::Justify::Center) => {
             let laid: f64 = column_widths(table, room).iter().sum();
-            ((available - laid) / 2.0).max(0.0)
+            (available - laid) / 2.0
         }
         Some(wp_model::prop::Justify::End) => {
             let laid: f64 = column_widths(table, room).iter().sum();
-            (available - laid).max(0.0)
+            available - laid
         }
         _ => indent,
     };
@@ -2236,6 +2259,38 @@ fn flow_table(
     // A header row repeats only while every row before it also says so: Word
     // stops at the first row that does not.
     let mut still_header = true;
+
+    /// What actually pads one cell.
+    ///
+    /// **A cell that states its own padding is padded by it**, and the table's
+    /// is only what a cell falls back to. WordprocessingML puts the padding on
+    /// the table in `<w:tblCellMar>` and treats a cell's own `<w:tcMar>` as the
+    /// exception, so one pair of numbers for the whole table was very nearly
+    /// right; OpenDocument has no table-level padding at all and states it on
+    /// every cell, so one pair of numbers is zero and every cell's text runs to
+    /// its own edge. Measured on a header table whose cells all say
+    /// `fo:padding="0.075in"`: a line five points wider than the cell allows
+    /// stayed on one line where the reference wrapped it, and the row below
+    /// came out four points high.
+    fn padding(
+        cell: &wp_model::table::CellMargins,
+        table: &wp_model::table::CellMargins,
+        available: f64,
+    ) -> [f64; 4] {
+        let side = |own: Option<wp_model::table::Width>,
+                    fallback: Option<wp_model::table::Width>| {
+            own.or(fallback)
+                .and_then(|w| w.resolve(Twips::from_points(available)))
+                .map(|t| t.points())
+                .unwrap_or(0.0)
+        };
+        [
+            side(cell.top, table.top),
+            side(cell.start, table.start),
+            side(cell.bottom, table.bottom),
+            side(cell.end, table.end),
+        ]
+    }
 
     let row_count = table.rows.len();
     // What a vertically merged cell still has to be given room for.
@@ -2260,6 +2315,18 @@ fn flow_table(
     let grid_columns = widths.len() as u32;
     let mut above_bottom: Vec<Option<Border>> = vec![None; widths.len()];
     for (row_index, row) in table.rows.iter().enumerate() {
+        // A row is as tall as its tallest cell needs, so the padding above and
+        // below it is the most any of its cells asks for.
+        let (pad_top, pad_bottom) = row
+            .cells
+            .iter()
+            .map(|cell| {
+                let pads = padding(&cell.props.margins, &margins, available);
+                (pads[0], pads[2])
+            })
+            .fold((pad_top, pad_bottom), |(top, bottom), (t, b)| {
+                (top.max(t), bottom.max(b))
+            });
         let is_last_row = row_index + 1 == row_count;
         let mut cells: Vec<CellPlan> = Vec::new();
         // Each cell's accumulator state on the way out, so the flow after the
@@ -2291,6 +2358,8 @@ fn flow_table(
                 .skip(column as usize)
                 .take(span as usize)
                 .sum();
+            let pads = padding(&cell.props.margins, &margins, available);
+            let (pad_start, pad_end) = (pads[1], pads[3]);
             let inner = (cell_width - pad_start - pad_end).max(1.0);
 
             // A continuation cell draws its background and its borders and holds
@@ -3448,7 +3517,7 @@ pub fn anchor_base(drawing: &wp_model::Drawing, page: &PageBox, origin: (f64, f6
 /// and no more: at −18 points of leftover measure Word sets the text below, and
 /// at +290 it sets it beside. Anything between is a guess, so the least is
 /// claimed — any room at all is room — rather than inventing a threshold the
-/// oracle has never been asked about. `tools/word-probe` and a document built
+/// oracle has never been asked about. `tools/probe` and a document built
 /// by `corpus/generate.ps1` would settle it.
 ///
 /// A float positioned relative to the page or a margin does not travel with the

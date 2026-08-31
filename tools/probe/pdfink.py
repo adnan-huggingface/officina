@@ -132,22 +132,35 @@ def marks(page):
     """(x0, y0, x1, y1) for every rectangle of ink on a page that is not type.
 
     Each drawing operation is reported as the ink it lays down and as nothing
-    more. A curve is the one thing with no honest rectangle, so the group it
-    belongs to is reported as a single box around the whole of it: a diagram's
-    hundreds of strokes are one drawing rather than hundreds of findings, and a
-    diagram is compared as a box in any case.
+    more, with one exception that has to be stated as a rule rather than as a
+    patch: **a filled path is one piece of ink and a stroked path is rules.**
+
+    A curve is the obvious case — it has no honest rectangle, so the path it
+    belongs to is reported as a single box around the whole of it, and a
+    diagram's hundreds of strokes are one drawing rather than hundreds of
+    findings. Straight lines are the same case whenever the path they belong to
+    is *filled*: they are the outline of a shape, not rules on the page. One
+    renderer drew a picture's shadow as seventeen hundred filled line segments,
+    which is one grey shape and was being read as seventeen hundred rules — and
+    no merging afterwards can put them back together, because each of them has
+    a different extent and merging only ever joins pieces that share one.
+
+    A path with a stroke colour and no fill is genuinely rules: that is a table
+    border, and it stays one finding per rule so that a border which moved says
+    where.
     """
     for path in page.get_drawings():
         width = path.get("width") or 0.0
+        filled = path.get("fill") is not None
         curves = None
         for item in path.get("items", ()):
             if item[0] == "re":
-                if path.get("fill") is not None:
+                if filled:
                     rect = item[1]
                     yield rect.x0, rect.y0, rect.x1, rect.y1
                 if path.get("color") is not None:
                     yield from edges(item[1], width)
-            elif item[0] == "l":
+            elif item[0] == "l" and not filled:
                 yield segment(item[1], item[2], width)
             elif item[0] == "qu":
                 rect = item[1].rect

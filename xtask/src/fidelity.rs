@@ -66,6 +66,13 @@ pub fn run(corpus_dir: &Path) -> Result<Report, String> {
             }
         }
 
+        // An OpenDocument package has no writer yet, so there is no edit to
+        // make and nothing an edit could lose. Check 1 still holds its
+        // container to every byte, which is the half of the guarantee that
+        // exists; when the writer lands, this is where the other half goes.
+        if is_open_document(&path) {
+            continue;
+        }
         let result = if is_spreadsheet(&path) {
             edit_round_trip(&path)
         } else {
@@ -90,6 +97,14 @@ fn cell(value: CellValue) -> Cell {
     }
 }
 
+/// An OpenDocument package, which is a zip with rules of its own and cannot be
+/// opened as an OPC one.
+fn is_open_document(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("odt"))
+}
+
 fn is_spreadsheet(path: &Path) -> bool {
     matches!(
         path.extension()
@@ -109,6 +124,23 @@ fn is_spreadsheet(path: &Path) -> bool {
 /// the moment our idea of a worksheet diverges from Excel's anywhere in the
 /// file, whether or not an edit ever lands there.
 fn round_trip(path: &Path) -> Result<Vec<Difference>, String> {
+    if is_open_document(path) {
+        // No writer yet, so there is nothing here that a *save* could lose —
+        // but the container is what a save will write through, and this is
+        // where it is held to the same bar as the other one: every part back,
+        // byte for byte, including the entry the manifest gives no type.
+        let before = wp_odf::Container::open(path).map_err(|e| format!("open: {e}"))?;
+        let mut buf = Vec::new();
+        before
+            .write(std::io::Cursor::new(&mut buf))
+            .map_err(|e| format!("write: {e}"))?;
+        let after = wp_odf::Container::read(std::io::Cursor::new(buf))
+            .map_err(|e| format!("reopen: {e}"))?;
+        return Ok(ooxml::compare::diff_entries(
+            &before.entries(),
+            &after.entries(),
+        ));
+    }
     let before = Package::open(path).map_err(|e| format!("open: {e}"))?;
 
     if !is_spreadsheet(path) {
@@ -395,7 +427,7 @@ fn snapshot(doc: &XlsxDocument) -> Snapshot {
 
 /// Every OOXML package under `dir`, recursively, in a stable order.
 fn collect_packages(dir: &Path) -> Result<Vec<PathBuf>, String> {
-    const EXTENSIONS: [&str; 6] = ["docx", "docm", "dotx", "xlsx", "xlsm", "xltx"];
+    const EXTENSIONS: [&str; 7] = ["docx", "docm", "dotx", "odt", "xlsx", "xlsm", "xltx"];
 
     if !dir.exists() {
         return Err(format!("corpus directory {} does not exist", dir.display()));

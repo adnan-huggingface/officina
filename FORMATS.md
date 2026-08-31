@@ -27,6 +27,7 @@ Three columns, because a file format has three different questions:
 | `.docx` / `.docm` | — | read + write | The main format. |
 | `.dotx` | — | read + write | Word's own 41 shipped templates are part of the test corpus. |
 | `.doc` (Word 97–2003) | — | read only | Opens as a copy, saves as `.docx`. Same reason as `.xls`. |
+| `.odt` / `.ott` (OpenDocument) | — | read only | Opens as a copy, saves as `.docx`. The container preserves every part of one and is checked doing so; what is missing is the writer, not the understanding. See below. |
 | `.md` | — | read + write | Headings become real heading *styles*, not bold text. |
 | `.txt` | — | read + write | Encoding and line endings are kept as they arrived. |
 | `.pdf` | no | no | Dropped from scope. |
@@ -84,6 +85,46 @@ Three columns, because a file format has three different questions:
 | Column balancing | no | — | yes |
 | Printing (Ctrl+P, system dialog) | — | yes | — |
 | PDF export, fonts embedded | — | yes | — |
+
+---
+
+## OpenDocument, and why it opens as a copy
+
+ODF is read against the OASIS standard rather than against a running
+application: v1.4 became an OASIS Standard on 6 October 2025, and every decision
+in `wp-odf` can cite a clause instead of a measurement. What is *rendered* is
+still held to a running application — LibreOffice, the implementation ODF is
+defined against in practice — by `cargo xtask compare`.
+
+**What is read.** The text, with its paragraphs, headings and spans. Both
+stylesheets, the named and the automatic, kept as styles rather than flattened
+into the paragraphs that point at them — direct formatting in ODF *is* a style,
+and turning it back into direct formatting would lose the difference between a
+run that states twelve points and one that inherits them. The page: size,
+orientation, margins, columns, and the header and footer of every master page.
+Lists, both the definitions and the nesting that says which level a paragraph is
+at. Tables, with their columns, repeated columns, spanned and covered cells, and
+borders. Frames and the pictures in them, whether the package holds them as
+files or the frame carries them as base64. Footnotes and endnotes. Bookmarks and
+links. Tab stops. The faces the document names, and the ones it carries.
+
+**What is not read.** Change tracking, forms, embedded objects, charts, and the
+drawing layer beyond a frame holding a picture — a watermark written as a custom
+shape is one of those, and it is the visible gap on a page that has one.
+
+**What is preserved.** Everything. `wp_odf::Container` reads every entry of the
+package into memory, filters none of them, and writes them all back — including
+an entry the manifest gives no media type, which Word's own ODF export leaves
+behind and which a reader that trusted the manifest would drop. `cargo xtask
+fidelity` holds it to that like any other container.
+
+**Why it is not written.** Not because the container cannot: it can, and the
+round trip is checked. Because nothing yet rewrites `content.xml` a paragraph at
+a time. Reprinting the part whole would pass a test that the edit came back and
+fail the one that matters — that everything the reader does not model came back
+too. A save that quietly loses what it did not understand is the one thing this
+project exists to prevent, so until the writer splices, an edited `.odt` is
+saved as a `.docx`, and the application says so when it opens one.
 
 ---
 

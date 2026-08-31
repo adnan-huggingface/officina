@@ -504,6 +504,21 @@ pub struct SectionProps {
     /// `<w:paperSrc>`, `<w:footnotePr>`, `<w:endnotePr>` and the rest are not
     /// modelled and ride through the writer untouched.
     pub gutter_at_top: bool,
+    /// How much clear space a header keeps between itself and the body, and a
+    /// footer between the body and itself.
+    ///
+    /// **WordprocessingML has no such value and OpenDocument does.** Word's
+    /// header sits in the margin and the body begins at `w:top` whatever the
+    /// header does, growing downward only when the header outgrows the margin;
+    /// ODF states the band's least height and, separately, a margin between the
+    /// band and the text, and the body begins below whichever of the two is
+    /// larger. Without it a header shorter than its stated minimum puts every
+    /// line of the body seven and a half points too high — measured on a
+    /// document whose header reserves 0.3in and keeps 0.15in clear under it.
+    ///
+    /// Zero for every document that is not ODF, which is what makes it free.
+    pub header_gap: Twips,
+    pub footer_gap: Twips,
 }
 
 impl SectionProps {

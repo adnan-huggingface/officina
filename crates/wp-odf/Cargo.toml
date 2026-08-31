@@ -1,0 +1,19 @@
+[package]
+name = "wp-odf"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+# For `PartName` and `PartClass`. An ODF package is not an OPC one — it has no
+# content types and no relationships — but a part name is a zip path with the
+# same rules, and the three-way classification is the project's, not OPC's.
+ooxml.workspace = true
+wp-model.workspace = true
+quick-xml = "0.41.0"
+
+# Directly, unlike `wp-docx`, because the two container rules ODF has that OPC
+# does not are stated in zip terms: `mimetype` first and stored uncompressed.
+# `ooxml::Package` cannot express either, so it cannot hold an `.odt`.
+zip = { version = "8.6.0", default-features = false, features = ["deflate"] }

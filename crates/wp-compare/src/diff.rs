@@ -170,7 +170,7 @@ impl Difference {
 #[derive(Debug, Default)]
 pub struct Report {
     pub pages_ours: usize,
-    pub pages_word: usize,
+    pub pages_theirs: usize,
     pub matched: usize,
     /// Matched words further out than the threshold.
     pub over: usize,
@@ -221,7 +221,7 @@ pub fn compare(ours: &[Word], theirs: &[Word], threshold: f64) -> Report {
     let theirs = by_page(theirs);
     let mut report = Report {
         pages_ours: ours.len(),
-        pages_word: theirs.len(),
+        pages_theirs: theirs.len(),
         ..Report::default()
     };
 
@@ -1220,7 +1220,7 @@ mod tests {
         .concat();
         let report = compare(&ours, &theirs, 1.0);
         assert_eq!(report.pages_ours, 2);
-        assert_eq!(report.pages_word, 1);
+        assert_eq!(report.pages_theirs, 1);
         assert_eq!(report.unmatched, 2);
     }
 

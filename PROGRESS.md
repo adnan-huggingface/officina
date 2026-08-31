@@ -3999,3 +3999,90 @@ What is left is diagnosed and deliberately not fixed:
   marks are the eleven pictures Word draws into rather than drawing a box for —
   the blind spot `NOT_COMPARED` already names.
 
+## OpenDocument text, read and measured
+
+Scriva opens `.odt`. `crates/wp-odf` is the reader and the container; `cargo
+xtask compare` measures a `.odt` against **LibreOffice** rather than against
+Word, because Word reads a format it does not own through a converter and this
+machine's Word had already been caught rendering an embedded face wrongly.
+
+**The oracle cost one script.** The reference half of the harness was already
+two steps — export the document to PDF, then read the PDF — and only the first
+step knew which application it was talking to. `tools/probe/toodf-pdf.ps1`
+drives LibreOffice headless with a user profile of its own; `pdfink.py` reads
+what it produced and neither knows nor cares who drew it. Which application
+answers for a document is decided by the document's extension and by nothing
+else, and the messages say which one they want: `tests/without_office.rs` runs
+the whole check with an empty PATH and asserts that a `.docx` with no reading
+asks for Word and an `.odt` asks for LibreOffice.
+
+The renderer is *not* a fourth digest on a reading's stamp. Each application is
+asked through a script of its own, so the export digest already tells two
+readings apart; naming it as well would have made every reading committed before
+this stale, which is half an hour of driving Word to restate an answer it had
+already given. It is named in the header, where a reader wants it.
+
+**Two corpus documents, and neither could have come from Word alone.**
+`corpus/odt/second-producer.odt` is hand-written by `corpus/odf.py` the way
+`strangers.py` hand-writes OOXML. `corpus/odt/word-odf-export.odt` is a
+structural rubbing of a real Word ODF export made by `corpus/scrub-odt.py`: it
+keeps the page layout, the master page whose header is a table, thirty-three
+list definitions, the covered cells and every token's own length and
+punctuation, and keeps none of the words, none of the pictures and none of the
+metadata. Real-world structure cannot be invented; real-world content is never
+the point and is not ours to publish.
+
+**What the two documents found, in the order they were fixed.**
+
+| | at first | now |
+|---|---:|---:|
+| `second-producer.odt` | 1039 | 788 |
+| `word-odf-export.odt` | 779 | 215 |
+
+- A table wider than the column overhangs it, on both sides if it is centred.
+  Clamping the two edges to the margin was worth 37.5 points on the first page
+  of a document whose header table is 7.55in wide in a 6.5in column.
+- A cell that states its own padding is padded by it. The layout resolved the
+  table's margins and ignored the cell's, which is very nearly right for
+  WordprocessingML and exactly zero for OpenDocument.
+- The body begins below the header *and* the clear space the header keeps under
+  itself, and the header's own trailing paragraph space is no part of that.
+  Eight probes settled the rule; the model gained `header_gap`/`footer_gap` and
+  `bands_keep_trailing_space` to say it.
+- A relative table width outranks the absolute one beside it and is clamped to
+  the column. Without it a five-column table was an inch and a quarter too
+  wide, nothing wrapped, and a five-page document came out in four.
+- Cambria was classified as a serif and drawn in Times, six per cent narrow.
+  It is now named, with the `.ttc` its regular weight ships inside.
+- A filled path is one piece of ink. One page of one document was being read as
+  seventeen hundred rules, which is the watermark and its shadow.
+
+None of the six moved a single number in the 24-document `.docx` and `.doc`
+corpus. They were latent gaps that only a second format's documents exercised.
+
+**What is left, and why.**
+
+- `word-odf-export.odt` still lays in four pages where the reference lays five,
+  and its 470 unplaced words are mostly that. The remaining per-page shortfall
+  is around twenty-eight points; the watermark is not drawn at all (a
+  `<draw:custom-shape>`, which this reader does not model and the container
+  keeps whole), and `PAGE`/`NUMPAGES` inside an ODF field are shown from the
+  cached text rather than computed, so a header reads the page number the file
+  was last saved with.
+- `second-producer.odt`'s 788 is one systematic point of vertical offset
+  crossing a one-point threshold. The offset is the leading below the last line
+  of a header: the reference measures a band to the bottom of the last line's
+  *text* and this measures it to the bottom of the line's box, which differs by
+  the proportional part of a 115% line. Under the threshold the count would be
+  about fifty.
+- A line ended by an explicit break is justified by LibreOffice and not by
+  Word. Four words of the count are that, and it is left in the corpus
+  deliberately: it is a difference worth having written down.
+
+**Writing is not done, and the container is.** `wp_odf::Container` reads every
+entry of a package, filters none, and writes them all back — including the entry
+Word's export leaves with no media type at all — and `cargo xtask fidelity`
+holds it to that beside the other thirty-three documents. What is missing is the
+splicing writer for `content.xml`. Until it exists an edited `.odt` is saved as
+a `.docx` and the application says so on open, because reprinting the part whole
+would pass the test that the edit came back and fail the one that matters.

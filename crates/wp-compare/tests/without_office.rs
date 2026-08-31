@@ -1,6 +1,7 @@
-//! The comparison, run on a machine that has no Word on it.
+//! The comparison, run on a machine that has neither of the two applications
+//! it measures against.
 //!
-//! **The claim `--check` rests on had never been executed.** Word's readings of
+//! **The claim `--check` rests on had never been executed.** The readings of
 //! the corpus are committed so that the gate needs no Office — that is why the
 //! check can sit inside `cargo xtask check`, and it is written down in three
 //! files. But every run of it has been on this machine, where Word is
@@ -9,13 +10,18 @@
 //! measurement. A claim about what happens when something is missing is exactly
 //! the kind that stops being true quietly.
 //!
-//! So the tool is run here with nothing on its PATH at all. Word is reached
-//! only by starting `powershell`, and the rendering is read only by starting
+//! So the tool is run here with nothing on its PATH at all. Both applications
+//! are reached by starting `powershell`, and the rendering is read by starting
 //! `python`; neither can be found without a PATH, which is as near to an absent
 //! Office as a machine with one installed can be brought. What these tests
 //! prove is not that the code would work elsewhere — it is that the corpus is
-//! checked without Word ever being asked, and that the two ways of needing it
-//! say so in words a person can act on.
+//! checked without either application ever being asked, and that the ways of
+//! needing one say so in words a person can act on.
+//!
+//! And they say *which* one. A document is measured against the application
+//! that owns its format, so a `.docx` with no reading asks for Word and an
+//! `.odt` asks for LibreOffice; a message that named the wrong one would send
+//! somebody to install software that would not have helped.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -51,14 +57,22 @@ fn root() -> PathBuf {
 /// Word on the PATH would have left a perfectly good one behind, and a test
 /// that passes because of what a previous run did is not a test.
 fn elsewhere(name: &str) -> PathBuf {
+    from(name, &["docx", "minimal.docx"])
+}
+
+/// The same, for a document of another format — and so of another oracle.
+fn elsewhere_odt(name: &str) -> PathBuf {
+    from(name, &["odt", "second-producer.odt"])
+}
+
+fn from(name: &str, source: &[&str]) -> PathBuf {
     let dir = root().join("target").join("no-word");
     std::fs::create_dir_all(&dir).expect("target/ is writable");
     let copy = dir.join(name);
-    std::fs::copy(
-        root().join("corpus").join("docx").join("minimal.docx"),
-        &copy,
-    )
-    .expect("the corpus holds minimal.docx");
+    let original = source
+        .iter()
+        .fold(root().join("corpus"), |path, part| path.join(part));
+    std::fs::copy(&original, &copy).expect("the corpus holds the document copied here");
     let _ = std::fs::remove_file(reading_of(name));
     copy
 }
@@ -128,5 +142,25 @@ fn a_stale_reading_says_it_is_stale_rather_than_that_word_is_missing() {
     assert!(
         said.contains("older"),
         "a stale reading must say it is stale:\n{said}"
+    );
+}
+
+/// The same case for the other format, and the reason the renderer is chosen
+/// by the document rather than by a flag.
+#[test]
+fn an_open_document_with_no_reading_asks_for_libreoffice_and_not_for_word() {
+    let path = elsewhere_odt("never-rendered.odt");
+    let out = without_word(&[&path.to_string_lossy()]);
+    let said = said(&out);
+    assert!(!out.status.success(), "there is nothing to compare against");
+    assert!(
+        said.contains("LibreOffice"),
+        "an .odt is measured against LibreOffice and must say so:
+{said}"
+    );
+    assert!(
+        !said.contains("Word"),
+        "and must not send anybody to install the application that does not          own the format:
+{said}"
     );
 }

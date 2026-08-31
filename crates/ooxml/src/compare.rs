@@ -76,14 +76,51 @@ impl std::fmt::Display for Difference {
     }
 }
 
+/// One part of a package, as much of it as a comparison needs.
+///
+/// A borrowed view rather than a trait, so that a container which is not an OPC
+/// package — an ODF one, which has a manifest where this has content types and
+/// no relationships at all — is compared by the same code and to the same
+/// standard. The alternative was a second comparison beside this one, which is
+/// the fastest way to end up with two definitions of "faithful".
+#[derive(Debug, Clone, Copy)]
+pub struct Entry<'a> {
+    pub name: &'a PartName,
+    /// The content type for OPC, the manifest's media type for ODF. Both are
+    /// the same claim: what a consumer will take these bytes to be.
+    pub kind: &'a str,
+    pub data: &'a [u8],
+}
+
 /// Compares `before` against `after`, returning every difference found.
 ///
 /// An empty result means the rewrite is faithful.
 pub fn diff(before: &Package, after: &Package) -> Vec<Difference> {
-    let mut out = Vec::new();
+    fn entries(package: &Package) -> Vec<Entry<'_>> {
+        package
+            .parts()
+            .map(|part| Entry {
+                name: &part.name,
+                kind: &part.content_type,
+                data: part.data(),
+            })
+            .collect()
+    }
+    diff_entries(&entries(before), &entries(after))
+}
 
-    let names_before: BTreeSet<&PartName> = before.parts().map(|p| &p.name).collect();
-    let names_after: BTreeSet<&PartName> = after.parts().map(|p| &p.name).collect();
+/// The same comparison, over whatever a container can hand out.
+pub fn diff_entries(before: &[Entry<'_>], after: &[Entry<'_>]) -> Vec<Difference> {
+    let mut out = Vec::new();
+    let find = |entries: &[Entry<'_>], name: &PartName| -> Option<(String, Vec<u8>)> {
+        entries
+            .iter()
+            .find(|entry| entry.name == name)
+            .map(|entry| (entry.kind.to_string(), entry.data.to_vec()))
+    };
+
+    let names_before: BTreeSet<&PartName> = before.iter().map(|e| e.name).collect();
+    let names_after: BTreeSet<&PartName> = after.iter().map(|e| e.name).collect();
 
     for lost in names_before.difference(&names_after) {
         out.push(Difference::PartLost((*lost).clone()));
@@ -93,23 +130,23 @@ pub fn diff(before: &Package, after: &Package) -> Vec<Difference> {
     }
 
     for name in names_before.intersection(&names_after) {
-        let a = before.part(name).expect("name came from this package");
-        let b = after.part(name).expect("name came from this package");
+        let a = find(before, name).expect("name came from this list");
+        let b = find(after, name).expect("name came from this list");
 
-        if a.content_type != b.content_type {
+        if a.0 != b.0 {
             out.push(Difference::ContentTypeChanged {
                 part: (*name).clone(),
-                before: a.content_type.clone(),
-                after: b.content_type.clone(),
+                before: a.0.clone(),
+                after: b.0.clone(),
             });
         }
 
-        if a.data() == b.data() {
+        if a.1 == b.1 {
             continue; // fast path: identical bytes are identical meaning
         }
 
-        if looks_like_xml(a.data()) && looks_like_xml(b.data()) {
-            match (canonicalize(a.data()), canonicalize(b.data())) {
+        if looks_like_xml(&a.1) && looks_like_xml(&b.1) {
+            match (canonicalize(&a.1), canonicalize(&b.1)) {
                 (Ok(ca), Ok(cb)) if equivalent(&ca, &cb) => {}
                 (Ok(ca), Ok(cb)) => out.push(Difference::XmlChanged {
                     part: (*name).clone(),
@@ -128,8 +165,8 @@ pub fn diff(before: &Package, after: &Package) -> Vec<Difference> {
         } else {
             out.push(Difference::BinaryChanged {
                 part: (*name).clone(),
-                before_len: a.len(),
-                after_len: b.len(),
+                before_len: a.1.len(),
+                after_len: b.1.len(),
             });
         }
     }

@@ -3,7 +3,7 @@
 This file provides guidance to coding agents working in this repository.
 
 Officina is a native office suite in Rust: **Calx** (spreadsheets: xlsx/xls/csv) and
-**Scriva** (documents: docx/doc/markdown), built on egui + wgpu. Windows-first;
+**Scriva** (documents: docx/doc/odt/markdown), built on egui + wgpu. Windows-first;
 Linux code paths exist but are unverified.
 
 ## Commands
@@ -12,7 +12,8 @@ Linux code paths exist but are unverified.
 cargo xtask check      # fmt + clippy (warnings denied) + tests + layout — the gate for any change
 cargo xtask fidelity   # round-trip harness over corpus/ (untouched save, then save-after-edit)
 cargo xtask perf       # stopwatch over the corpus and larger files
-cargo xtask compare <file>  # where a page differs from Word's own, ranked (needs Word)
+cargo xtask compare <file>  # where a page differs from the owning application's rendering,
+                            # ranked (needs Word, or LibreOffice for .odt)
 cargo xtask compare --check # every corpus document, against LAYOUT.md — fails if any got worse
 cargo xtask package    # release zip; regenerates THIRD-PARTY-NOTICES.yml (needs cargo-bundle-licenses)
 cargo test -p wp-docx                          # one crate
@@ -29,7 +30,8 @@ and the driver rules that keep the exercise safe.
 
 Layout fidelity is judged by measurement, never by eye: `cargo xtask compare`
 lays the document with the application's own shaper, exports the same file from
-Word, and reports every mark whose pen went down somewhere else — worst first.
+the application that owns its format, and reports every mark whose pen went down
+somewhere else — worst first.
 Words and the page's furniture both: a rule, a shading, a border and a picture's
 box are compared the same way and counted in their own column, because until
 they were, a border could move an inch and no number moved with it. adr/0003
@@ -45,13 +47,18 @@ tests pass, the document opens, and a line sits a point and a half further down
 the page. When the new numbers are the ones to keep, `--record` and commit the
 change to `LAYOUT.md` deliberately.
 
-That check needs **no Word**: Word's readings of the corpus are committed under
-`corpus/rendered/`, because its answer for a document cannot change until the
-document does. Word is needed only to renew the reading of a document that
-actually changed — `cargo xtask compare --refresh` — and the file it renews says
-so plainly when it is out of date. `crates/wp-compare/tests/without_word.rs`
-runs the whole check with nothing on its PATH, so that this is measured rather
-than merely designed.
+That check needs **neither application**: their readings of the corpus are
+committed under `corpus/rendered/`, because an application's answer for a
+document cannot change until the document does. One is needed only to renew the
+reading of a document that actually changed — `cargo xtask compare --refresh` —
+and the file it renews says plainly when it is out of date, and which
+application it wants. `crates/wp-compare/tests/without_office.rs` runs the whole
+check with nothing on its PATH, so that this is measured rather than merely
+designed.
+
+Which application answers for a document is decided by the document: Word for
+`.docx` and `.doc`, LibreOffice for `.odt`. Word reads ODF through a converter
+it wrote for a format it does not own, and is not the standard for it.
 
 ## The invariant everything serves
 
@@ -64,7 +71,7 @@ readers or writers must leave `cargo xtask fidelity` at zero failures.
 
 Excel's and Word's observed behavior is the spec, including their bugs (1900
 leap-year, coercion order). When a decision needs an oracle, measure the real
-application — see adr/0001 and tools/word-probe/.
+application — see adr/0001 and tools/probe/.
 
 ## Architecture
 
@@ -75,8 +82,10 @@ Data flows through crates in layers; UI never touches file formats directly:
 - Spreadsheet stack: `ss-model` (sparse cells, styles) ← `ss-formula` (parser,
   incremental dependency-graph recalc) ← `ss-xlsx` / `ss-xls` / `ss-csv` ← `app-calx`.
 - Document stack: `wp-model` (paragraph/run tree, lazy style inheritance) ←
-  `wp-layout` (shaping, pagination, floats) ← `wp-docx` / `wp-doc` / `wp-text` ←
-  `wp-print` (PDF) ← `app-scriva`.
+  `wp-layout` (shaping, pagination, floats) ← `wp-docx` / `wp-doc` / `wp-odf` /
+  `wp-text` ← `wp-print` (PDF) ← `app-scriva`. `wp-odf` has a container of its
+  own rather than `ooxml`'s: an ODF package puts `mimetype` first and uncompressed
+  and lists its parts in a manifest, where OPC has content types and relationships.
 - `chart` renders DrawingML charts for both apps; `ui-kit` holds shared egui widgets
   (menu bar + toolbar — there is no ribbon), fonts, and theming.
 
@@ -86,9 +95,13 @@ bundled — keep it that way (licensing).
 ## Provenance rules (licensing)
 
 - Never copy or port code from other office implementations (LibreOffice, POI, …);
-  cite specs by section (ECMA-376, [MS-DOC]) but never paste spec text.
+  cite specs by section (ECMA-376, [MS-DOC], OpenDocument v1.4) but never paste spec
+  text. LibreOffice is used as a *measuring instrument* for `.odt` — asked to render,
+  never read — which is the standing Word has and no more.
 - corpus/ files are self-made: generate.ps1 drives the user's own Word/Excel;
-  strangers.py hand-writes second-producer OOXML. Never commit downloaded documents
+  strangers.py hand-writes second-producer OOXML and odf.py does the same for ODF;
+  scrub-odt.py makes a structural rubbing of a real `.odt` that keeps its shape and
+  none of its words. Never commit downloaded documents
   or anything with unknown redistribution terms. manual_examples/ is gitignored for
   this reason.
 - The accent green #1E6F5C is deliberately not Microsoft's brand color; UI strings

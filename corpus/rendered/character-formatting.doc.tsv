@@ -3,7 +3,7 @@
 # but the comparison. In points, one mark to a line, of two kinds:
 #   word  page  x  baseline  text
 #   mark  page  x0  y0  x1  y1
-# document 035d8456  export 67d00bda  reading 49cf81e9
+# document 035d8456  export 67d00bda  reading bcd125f9
 # Stale? `cargo xtask compare --refresh` renews it, and needs Word for that
 # one document. Everything else goes on working without it.
 word	1	72.024	94.820	Plain

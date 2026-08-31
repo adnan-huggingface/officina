@@ -128,6 +128,21 @@ const NAMED: &[(&str, [&str; 4])] = &[
         "palatino linotype",
         ["pala.ttf", "palab.ttf", "palai.ttf", "palabi.ttf"],
     ),
+    // Windows ships the regular weight of this one inside a collection rather
+    // than as a file of its own, which is why it is spelled `.ttc` here. It is
+    // worth naming: it is the face a great many documents set their headings
+    // in, and substituting Times for it sets every heading some six per cent
+    // narrow — enough to move the last word of a heading nine points and, in a
+    // long one, to change where it breaks.
+    (
+        "cambria",
+        [
+            "cambria.ttc",
+            "cambriab.ttf",
+            "cambriai.ttf",
+            "cambriaz.ttf",
+        ],
+    ),
     ("lucida sans unicode", ["l_10646.ttf", "", "", ""]),
     ("lucida console", ["lucon.ttf", "", "", ""]),
     (
@@ -885,6 +900,8 @@ mod tests {
         assert_eq!(Family::of("Arial"), Family::Sans);
         assert_eq!(Family::of("Calibri"), Family::Sans);
         assert_eq!(Family::of("Times New Roman"), Family::Serif);
+        // Still a serif for the purpose of substituting a *glyph* it lacks,
+        // even though it is now drawn as itself.
         assert_eq!(Family::of("Cambria"), Family::Serif);
         assert_eq!(Family::of("Courier New"), Family::Mono);
         assert_eq!(Family::of("Consolas"), Family::Mono);
@@ -909,7 +926,10 @@ mod tests {
         assert_eq!(gdi_family("Verdana"), "Verdana");
         assert_eq!(gdi_family("verdana"), "verdana", "case is GDI's problem");
         assert_eq!(gdi_family("Chalkduster Pro"), "Arial");
-        assert_eq!(gdi_family("Cambria"), "Times New Roman");
+        // Cambria is a named face now, and prints as itself. It classified as
+        // a serif and drew in Times until documents that set their headings in
+        // it turned up, six per cent narrow the whole way across a line.
+        assert_eq!(gdi_family("Cambria"), "Cambria");
         assert_eq!(gdi_family("Courier New"), "Courier New");
         // A missing face prints as Word's substitute for it, not as the
         // generic shape.

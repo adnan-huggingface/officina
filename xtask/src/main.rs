@@ -63,9 +63,11 @@ cargo xtask <command>
   fidelity   run the round-trip fidelity harness over corpus/
              (--report also writes FIDELITY.md)
   perf       time reading and laying out every file in corpus/
-  compare    where a document differs from Word's own rendering of it,
-             ranked (--check runs inside `check` and needs no Word; only
-             --refresh does, and only for a document that changed)
+  compare    where a document differs from the rendering the application
+             that owns its format makes of it, ranked — Word for .docx and
+             .doc, LibreOffice for .odt (--check runs inside `check` and
+             needs neither; only --refresh does, and only for a document
+             that changed)
   help       this message"
     );
 }
@@ -123,6 +125,7 @@ fn associate() -> Result<(), String> {
         (".csv", "calx"),
         (".docx", "scriva"),
         (".doc", "scriva"),
+        (".odt", "scriva"),
         (".md", "scriva"),
     ] {
         println!(

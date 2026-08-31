@@ -1,8 +1,17 @@
-//! Where Word put every mark of the same document.
+//! Where the reference application put every mark of the same document.
 //!
-//! Two steps, both under `tools/word-probe/`: `topdf.ps1` asks Word for its own
-//! rendering of the file, and `pdfink.py` reads out of it where the words and
-//! the rules landed.
+//! Two steps, both under `tools/probe/`. The first asks the application that
+//! owns the format for its own rendering of the file, as a PDF: `topdf.ps1`
+//! asks Word, `toodf-pdf.ps1` asks LibreOffice. The second, `pdfink.py`, reads
+//! out of that PDF where the words and the rules landed, and neither knows nor
+//! cares which application drew it.
+//!
+//! **Which application answers for a document is decided by the document.**
+//! Word owns `.docx` and `.doc` and is the only honest oracle for them.
+//! LibreOffice is the implementation ODF is defined against in practice, and
+//! Word reads `.odt` through a converter it wrote for a format it does not own
+//! — so an `.odt` is measured against LibreOffice. One renderer per document,
+//! which is what keeps a document to one reading and one row of `LAYOUT.md`.
 //!
 //! The route through paper is not a convenience. `Range.Information(5|6)`
 //! answers to a twentieth of a point, but it costs Word a layout pass per call
@@ -10,12 +19,12 @@
 //! hours. `wordmap.ps1` still uses it, for one page at a time, by eye.
 //!
 //! **The answers for the corpus are committed, and that is what lets the check
-//! be a check.** Word's reading of a document does not change until the
-//! document does, so it is written to `corpus/rendered/` and kept: the
-//! comparison then needs no Word at all, runs in a few seconds, and can sit
-//! inside `cargo xtask check` on a machine that has never had Office installed.
-//! Word is needed again only to renew the reading of a document that has
-//! actually changed, and the file says plainly when that is so.
+//! be a check.** A rendering of a document does not change until the document
+//! does, so it is written to `corpus/rendered/` and kept: the comparison then
+//! needs neither application at all, runs in a few seconds, and can sit inside
+//! `cargo xtask check` on a machine that has never had either installed. One is
+//! needed again only to renew the reading of a document that has actually
+//! changed, and the file says plainly when that is so.
 //!
 //! Only documents under `corpus/` are kept this way. A reading holds every word
 //! of the document it read, so a reading of somebody's real document is that
@@ -29,6 +38,46 @@ use crate::diff::Word;
 use crate::marks::{Mark, Rect};
 use crate::Reading;
 
+/// The application a document is measured against.
+///
+/// Chosen by the document rather than by a flag, because it is not a preference:
+/// a `.docx` measured against anything but Word, or an `.odt` measured against
+/// Word's converter for a format it does not own, is a number about the wrong
+/// thing. Adding a format means adding the application that owns it here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Renderer {
+    Word,
+    LibreOffice,
+}
+
+impl Renderer {
+    pub fn of(path: &Path) -> Renderer {
+        match path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("odt"))
+        {
+            true => Renderer::LibreOffice,
+            false => Renderer::Word,
+        }
+    }
+
+    /// What to call it in a message somebody has to act on.
+    pub fn name(self) -> &'static str {
+        match self {
+            Renderer::Word => "Word",
+            Renderer::LibreOffice => "LibreOffice",
+        }
+    }
+
+    /// The script that asks it to render, under `tools/probe/`.
+    fn script(self) -> &'static str {
+        match self {
+            Renderer::Word => "topdf.ps1",
+            Renderer::LibreOffice => "toodf-pdf.ps1",
+        }
+    }
+}
+
 /// The three things a reading depends on, as one line of a file.
 ///
 /// The document, and both scripts: an improvement to how words are found on a
@@ -37,7 +86,17 @@ use crate::Reading;
 /// reading is committed and a clone has no timestamps worth anything — git
 /// records content, not when a file was written, and a cache keyed on mtime
 /// misses on every fresh checkout.
+///
+/// **The renderer is not a fourth digest, and does not need to be.** Each
+/// application is asked through a script of its own, so `export` already
+/// differs between them, and a reading taken from one can never answer a stamp
+/// computed for the other. Naming the renderer on the stamp line as well would
+/// say nothing the digest does not, and would make every reading committed
+/// before ODF existed stale — half an hour of driving Word to restate an answer
+/// it has already given. It is named in the header instead, where a reader
+/// wants it and nothing is held to it.
 struct Stamp {
+    renderer: Renderer,
     document: u32,
     export: u32,
     reading: u32,
@@ -48,9 +107,11 @@ impl Stamp {
         if !path.exists() {
             return Err(format!("{} is not there", path.display()));
         }
+        let renderer = Renderer::of(path);
         Ok(Stamp {
+            renderer,
             document: digest(path),
-            export: digest(&probe("topdf.ps1")),
+            export: digest(&probe(renderer.script())),
             reading: digest(&probe("pdfink.py")),
         })
     }
@@ -65,15 +126,16 @@ impl Stamp {
     fn header(&self, path: &Path) -> String {
         let name = path.file_name().unwrap_or_default().to_string_lossy();
         format!(
-            "# Word's own rendering of {name}, as the place every mark of it landed.\n\
+            "# {who}'s own rendering of {name}, as the place every mark of it landed.\n\
              # Written by `cargo xtask compare`. Not by hand, and not read by anything\n\
              # but the comparison. In points, one mark to a line, of two kinds:\n\
              #   word  page  x  baseline  text\n\
              #   mark  page  x0  y0  x1  y1\n\
              {}\n\
-             # Stale? `cargo xtask compare --refresh` renews it, and needs Word for that\n\
+             # Stale? `cargo xtask compare --refresh` renews it, and needs {who} for that\n\
              # one document. Everything else goes on working without it.\n",
-            self.line()
+            self.line(),
+            who = self.renderer.name()
         )
     }
 
@@ -154,7 +216,8 @@ pub enum Renew {
     Always,
 }
 
-/// Asks Word where every mark went — or, almost always, reads what it said.
+/// Asks the reference application where every mark went — or, almost always,
+/// reads what it already said.
 pub fn read(path: &Path, renew: Renew) -> Result<Reading, String> {
     let stamp = Stamp::of(path)?;
     let kept = reading_at(path)?;
@@ -169,10 +232,11 @@ pub fn read(path: &Path, renew: Renew) -> Result<Reading, String> {
     if renew == Renew::Never {
         return Err(format!(
             "{} answers an older {}, or an older probe script. Renewing it needs \
-             Word, and a check will not do that for you: run \
+             {}, and a check will not do that for you: run \
              `cargo xtask compare --refresh` and commit what it writes.",
             kept.display(),
-            path.file_name().unwrap_or_default().to_string_lossy()
+            path.file_name().unwrap_or_default().to_string_lossy(),
+            stamp.renderer.name()
         ));
     }
 
@@ -185,16 +249,17 @@ pub fn read(path: &Path, renew: Renew) -> Result<Reading, String> {
         std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     }
     if renew == Renew::Always || !paper.exists() {
-        render(path, &paper).map_err(|why| match kept.exists() {
+        render(stamp.renderer, path, &paper).map_err(|why| match kept.exists() {
             // The distinction that matters when this fails: a reading that is
             // merely out of date is a document somebody changed, or a probe
             // script somebody improved, and it should say so rather than read
             // as a machine without Word on it.
             true => format!(
                 "{} was taken from an older {}, or with older probe scripts, \
-                 and renewing it needs Word.\n{why}",
+                 and renewing it needs {}.\n{why}",
                 kept.display(),
-                path.file_name().unwrap_or_default().to_string_lossy()
+                path.file_name().unwrap_or_default().to_string_lossy(),
+                stamp.renderer.name()
             ),
             false => why,
         })?;
@@ -205,18 +270,23 @@ pub fn read(path: &Path, renew: Renew) -> Result<Reading, String> {
 }
 
 fn probe(name: &str) -> PathBuf {
-    crate::repo_root()
-        .join("tools")
-        .join("word-probe")
-        .join(name)
+    crate::repo_root().join("tools").join("probe").join(name)
 }
 
-/// Word's own rendering of the document, as a PDF beside the cache.
-fn render(path: &Path, pdf: &Path) -> Result<(), String> {
+/// The reference application's own rendering of the document, as a PDF beside
+/// the cache.
+///
+/// Both probes are PowerShell, and Word is Windows-only in any case. LibreOffice
+/// is not, but the script that drives it is, and a claim to run anywhere that
+/// nothing here ever runs is prose rather than a capability.
+fn render(who: Renderer, path: &Path, pdf: &Path) -> Result<(), String> {
     if !cfg!(windows) {
-        return Err("Word's half of the comparison needs Windows and an installed Word".into());
+        return Err(format!(
+            "{}'s half of the comparison needs Windows and an installed {0}",
+            who.name()
+        ));
     }
-    let script = probe("topdf.ps1");
+    let script = probe(who.script());
     if !script.exists() {
         return Err(format!("{} is missing", script.display()));
     }
@@ -229,23 +299,25 @@ fn render(path: &Path, pdf: &Path) -> Result<(), String> {
         .arg(pdf)
         .output()
         // The message somebody without Office reads, and it has one job: to
-        // say that only *this document* wants Word. The corpus does not — its
+        // say that only *this document* wants it. The corpus does not — its
         // readings are committed — and a machine that cannot start powershell
         // can still run `cargo xtask compare --check` and the whole gate above
         // it, which is the thing worth knowing here and is easy to doubt when
         // the tool has just refused to do anything at all.
         .map_err(|e| {
             format!(
-                "this document has no reading, and taking one needs Word: {e}.\n\
+                "this document has no reading, and taking one needs {}: {e}.\n\
                  Only a document from outside `corpus/` ever needs it. The corpus \
                  is compared against readings committed under `corpus/rendered/`, \
-                 and `--check` asks Word for nothing."
+                 and `--check` asks {0} for nothing.",
+                who.name()
             )
         })?;
     if !out.status.success() || !pdf.exists() {
         let why = String::from_utf8_lossy(&out.stderr);
         return Err(format!(
-            "Word would not render {}:\n{}",
+            "{} would not render {}:\n{}",
+            who.name(),
             path.display(),
             why.trim()
         ));
@@ -264,7 +336,7 @@ fn extract(pdf: &Path) -> Result<String, String> {
         .output()
         .map_err(|e| {
             format!(
-                "Word's rendering is made but nothing here can read it: {e}.\n\
+                "the rendering is made but nothing here can read it: {e}.\n\
                  {} needs Python and PyMuPDF — `python -m pip install pymupdf`.",
                 script.display()
             )
@@ -323,7 +395,7 @@ fn parse(dump: &str) -> Result<Reading, String> {
         }
     }
     if words.is_empty() {
-        return Err("Word's rendering held no words at all — is the document empty?".into());
+        return Err("the rendering held no words at all — is the document empty?".into());
     }
     Ok(Reading { words, marks })
 }
@@ -457,7 +529,7 @@ mod tests {
     }
 
     /// The guarantee a check rests on, tested where it is hardest to see: on a
-    /// machine that *has* Word. `tests/without_word.rs` proves the corpus can be
+    /// machine that *has* Word. `tests/without_office.rs` proves the corpus can be
     /// checked without Office; this proves the check would not have quietly
     /// fetched it even if it could. A commit went out with readings stamped for
     /// an older probe script precisely because renewing one is invisible here.

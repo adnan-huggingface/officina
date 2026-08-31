@@ -12,7 +12,7 @@ postscript at the end for what it cost and what it found.
 ADR 0001 ends with a sentence this repository then half-followed for a
 fortnight: *build the oracle early; every hour spent on probe machinery repaid
 itself the same day.* That was learned for **probes** — synthetic documents
-isolating one variable, measured over COM — and `tools/word-probe/` is the
+isolating one variable, measured over COM — and `tools/probe/` is the
 machinery it bought. Nothing equivalent was ever built for the other half of
 the work: **a whole real document, every page, compared against Word's own
 rendering of it.**
@@ -116,7 +116,7 @@ an agent taking turns at forty-five minutes a turn.
 **Paid:**
 
 - A licensed Word and COM, the same constraint `corpus/generate.ps1` and
-  `tools/word-probe/` already carry. The harness must skip itself cleanly where
+  `tools/probe/` already carry. The harness must skip itself cleanly where
   Word is absent, as those tests already do.
 - A glyph-origin diff carries its own noise, and a harness is not evidence
   until it has been made to agree with a case already settled by hand. ADR 0002
@@ -175,7 +175,7 @@ resolves half a point at best, and reports one defect per look.
 differ from what this record decided, and all three were forced by measurement.
 
 **Word's half goes through paper, not through COM.** The decision above assumed
-`Range.Information(5|6)`, which is how every probe in `tools/word-probe/` has
+`Range.Information(5|6)`, which is how every probe in `tools/probe/` has
 worked since ADR 0001. It cannot do a whole document: each call costs Word a
 layout pass, measured here at about **110ms per word** — 200 words in 22.7
 seconds — so the sixteen-page document is hours. One `ExportAsFixedFormat` is
