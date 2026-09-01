@@ -1,17 +1,40 @@
 # The OpenDocument writer
 
-What is left of `.odt` support, as boxes. **This file is the definition of done**
-— `python .claude/hooks/gate.py` fails while any box here is unticked, whatever
-else is green, and `.claude/hooks/stop_gate.py` will not let a session end while
-it does.
+What is left of `.odt` support. **This file is immutable while the work runs.**
+Nothing that does the work may edit it — not to reword an item, not to remove
+one, and above all not to mark one done. A definition of done that the worker
+can edit is not a definition of done.
 
-Tick a box only when the thing it names is true *and* something proves it. A box
-ticked because the code was written is a box ticked too early; a box ticked
-because a test passes is a box.
+**Nothing here is ticked, because nothing here is ticked by hand.** Each item
+carries a `verify:` command, and the item is finished exactly when that command
+exits zero. `python .claude/hooks/gate.py` runs them all and reports the ones
+that do not. There is no ledger to keep and none to forge: the repository
+either answers the question or it does not.
 
-If one of these turns out to be wrong, or impossible, say so in `PROGRESS.md`
-and leave it unticked. An honest unticked box is worth more than a tick nobody
-believes.
+What that buys, stated plainly: an agent cannot finish this by claiming to have
+finished it. It can only make commands pass. The failure this replaces is a real
+one from the session that wrote the reader — the plan was staged, the agent
+treated a stage boundary as permission to stop, and wrote the shortfall up as a
+considered design position rather than as work skipped.
+
+Two consequences worth being honest about:
+
+- A `verify:` command is only as good as what it checks, and the first draft of
+  this file got that wrong in a way worth remembering: it used
+  `cargo test -p wp-odf splice`, and **a cargo filter that matches no test at
+  all exits zero**. Nine of these fourteen items reported themselves finished on
+  the day the plan was written. They now go through
+  `.claude/hooks/proved.py`, which fails unless at least one test actually ran.
+- The rest can only check that a file says something, which is weaker. They are
+  marked, and they are the ones to distrust.
+- If an item turns out to be wrong or impossible, that is a conversation with a
+  person and an edit to this file by that person. It is not something to work
+  around. Say so in `PROGRESS.md` and stop.
+
+`PROGRESS.md` is where the work is narrated, and `LEARNINGS.md` is where what
+the format taught goes. Neither is read by the gate. They are for people.
+
+---
 
 ## The writer
 
@@ -25,59 +48,110 @@ edit came back and fail the one that matters: that everything the reader does
 not model came back too. `crates/wp-docx/src/write/mod.rs` and its `splice.rs`
 state the design; read them first.
 
-- [ ] A splicer over `content.xml` that hands back each XML event together with
-      the source bytes it came from, so an element can be copied exactly or
-      replaced whole.
-- [ ] `content_out` walks the part and copies every byte of it except the
-      `<text:p>`, `<text:h>` and `<table:table>` elements that *read back
-      differently* from the model. Changed is defined by re-reading, never by
-      remembering: that is the only definition that cannot drift from the
-      reader.
-- [ ] A changed paragraph is emitted as ODF — `<text:p>`/`<text:h>` with its
-      style, `<text:span>` for a run that carries one, `<text:s text:c="n"/>`
-      for the second and later spaces of a run, `<text:tab/>`,
-      `<text:line-break/>`, and text escaped the way the format escapes it.
-- [ ] Direct formatting mints an **automatic style**. ODF has nowhere else to
-      put it: a run made bold by hand is not bold in the file, it names a
-      `<style:style style:family="text">` that is. The minted styles go into
-      `<office:automatic-styles>`, which stands before the body and so must be
-      written after it is known what the body needs.
-- [ ] `wp_odf::save` and `wp_odf::flush`, with the signatures `wp_docx` uses.
-- [ ] `wp_odf::write::blank::container_for(&Document)` authors a package for a
-      document that never had one, so Save As `.odt` works from a `.docx` or a
-      markdown file.
+### W1 — a splicer that keeps the bytes an event came from
+
+So that an element can be copied exactly or replaced whole.
+
+    verify: python .claude/hooks/proved.py -p wp-odf splice
+
+### W2 — `content_out` copies everything it did not change
+
+Walks `content.xml` and copies every byte of it except the `<text:p>`,
+`<text:h>` and `<table:table>` elements that *read back differently* from the
+model. Changed is defined by re-reading, never by remembering: that is the only
+definition that cannot drift from the reader.
+
+    verify: python .claude/hooks/proved.py -p wp-odf content_out
+
+### W3 — a changed paragraph is emitted as ODF
+
+`<text:p>`/`<text:h>` with its style, `<text:span>` for a run that carries one,
+`<text:s text:c="n"/>` for the second and later spaces of a run, `<text:tab/>`,
+`<text:line-break/>`, and text escaped the way the format escapes it.
+
+    verify: python .claude/hooks/proved.py -p wp-odf emit
+
+### W4 — direct formatting mints an automatic style
+
+ODF has nowhere else to put it: a run made bold by hand is not bold in the file,
+it names a `<style:style style:family="text">` that is. The minted styles go into
+`<office:automatic-styles>`, which stands before the body and so must be written
+after it is known what the body needs.
+
+    verify: python .claude/hooks/proved.py -p wp-odf automatic_style
+
+### W5 — `save` and `flush`, with the signatures `wp_docx` uses
+
+    verify: python .claude/hooks/proved.py -p wp-odf write::
+
+### W6 — `container_for` authors a package for a document that never had one
+
+So Save As `.odt` works from a `.docx` or a markdown file.
+
+    verify: python .claude/hooks/proved.py -p wp-odf blank
 
 ## The proof
 
-- [ ] `xtask fidelity` check 2 covers `.odt`: open, change the text of one
-      paragraph, save, reopen, and account for every byte that moved. Both
-      corpus documents pass it, and the entry with no media type is still
-      there afterwards.
-- [ ] An `.odt` saved with no edit at all is byte-identical to the one that was
-      opened, and a test says so rather than a person having noticed once.
+### P1 — an untouched save is byte-identical
+
+Not "a person noticed once". A test.
+
+    verify: python .claude/hooks/proved.py -p wp-odf untouched
+
+### P2 — fidelity check 2 covers `.odt`
+
+Open, change the text of one paragraph, save, reopen, and account for every byte
+that moved. Both corpus documents pass it, and the entry with no media type is
+still there afterwards.
+
+    verify: python .claude/hooks/covers_odt.py
 
 ## The application
 
-- [ ] `Format::Odt::is_writable()` is true, `save` writes an `.odt` in place,
-      and the "opens as a copy" message is gone along with the `.docx` the path
-      was being rewritten to.
-- [ ] `FORMATS.md` says read + write for `.odt`, and the section explaining why
-      it is not written goes with it. Nothing in that file is aspirational.
+### A1 — an `.odt` saves in place
+
+`Format::Odt::is_writable()` is true, `save` writes an `.odt`, and the path is
+no longer rewritten to `.docx`.
+
+    verify: python .claude/hooks/proved.py -p scriva odt
+
+### A2 — `FORMATS.md` says read + write, and the excuse is gone
+
+Weak check: it reads the file rather than the behaviour. A1 is the real one.
+
+    verify: python -c "import sys,pathlib; t=pathlib.Path('FORMATS.md').read_text(encoding='utf-8'); sys.exit(0 if 'read + write' in t.split('.odt')[1][:200] and 'why it is not written' not in t else 1)"
 
 ## The page
 
 Two differences from the reference are known, traced and unfixed. Neither is a
 mystery; both are work.
 
-- [ ] `word-odf-export.odt` lays in five pages, as the reference does. The
-      per-page shortfall is traced to the last paragraph of its header, which
-      holds the watermark this reader empties.
-- [ ] The `<draw:custom-shape>` watermark is drawn, or — if it is decided that
-      it should not be — `PROGRESS.md` argues why and `LAYOUT.md` records the
-      residue deliberately.
+### L1 — `word-odf-export.odt` lays in five pages
+
+As the reference does. The per-page shortfall is traced to the last paragraph of
+its header, which holds the watermark this reader empties.
+
+    verify: python -c "import sys,pathlib,re; t=pathlib.Path('LAYOUT.md').read_text(encoding='utf-8'); m=re.search(r'`word-odf-export.odt`\s*\|\s*(\d+)',t); sys.exit(0 if m and m.group(1)=='5' else 1)"
+
+### L2 — the watermark is drawn, or its absence is argued
+
+A `<draw:custom-shape>`. If it is decided that it should not be drawn,
+`PROGRESS.md` argues why and `LAYOUT.md` records the residue deliberately — and
+then this item is closed by a person editing this file, not by the worker.
+
+    verify: python .claude/hooks/proved.py -p wp-odf custom_shape
 
 ## The record
 
-- [ ] `PROGRESS.md` has the work log for the writer.
-- [ ] `LEARNINGS.md` records what writing the format taught, in the voice of the
-      entries already there: what was believed, what was measured, what it cost.
+### R1 — `PROGRESS.md` narrates the writer
+
+Weak check: it looks for a section, not for whether it is any good.
+
+    verify: python -c "import sys,pathlib; sys.exit(0 if 'The OpenDocument writer' in pathlib.Path('PROGRESS.md').read_text(encoding='utf-8') else 1)"
+
+### R2 — `LEARNINGS.md` records what writing the format taught
+
+In the voice of the entries already there: what was believed, what was measured,
+what it cost. Weak check, same reason.
+
+    verify: python -c "import sys,pathlib; t=pathlib.Path('LEARNINGS.md').read_text(encoding='utf-8').lower(); sys.exit(0 if 'automatic style' in t else 1)"

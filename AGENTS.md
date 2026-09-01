@@ -63,9 +63,18 @@ it wrote for a format it does not own, and is not the standard for it.
 ## When the work is finished
 
 **"Done" is a command here, not a paragraph.** `python .claude/hooks/gate.py`
-exits zero when every gate passes and `PLAN.md` — if there is one — has no
-unticked boxes, and non-zero with the reason when it does not. Prose loses to
-fatigue; an exit code does not.
+exits zero when every gate passes and every item of `PLAN.md` — if there is
+one — proves itself, and non-zero with the reason when it does not. Prose loses
+to fatigue; an exit code does not.
+
+`PLAN.md` is **not a checklist and is immutable while the work runs**. Each item
+carries its own `verify:` command and is done exactly when that exits zero; there
+is nothing to tick, so nothing doing the work can finish it by editing a file.
+`--items` lists them. Two traps that were walked into rather than reasoned about,
+both worth remembering when writing a `verify:` line: **a `cargo test` filter
+that matches no test exits zero**, so `.claude/hooks/proved.py` insists a test
+actually ran; and a harness can be green because it is not looking, which is why
+the item about fidelity covering `.odt` checks that the skip is gone as well.
 
 `.claude/hooks/stop_gate.py` is a `Stop` hook that runs it and refuses to let a
 session end while it says no, handing the reason back. **It is off by default,
