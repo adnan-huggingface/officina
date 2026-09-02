@@ -40,6 +40,15 @@ pub struct Styles {
     pub faces: FontFaces,
     /// Paragraph and text styles, by the name a `text:style-name` uses.
     pub by_name: HashMap<String, StyleId>,
+    /// Which of those names came from `<office:automatic-styles>` rather than
+    /// from `<office:styles>`.
+    ///
+    /// Nothing in reading a document turns on the difference — an automatic
+    /// style is interned and inherited like any other — but writing one does:
+    /// an automatic style is not a thing to name as a parent, so a writer
+    /// placing new direct formatting has to know which kind it is standing on.
+    /// See `write::auto`.
+    pub automatic: std::collections::HashSet<String>,
     pub tables: HashMap<String, TableProps>,
     pub rows: HashMap<String, RowProps>,
     pub columns: HashMap<String, Width>,
@@ -102,7 +111,7 @@ pub fn read(
                 // it means in its attributes. Reading only the start tags would
                 // lose it, and lose every reference to it with it.
                 match name.as_slice() {
-                    b"style" => one(reader, &e, empty, table, styles),
+                    b"style" => one(reader, &e, empty, table, styles, end == b"automatic-styles"),
                     b"default-style" if !empty => default(reader, &e, table, styles),
                     b"list-style" if !empty => {
                         crate::list::list_style(reader, &e, styles, numbering)
@@ -153,6 +162,7 @@ fn one(
     empty: bool,
     table: &mut StyleTable,
     styles: &mut Styles,
+    automatic: bool,
 ) {
     let Some(name) = attr_in(e, b"style", b"name") else {
         if !empty {
@@ -170,6 +180,9 @@ fn one(
     };
     if !empty {
         props::properties(reader, b"style", &styles.faces, &mut props);
+    }
+    if automatic {
+        styles.automatic.insert(name.clone());
     }
 
     match family.as_str() {

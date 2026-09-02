@@ -27,8 +27,20 @@ use wp_model::units::Emu;
 use crate::xml::{attr_in, end_local_name, local_name, push_text, skip_element};
 use crate::Ctx;
 
-/// Reads one `<draw:frame>`, whose start tag the caller has just seen.
-pub fn frame(reader: &mut Reader<&[u8]>, e: &BytesStart<'_>, ctx: &mut Ctx<'_>) -> Option<Drawing> {
+/// Reads one `<draw:frame>`, whose start tag began at `at` and which the caller
+/// has just seen.
+///
+/// `at` is what lets the drawing keep the bytes it was written as — see
+/// [`Drawing::source`], which is the preservation vault applied inside a part
+/// this crate models. A frame carries a graphic style, a title, an anchor and
+/// possibly an object nothing here can draw, and editing the paragraph a
+/// picture sits in is an ordinary thing to do.
+pub fn frame(
+    reader: &mut Reader<&[u8]>,
+    e: &BytesStart<'_>,
+    ctx: &mut Ctx<'_>,
+    at: usize,
+) -> Option<Drawing> {
     let width = attr_in(e, b"svg", b"width")
         .as_deref()
         .and_then(crate::xml::length);
@@ -72,6 +84,10 @@ pub fn frame(reader: &mut Reader<&[u8]>, e: &BytesStart<'_>, ctx: &mut Ctx<'_>) 
     let (rel, description) = inside(reader, ctx);
     drawing.rel = rel;
     drawing.description = description;
+    let to = reader.buffer_position() as usize;
+    if let Some(source) = ctx.source.get(at..to) {
+        drawing.source = source.into();
+    }
     // A frame this crate cannot draw is not a frame to put an empty box on the
     // page for. It is still in the package, and a save writes it back.
     drawing.rel.as_ref()?;

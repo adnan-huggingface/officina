@@ -66,15 +66,10 @@ pub fn run(corpus_dir: &Path) -> Result<Report, String> {
             }
         }
 
-        // An OpenDocument package has no writer yet, so there is no edit to
-        // make and nothing an edit could lose. Check 1 still holds its
-        // container to every byte, which is the half of the guarantee that
-        // exists; when the writer lands, this is where the other half goes.
-        if is_open_document(&path) {
-            continue;
-        }
         let result = if is_spreadsheet(&path) {
             edit_round_trip(&path)
+        } else if is_open_document(&path) {
+            odt_edit_round_trip(&path)
         } else {
             document_edit_round_trip(&path)
         };
@@ -125,13 +120,17 @@ fn is_spreadsheet(path: &Path) -> bool {
 /// file, whether or not an edit ever lands there.
 fn round_trip(path: &Path) -> Result<Vec<Difference>, String> {
     if is_open_document(path) {
-        // No writer yet, so there is nothing here that a *save* could lose —
-        // but the container is what a save will write through, and this is
-        // where it is held to the same bar as the other one: every part back,
-        // byte for byte, including the entry the manifest gives no type.
+        // Through the model, as a save actually behaves: the document is read
+        // and written back with nothing changed, so this fails the moment the
+        // splicing writer moves a byte it was not asked to move — the entry the
+        // manifest gives no type included.
         let before = wp_odf::Container::open(path).map_err(|e| format!("open: {e}"))?;
+        let mut container = wp_odf::Container::open(path).map_err(|e| format!("open: {e}"))?;
+        let (mut document, _) =
+            wp_odf::read(&container).map_err(|e| format!("read document: {e}"))?;
+        wp_odf::flush(&mut document, &mut container).map_err(|e| format!("write: {e}"))?;
         let mut buf = Vec::new();
-        before
+        container
             .write(std::io::Cursor::new(&mut buf))
             .map_err(|e| format!("write: {e}"))?;
         let after = wp_odf::Container::read(std::io::Cursor::new(buf))
@@ -252,6 +251,87 @@ fn document_edit_round_trip(path: &Path) -> Result<Vec<String>, String> {
         problems.push(format!(
             "{name} was rewritten though nothing in it was edited ({before} -> {after} bytes)"
         ));
+    }
+
+    Ok(problems)
+}
+
+/// Check 2 for an OpenDocument text document.
+///
+/// The same two questions as for a `.docx`, asked of a package whose parts are
+/// its own: did the edit come back, and did anything else move. The second is
+/// the one with teeth — an ODF writer that reprinted `content.xml` passes the
+/// first and fails the second, and reprinting is exactly what would quietly drop
+/// the change tracking, the form controls and the drawings this reader does not
+/// model.
+fn odt_edit_round_trip(path: &Path) -> Result<Vec<String>, String> {
+    use wp_model::doc::{Inline, Run};
+
+    const MARKER: &str = "scriva fidelity harness";
+
+    let original = wp_odf::Container::open(path).map_err(|e| format!("open: {e}"))?;
+    let mut container = wp_odf::Container::open(path).map_err(|e| format!("open: {e}"))?;
+    let (mut document, _) = wp_odf::read(&container).map_err(|e| format!("read document: {e}"))?;
+
+    {
+        let mut paragraphs = document.paragraphs_mut();
+        let Some(paragraph) = paragraphs.first_mut() else {
+            return Ok(vec!["no paragraph to edit".to_owned()]);
+        };
+        paragraph.content = vec![Inline::Run(Run::of(MARKER))];
+    }
+
+    let expected: Vec<String> = document
+        .paragraphs()
+        .iter()
+        .map(|paragraph| paragraph.text())
+        .collect();
+
+    wp_odf::flush(&mut document, &mut container).map_err(|e| format!("write: {e}"))?;
+    let mut buf = Vec::new();
+    container
+        .write(std::io::Cursor::new(&mut buf))
+        .map_err(|e| format!("write: {e}"))?;
+    let saved =
+        wp_odf::Container::read(std::io::Cursor::new(buf)).map_err(|e| format!("reopen: {e}"))?;
+    let (reopened, _) = wp_odf::read(&saved).map_err(|e| format!("reread document: {e}"))?;
+
+    let mut problems = Vec::new();
+    let after: Vec<String> = reopened
+        .paragraphs()
+        .iter()
+        .map(|paragraph| paragraph.text())
+        .collect();
+    if after != expected {
+        problems.push(format!(
+            "the text changed on the way through: {} paragraphs before, {} after",
+            expected.len(),
+            after.len()
+        ));
+    }
+    if !reopened.text().contains(MARKER) {
+        problems.push("the edit did not come back".to_owned());
+    }
+
+    // The edit was in the body, so `content.xml` is the only part that may have
+    // moved. Not `styles.xml`, which holds the headers; not the pictures; and
+    // not the entry Word's own ODF export leaves with no media type.
+    for part in original.parts() {
+        let name = part.name().as_str();
+        // A part name is stated with the leading slash a package path has, and
+        // the entry inside the zip is stated without one.
+        if name.trim_start_matches('/') == "content.xml" {
+            continue;
+        }
+        match saved.data(name) {
+            Some(after) if after == part.data() => {}
+            Some(after) => problems.push(format!(
+                "{name} was rewritten though nothing in it was edited ({} -> {} bytes)",
+                part.len(),
+                after.len()
+            )),
+            None => problems.push(format!("{name} is gone from the saved package")),
+        }
     }
 
     Ok(problems)

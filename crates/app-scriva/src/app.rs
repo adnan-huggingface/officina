@@ -165,7 +165,7 @@ pub enum Format {
     Docx,
     /// Word 97-2003. Read-only: see `wp_doc`.
     Doc,
-    /// OpenDocument text. Read-only for now: see `wp_odf`.
+    /// OpenDocument text.
     Odt,
     Markdown,
     Text,
@@ -188,8 +188,14 @@ impl Format {
     }
 
     /// Whether saving in this format throws formatting away.
+    ///
+    /// Only the two text formats do. A `.odt` is a whole document format with a
+    /// splicing writer behind it, so saving one keeps everything a `.docx` save
+    /// keeps — and the warning this drives names Markdown and plain text by
+    /// what they cannot hold, which is not a thing that could be said about
+    /// OpenDocument without saying something false.
     pub fn is_lossy(self) -> bool {
-        !matches!(self, Format::Docx)
+        matches!(self, Format::Markdown | Format::Text)
     }
 
     /// Whether this format can be written at all.
@@ -198,15 +204,12 @@ impl Format {
     /// back means rebuilding every byte offset in it, and one wrong offset makes
     /// a file Word opens as something else. So it is read and saved as `.docx`.
     ///
-    /// An `.odt` is not written for a different reason and only for now: the
-    /// container preserves every part of one and is checked doing so, but
-    /// nothing yet rewrites `content.xml` a paragraph at a time, and reprinting
-    /// it whole would drop everything in the file this reader does not model.
-    /// A save that quietly loses the parts of a document it did not understand
-    /// is the one thing this project exists to prevent, so until the writer
-    /// splices, an edited `.odt` is saved as a `.docx`.
+    /// An `.odt` is written, through a splicing writer of its own: the package
+    /// it came out of is kept and `content.xml` is edited a paragraph at a
+    /// time, so a save keeps every part and every element the reader does not
+    /// model. See `wp_odf::write`.
     pub fn is_writable(self) -> bool {
-        !matches!(self, Format::Doc | Format::Odt)
+        !matches!(self, Format::Doc)
     }
 }
 
@@ -224,6 +227,11 @@ pub struct Scriva {
     /// The package the document came out of. The writer edits it rather than
     /// building a new one, which is the whole of the preservation guarantee.
     package: Option<ooxml::Package>,
+    /// The same thing for an OpenDocument file, whose package is a zip with
+    /// rules of its own and cannot be an [`ooxml::Package`]. Exactly one of the
+    /// two is ever set, and which one it is decides which writer a save goes
+    /// through.
+    container: Option<wp_odf::Container>,
     /// Where the pictures live inside that package. Located once on opening,
     /// because resolving a relationship per frame is work per frame.
     parts: Option<wp_docx::DocumentParts>,
@@ -425,6 +433,7 @@ impl Scriva {
         Scriva {
             document: blank(),
             package: None,
+            container: None,
             path: None,
             dirty: false,
             stamp: 1,
@@ -793,6 +802,7 @@ impl Scriva {
             _ => wp_text::read_plain(&text),
         };
         self.package = None;
+        self.container = None;
         self.parts = None;
         self.adopt_document_fonts();
         self.pictures.clear();
@@ -817,18 +827,16 @@ impl Scriva {
     /// Ctrl+S must not offer to write back over a file this cannot write.
     /// Opens an `.odt`.
     ///
-    /// The same shape as a `.doc`: read, shown, and saved as a `.docx`, because
-    /// nothing here writes an OpenDocument package yet. The difference is that
-    /// this one is a decision about the writer rather than about the format —
-    /// the container reads and rewrites every part of an `.odt` faithfully, and
-    /// `cargo xtask fidelity` holds it to that; what is missing is the splicing
-    /// writer for `content.xml`, and until it exists an edited save would have
-    /// to reprint the part and drop whatever this reader does not model.
+    /// The same shape as a `.docx` and not the same as a `.doc`: the package
+    /// the document came out of is kept, and a save edits it. What that buys is
+    /// stated in `wp_odf::write` — the parts this crate does not model come
+    /// back byte for byte, and so does every element inside the ones it does.
     fn open_odt(&mut self, path: &Path) {
         match wp_odf::open(path) {
-            Ok((document, media, _container)) => {
+            Ok((document, media, container)) => {
                 self.document = document;
                 self.package = None;
+                self.container = Some(container);
                 self.parts = None;
                 self.adopt_document_fonts();
                 self.pictures.clear();
@@ -837,8 +845,8 @@ impl Scriva {
                 // and the bytes arrive beside the document.
                 self.pictures
                     .adopt(media.into_iter().map(|picture| (picture.rel, picture.data)));
-                self.path = Some(path.with_extension("docx"));
-                self.dirty = true;
+                self.path = Some(path.to_path_buf());
+                self.dirty = false;
                 self.history.clear();
                 self.selection = Selection::default();
                 self.scope = wp_model::Scope::Body;
@@ -850,11 +858,6 @@ impl Scriva {
                 self.view.invalidate();
                 self.recent.remember(SCRIVA, path);
                 self.refresh_fields();
-                self.message = Some((
-                    "Opened as a copy".to_owned(),
-                    "OpenDocument text is read but not yet written, so this one will be saved as a .docx. Its styles, lists, tables, headers and pictures come with it, and the original file is left exactly as it was."
-                        .to_owned(),
-                ));
             }
             Err(error) => {
                 self.message = Some((
@@ -875,6 +878,7 @@ impl Scriva {
             Ok((document, media)) => {
                 self.document = document;
                 self.package = None;
+                self.container = None;
                 self.parts = None;
                 self.adopt_document_fonts();
                 self.pictures.clear();
@@ -942,6 +946,7 @@ impl Scriva {
                 self.document = document;
                 self.parts = wp_docx::DocumentParts::locate_in(&package).ok();
                 self.package = Some(package);
+                self.container = None;
                 self.adopt_document_fonts();
                 self.pictures.clear();
                 self.path = Some(path.to_path_buf());
@@ -970,13 +975,18 @@ impl Scriva {
         let Some(path) = self.path.clone() else {
             return self.save_as();
         };
-        if Format::of(&path) != Format::Docx {
-            return self.save_text(&path, Format::of(&path));
+        match Format::of(&path) {
+            Format::Docx => {}
+            Format::Odt => return self.save_odt(&path),
+            other => return self.save_text(&path, other),
         }
         if self.package.is_none() {
-            // A new document, or one read out of a `.doc`. Author the package
-            // once; from here on it is edited by the same splice writer that
-            // edits a document Word wrote.
+            // A new document, or one read out of a `.doc` or a `.odt`. Author
+            // the package once; from here on it is edited by the same splice
+            // writer that edits a document Word wrote. Whatever package the
+            // document arrived in is not this one, and is let go with the
+            // format it belonged to.
+            self.container = None;
             match wp_docx::write::blank::package_for(&self.document) {
                 Ok(mut package) => {
                     self.carry_loose_pictures(&mut package);
@@ -1000,6 +1010,67 @@ impl Scriva {
             Err(error) => {
                 // A document open in Word cannot be written by anything else,
                 // and that is not a fault in the save. Say so where it happens.
+                self.message = Some((
+                    "Cannot save".to_owned(),
+                    format!(
+                        "{}\n\n{error}\n\nIf the document is open in another \
+                         program, close it there and try again.",
+                        path.display()
+                    ),
+                ));
+                false
+            }
+        }
+    }
+
+    /// Says no, in the one place where an OpenDocument document can do less
+    /// than a Word one.
+    ///
+    /// A picture is three things in a package — bytes, a name for them and a
+    /// drawing that uses the name — and this authors none of the three for an
+    /// ODF package yet. Refusing where the user asks is the honest answer;
+    /// authoring a `.docx` package underneath a document that will be saved as
+    /// `.odt` is how a picture would arrive on screen and be gone from the file.
+    fn refuse_in_open_document(&mut self, why: &str) -> bool {
+        if self.container.is_none() {
+            return false;
+        }
+        self.message = Some((
+            "Not yet".to_owned(),
+            format!("{why}. Save it as a .docx first."),
+        ));
+        true
+    }
+
+    /// Writes an OpenDocument text document.
+    ///
+    /// Through the package it was opened from wherever there is one, which is
+    /// what makes a save keep the parts and the elements this project does not
+    /// model. A document that came from somewhere else — a new one, or a
+    /// `.docx` being saved as `.odt` — has a package authored for it once, and
+    /// from then on it is edited by the same splice writer.
+    fn save_odt(&mut self, path: &Path) -> bool {
+        if self.container.is_none() {
+            self.package = None;
+            self.parts = None;
+            match wp_odf::write::blank::container_for(&self.document) {
+                Ok(container) => self.container = Some(container),
+                Err(error) => {
+                    self.message = Some(("Cannot save".to_owned(), error.to_string()));
+                    return false;
+                }
+            }
+        }
+        let Some(container) = &mut self.container else {
+            return false;
+        };
+        match wp_odf::save(&mut self.document, container, path) {
+            Ok(()) => {
+                self.dirty = false;
+                self.recent.remember(SCRIVA, path);
+                true
+            }
+            Err(error) => {
                 self.message = Some((
                     "Cannot save".to_owned(),
                     format!(
@@ -1050,6 +1121,7 @@ impl Scriva {
     fn save_as(&mut self) -> bool {
         let mut chooser = rfd::FileDialog::new()
             .add_filter("Word document", &["docx"])
+            .add_filter("OpenDocument text", &["odt"])
             .add_filter("Markdown", &["md"])
             .add_filter("Plain text", &["txt"]);
         if let Some(directory) = self.recent.directory() {
@@ -1229,6 +1301,7 @@ impl Scriva {
     fn close_document(&mut self) {
         self.document = blank();
         self.package = None;
+        self.container = None;
         self.parts = None;
         self.adopt_document_fonts();
         self.pictures.clear();
@@ -2183,6 +2256,9 @@ impl Scriva {
     /// drawable — and savable — the moment it is pasted rather than at the next
     /// save.
     fn insert_picture(&mut self, data: &[u8], content_type: &str, width: u32, height: u32) -> bool {
+        if self.refuse_in_open_document("Pictures cannot be added to an OpenDocument file yet") {
+            return false;
+        }
         if self.package.is_none() {
             // A document that has never been in a file has no package to put a
             // part into. Authoring one now is what the next save would do.
@@ -2229,6 +2305,9 @@ impl Scriva {
     /// to it from here is what it can do to any drawing: move it, resize it,
     /// delete it. Changing what it plots means going back to Calx.
     fn insert_chart_part(&mut self, chart_space: &[u8], cx: i64, cy: i64) -> bool {
+        if self.refuse_in_open_document("Charts cannot be added to an OpenDocument file yet") {
+            return false;
+        }
         if self.package.is_none() {
             match wp_docx::write::blank::package_for(&self.document) {
                 Ok(package) => self.package = Some(package),
@@ -8908,5 +8987,90 @@ mod tests {
             with_extension(PathBuf::from("report.docm")),
             PathBuf::from("report.docm")
         );
+    }
+
+    fn corpus(name: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../corpus/odt")
+            .join(name)
+    }
+
+    /// The whole of A1: an OpenDocument file opened here is a document, not a
+    /// copy of one. It keeps its own name, its own package and its own format,
+    /// and a save writes back through all three.
+    #[test]
+    fn an_odt_is_saved_in_place_rather_than_turned_into_a_docx() {
+        assert!(Format::Odt.is_writable());
+        assert!(!Format::Odt.is_lossy());
+
+        let source = corpus("second-producer.odt");
+        let temp = std::env::temp_dir().join("scriva-odt-in-place.odt");
+        std::fs::copy(&source, &temp).expect("the corpus document is there");
+
+        let mut app = Scriva::new();
+        app.open_odt(&temp);
+        assert_eq!(
+            app.path.as_deref(),
+            Some(temp.as_path()),
+            "the path is the file's own, not the same name with .docx on it"
+        );
+        assert!(
+            app.container.is_some(),
+            "the package it came out of is kept"
+        );
+        assert!(
+            !app.dirty,
+            "and it is a document rather than an unsaved copy"
+        );
+
+        {
+            let mut paragraphs = app.document.paragraphs_mut();
+            let first = paragraphs.first_mut().expect("a paragraph to edit");
+            first.content = vec![wp_model::doc::Inline::Run(wp_model::doc::Run::of(
+                "edited in Scriva",
+            ))];
+        }
+        assert!(app.save(), "the save reports success");
+
+        let (reopened, _, saved) =
+            wp_odf::open(&temp).expect("what came out is an OpenDocument package");
+        assert!(
+            reopened.text().contains("edited in Scriva"),
+            "the edit came back"
+        );
+
+        // And the half that matters: an edit in the body moved `content.xml`
+        // and nothing else in the package.
+        let original = wp_odf::Container::open(&source).expect("the corpus document opens");
+        for part in original.parts() {
+            let name = part.name().as_str();
+            if name.trim_start_matches('/') == "content.xml" {
+                continue;
+            }
+            assert_eq!(
+                saved.data(name),
+                Some(part.data()),
+                "{name} was rewritten though nothing in it was edited"
+            );
+        }
+        let _ = std::fs::remove_file(&temp);
+    }
+
+    /// Save As `.odt` from a document that never had a package: the writer
+    /// authors one, and what lands on disk opens again.
+    #[test]
+    fn a_document_with_no_package_saves_as_an_odt() {
+        let mut app = app_with(&["first line", "second line"]);
+        let temp = std::env::temp_dir().join("scriva-odt-authored.odt");
+        app.path = Some(temp.clone());
+        assert!(app.save(), "the save reports success");
+
+        let (read, _, _) = wp_odf::open(&temp).expect("it opens as OpenDocument text");
+        assert_eq!(
+            read.text(),
+            "first line
+second line"
+        );
+        let _ = std::fs::remove_file(&temp);
     }
 }

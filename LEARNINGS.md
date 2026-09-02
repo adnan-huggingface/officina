@@ -1678,3 +1678,55 @@ printing our own page beside the reference's to see it at all, and the
 reference settled the rest: it sets `Scope` as an `S` at 14pt followed by
 `COPE` at 11.2, so a change of case is a unit boundary exactly as a change of
 script is.
+
+**Direct formatting is not a thing you can write in ODF.** A run made bold by
+hand does not carry bold: it names a `<style:style style:family="text">` that
+does, and that style is an *automatic style* standing in
+`<office:automatic-styles>` at the top of the part. Two consequences a writer
+has to be built around rather than patched for. The stylesheet stands *before*
+the body, so it cannot be written until the body is known — it has to be spliced
+back into bytes already emitted. And an automatic style is not a thing to name as
+a parent: ODF 1.4 part 3 §16.4 has them outside the hierarchy a person navigates,
+so a producer that chains one to another is asking every consumer to resolve a
+name in a pool it does not keep. Where a run already wears one, its properties
+have to be copied into the new style and its parent taken over with them, which
+says in one level what the file said in two.
+
+**A table's geometry is outside the table.** WordprocessingML puts the grid, each
+cell's width, its borders and its shading inside `<w:tbl>`, so a writer can
+re-emit a whole table from the model and lose nothing the model does not hold.
+ODF states all of it in automatic styles named from every column, row and cell —
+`<table:table-column table:style-name="Table1.A">` — so the same move means
+minting that whole family and hoping they say what the originals said. The two
+writers in this repository therefore differ where it would have been tidier for
+them to agree: the ODF one splices *into* a changed table, down to the paragraphs
+in its cells, and copies every width and border rather than restating it.
+
+**Pairing a file's paragraphs with a model's by counting needs an identity the
+format may not have.** A `.docx` writer can survive it because Word gives every
+paragraph a `w14:paraId`: delete one in the middle, everything after it pairs
+with the wrong neighbour and is rewritten, but the rewrite reproduces the
+`paraId` and the bytes come out the same anyway. ODF has no such thing. Measured
+on a five-block document, one deletion re-emitted every block after it — and the
+table among them lost its column widths, because a table paired against a
+paragraph has its bytes dropped and the model's table written in its place. The
+fix is not a better identity but a better question: scan the scope first, then
+align the two sequences by what the blocks *say*, looking a bounded distance
+either way. Finding the file's block further on in the model means an insertion;
+finding the model's block further on in the file means a deletion; only when
+neither holds is it an edit.
+
+**ODF collapses whitespace, so a space is sometimes an element.** A run of spaces
+in `<text:p>` reads as one space (ODF 1.4 part 3 §6.1.2), and so does a space at
+the start of a line. Every space after the first has to be written
+`<text:s text:c="n"/>` or a document that lines its columns up with spaces comes
+back with the columns closed. The file stays well-formed either way, which is
+what makes it the kind of mistake a round-trip test written in terms of "does it
+parse" would never catch.
+
+**A part's byte offsets and its parser's byte offsets have to be the same
+buffer.** Keeping a `<draw:frame>` as the bytes it was read from means slicing
+the part at the positions quick-xml reports — and quick-xml does not count a
+byte-order mark. Stripping the mark before the reader is given the text is the
+only version of this that is not three bytes wrong in exactly the documents that
+have one.

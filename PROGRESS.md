@@ -4132,3 +4132,90 @@ longer disagree — and then finished: a change of case is now a unit boundary, 
 `Scope` is set as an `S` at 14pt and `COPE` at 11.2, which is span for span and
 size for size what the reference does. One corpus document got better; none got
 worse.
+
+## The OpenDocument writer
+
+`.odt` is now read *and* written. The half that was missing — the one that
+rewrites `content.xml` a paragraph at a time — is `crates/wp-odf/src/write`, and
+it is `wp_docx::write`'s design applied to a format that makes two different
+demands of it.
+
+**What was built.** `splice.rs` is the third splicer in the repository and the
+same primitive as the other two: an XML reader that hands back each event
+together with the exact bytes it came from, so an element can be copied or
+replaced whole. `content_out` walks `content.xml` and copies every byte of it
+except the `<text:p>`, `<text:h>`, block-level `<draw:frame>` and
+`<table:table>` elements that *read back differently* from the model — changed
+defined by re-reading, never by remembering. `emit.rs` writes a changed
+paragraph as ODF; `auto.rs` mints the automatic styles direct formatting has to
+become; `blank.rs` authors a package for a document that never had one, so Save
+As `.odt` works. `styles.xml` goes through the same walk, because a header is
+paragraphs inside a master page and Scriva edits a header where it is drawn.
+
+**Two departures from `wp_docx::write`, both the format's doing.**
+
+A table that changed is spliced *into* rather than re-emitted. WordprocessingML
+keeps a table's geometry inside `<w:tbl>`, so re-emitting one from the model
+loses nothing; ODF states every width, border and shading in automatic styles
+named from each column, row and cell, so re-emitting a table means minting that
+whole family and hoping. The walk mirrors `table::read`'s own bookkeeping —
+`table:number-columns-repeated`, `number-rows-repeated`, the covered cells — so
+that the model's cell at a position is the one the file's cell pairs with. The
+cost is that a change to a table's *structure* is not written; the benefit is
+that fixing a typo in a cell does not resize the table.
+
+Direct formatting cannot be written where the run is. A run made bold by hand
+names a `<style:style style:family="text">` that is bold, and that style lives in
+`<office:automatic-styles>`, which stands *before* the body — so the stylesheet
+cannot be written until the body is known and is spliced back in afterwards. A
+minted style stands on a *common* style and never on another automatic one: where
+the run already names an automatic style, that style's own properties are copied
+into the new one and its parent is taken over with them.
+
+**Positional pairing was not good enough, and the corpus said so before a user
+would have.** The first version paired the file's blocks with the model's by
+counting, as `wp_docx` does. Delete the second paragraph of a document and every
+paragraph after it pairs with the one that used to follow it: all of them read
+back "changed", all of them are rewritten, and everything in them this crate does
+not model goes with the rewrite — for one deletion. Worse, the *table* after the
+deletion pairs against a paragraph, its bytes are dropped, and the model's table
+is re-emitted with none of its column widths. `wp_docx` survives the same
+arithmetic only because a Word paragraph carries `w14:paraId` and the re-emission
+reproduces it; ODF has no such identity.
+
+So the walk now scans a scope first — reading each block in document order, which
+is what keeps the reading context's note numbers and picture names in step — and
+then aligns the two sequences by *what they say*, looking a bounded distance
+either way. Finding the file's block further on in the model means blocks were
+inserted; finding the model's block further on in the file means blocks were
+deleted; only when neither holds is it the same block, edited. A deletion now
+costs the deleted paragraph's bytes and nothing else.
+
+**A drawing keeps the bytes it arrived as.** `Drawing::source` was empty for ODF
+and is now filled: the reader slices the `<draw:frame>` out of the part it is
+reading. Without it, editing the paragraph a picture sits in would have written
+back a frame reconstructed from four attributes and lost its graphic style, its
+title and anything inside it this crate cannot draw. This is the preservation
+vault applied inside a modelled part, and it is what the model's own comment on
+that field asks for.
+
+**What the corpus proves.** `cargo xtask fidelity` check 1 for an `.odt` now goes
+*through the model* — open, save with nothing changed, compare — and both corpus
+documents come back byte for byte, the entry Word's export leaves with no media
+type included. Check 2 no longer steps over an OpenDocument package: it changes
+the first paragraph, saves, reopens, and asserts that `content.xml` is the only
+part that moved. `.claude/hooks/covers_odt.py` checks that the skip is gone as
+well as that the harness passes.
+
+**In the application.** `Format::Odt::is_writable()` is true, an `.odt` opens as
+itself rather than as a copy, the path is no longer rewritten to `.docx`, and
+Save As offers OpenDocument text. Two things it still refuses, and says so where
+the user asks rather than quietly: a picture cannot yet be *added* to an ODF
+document (a picture is three things in a package and this authors none of them
+for ODF), and a `.docx` saved as `.odt` gets a package authored from nothing,
+which carries the text, the styles and the page but not the pictures.
+
+**What is left.** The two items of `PLAN.md` about the page: `word-odf-export.odt`
+still lays in four pages where LibreOffice lays five, and the watermark it holds
+as a `<draw:custom-shape>` is still not drawn. Both were traced in the previous
+sitting and both are work rather than mystery.

@@ -30,6 +30,7 @@ use std::path::Path;
 
 pub mod container;
 pub mod manifest;
+pub mod write;
 
 mod content;
 mod draw;
@@ -42,6 +43,7 @@ mod table;
 mod xml;
 
 pub use container::{Container, Part};
+pub use write::{flush, save};
 
 /// The version of the standard this crate writes, and the newest it knows.
 ///
@@ -222,6 +224,9 @@ pub fn read(container: &Container) -> Result<(wp_model::Document, Vec<Media>)> {
 /// to each other in both directions.
 pub(crate) struct Ctx<'a> {
     pub container: &'a Container,
+    /// The bytes of the part being read, so that an element kept whole for the
+    /// writer can be sliced out of them. See [`wp_model::doc::Drawing::source`].
+    pub source: &'a [u8],
     pub table: wp_model::StyleTable,
     pub numbering: wp_model::Numbering,
     pub styles: styles::Styles,
@@ -250,6 +255,7 @@ impl<'a> Ctx<'a> {
     fn new(container: &'a Container) -> Ctx<'a> {
         Ctx {
             container,
+            source: &[],
             table: wp_model::StyleTable::new(),
             numbering: wp_model::Numbering::new(),
             styles: styles::Styles::default(),

@@ -27,7 +27,7 @@ Three columns, because a file format has three different questions:
 | `.docx` / `.docm` | — | read + write | The main format. |
 | `.dotx` | — | read + write | Word's own 41 shipped templates are part of the test corpus. |
 | `.doc` (Word 97–2003) | — | read only | Opens as a copy, saves as `.docx`. Same reason as `.xls`. |
-| `.odt` / `.ott` (OpenDocument) | — | read only | Opens as a copy, saves as `.docx`. The container preserves every part of one and is checked doing so; what is missing is the writer, not the understanding. See below. |
+| `.odt` / `.ott` (OpenDocument) | — | read + write | Saved in place, through a splicing writer of its own: every part the reader does not model comes back byte for byte, and so does every element inside the ones it does. See below. |
 | `.md` | — | read + write | Headings become real heading *styles*, not bold text. |
 | `.txt` | — | read + write | Encoding and line endings are kept as they arrived. |
 | `.pdf` | no | no | Dropped from scope. |
@@ -110,7 +110,9 @@ links. Tab stops. The faces the document names, and the ones it carries.
 
 **What is not read.** Change tracking, forms, embedded objects, charts, and the
 drawing layer beyond a frame holding a picture — a watermark written as a custom
-shape is one of those, and it is the visible gap on a page that has one.
+shape is one of those, and it is the visible gap on a page that has one. None of
+it is dropped on the way out: a `<draw:frame>` is kept as the bytes it was read
+as, and everything else rides through inside the paragraph it is in.
 
 **What is preserved.** Everything. `wp_odf::Container` reads every entry of the
 package into memory, filters none of them, and writes them all back — including
@@ -118,13 +120,27 @@ an entry the manifest gives no media type, which Word's own ODF export leaves
 behind and which a reader that trusted the manifest would drop. `cargo xtask
 fidelity` holds it to that like any other container.
 
-**Why it is not written.** Not because the container cannot: it can, and the
-round trip is checked. Because nothing yet rewrites `content.xml` a paragraph at
-a time. Reprinting the part whole would pass a test that the edit came back and
-fail the one that matters — that everything the reader does not model came back
-too. A save that quietly loses what it did not understand is the one thing this
-project exists to prevent, so until the writer splices, an edited `.odt` is
-saved as a `.docx`, and the application says so when it opens one.
+**How it is written.** `content.xml` is *edited*, never reprinted: the part is
+walked, each `<text:p>`, `<text:h>` and `<table:table>` is compared against the
+model by reading it again, and one that reads back the same is copied byte for
+byte. Reprinting would pass a test that the edit came back and fail the one that
+matters — that everything the reader does not model came back too. `styles.xml`
+goes the same way, because a header is paragraphs inside a master page and a
+header is edited where it is drawn.
+
+Two things the format makes a writer do that WordprocessingML does not. Direct
+formatting has nowhere to live but an automatic style, so a run made bold by
+hand mints a `<style:style style:family="text">` in `<office:automatic-styles>`
+— which stands before the body, and so is spliced in once the body is known. And
+a table that changed is spliced *into* rather than rewritten: an ODF table states
+its widths, borders and shading in automatic styles named from every column, row
+and cell, so rewriting one would mean minting the lot. The cost is that a change
+to a table's structure — a row added, a column removed — is not yet written.
+
+Two gaps remain, and both are about authoring rather than preserving: a picture
+cannot yet be *added* to an ODF document, and a `.docx` saved as `.odt` gets a
+package authored from nothing, which carries the text, the styles and the page
+but not the pictures.
 
 ---
 

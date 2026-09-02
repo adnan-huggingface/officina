@@ -36,12 +36,21 @@ use crate::{Ctx, Error, Master, Result};
 pub enum Which {
     Content,
     Styles,
+    /// The stylesheets alone: no body, and no master pages either. What the
+    /// writer needs to put a context back in the state the reader was in at the
+    /// moment it began reading a body.
+    Stylesheet,
 }
 
 /// Reads one part, and returns the body it held — empty for `styles.xml`,
 /// whose content is the master pages and reaches the caller through `ctx`.
-pub fn part(bytes: &[u8], ctx: &mut Ctx<'_>, which: Which) -> Result<Vec<Block>> {
+pub fn part<'a>(bytes: &'a [u8], ctx: &mut Ctx<'a>, which: Which) -> Result<Vec<Block>> {
     let text = std::str::from_utf8(bytes).map_err(|e| Error::Xml(format!("not UTF-8: {e}")))?;
+    // A byte-order mark is dropped before anything counts bytes, so that the
+    // offsets the reader hands out index the same buffer the parser walks —
+    // which is what lets a drawing be kept as the bytes it was read from.
+    let text = text.strip_prefix('\u{FEFF}').unwrap_or(text);
+    ctx.source = text.as_bytes();
     let mut reader = Reader::from_str(text);
     let mut body = Vec::new();
     loop {
@@ -60,7 +69,15 @@ pub fn part(bytes: &[u8], ctx: &mut Ctx<'_>, which: Which) -> Result<Vec<Block>>
                         stylesheet(&mut reader, b"automatic-styles", ctx)
                     }
                     b"styles" if !empty => stylesheet(&mut reader, b"styles", ctx),
-                    b"master-styles" if !empty => master_styles(&mut reader, ctx),
+                    // The master pages hold bodies of their own, so a caller
+                    // that wants the stylesheets and nothing that numbers a
+                    // note or mints a picture name asks for `Stylesheet`. The
+                    // writer does, because it is about to read those bodies
+                    // itself and every id has to land where the first reading
+                    // put it.
+                    b"master-styles" if !empty && which != Which::Stylesheet => {
+                        master_styles(&mut reader, ctx)
+                    }
                     b"text" if !empty && which == Which::Content => {
                         body = blocks(&mut reader, b"text", ctx)
                     }
@@ -186,7 +203,31 @@ pub fn blocks(reader: &mut Reader<&[u8]>, end: &[u8], ctx: &mut Ctx<'_>) -> Vec<
 }
 
 /// The list stack: which list style each level is in, innermost last.
-type Lists = Vec<Option<u32>>;
+pub(crate) type Lists = Vec<Option<u32>>;
+
+/// The list style a `<text:list>` puts its paragraphs in.
+///
+/// Stated here or inherited from the list this one is inside — a nested list
+/// usually names nothing and continues its parent's definition. The writer
+/// walks the same structure and asks the same question, which is why this is a
+/// function rather than four lines in one place.
+pub(crate) fn list_level(e: &BytesStart<'_>, ctx: &Ctx<'_>, lists: &Lists) -> Option<u32> {
+    let named =
+        attr_in(e, b"text", b"style-name").and_then(|name| ctx.styles.lists.get(&name).copied());
+    named.or_else(|| lists.iter().rev().flatten().next().copied())
+}
+
+/// A frame standing where a block belongs, which the model has no room for
+/// except as a paragraph holding it.
+pub(crate) fn framed(drawing: wp_model::doc::Drawing) -> Block {
+    Block::Paragraph(Paragraph {
+        content: vec![Inline::Run(Run {
+            content: vec![Piece::Drawing(Box::new(drawing))],
+            ..Run::default()
+        })],
+        ..Paragraph::default()
+    })
+}
 
 fn blocks_into(
     reader: &mut Reader<&[u8]>,
@@ -195,7 +236,13 @@ fn blocks_into(
     out: &mut Vec<Block>,
     lists: &mut Lists,
 ) {
-    while let Ok(event) = reader.read_event() {
+    loop {
+        // Where the event about to be read starts, so that a frame can be kept
+        // as the bytes it was written as.
+        let at = reader.buffer_position() as usize;
+        let Ok(event) = reader.read_event() else {
+            return;
+        };
         let empty = matches!(event, Event::Empty(_));
         match event {
             Event::Start(e) | Event::Empty(e) => {
@@ -206,13 +253,7 @@ fn blocks_into(
                         out.push(Block::Paragraph(paragraph));
                     }
                     b"list" if !empty => {
-                        // The style may be stated here or inherited from the
-                        // list this one is inside — a nested list usually names
-                        // nothing and continues its parent's definition.
-                        let named = attr_in(&e, b"text", b"style-name")
-                            .and_then(|name| ctx.styles.lists.get(&name).copied());
-                        let inherited = lists.iter().rev().flatten().next().copied();
-                        lists.push(named.or(inherited));
+                        lists.push(list_level(&e, ctx, lists));
                         blocks_into(reader, b"list", ctx, out, lists);
                         lists.pop();
                     }
@@ -246,14 +287,8 @@ fn blocks_into(
                         // A frame anchored to the page or to a paragraph that
                         // is not there yet still has to be drawn, so it becomes
                         // a paragraph of its own.
-                        if let Some(drawing) = crate::draw::frame(reader, &e, ctx) {
-                            out.push(Block::Paragraph(Paragraph {
-                                content: vec![Inline::Run(Run {
-                                    content: vec![Piece::Drawing(Box::new(drawing))],
-                                    ..Run::default()
-                                })],
-                                ..Paragraph::default()
-                            }));
+                        if let Some(drawing) = crate::draw::frame(reader, &e, ctx, at) {
+                            out.push(framed(drawing));
                         }
                     }
                     _ if !empty => skip_element(reader, &name),
@@ -344,6 +379,7 @@ fn inlines(
     let mut out: Vec<Inline> = Vec::new();
     let mut pieces: Vec<Piece> = Vec::new();
     let mut text = String::new();
+    let mut at;
 
     macro_rules! flush_text {
         () => {
@@ -365,7 +401,11 @@ fn inlines(
         }};
     }
 
-    while let Ok(event) = reader.read_event() {
+    loop {
+        at = reader.buffer_position() as usize;
+        let Ok(event) = reader.read_event() else {
+            break;
+        };
         if push_text(&mut text, &event) {
             continue;
         }
@@ -461,7 +501,7 @@ fn inlines(
                     }
                     b"frame" if !empty => {
                         flush_text!();
-                        if let Some(drawing) = crate::draw::frame(reader, &e, ctx) {
+                        if let Some(drawing) = crate::draw::frame(reader, &e, ctx, at) {
                             pieces.push(Piece::Drawing(Box::new(drawing)));
                         }
                     }
@@ -615,6 +655,47 @@ fn note(reader: &mut Reader<&[u8]>, e: &BytesStart<'_>, ctx: &mut Ctx<'_>) -> Op
             custom_mark: false,
         },
     })
+}
+
+/// One block, read out of exactly the bytes it occupies in the part.
+///
+/// **This is the writer's definition of "changed".** A `<text:p>` is compared
+/// against the model by reading it again and asking whether the result differs,
+/// rather than by remembering what some earlier reading believed — which is the
+/// only definition that cannot drift away from the reader. `lists` is the stack
+/// of `<text:list>` elements the block stands inside, because a paragraph is
+/// numbered by that and by nothing else and the bytes alone do not say.
+pub(crate) fn block_of<'a>(bytes: &'a [u8], ctx: &mut Ctx<'a>, lists: &Lists) -> Option<Block> {
+    let text = std::str::from_utf8(bytes).ok()?;
+    ctx.source = bytes;
+    let mut reader = Reader::from_str(text);
+    loop {
+        let at = reader.buffer_position() as usize;
+        let event = reader.read_event().ok()?;
+        let empty = matches!(event, Event::Empty(_));
+        match event {
+            Event::Start(e) | Event::Empty(e) => {
+                let name = local_name(&e).to_vec();
+                return match name.as_slice() {
+                    b"p" | b"h" => Some(Block::Paragraph(paragraph(
+                        &mut reader,
+                        &e,
+                        &name,
+                        empty,
+                        ctx,
+                        lists,
+                    ))),
+                    b"table" if !empty => {
+                        crate::table::read(&mut reader, &e, ctx).map(Block::Table)
+                    }
+                    b"frame" if !empty => crate::draw::frame(&mut reader, &e, ctx, at).map(framed),
+                    _ => None,
+                };
+            }
+            Event::Eof => return None,
+            _ => {}
+        }
+    }
 }
 
 /// The text of an element and everything under it, for the places that want
