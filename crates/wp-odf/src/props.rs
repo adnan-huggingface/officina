@@ -64,6 +64,15 @@ pub struct Props {
     pub master_page: Option<String>,
     /// How text goes round a frame in this style.
     pub wrap: Option<wp_model::doc::Wrap>,
+    /// `draw:fill-color` and `draw:opacity` — what a shape is filled with, and
+    /// how much of it shows. A watermark's letters are drawn in the *shape's*
+    /// fill rather than in the text's colour, so this is what a reader has to
+    /// take the grey from.
+    pub fill: Option<wp_model::Color>,
+    pub opacity: Option<f64>,
+    /// `style:horizontal-pos` / `style:vertical-pos` and what each is measured
+    /// against, for a shape the page positions rather than the line.
+    pub position: Option<wp_model::doc::DrawingPosition>,
 }
 
 /// Reads the `<style:*-properties>` children of whatever element is open, up to
@@ -104,7 +113,7 @@ pub fn properties(reader: &mut Reader<&[u8]>, end: &[u8], faces: &FontFaces, pro
                     b"table-cell-properties" => {
                         cell_properties(&e, props.cell.get_or_insert_with(CellProps::default))
                     }
-                    b"graphic-properties" => props.wrap = wrap(&e),
+                    b"graphic-properties" => graphic_properties(&e, props),
                     _ => {}
                 }
                 if !empty && name != b"paragraph-properties" {
@@ -529,6 +538,68 @@ pub fn cell_properties(e: &BytesStart<'_>, cell: &mut CellProps) {
         bottom: pad(b"padding-bottom"),
         end: pad(b"padding-right"),
     };
+}
+
+/// `<style:graphic-properties>` — everything about a drawing that is stated in
+/// a style rather than on the drawing.
+fn graphic_properties(e: &BytesStart<'_>, props: &mut Props) {
+    props.wrap = wrap(e);
+    props.fill = attr_in(e, b"draw", b"fill-color")
+        .as_deref()
+        .and_then(color);
+    props.opacity = attr_in(e, b"draw", b"opacity")
+        .as_deref()
+        .and_then(percent)
+        .map(|share| share / 100.0);
+    props.position = position(e);
+}
+
+/// Where a shape sits, out of the four attributes that say it.
+///
+/// ODF names the edge and what it is measured against separately, which is the
+/// shape the model keeps: `style:horizontal-pos="center"` with
+/// `style:horizontal-rel="page-content"` is centred on the text column.
+fn position(e: &BytesStart<'_>) -> Option<wp_model::doc::DrawingPosition> {
+    use wp_model::doc::{Alignment, DrawingPosition, Offset, RelativeTo};
+
+    let axis = |pos: &[u8], rel: &[u8], vertical: bool| {
+        let align = attr_in(e, b"style", pos).and_then(|value| {
+            Some(match (value.as_str(), vertical) {
+                ("left", false) | ("from-left", false) => Alignment::Left,
+                ("center", _) | ("middle", _) => Alignment::Center,
+                ("right", false) => Alignment::Right,
+                ("inside", false) => Alignment::Inside,
+                ("outside", false) => Alignment::Outside,
+                ("top", true) | ("from-top", true) => Alignment::Top,
+                ("bottom", true) => Alignment::Bottom,
+                _ => return None,
+            })
+        });
+        let relative_to = match attr_in(e, b"style", rel).as_deref() {
+            Some("page") => RelativeTo::Page,
+            Some("page-content") | Some("page-start-margin") | Some("page-end-margin") => {
+                RelativeTo::Margin
+            }
+            Some("paragraph") | Some("paragraph-content") => RelativeTo::Paragraph,
+            Some("char") => RelativeTo::Character,
+            Some("line") => RelativeTo::Line,
+            _ => RelativeTo::Column,
+        };
+        Offset {
+            relative_to,
+            offset: None,
+            align,
+        }
+    };
+    let horizontal = axis(b"horizontal-pos", b"horizontal-rel", false);
+    let vertical = axis(b"vertical-pos", b"vertical-rel", true);
+    match horizontal.align.is_none() && vertical.align.is_none() {
+        true => None,
+        false => Some(DrawingPosition {
+            horizontal,
+            vertical,
+        }),
+    }
 }
 
 /// `<style:graphic-properties style:wrap="...">` — how the text goes round a

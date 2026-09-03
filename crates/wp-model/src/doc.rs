@@ -1175,6 +1175,21 @@ pub struct Settings {
     /// True by default, because the format this model was shaped by is the one
     /// that counts it.
     pub bands_keep_trailing_space: bool,
+    /// Whether the gap between two paragraphs is the sum of the space below the
+    /// first and the space above the second, rather than the larger of them.
+    ///
+    /// **The two formats answer this differently and neither states it.**
+    /// Measured on `word-odf-export.odt`, whose body sets `Body Text` an eighth
+    /// of an inch above and below and `Heading 2` a quarter above: LibreOffice
+    /// puts eighteen points between two body paragraphs and twenty-seven
+    /// between a body paragraph and a heading, which is the sum both times;
+    /// Word's own corpus of twenty-four documents lays exactly right on the
+    /// larger of the two and would move if it were changed. The difference is
+    /// nine points a paragraph, and over one document it was a whole page.
+    ///
+    /// False by default, because the format this model was shaped by is the one
+    /// that takes the larger.
+    pub spacing_adds: bool,
 }
 
 impl Default for Settings {
@@ -1196,6 +1211,7 @@ impl Default for Settings {
             // in an older mode, and the oldest is what that means.
             compatibility_mode: 0,
             bands_keep_trailing_space: true,
+            spacing_adds: false,
         }
     }
 }

@@ -546,6 +546,15 @@ fn inlines(
                             prop_change: None,
                         }));
                     }
+                    // A watermark, and the one autoshape whose words are the
+                    // whole of what it puts on the page. See
+                    // [`crate::draw::custom_shape`] for why no other is drawn.
+                    b"custom-shape" if !empty => {
+                        flush_text!();
+                        if let Some(drawing) = crate::draw::custom_shape(reader, &e, ctx, at) {
+                            pieces.push(Piece::Drawing(Box::new(drawing)));
+                        }
+                    }
                     // **A drawing's words are not the paragraph's words.** A
                     // shape carries its label as paragraphs of its own, and the
                     // rule below would harvest them into the line the shape is

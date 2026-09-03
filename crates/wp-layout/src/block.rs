@@ -1010,7 +1010,10 @@ fn place_bands(
         if let Some(footer) = document.header(body) {
             let (placements, height) = band(&footer.content, document, ctx, shaper, width);
             page.footer_body = Some(body);
-            let top = section.page.height.points() - section.margins.footer.points() - height;
+            // The band's bottom is fixed and its words are drawn from its top,
+            // so a stated minimum lifts them. See `SectionProps::footer_min`.
+            let band_height = height.max(section.footer_min.points());
+            let top = section.page.height.points() - section.margins.footer.points() - band_height;
             for placement in placements {
                 page.footer.push(Placement {
                     x: section.margins.start.points() + placement.x,
@@ -1420,7 +1423,15 @@ pub fn flow_paragraph(
     };
     let first = into.items.len();
     push_paragraph(
-        paragraph, &layers, laid, left, width, ctx.theme, shaper, into,
+        paragraph,
+        &layers,
+        laid,
+        left,
+        width,
+        ctx.theme,
+        document.settings.spacing_adds,
+        shaper,
+        into,
     );
     // Attached to the paragraph's first item. Word attaches a note to the
     // *line* its mark sits on, so a paragraph split across a page break can
@@ -1688,6 +1699,7 @@ fn push_paragraph(
     left: f64,
     width: f64,
     theme: &wp_model::color::Theme,
+    spacing_adds: bool,
     shaper: &mut dyn Shaper,
     into: &mut Flow,
 ) {
@@ -1811,9 +1823,14 @@ fn push_paragraph(
         }
         out
     };
-    // See [`Flow::last_after`]: the gap between paragraphs is the larger of
-    // the two spacings, and the previous one's share is already placed.
-    let mut before = (laid.space_before - into.last_after).max(0.0);
+    // See [`Flow::last_after`] and [`wp_model::doc::Settings::spacing_adds`]:
+    // Word makes the gap between two paragraphs the larger of the two spacings,
+    // and the previous one's share is already placed; LibreOffice adds them,
+    // and an ODF document laid out the other way loses nine points a paragraph.
+    let mut before = match spacing_adds {
+        true => laid.space_before,
+        false => (laid.space_before - into.last_after).max(0.0),
+    };
     let after = laid.space_after;
     // Two paragraphs of one style, at least one of which asked for it, sit
     // with no space between them at all. The space above is simply not taken;

@@ -320,6 +320,11 @@ impl<'a> Ctx<'a> {
         // either, and the answer is fixed for the format rather than chosen by
         // the document. Measured — see the setting's own note.
         document.settings.bands_keep_trailing_space = false;
+        // Nor is this, and it is the other rule of the same kind: two
+        // paragraphs are separated by the space below the first *plus* the
+        // space above the second, where Word takes the larger of the two. See
+        // the setting's own note for what it was measured on.
+        document.settings.spacing_adds = true;
         (document, self.media)
     }
 }

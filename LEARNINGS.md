@@ -1730,3 +1730,51 @@ the part at the positions quick-xml reports — and quick-xml does not count a
 byte-order mark. Stripping the mark before the reader is given the text is the
 only version of this that is not three bytes wrong in exactly the documents that
 have one.
+
+**Two paragraphs are separated by the sum of their spacing, not the larger of
+it.** Word puts the greater of the space below the first and the space above the
+second between them, and every reader here had been built on that. LibreOffice
+adds them. Measured on a document whose body style sets an eighth of an inch
+above and below and whose `Heading 2` sets a quarter above: eighteen points
+between two body paragraphs and twenty-seven between a body paragraph and a
+heading, which is the sum both times. It is nine points a paragraph, it is not
+stated anywhere in either file, and over one document it was a whole page — a
+five-page document laid in four with its last 457 words nowhere. Neither format
+says which rule it wants, so it is a property of the format rather than of the
+document, and it belongs beside the other one of its kind
+(`bands_keep_trailing_space`) in the settings a reader sets for the whole file.
+
+**A footer's minimum height lifts its words and a header's does not.** The two
+bands grow in opposite directions: a header's top is where the margin says and a
+minimum only pushes the body further down, which the margin conversion already
+carries; a footer's *bottom* is fixed and its words are drawn from its top, so
+`fo:min-height` of half an inch over a single ten-point line puts that line
+twenty-four points higher than a band the size of its content. WordprocessingML
+has no such value at all, which is why nothing had ever needed to ask.
+
+**A watermark is a `<draw:custom-shape>` and the geometry is what identifies
+it.** ODF has one element for every autoshape, and the thing that separates the
+one kind whose words *are* what it puts on the page from an ellipse is
+`<draw:enhanced-geometry draw:text-path="true">`. Three details a reader gets
+wrong by analogy with the other format. The letters are filled with the
+**shape's** colour, not the text's: Word's export writes `draw:fill-color`
+`#c0c0c0` at `draw:opacity="50%"` on the graphic style and leaves the run's own
+colour to mean nothing. The size on the run means nothing either — the export
+writes `fo:font-size="0.01389in"`, one point, for a label an inch and a half
+high, because a text path sets its size from the box it has to fill. And
+`draw:transform` states the rotation in **radians anticlockwise** (ODF 1.4
+part 3 §19.228) where the model and VML both keep degrees clockwise: the same
+diagonal watermark that a `.docx` states as 315 comes out of the ODF export as
+`rotate(-5.49779)`.
+
+**A measuring instrument that is silent about a thing is not the same as a thing
+that is not there.** The layout comparison deliberately does not gather a shape's
+own words, because Word draws a WordArt watermark into a PDF as outlines and
+gathering ours would put words on one side that nothing on the other could
+answer. So drawing the watermark correctly moved not one number, and the honest
+way to tell that from having failed to draw it was to turn the reader off and
+compare again — byte-identical output says the silence is the harness's design.
+What answered the actual question was printing our own page: the first drawing
+operation in the PDF is the twelve glyphs of the watermark, grey at 0.88, under
+a rotation matrix. A harness can be green because it is not looking, and it can
+be flat for the same reason.

@@ -228,6 +228,10 @@ pub fn section(layout: &Layout, has_header: bool, has_footer: bool) -> SectionPr
             true => layout.footer.gap,
             false => Twips(0),
         },
+        footer_min: match has_footer {
+            true => layout.footer.height,
+            false => Twips(0),
+        },
         ..SectionProps::default()
     }
 }

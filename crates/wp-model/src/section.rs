@@ -519,6 +519,19 @@ pub struct SectionProps {
     /// Zero for every document that is not ODF, which is what makes it free.
     pub header_gap: Twips,
     pub footer_gap: Twips,
+    /// The least height a footer band takes up, whatever is in it.
+    ///
+    /// **A footer is drawn from the top of its band and the band's bottom is
+    /// fixed**, so a stated minimum moves the words: `fo:min-height` of half an
+    /// inch over a single ten-point line puts that line twenty-four points
+    /// higher than a band the size of its content. A header needs no such
+    /// value because it grows the other way — its top is where the margin says
+    /// and a minimum moves only the body, which `margins.top` already carries.
+    ///
+    /// Zero for every document that is not ODF: WordprocessingML has no such
+    /// value, and Word draws a footer's last line at `w:footer` from the foot
+    /// of the page whatever else is true.
+    pub footer_min: Twips,
 }
 
 impl SectionProps {

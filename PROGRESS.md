@@ -4219,3 +4219,70 @@ which carries the text, the styles and the page but not the pictures.
 still lays in four pages where LibreOffice lays five, and the watermark it holds
 as a `<draw:custom-shape>` is still not drawn. Both were traced in the previous
 sitting and both are work rather than mystery.
+
+## The page an OpenDocument document lays on (2026-09-02)
+
+The two items `PLAN.md` left open were both about the page rather than about the
+file, and the sitting before this one had left the work for them half-written and
+not compiling — a `<draw:custom-shape>` reader calling two functions that were
+never written. Finishing it is this entry.
+
+**The five pages were a spacing rule, and it was not the watermark.**
+`word-odf-export.odt` laid in four pages where LibreOffice lays five, and the
+previous sitting had traced the shortfall to the header holding the watermark
+this reader emptied. That account was wrong, and measuring settled it: with the
+watermark read and drawn, the document still lays in four pages; with the
+watermark left unread and `Settings::spacing_adds` on, it lays in five. **Two
+paragraphs in ODF are separated by the space below the first plus the space
+above the second**, where Word takes the larger of the two. Nine points a
+paragraph, and over one document a whole page. `second-producer.odt` was carrying
+the same error and got better without being asked: 601 words out of place to
+506, and 205 of them past five points to 137.
+
+The other two changes of the same kind that came with it: a footer band is drawn
+from its top and its bottom is fixed, so `fo:min-height` *lifts* the words in it
+(`SectionProps::footer_min`), and a header needs no such value because a minimum
+there moves only the body, which the margin conversion already carries.
+
+**The watermark is drawn, and the comparison cannot see it.** It is read now —
+`draw::custom_shape`, and only for a shape whose `<draw:enhanced-geometry>` says
+`draw:text-path="true"`, because a geometry this crate cannot draw is better left
+undrawn than guessed at. The letters take the *shape's* fill rather than the
+text's, blended against the paper because the model keeps a colour and no
+opacity; the rotation comes out of `draw:transform`, which states it in radians
+anticlockwise where the model keeps degrees clockwise. The face is resolved
+through the style chain and the size deliberately is not: a text path sets its
+own out of the box it fills, which is why Word's export can write a one-point
+font on a label an inch and a half high.
+
+None of that moves a number, and it was worth finding out why rather than
+assuming the reader had failed. `wp_compare::ours` deliberately does not gather
+a shape's own words — Word draws a WordArt watermark into a PDF as outlines, so
+gathering ours would put words on one side that nothing on the other could
+answer. Turning the whole `custom-shape` branch off and comparing again gives
+byte-identical output, which is the measurement that says the silence is the
+harness's design and not a defect. What settled it instead was printing our own
+page: the first drawing operation in the exported PDF is
+`/F0 71.91 Tf 0.88 0.88 0.88 rg` under a rotation matrix, with the twelve glyphs
+of the watermark's word — the grey is `#c0c0c0` at fifty per cent over white,
+which is exactly what the file asks for.
+
+`crates/wp-odf/tests/watermark.rs` holds it to the real document rather than to
+hand-written XML, because the element in the corpus is the only one worth being
+right about: the shape is in a header of `styles.xml`, inside a `<text:span>`,
+which is not where a body reader would look for a drawing.
+
+**What the corpus now measures.** `word-odf-export.odt`: five pages, 517 of its
+522 words matched against LibreOffice's own rendering where 453 of them were
+unplaced before, the worst shift down from 201.59 points to 28.90. Over the
+whole corpus the words past five points fell from 400 to 167 and the unplaced
+from 521 to 73. The `out` column rose, 1141 to 1194, and that is the arithmetic
+of a document finally laying its fifth page: words that were not placed at all
+cost nothing in that column until they are. `LAYOUT.md` is recorded deliberately,
+as a pagination change has to be.
+
+**What is left.** The residue on the fifth page is a table that sits some
+twenty-eight points to the left of where LibreOffice puts it, and a body that
+runs two and a half points high through the document's later pages. Neither is
+in `PLAN.md`; both are visible in `cargo xtask compare corpus/odt/word-odf-export.odt`
+and are the next sitting's if anyone wants them.
