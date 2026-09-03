@@ -1,4 +1,4 @@
-# The OpenDocument writer
+# The save nobody watched a person make
 
 What is left of `.odt` support. **This file is immutable while the work runs.**
 Nothing that does the work may edit it — not to reword an item, not to remove
@@ -11,147 +11,116 @@ exits zero. `python .claude/hooks/gate.py` runs them all and reports the ones
 that do not. There is no ledger to keep and none to forge: the repository
 either answers the question or it does not.
 
-What that buys, stated plainly: an agent cannot finish this by claiming to have
-finished it. It can only make commands pass. The failure this replaces is a real
-one from the session that wrote the reader — the plan was staged, the agent
-treated a stage boundary as permission to stop, and wrote the shortfall up as a
-considered design position rather than as work skipped.
-
-Two consequences worth being honest about:
-
-- A `verify:` command is only as good as what it checks, and the first draft of
-  this file got that wrong in a way worth remembering: it used
-  `cargo test -p wp-odf splice`, and **a cargo filter that matches no test at
-  all exits zero**. Nine of these fourteen items reported themselves finished on
-  the day the plan was written. They now go through
-  `.claude/hooks/proved.py`, which fails unless at least one test actually ran.
-- The rest can only check that a file says something, which is weaker. They are
-  marked, and they are the ones to distrust.
-- If an item turns out to be wrong or impossible, that is a conversation with a
-  person and an edit to this file by that person. It is not something to work
-  around. Say so in `PROGRESS.md` and stop.
-
 `PROGRESS.md` is where the work is narrated, and `LEARNINGS.md` is where what
 the format taught goes. Neither is read by the gate. They are for people.
 
+## Why there is a second round
+
+The writer is written, measured and merged, and the round that built it passed
+every gate honestly. It was still short, and the shortfall was **in this file
+rather than in the work**.
+
+The plan that was approved before any of it started carried six verification
+steps. The sixth read: *per `AGENTS.md`, after the UI work, recreate a document
+through the running app, New → Save As `.odt` → reopen, by menu and keystroke.*
+When that plan was converted into gated items, that step did not survive — not
+by decision, but because **every item here has to be a command that exits zero,
+and a person at a keyboard is not one**. The whole application half of the
+format became a single item proven by two unit tests, and nobody noticed,
+because the document that would have said otherwise was the document being
+replaced.
+
+That is a bias in the machinery, not an accident: a gate made of shell commands
+will always be missing whichever requirements are not shell commands, and it
+will be missing them silently. ADR 0002 records what it costs — one afternoon
+of driving the real binaries found a crash and two silent data losses that
+1,350 passing tests never came near, and every one of them lived in the seam
+between a keystroke and the model, which is the one seam no unit test crosses.
+
+So this round finishes the save: the cases the first round's two tests left
+out, and the exercise the first round dropped — this time with an exit code of
+its own, so that it cannot be dropped again in silence.
+
 ---
 
-## The writer
+## The saves that were never tested
 
-The reader is done and measured. The container reads every entry of a package,
-filters none and writes them all back — including the one Word's own ODF export
-leaves with no media type — and `cargo xtask fidelity` holds it to that. What is
-missing is the half that rewrites `content.xml` a paragraph at a time.
+The application half of the last round was item A1, and A1 was two tests: a
+save in place over an existing `.odt`, and a Save As from a document that never
+had a package. Everything below is a save a user will make in the first week
+and no test has ever made.
 
-**Reprinting the part whole is not an option.** It would pass a test that the
-edit came back and fail the one that matters: that everything the reader does
-not model came back too. `crates/wp-docx/src/write/mod.rs` and its `splice.rs`
-state the design; read them first.
+### S1 — Save As writes a new `.odt` and leaves the old one where it was
 
-### W1 — a splicer that keeps the bytes an event came from
+Open a corpus `.odt`, edit it, save it to a *different* path. The new file
+holds the edit, the original is byte-for-byte what it was, and the application
+is now editing the new one.
 
-So that an element can be copied exactly or replaced whole.
+    verify: python .claude/hooks/proved.py -p scriva save_as_odt
 
-    verify: python .claude/hooks/proved.py -p wp-odf splice
+### S2 — both cross-format directions
 
-### W2 — `content_out` copies everything it did not change
+`.odt` saved as `.docx` and `.docx` saved as `.odt`. The chokepoint lets go of
+the package the document arrived in and authors the other — `self.container` and
+`self.package` are never both live — and what lands on disk opens in the format
+its name claims. This is read as correct today and has never been run.
 
-Walks `content.xml` and copies every byte of it except the `<text:p>`,
-`<text:h>` and `<table:table>` elements that *read back differently* from the
-model. Changed is defined by re-reading, never by remembering: that is the only
-definition that cannot drift from the reader.
+    verify: python .claude/hooks/proved.py -p scriva cross_format
 
-    verify: python .claude/hooks/proved.py -p wp-odf content_out
+### S3 — saving twice in one session
 
-### W3 — a changed paragraph is emitted as ODF
+Edit, save, edit again, save again. The second save writes through a container
+the first one already flushed, which is the state no test has ever put it in,
+and the parts nobody edited are still byte-identical after the second one.
 
-`<text:p>`/`<text:h>` with its style, `<text:span>` for a run that carries one,
-`<text:s text:c="n"/>` for the second and later spaces of a run, `<text:tab/>`,
-`<text:line-break/>`, and text escaped the way the format escapes it.
+    verify: python .claude/hooks/proved.py -p scriva saves_twice
 
-    verify: python .claude/hooks/proved.py -p wp-odf emit
+### S4 — a save that cannot be written says so and loses nothing
 
-### W4 — direct formatting mints an automatic style
+The target is read-only, or the directory is not there. `save_odt` has an error
+arm that composes a message about the file being open elsewhere; no test has
+ever reached it. Afterwards the document is still dirty, still has its path, and
+the file on disk is untouched — a failed save must not be a lost document.
 
-ODF has nowhere else to put it: a run made bold by hand is not bold in the file,
-it names a `<style:style style:family="text">` that is. The minted styles go into
-`<office:automatic-styles>`, which stands before the body and so must be written
-after it is known what the body needs.
+    verify: python .claude/hooks/proved.py -p scriva save_that_fails
 
-    verify: python .claude/hooks/proved.py -p wp-odf automatic_style
+## The path from a keystroke to the model
 
-### W5 — `save` and `flush`, with the signatures `wp_docx` uses
+### U1 — a driver that reaches Save As the way a person does
 
-    verify: python .claude/hooks/proved.py -p wp-odf write::
+`tools/drive/scriva_odt.py`, run as `--out <dir>`: launches the built Scriva,
+makes a document through the menus and the keyboard, saves it as `.odt` through
+the real Save As dialog, reopens it, and reads screenshots back as it goes. It
+types the sentence `SCRIVA ODT DRIVE` so that what lands on disk can be tied to
+the run that made it.
 
-### W6 — `container_for` authors a package for a document that never had one
+**ADR 0002's driver rules are binding and each was paid for**: find the window
+by *process name* and never by title substring; check before every single input
+that the foreground window belongs to that process, and abort rather than type
+into another application's window; trust no coordinate that a screenshot has not
+just confirmed. A driver that types a document into a terminal is not a failed
+test, it is an incident.
 
-So Save As `.odt` works from a `.docx` or a markdown file.
+The exercise is the point, not the script: if a feature cannot be reached
+through the menus, **that inability is the finding** and it goes in
+`PROGRESS.md` rather than being routed around with a test hook.
 
-    verify: python .claude/hooks/proved.py -p wp-odf blank
+    verify: python .claude/hooks/drove_it.py
 
-## The proof
+### U2 — what the drive found is fixed, or written down as a wall
 
-### P1 — an untouched save is byte-identical
+Weak check: it looks for a section, not for whether the walls in it were real
+or honestly reported. The recreation is not done while a wall it hit still
+stands — each one is either a fix in this sitting or a named, recorded
+limitation. ADR 0002 §5.
 
-Not "a person noticed once". A test.
-
-    verify: python .claude/hooks/proved.py -p wp-odf untouched
-
-### P2 — fidelity check 2 covers `.odt`
-
-Open, change the text of one paragraph, save, reopen, and account for every byte
-that moved. Both corpus documents pass it, and the entry with no media type is
-still there afterwards.
-
-    verify: python .claude/hooks/covers_odt.py
-
-## The application
-
-### A1 — an `.odt` saves in place
-
-`Format::Odt::is_writable()` is true, `save` writes an `.odt`, and the path is
-no longer rewritten to `.docx`.
-
-    verify: python .claude/hooks/proved.py -p scriva odt
-
-### A2 — `FORMATS.md` says read + write, and the excuse is gone
-
-Weak check: it reads the file rather than the behaviour. A1 is the real one.
-
-    verify: python -c "import sys,pathlib; t=pathlib.Path('FORMATS.md').read_text(encoding='utf-8'); sys.exit(0 if 'read + write' in t.split('.odt')[1][:200] and 'why it is not written' not in t else 1)"
-
-## The page
-
-Two differences from the reference are known, traced and unfixed. Neither is a
-mystery; both are work.
-
-### L1 — `word-odf-export.odt` lays in five pages
-
-As the reference does. The per-page shortfall is traced to the last paragraph of
-its header, which holds the watermark this reader empties.
-
-    verify: python -c "import sys,pathlib,re; t=pathlib.Path('LAYOUT.md').read_text(encoding='utf-8'); m=re.search(r'`word-odf-export.odt`\s*\|\s*(\d+)',t); sys.exit(0 if m and m.group(1)=='5' else 1)"
-
-### L2 — the watermark is drawn, or its absence is argued
-
-A `<draw:custom-shape>`. If it is decided that it should not be drawn,
-`PROGRESS.md` argues why and `LAYOUT.md` records the residue deliberately — and
-then this item is closed by a person editing this file, not by the worker.
-
-    verify: python .claude/hooks/proved.py -p wp-odf custom_shape
+    verify: python -c "import sys,pathlib; sys.exit(0 if 'What driving it found' in pathlib.Path('PROGRESS.md').read_text(encoding='utf-8') else 1)"
 
 ## The record
 
-### R1 — `PROGRESS.md` narrates the writer
+### R1 — `LEARNINGS.md` records what the keystroke path taught
 
-Weak check: it looks for a section, not for whether it is any good.
+In the voice of the entries already there: what was believed, what was
+measured, what it cost. Weak check, same reason as above.
 
-    verify: python -c "import sys,pathlib; sys.exit(0 if 'The OpenDocument writer' in pathlib.Path('PROGRESS.md').read_text(encoding='utf-8') else 1)"
-
-### R2 — `LEARNINGS.md` records what writing the format taught
-
-In the voice of the entries already there: what was believed, what was measured,
-what it cost. Weak check, same reason.
-
-    verify: python -c "import sys,pathlib; t=pathlib.Path('LEARNINGS.md').read_text(encoding='utf-8').lower(); sys.exit(0 if 'automatic style' in t else 1)"
+    verify: python -c "import sys,pathlib; t=pathlib.Path('LEARNINGS.md').read_text(encoding='utf-8').lower(); sys.exit(0 if 'the keystroke path' in t else 1)"
