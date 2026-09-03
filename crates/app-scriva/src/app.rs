@@ -1130,6 +1130,18 @@ impl Scriva {
         let Some(path) = chooser.save_file() else {
             return false;
         };
+        self.save_to(path)
+    }
+
+    /// The whole of Save As once the chooser has closed: the name decides the
+    /// format, the format decides whether it can be written at all, and the
+    /// document takes the new name whether or not it keeps the old one's
+    /// format.
+    ///
+    /// Separate from [`Scriva::save_as`] because a file dialog is the one part
+    /// of this path no test can open, and everything that has ever gone wrong
+    /// in it is on this side of the dialog.
+    fn save_to(&mut self, path: PathBuf) -> bool {
         let path = with_extension(path);
         let format = Format::of(&path);
         if !format.is_writable() {
@@ -1147,8 +1159,16 @@ impl Scriva {
             self.pending = Some(Pending::Lossy(path, format));
             return false;
         }
-        self.path = Some(path);
-        self.save()
+        // The new name is taken up only if it can actually be written. A Save
+        // As that fails after renaming the document leaves it pointing at a
+        // path that does not work, and the next Ctrl+S goes there rather than
+        // to the file the user still has.
+        let previous = self.path.replace(path);
+        if self.save() {
+            return true;
+        }
+        self.path = previous;
+        false
     }
 
     /// The images the current pages draw, decoded for a paper renderer.
@@ -9072,5 +9092,208 @@ mod tests {
 second line"
         );
         let _ = std::fs::remove_file(&temp);
+    }
+
+    /// A directory of this test's own, so that two of these running at once
+    /// cannot save over one another's document.
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("scriva-odt-{name}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        dir
+    }
+
+    /// S1 — Save As to a different name. The new file holds the edit, the file
+    /// it was saved *from* is untouched, and the application goes on editing
+    /// the new one: a Save As that leaves the caret over the old path is how
+    /// the next Ctrl+S writes to the wrong file.
+    #[test]
+    fn save_as_odt_writes_a_new_file_and_leaves_the_old_one_where_it_was() {
+        let dir = scratch("save-as");
+        let source = dir.join("original.odt");
+        std::fs::copy(corpus("second-producer.odt"), &source)
+            .expect("the corpus document is there");
+        let before = std::fs::read(&source).expect("the copy is readable");
+
+        let mut app = Scriva::new();
+        app.open_odt(&source);
+        app.type_text("Saved as. ");
+        assert!(app.dirty, "typing is what makes a document need saving");
+
+        let target = dir.join("under-another-name.odt");
+        assert!(app.save_to(target.clone()), "the save reports success");
+        assert_eq!(
+            app.path.as_deref(),
+            Some(target.as_path()),
+            "the document being edited is now the new one"
+        );
+        assert!(!app.dirty, "and it is saved");
+
+        assert_eq!(
+            std::fs::read(&source).expect("it is still there"),
+            before,
+            "the file Save As was invoked from was written to"
+        );
+        let (reopened, _, _) = wp_odf::open(&target).expect("the new file is an OpenDocument one");
+        assert!(
+            reopened.text().starts_with("Saved as. "),
+            "the edit is in the file that was written"
+        );
+    }
+
+    /// S2 — both directions across the two package formats. The document lets
+    /// go of the container it arrived in and authors the other, which is what
+    /// `self.container` and `self.package` never being live together means.
+    #[test]
+    fn a_cross_format_save_lets_go_of_the_package_the_document_arrived_in() {
+        let dir = scratch("cross-format");
+
+        // An OpenDocument document saved as a Word one.
+        let mut app = Scriva::new();
+        app.open_odt(&corpus("second-producer.odt"));
+        assert!(app.container.is_some() && app.package.is_none());
+        app.type_text("Now a docx. ");
+        let as_docx = dir.join("from-odt.docx");
+        assert!(app.save_to(as_docx.clone()), "the save reports success");
+        assert!(
+            app.container.is_none(),
+            "the OpenDocument package is let go with the format it belonged to"
+        );
+        assert!(app.package.is_some(), "and a Word one stands in its place");
+        let (from_odt, _) =
+            wp_docx::open(&as_docx).expect("it opens as the Word document it claims to be");
+        assert!(from_odt.text().starts_with("Now a docx. "));
+
+        // And a Word document saved as an OpenDocument one.
+        let mut app = Scriva::new();
+        app.open_docx(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus/docx/minimal.docx"),
+        );
+        assert!(app.package.is_some() && app.container.is_none());
+        let was = app.document.text();
+        app.type_text("Now an odt. ");
+        let as_odt = dir.join("from-docx.odt");
+        assert!(app.save_to(as_odt.clone()), "the save reports success");
+        assert!(
+            app.package.is_none() && app.parts.is_none(),
+            "the Word package is let go rather than kept beside the container"
+        );
+        assert!(app.container.is_some());
+        let (from_docx, _, _) =
+            wp_odf::open(&as_odt).expect("it opens as the OpenDocument text it claims to be");
+        assert_eq!(
+            from_docx.text(),
+            format!("Now an odt. {was}"),
+            "the words came across whole"
+        );
+    }
+
+    /// S3 — two saves in one session. The second writes through a container the
+    /// first already flushed, and the parts nobody edited are still the bytes
+    /// the corpus document arrived with.
+    #[test]
+    fn a_session_that_saves_twice_moves_only_what_was_edited_both_times() {
+        let dir = scratch("twice");
+        let source = corpus("second-producer.odt");
+        let target = dir.join("twice.odt");
+        std::fs::copy(&source, &target).expect("the corpus document is there");
+
+        let mut app = Scriva::new();
+        app.open_odt(&target);
+        app.type_text("First save. ");
+        assert!(app.save(), "the first save reports success");
+        app.type_text("Second save. ");
+        assert!(app.save(), "the second save reports success");
+
+        let (reopened, _, saved) = wp_odf::open(&target).expect("what came out is a package");
+        assert!(
+            reopened.text().starts_with("First save. Second save. "),
+            "both edits are in the file, in the order they were typed"
+        );
+
+        let original = wp_odf::Container::open(&source).expect("the corpus document opens");
+        for part in original.parts() {
+            let name = part.name().as_str();
+            if name.trim_start_matches('/') == "content.xml" {
+                continue;
+            }
+            assert_eq!(
+                saved.data(name),
+                Some(part.data()),
+                "{name} was rewritten by the second save though nothing in it was edited"
+            );
+        }
+    }
+
+    /// S4 — a save that cannot be written. The message says so, the document is
+    /// still dirty and still knows its name, and what is on disk is what was
+    /// there before: a failed save that clears the dirty flag is a lost
+    /// document the next time the window closes.
+    #[test]
+    fn a_save_that_fails_says_so_and_loses_neither_the_edit_nor_the_file() {
+        let dir = scratch("cannot-write");
+        let target = dir.join("read-only.odt");
+        std::fs::copy(corpus("second-producer.odt"), &target)
+            .expect("the corpus document is there");
+
+        let mut app = Scriva::new();
+        app.open_odt(&target);
+        app.type_text("Never written. ");
+
+        let mut readonly = std::fs::metadata(&target)
+            .expect("it is there")
+            .permissions();
+        readonly.set_readonly(true);
+        std::fs::set_permissions(&target, readonly).expect("the file can be made read-only");
+        let before = std::fs::read(&target).expect("and read");
+
+        assert!(
+            !app.save(),
+            "a save that did not happen does not report success"
+        );
+        let (title, said) = app.message.clone().expect("the user is told");
+        assert_eq!(title, "Cannot save");
+        assert!(
+            said.contains("read-only.odt") && said.contains("another program"),
+            "the message names the file and the likeliest reason: {said}"
+        );
+        assert!(
+            app.dirty,
+            "the edit is still unsaved rather than believed saved"
+        );
+        assert_eq!(
+            app.path.as_deref(),
+            Some(target.as_path()),
+            "and the document still knows where it belongs"
+        );
+        assert_eq!(
+            std::fs::read(&target).expect("still readable"),
+            before,
+            "the file that could not be written was written to anyway"
+        );
+
+        // The other way a save fails, which reaches the same arm through a
+        // different error: nothing to write into. The temporary file a save
+        // writes beside its target has nowhere to go either, so this is the
+        // case where not one byte is created.
+        let gone = dir.join("no-such-directory").join("elsewhere.odt");
+        assert!(
+            !app.save_to(gone.clone()),
+            "and this one does not report success either"
+        );
+        assert!(app.dirty);
+        assert!(!gone.exists());
+        assert_eq!(
+            app.path.as_deref(),
+            Some(target.as_path()),
+            "a Save As that failed does not rename the document to where it could not go"
+        );
+
+        let mut writable = std::fs::metadata(&target)
+            .expect("it is there")
+            .permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        writable.set_readonly(false);
+        let _ = std::fs::set_permissions(&target, writable);
     }
 }
