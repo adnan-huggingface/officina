@@ -129,11 +129,24 @@ fn styles(document: &Document) -> Vec<u8> {
     out.push_str("</office:styles>");
 
     out.push_str("<office:automatic-styles>");
-    page_layout(&mut out, &document.section);
+    let has_header = document.headers.iter().any(|band| !band.footer);
+    let has_footer = document.headers.iter().any(|band| band.footer);
+    page_layout(&mut out, &document.section, has_header, has_footer);
     out.push_str("</office:automatic-styles>");
-    out.push_str(
-        r#"<office:master-styles><style:master-page style:name="Standard" style:page-layout-name="pm1"/></office:master-styles>"#,
-    );
+
+    // The bands are written empty and filled by the splice writer, exactly as
+    // the body is: an element that is not there is one it cannot fill, and a
+    // header typed in the application would be on the screen and absent from
+    // the file. Header before footer, which is the order ODF 1.4 part 3 §16.9
+    // states and not the order the model keeps them in.
+    out.push_str(r#"<office:master-styles><style:master-page style:name="Standard" style:page-layout-name="pm1">"#);
+    if has_header {
+        out.push_str("<style:header></style:header>");
+    }
+    if has_footer {
+        out.push_str("<style:footer></style:footer>");
+    }
+    out.push_str("</style:master-page></office:master-styles>");
     out.push_str("</office:document-styles>");
     out.into_bytes()
 }
@@ -142,17 +155,29 @@ fn styles(document: &Document) -> Vec<u8> {
 ///
 /// The margins are converted back the way `page.rs` converts them forward: ODF
 /// measures the top margin to the *header* and the model keeps the distance to
-/// the header separately, so it is that distance and not the body's that goes
-/// out. A page authored here carries no header, so the two are the same number
-/// unless the document came from a format where they were not.
-fn page_layout(out: &mut String, section: &wp_model::section::SectionProps) {
+/// the header separately, so where there is a header it is that distance and
+/// not the body's that goes out.
+///
+/// **Where there is none, the body's own margin goes out**, and the two are not
+/// interchangeable however alike they look. A document that has never had a
+/// header still states where one would go — a Word document says half an inch,
+/// against an inch of top margin — and writing that number for a page with no
+/// header to fill the space moves every line of the document half an inch up
+/// the page. `page::section` draws the same distinction reading, which is what
+/// makes the round trip close: with no header the margin it reads is the body's.
+fn page_layout(
+    out: &mut String,
+    section: &wp_model::section::SectionProps,
+    has_header: bool,
+    has_footer: bool,
+) {
     let page = &section.page;
     let margins = &section.margins;
-    let top = match margins.header.0 > 0 && margins.header.0 < margins.top.0 {
+    let top = match has_header && margins.header.0 > 0 && margins.header.0 < margins.top.0 {
         true => margins.header,
         false => margins.top,
     };
-    let bottom = match margins.footer.0 > 0 && margins.footer.0 < margins.bottom.0 {
+    let bottom = match has_footer && margins.footer.0 > 0 && margins.footer.0 < margins.bottom.0 {
         true => margins.footer,
         false => margins.bottom,
     };
@@ -180,7 +205,54 @@ fn page_layout(out: &mut String, section: &wp_model::section::SectionProps) {
     } else {
         out.push_str("/>");
     }
+    // What the band takes out of the page, which is the other half of the same
+    // arithmetic: ODF's margin reaches the band and `page::section` puts the
+    // body below it by the band's own least height, so that height is the
+    // distance between the two margins. Without it a document with a header
+    // would come back with its body where the header is.
+    if has_header {
+        band_style(
+            out,
+            "header",
+            margins.top,
+            margins.header,
+            section.header_gap,
+        );
+    }
+    if has_footer {
+        band_style(
+            out,
+            "footer",
+            margins.bottom,
+            margins.footer,
+            section.footer_gap,
+        );
+    }
     out.push_str("</style:page-layout>");
+}
+
+/// `<style:header-style>` or `<style:footer-style>`.
+///
+/// The gap is stated as the band's own margin facing the text — the bottom of a
+/// header, the top of a footer — because the two face it from opposite sides.
+fn band_style(
+    out: &mut String,
+    which: &str,
+    body: wp_model::Twips,
+    band: wp_model::Twips,
+    gap: wp_model::Twips,
+) {
+    let height = wp_model::Twips((body.0 - band.0).max(0));
+    let facing = match which {
+        "header" => "margin-bottom",
+        _ => "margin-top",
+    };
+    let _ = write!(
+        out,
+        r#"<style:{which}-style><style:header-footer-properties fo:min-height="{}" fo:{facing}="{}"/></style:{which}-style>"#,
+        length(height),
+        length(gap)
+    );
 }
 
 fn length(value: wp_model::Twips) -> String {
@@ -236,6 +308,113 @@ mod tests {
 
         let (read, _) = crate::read(&container).expect("it reads back");
         assert_eq!(read.section.page.height, wp_model::Twips(16838));
+    }
+
+    /// Found by saving a document through the application and opening it
+    /// again: every line of it had moved half an inch up the page.
+    ///
+    /// A document with no header still says where a header would go, and a
+    /// Word one says half an inch against an inch of top margin. Writing that
+    /// number as the page's own margin is only right when there is a header
+    /// standing in the space it leaves.
+    #[test]
+    fn a_page_with_no_header_is_written_at_the_margin_the_body_has() {
+        let document = Document::new();
+        assert_eq!(document.section.margins.top, wp_model::Twips::INCH);
+        assert_eq!(document.section.margins.header, wp_model::Twips(720));
+
+        let container = container_for(&document).expect("a package");
+        let text = String::from_utf8(container.data("styles.xml").unwrap().to_vec()).unwrap();
+        assert!(text.contains(r#"fo:margin-top="72pt""#), "{text}");
+        assert!(text.contains(r#"fo:margin-bottom="72pt""#), "{text}");
+
+        let (read, _) = crate::read(&container).expect("it reads back");
+        assert_eq!(read.section.margins.top, wp_model::Twips::INCH);
+        assert_eq!(read.section.margins.bottom, wp_model::Twips::INCH);
+    }
+
+    /// Found by driving the application: a header typed into a new document
+    /// and saved as `.odt` was on the screen and nowhere in the file.
+    ///
+    /// The splice writer fills the band elements the master page has, and an
+    /// authored master page had none — so there was nothing to fill, no error,
+    /// and a document that looked saved. The page it comes back on is checked
+    /// as well as the words, because the two are one arithmetic: what the band
+    /// reserves is what the body is pushed down by.
+    #[test]
+    fn a_header_made_in_the_application_is_in_the_package_it_authors() {
+        let mut document = Document::blank();
+        document.headers.push(wp_model::doc::HeaderFooter {
+            id: wp_model::section::HeaderId(0),
+            part: None,
+            rel: None,
+            footer: false,
+            content: vec![Block::Paragraph(Paragraph::of("Every page says this."))],
+        });
+
+        let mut container = container_for(&document).expect("a package");
+        super::super::flush(&mut document, &mut container).expect("it writes");
+        let text = String::from_utf8(container.data("styles.xml").unwrap().to_vec()).unwrap();
+        assert!(text.contains("Every page says this."), "{text}");
+
+        let (read, _) = crate::read(&container).expect("it reads back");
+        let band = read.headers.first().expect("the header came back");
+        assert!(!band.footer);
+        assert_eq!(
+            band.content
+                .iter()
+                .map(|block| match block {
+                    Block::Paragraph(paragraph) => paragraph.text(),
+                    _ => String::new(),
+                })
+                .collect::<String>(),
+            "Every page says this."
+        );
+        assert_eq!(
+            read.section.margins.top,
+            wp_model::Twips::INCH,
+            "the body is still an inch down the page"
+        );
+        assert_eq!(read.section.margins.header, wp_model::Twips(720));
+    }
+
+    /// The second half of the same finding: the header came back, and it came
+    /// back in a face nobody had chosen.
+    ///
+    /// A header's paragraph carries its spacing and its tab stops as direct
+    /// formatting, so a style is minted for it — and a minted style with no
+    /// parent inherits nothing, which took the paragraph out of the document's
+    /// default style while the body beside it, naming no style at all, kept it.
+    #[test]
+    fn a_paragraph_whose_formatting_is_minted_keeps_the_default_style_under_it() {
+        let mut document = Document::new();
+        let mut normal = wp_model::style::Style::new("Normal", wp_model::StyleKind::Paragraph);
+        normal.run.fonts.ascii = Some("Calibri".into());
+        document.styles.insert(normal);
+        document.body = vec![Block::Paragraph(Paragraph {
+            props: wp_model::prop::ParaProps {
+                spacing: wp_model::prop::Spacing {
+                    after: Some(wp_model::Twips(0)),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            content: vec![wp_model::doc::Inline::Run(wp_model::doc::Run::of("Set in"))],
+            ..Paragraph::default()
+        })];
+
+        let mut container = container_for(&document).expect("a package");
+        super::super::flush(&mut document, &mut container).expect("it writes");
+        let (read, _) = crate::read(&container).expect("it reads back");
+
+        let paragraphs = read.paragraphs();
+        let first = paragraphs.first().expect("the paragraph came back");
+        let resolved = read.styles.resolve_paragraph(&first.props, None);
+        assert_eq!(
+            resolved.run.fonts.ascii.as_deref(),
+            Some("Calibri"),
+            "the minted style stands on the default one rather than on nothing"
+        );
     }
 
     /// A style seeded by the application is a style the file has to carry, or

@@ -213,7 +213,7 @@ fn part_out<'a>(original: &'a [u8], scope: Scope, ctx: &mut Ctx<'a>, w: &mut Out
     let mut before_end: Option<usize> = None;
     let mut instead_of: Option<std::ops::Range<usize>> = None;
     let mut before_body: Option<usize> = None;
-    let mut band = 0usize;
+    let mut band = Bands::default();
 
     while let Some((event, span)) = splicer.next() {
         match &event {
@@ -246,12 +246,10 @@ fn part_out<'a>(original: &'a [u8], scope: Scope, ctx: &mut Ctx<'a>, w: &mut Out
             Event::Start(e) if scope == Scope::Bands && is_band(local_name(e)) => {
                 out.extend_from_slice(splicer.bytes(span));
                 let name = local_name(e).to_vec();
-                let content = document
-                    .headers
-                    .get(band)
+                let content = band
+                    .take(&name, document)
                     .map(|band| band.content.as_slice())
                     .unwrap_or_default();
-                band += 1;
                 blocks_out(
                     &mut splicer,
                     &mut out,
@@ -265,7 +263,7 @@ fn part_out<'a>(original: &'a [u8], scope: Scope, ctx: &mut Ctx<'a>, w: &mut Out
                 );
             }
             Event::Empty(e) if scope == Scope::Bands && is_band(local_name(e)) => {
-                band += 1;
+                let _ = band.take(local_name(e), document);
                 out.extend_from_slice(splicer.bytes(span));
             }
             _ => out.extend_from_slice(splicer.bytes(span)),
@@ -293,6 +291,39 @@ fn part_out<'a>(original: &'a [u8], scope: Scope, ctx: &mut Ctx<'a>, w: &mut Out
         out.splice(at..at, sheet.bytes());
     }
     out
+}
+
+/// Which of the model's bands each band element in the file stands for.
+///
+/// **By what it is rather than by where it stands.** The reader numbers the
+/// bands in the order it meets them, so counting them off again agrees with it
+/// for any file this crate has read — but not for a package this crate
+/// *authored*, where the master page has to list a header before a footer
+/// (ODF 1.4 part 3 §16.9) while the model lists them in whichever order the
+/// person made them. Counting there pairs a footer element with a header's
+/// paragraphs, which is how a document comes back with its header at the foot
+/// of the page. Taking the next unused band of the right kind is the same
+/// answer wherever counting was right, and the right one where it was not.
+#[derive(Default)]
+struct Bands {
+    used: Vec<usize>,
+}
+
+impl Bands {
+    fn take<'d>(
+        &mut self,
+        element: &[u8],
+        document: &'d Document,
+    ) -> Option<&'d wp_model::doc::HeaderFooter> {
+        let footer = element.starts_with(b"footer");
+        let (at, band) = document
+            .headers
+            .iter()
+            .enumerate()
+            .find(|(at, band)| band.footer == footer && !self.used.contains(at))?;
+        self.used.push(at);
+        Some(band)
+    }
 }
 
 /// The six elements a master page draws its running content in.

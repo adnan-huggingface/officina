@@ -4286,3 +4286,108 @@ twenty-eight points to the left of where LibreOffice puts it, and a body that
 runs two and a half points high through the document's later pages. Neither is
 in `PLAN.md`; both are visible in `cargo xtask compare corpus/odt/word-odf-export.odt`
 and are the next sitting's if anyone wants them.
+
+
+## The save nobody watched a person make (2026-09-03)
+
+The writer was built, measured and merged without anyone once saving an `.odt`
+through the application. This sitting is that save — the four a user makes in
+the first week as tests, and the one a person makes with their hands as a
+script with an exit code of its own.
+
+**The four saves (S1–S4).** They are unit tests in `app-scriva`, and each is a
+save no test had ever made: Save As to a different name, both directions across
+the two package formats, two saves in one session, and a save that cannot be
+written. Two things came out of writing them. Save As is now `save_to`, which
+is the whole of it once the chooser has closed — a file dialog is the one part
+of that path no test can open, and everything that has ever gone wrong in it is
+on this side of the dialog. And a Save As that *fails* no longer renames the
+document: the path was being taken up before the write was attempted, so a save
+that could not be written left the document pointing at somewhere that does not
+work, and the next Ctrl+S would have gone there rather than to the file the user
+still had.
+
+**The driver.** `tools/drive/scriva_odt.py` launches the built Scriva, makes a
+document through File ▸ New, types it, bolds through the Format menu and unbolds
+through the shortcut, puts a header in through Insert ▸ Header ▸ Edit Header,
+saves it as `.odt` through the real Save As dialog, opens it again through the
+real Open dialog, and reads the window back at every step.
+`.claude/hooks/drove_it.py` runs it and then asks its leavings whether it did
+anything. ADR 0002's rules are kept where they cost something: the target is
+found by the process id of the process this launched, the foreground is checked
+before *every* input rather than at the start, and there is not one click in it
+— every command is reached by Alt and the underlined letter, which is what the
+menu bar is for and the only way of reaching a menu that survives two monitors
+at different scales. The screenshots are read rather than filed: a window that
+never painted, a menu that did not open and a page with no ink on it all fail
+the run.
+
+### What driving it found
+
+Four things, in a suite of 1,350-odd tests that all passed the whole time. Every
+one lived between a keystroke and a file, and every one is fixed here.
+
+**Every Save As halved the top and bottom margins.** A document with no header
+still says where a header would go — a Word-shaped one says half an inch against
+an inch of top margin — and `blank::page_layout` wrote that number as the page's
+own margin, because ODF measures `fo:margin-top` to the header. With no header
+standing in the space it leaves, the body simply moved up half an inch, and the
+document repaginated on the way back in. The number is right only when there is
+a band to fill the gap, which is exactly the distinction `page::section` already
+drew reading.
+
+**A style that says nothing said something.** Ctrl+B on an empty line puts the
+bold on the paragraph mark, and ODF has no paragraph mark. The residue was not
+empty, so an automatic style was minted; it had no properties and no parent, and
+the paragraph that named it stopped inheriting. The line came back set in a face
+nobody had chosen while the line above it — which named no style at all, and so
+was given the default one — was right. A mint whose body comes out empty is no
+longer made.
+
+**The header was not in the file at all.** It was on the screen, the save
+reported success, and `styles.xml` had no trace of it. The splice writer fills
+the band elements a master page *has*, and a package authored from nothing had
+none: `<style:master-page/>`, self-closed. Nothing to fill, no error, and a
+document that looked saved. An authored master page now carries an empty
+`<style:header>` or `<style:footer>` for the writer to fill, with the
+`<style:header-style>` that reserves the space it takes out of the page — the
+other half of the same arithmetic, since the body sits below the band by the
+band's own least height. Which bands stand for which of the model's is now
+decided by what they are rather than by where they stand: ODF wants a header
+before a footer in a master page and the model keeps them in whichever order the
+person made them, so counting them off would pair a footer element with a
+header's paragraphs.
+
+**And then the header came back in the wrong face.** A header's paragraph
+carries its spacing and its two tab stops as direct formatting, so a style *was*
+minted for it — with no parent, which in ODF means inheriting from
+`<style:default-style>` and nothing else. A minted paragraph style now stands on
+the document's default paragraph style where the paragraph named none.
+
+### Two walls that were the driver's own
+
+Worth writing down because a later round will build the same two.
+
+**winit keeps a top-level window called `Winit Thread Event Target`.** It is
+visible, it has no title, it belongs to the application's process and it never
+closes. The first version of `dialog_of` took it for the Save As dialog, typed a
+file path into the document because the real dialog had not opened yet, and then
+waited a minute for a window that outlives the application. A native dialog is
+found by waiting for *the focus* to move to another window of the process, which
+is the thing that actually happens.
+
+**One Return is not always enough for a file dialog.** Typing a name that
+matches a file already in the folder drops an autocompletion list under the box,
+and the first Return goes to the list. The Open dialog therefore hung where the
+Save As dialog had not. Accepting more than once, and looking to see whether the
+dialog went, is what a person does.
+
+### What is left
+
+The `.docx` → `.odt` direction still authors a package with no pictures in it,
+and the application says so where the user asks rather than quietly; a picture
+still cannot be *added* to an ODF document. Both are stated in `app-scriva` and
+neither was touched here. The residue on `word-odf-export.odt`'s fifth page —
+a table some twenty-eight points left of where LibreOffice puts it, and a body
+running two and a half points high on the later pages — is still the next
+sitting's if anyone wants it.

@@ -1778,3 +1778,56 @@ What answered the actual question was printing our own page: the first drawing
 operation in the PDF is the twelve glyphs of the watermark, grey at 0.88, under
 a rotation matrix. A harness can be green because it is not looking, and it can
 be flat for the same reason.
+
+
+**A style with no parent is not a style that inherits.** OOXML puts every
+paragraph on `docDefaults` and then on the default style, whatever else it
+names; ODF 1.4 part 3 §16.2 has a style with no `style:parent-style-name`
+inheriting from `<style:default-style>` and from nothing else. So an automatic
+style minted for a paragraph's direct formatting takes that paragraph *out* of
+the document's default style unless it says what it stands on. Measured by
+saving a document through the application and opening it again: the header —
+whose paragraph carries its spacing and its two tab stops directly, so a style
+had to be minted for it — came back set in a serif face, while the body
+paragraph beside it, which named no style at all and so was given the default
+one, was exactly right. LibreOffice writes `style:parent-style-name="Standard"`
+on its automatic styles for this reason, and every producer has to.
+
+**An automatic style that states nothing states something.** The model holds
+formatting ODF has no word for — the paragraph mark's own properties are the
+specimen, ODF having no paragraph mark — and a residue made only of those minted
+a `<style:style>` with no properties and no parent. Empty, valid, and quietly
+disinheriting: it is the previous lesson arriving through a door nobody was
+watching, since the paragraph had no formatting a reader could see. A mint whose
+body comes out empty must not be made at all.
+
+**One number, two meanings, and only a band to tell them apart.** ODF's
+`fo:margin-top` reaches the top of the *header* and Word's `w:top` reaches the
+top of the body, which is already written down here — what is not is that the
+conversion back cannot be made from the numbers alone. A document with no header
+still says where one would go (half an inch, against an inch of top margin), and
+writing that number for a page with no band to fill the space moves every line
+half an inch up. The band's own `fo:min-height` is what makes the two numbers
+consistent: the body sits below the band by exactly that, so it is the
+difference between the two margins and is written whenever a band is.
+
+**What a skeleton leaves out cannot be spliced in later.** A writer that edits a
+file by copying it and replacing what changed can only replace elements that are
+there. A package authored from nothing had `<style:master-page/>`, self-closed —
+so a document with a header saved perfectly, reported success, and had no header
+in it anywhere. The rule this leaves behind: every place the splice writer fills
+has to exist in the skeleton, empty, in the order the format wants them rather
+than the order the model keeps them (ODF wants a header before a footer in a
+master page; the model keeps whichever the person made first), and what pairs
+the two is what the element *is* rather than where it stands.
+
+**The keystroke path is where all four of those were found, and none of them
+were findable anywhere else.** The suite stood at some 1,350 tests, the fidelity
+harness at zero failures on both checks and the layout comparison at 27
+documents none worse — and the first document ever saved through the running
+application lost its header, halved its margins and came back in a face nobody
+chose. Not one of those is a defect in a reader, a writer or a model, and every
+one of them is a defect in what happens between a keystroke and a file. ADR 0002
+said so and was written about a different format; this is the second time the
+same afternoon has paid for itself. A save that has never been made by hand is a
+save that has never been made.

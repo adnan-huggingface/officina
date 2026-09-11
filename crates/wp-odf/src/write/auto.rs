@@ -18,6 +18,16 @@
 //! into the new one and its parent is inherited with them. The result says the
 //! same thing in one level that the file said in two.
 //!
+//! **A style that would say nothing is not minted, because naming one says
+//! something.** The model holds properties this vocabulary has nowhere to put —
+//! the formatting of the paragraph mark itself is the specimen, ODF having no
+//! paragraph mark to format — and a residue made only of those used to produce
+//! an automatic style with no properties and no parent. A paragraph that names
+//! it stops inheriting the document's defaults, which is how the first document
+//! ever saved through the application came back set in a face nobody had asked
+//! for. So a mint whose body comes out empty is not made at all, and the
+//! paragraph goes on naming what it named.
+//!
 //! Nothing here is minted for a paragraph nobody edited: an unchanged paragraph
 //! is copied byte for byte and never reaches this module, so a save with no
 //! edits adds no styles at all.
@@ -29,7 +39,7 @@ use wp_model::prop::{
     Border, BorderStyle, Justify, Layer, LineSpacing, ParaBorders, ParaProps, RunProps, Shading,
     TabKind, TabLeader, Toggle, UnderlineKind, VertAlign,
 };
-use wp_model::style::{StyleId, StyleTable};
+use wp_model::style::{StyleId, StyleKind, StyleTable};
 use wp_model::units::Twips;
 
 use super::splice::escape_attr;
@@ -107,10 +117,14 @@ impl Automatic {
             return base;
         }
         let (parent, mut para, run) = self.foundation(base.as_deref());
+        let parent = parent.or_else(|| self.default_paragraph());
         para.layer(&direct, Layer::Direct);
         let mut body = String::new();
         paragraph_properties(&mut body, &para);
         text_properties(&mut body, &run);
+        if body.is_empty() {
+            return base;
+        }
         Some(self.mint("paragraph", 'P', parent.as_deref(), base.as_deref(), &body))
     }
 
@@ -132,7 +146,30 @@ impl Automatic {
         run.layer(&direct, Layer::Direct);
         let mut body = String::new();
         text_properties(&mut body, &run);
+        if body.is_empty() {
+            return base;
+        }
         Some(self.mint("text", 'T', parent.as_deref(), None, &body))
+    }
+
+    /// What a minted paragraph style stands on when the paragraph names no
+    /// style of its own: the document's default paragraph style, by name.
+    ///
+    /// **A style with no parent is not a style that inherits.** ODF 1.4 part 3
+    /// §16.2 has one inheriting from `<style:default-style>` and from nothing
+    /// else, so a minted style with no parent quietly takes its paragraph *out*
+    /// of the default style — which is how a header typed into the application
+    /// came back in a face nobody had chosen, while the paragraph beside it,
+    /// which named no style at all and so was given the default one, was right.
+    ///
+    /// Nothing is named where the document has no default paragraph style to
+    /// name, which is every file this crate reads that follows ODF's own
+    /// convention rather than Word's.
+    fn default_paragraph(&self) -> Option<String> {
+        self.styles
+            .default_style(StyleKind::Paragraph)
+            .and_then(|id| self.name_of(id))
+            .map(str::to_owned)
     }
 
     /// The style a minted one stands on, and the properties it starts from.
@@ -622,6 +659,31 @@ mod tests {
         let mut auto = Automatic::new(table, &read);
         assert_eq!(auto.run_style(&RunProps::default()), None);
         assert!(auto.is_empty());
+    }
+
+    /// Found by driving the application: Ctrl+B on an empty line puts the bold
+    /// on the paragraph mark, which is a thing ODF has no word for. The residue
+    /// was not empty, so a style was minted; the style had nothing to say and
+    /// nothing to stand on, and the paragraph that named it came back in
+    /// whatever face a consumer keeps for a paragraph that inherits nothing.
+    #[test]
+    fn a_paragraph_whose_only_formatting_is_unsayable_here_mints_nothing() {
+        let table = StyleTable::new();
+        let read = read_styles(&[]);
+        let mut auto = Automatic::new(table, &read);
+        let mut mark = RunProps::default();
+        mark.toggles.set(Toggle::Bold, true);
+        let props = ParaProps {
+            mark: Some(Box::new(mark)),
+            ..ParaProps::default()
+        };
+
+        assert_eq!(
+            auto.paragraph_style(&props),
+            None,
+            "a paragraph with nothing to name names nothing"
+        );
+        assert!(auto.is_empty(), "{}", auto.stylesheet());
     }
 
     #[test]
