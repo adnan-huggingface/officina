@@ -15,8 +15,9 @@ use ooxml::{Package, PartName, Relationship, TargetMode};
 use crate::error::{Error, Result};
 use crate::parts;
 
-const REL_BASE: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
-const RELS_TYPE: &str = "application/vnd.openxmlformats-package.relationships+xml";
+pub(crate) const REL_BASE: &str =
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+pub(crate) const RELS_TYPE: &str = "application/vnd.openxmlformats-package.relationships+xml";
 
 /// Adds an image to the package and relates it to the document part.
 ///

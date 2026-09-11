@@ -222,6 +222,11 @@ enum Pending {
     Lossy(PathBuf, Format),
 }
 
+/// What a crossing into the other package format renamed: each drawing or
+/// link by its place in document order, and the name it had before. Kept so
+/// that a save that fails can put the names back.
+type Renamed = Vec<(usize, Option<std::sync::Arc<str>>)>;
+
 pub struct Scriva {
     document: Document,
     /// The package the document came out of. The writer edits it rather than
@@ -989,10 +994,12 @@ impl Scriva {
         // to the `.odt` it came from with nothing to write it through, and the
         // next Ctrl+S authors that file again from nothing.
         let mut authored = None;
+        let (mut pictures, mut links) = (Vec::new(), Vec::new());
         if self.package.is_none() {
             match wp_docx::write::blank::package_for(&self.document) {
                 Ok(mut package) => {
-                    self.carry_loose_pictures(&mut package);
+                    pictures = self.carry_loose_pictures(&mut package);
+                    links = self.relate_addresses(&mut package);
                     authored = Some(package);
                 }
                 Err(error) => {
@@ -1020,6 +1027,7 @@ impl Scriva {
                 true
             }
             Err(error) => {
+                self.put_back(pictures, links);
                 // A document open in Word cannot be written by anything else,
                 // and that is not a fault in the save. Say so where it happens.
                 self.message = Some((
@@ -1066,9 +1074,13 @@ impl Scriva {
         // the container replacing it is on disk, so that a Save As into `.odt`
         // that fails leaves a `.docx` with the package it came in.
         let mut authored = None;
+        let mut links = Vec::new();
         if self.container.is_none() {
             match wp_odf::write::blank::container_for(&self.document) {
-                Ok(container) => authored = Some(container),
+                Ok(container) => {
+                    links = self.state_addresses();
+                    authored = Some(container);
+                }
                 Err(error) => {
                     self.message = Some(("Cannot save".to_owned(), error.to_string()));
                     return false;
@@ -1095,6 +1107,7 @@ impl Scriva {
                 true
             }
             Err(error) => {
+                self.put_back(Vec::new(), links);
                 self.message = Some((
                     "Cannot save".to_owned(),
                     format!(
@@ -1108,28 +1121,30 @@ impl Scriva {
         }
     }
 
-    /// Puts the pictures a `.doc` brought with it into the package being
-    /// authored, and re-points the document's drawings at them.
+    /// Puts the pictures a `.doc` or an `.odt` brought with it into the
+    /// package being authored, and re-points the document's drawings at them.
     ///
     /// **A relationship that names no part is not a missing picture to Word,
     /// it is a damaged file.** So this happens before the document part is
     /// written, and a picture that cannot be embedded takes its drawing's
-    /// relationship with it rather than leaving one dangling.
-    fn carry_loose_pictures(&mut self, package: &mut ooxml::Package) {
-        let mut renamed: std::collections::HashMap<String, String> =
+    /// relationship with it rather than leaving one dangling. Answers what it
+    /// re-pointed, for [`Scriva::put_back`] to undo if the write then fails.
+    fn carry_loose_pictures(&mut self, package: &mut ooxml::Package) -> Renamed {
+        let mut embedded: std::collections::HashMap<String, String> =
             std::collections::HashMap::new();
         for (rel, bytes) in self.pictures.loose() {
             let Some(content_type) = image_content_type(bytes) else {
                 continue;
             };
             if let Ok(id) = wp_docx::media::embed(package, bytes, content_type) {
-                renamed.insert(rel.clone(), id);
+                embedded.insert(rel.clone(), id);
             }
         }
+        let mut renamed = Vec::new();
         if self.pictures.loose().is_empty() {
-            return;
+            return renamed;
         }
-        for drawing in self.document.drawings_mut() {
+        for (at, drawing) in self.document.drawings_mut().into_iter().enumerate() {
             let Some(rel) = drawing.rel.as_deref() else {
                 continue;
             };
@@ -1141,7 +1156,84 @@ impl Scriva {
             if !self.pictures.loose().contains_key(rel) {
                 continue;
             }
-            drawing.rel = renamed.get(rel).map(|id| id.as_str().into());
+            let id = embedded.get(rel).map(|id| id.as_str().into());
+            renamed.push((at, std::mem::replace(&mut drawing.rel, id)));
+        }
+        renamed
+    }
+
+    /// Relates every link to an address outside the document, for a document
+    /// going into a `.docx` it did not come out of.
+    ///
+    /// Such a document holds addresses where WordprocessingML wants the names of
+    /// relationships: ODF states a link's address on the link. Written as they
+    /// stand they are an `r:id` naming no relationship, and Word refuses the
+    /// file rather than the link. Answers what it re-pointed.
+    fn relate_addresses(&mut self, package: &mut ooxml::Package) -> Renamed {
+        let mut renamed = Vec::new();
+        for (at, link) in self.document.hyperlinks_mut().into_iter().enumerate() {
+            if link.anchor.is_some() {
+                continue;
+            }
+            let Some(address) = link.rel.clone() else {
+                continue;
+            };
+            // A link that cannot be related loses its target rather than
+            // keeping one Word would take for a damaged file.
+            let id = wp_docx::link::relate(package, &address)
+                .ok()
+                .map(|id| id.as_str().into());
+            renamed.push((at, std::mem::replace(&mut link.rel, id)));
+        }
+        renamed
+    }
+
+    /// The other way: a document leaving its `.docx` for an `.odt` has links
+    /// that name relationships, and ODF has none, so each takes the address
+    /// its relationship held. Kept as a name it would be a link to nowhere,
+    /// and nothing would say so. Answers what it re-pointed.
+    fn state_addresses(&mut self) -> Renamed {
+        let mut renamed = Vec::new();
+        let Some(parts) = &self.parts else {
+            return renamed;
+        };
+        for (at, link) in self.document.hyperlinks_mut().into_iter().enumerate() {
+            if link.anchor.is_some() {
+                continue;
+            }
+            let Some(address) = link
+                .rel
+                .as_deref()
+                .and_then(|rel| parts.external_target(rel))
+            else {
+                continue;
+            };
+            let address: std::sync::Arc<str> = address.into();
+            renamed.push((at, link.rel.replace(address)));
+        }
+        renamed
+    }
+
+    /// Puts back what a crossing into the other format renamed, for a save that
+    /// did not happen.
+    ///
+    /// The document goes back to the package it came in, and its pictures and
+    /// links have to go back to the names that package knows them by. Left
+    /// renamed, they name relationships of a package that was never written:
+    /// every paragraph holding one reads back as changed on the next save and
+    /// is rewritten, and what the reader did not model in it goes with it.
+    fn put_back(&mut self, pictures: Renamed, links: Renamed) {
+        let mut drawings = self.document.drawings_mut();
+        for (at, rel) in pictures {
+            if let Some(drawing) = drawings.get_mut(at) {
+                drawing.rel = rel;
+            }
+        }
+        let mut hyperlinks = self.document.hyperlinks_mut();
+        for (at, rel) in links {
+            if let Some(link) = hyperlinks.get_mut(at) {
+                link.rel = rel;
+            }
         }
     }
 
@@ -9350,8 +9442,23 @@ second line"
         let mut app = Scriva::new();
         app.open_odt(&source);
         app.type_text("Kept. ");
+        let named = |app: &mut Scriva| {
+            let pictures: Vec<Option<String>> = app
+                .document
+                .drawings_mut()
+                .iter()
+                .map(|drawing| drawing.rel.as_deref().map(str::to_owned))
+                .collect();
+            (pictures, external_links(&mut app.document))
+        };
+        let before = named(&mut app);
         let nowhere = dir.join("no-such-directory").join("elsewhere.docx");
         assert!(!app.save_to(nowhere), "a save with nowhere to go fails");
+        assert_eq!(
+            named(&mut app),
+            before,
+            "a save that did not happen left the pictures and links named for a package              that was never written"
+        );
         assert!(
             app.save(),
             "and the save back to the file it came from works"
@@ -9458,7 +9565,7 @@ second line"
         )
         .into_owned();
         assert_eq!(
-            undeclared_prefixes(&xml),
+            unbound_prefixes(&xml),
             Vec::<String>::new(),
             "the document part uses prefixes it never declares"
         );
@@ -9470,28 +9577,45 @@ second line"
         }
     }
 
-    /// The prefixes a part uses on its elements and never declares.
+    /// The prefixes a part uses and has not declared where it uses them.
     ///
     /// A part with one is not well-formed XML as far as a namespace-aware
     /// reader is concerned, and both applications that own these formats are
     /// namespace-aware: Word reports the file damaged and LibreOffice will not
     /// open the part. This crate's own readers match local names and skip what
-    /// they do not know, so a reopen here passes over exactly this.
-    fn undeclared_prefixes(xml: &str) -> Vec<String> {
+    /// they do not know, so a reopen here passes over exactly this. Scoped, and
+    /// attributes included, because a first version of this check was neither:
+    /// it passed a `.docx` whose `r:id` had no `r:` declared anywhere above it,
+    /// and Word refused the file.
+    fn unbound_prefixes(xml: &str) -> Vec<String> {
+        use quick_xml::events::Event;
+        use quick_xml::name::ResolveResult;
+
+        let mut reader = quick_xml::NsReader::from_str(xml);
         let mut out: Vec<String> = Vec::new();
-        for tag in xml.split('<').skip(1) {
-            let name: String = tag
-                .chars()
-                .take_while(|c| !c.is_whitespace() && *c != '>' && *c != '/')
-                .collect();
-            let Some((prefix, _)) = name.split_once(':') else {
-                continue;
-            };
-            if prefix.starts_with(['?', '!']) || prefix == "xml" {
-                continue;
+        let note = |result: ResolveResult<'_>, out: &mut Vec<String>| {
+            if let ResolveResult::Unknown(prefix) = result {
+                let prefix = String::from_utf8_lossy(&prefix).into_owned();
+                if !out.contains(&prefix) {
+                    out.push(prefix);
+                }
             }
-            if !xml.contains(&format!("xmlns:{prefix}=")) && !out.iter().any(|p| p == prefix) {
-                out.push(prefix.to_owned());
+        };
+        loop {
+            match reader.read_resolved_event() {
+                Ok((result, Event::Start(element) | Event::Empty(element))) => {
+                    note(result, &mut out);
+                    for attribute in element.attributes().flatten() {
+                        let (result, _) = reader.resolver().resolve_attribute(attribute.key);
+                        note(result, &mut out);
+                    }
+                }
+                Ok((_, Event::Eof)) => break,
+                Ok(_) => {}
+                Err(error) => {
+                    out.push(format!("(not XML at all: {error})"));
+                    break;
+                }
             }
         }
         out
@@ -9530,9 +9654,157 @@ second line"
             let xml =
                 String::from_utf8_lossy(saved.data(part).expect("the part is there")).into_owned();
             assert_eq!(
-                undeclared_prefixes(&xml),
+                unbound_prefixes(&xml),
                 Vec::<String>::new(),
                 "{part} uses prefixes it never declares"
+            );
+        }
+    }
+
+    /// What every link to outside the document names, in document order.
+    fn external_links(document: &mut wp_model::Document) -> Vec<String> {
+        document
+            .hyperlinks_mut()
+            .into_iter()
+            .filter(|link| link.anchor.is_none())
+            .filter_map(|link| link.rel.as_deref().map(str::to_owned))
+            .collect()
+    }
+
+    /// The links of an `.odt` saved as a `.docx` go where they went.
+    ///
+    /// ODF states a link's address on the link; WordprocessingML names a
+    /// relationship that holds it. The address was being written where the
+    /// name goes — `r:id="https://…"`, with no `r:` declared above it — and
+    /// Word refused the whole file rather than the link.
+    #[test]
+    fn a_cross_format_save_relates_the_odt_links_in_the_docx() {
+        let dir = scratch("cross-format-links");
+        let source = dir.join("with-links.odt");
+        std::fs::copy(corpus("second-producer.odt"), &source)
+            .expect("the corpus document is there");
+        let mut app = Scriva::new();
+        app.open_odt(&source);
+        let addresses = external_links(&mut app.document);
+        assert!(
+            !addresses.is_empty(),
+            "the corpus document links outside itself"
+        );
+
+        let target = dir.join("as-word.docx");
+        assert!(app.save_to(target.clone()), "the save reports success");
+
+        let package = ooxml::Package::open(&target).expect("it opens as a package");
+        let parts = wp_docx::DocumentParts::locate_in(&package).expect("it has a document part");
+        let rels = package
+            .relationships(&parts.document)
+            .expect("the document part has relationships");
+        let mut document = wp_docx::read(&package).expect("it reads as a document");
+        let went: Vec<String> = external_links(&mut document)
+            .iter()
+            .map(|id| {
+                let rel = rels
+                    .get(id)
+                    .unwrap_or_else(|| panic!("{id} names no relationship"));
+                assert_eq!(
+                    rel.mode,
+                    ooxml::TargetMode::External,
+                    "{id} leaves the document"
+                );
+                rel.target.clone()
+            })
+            .collect();
+        assert_eq!(went, addresses, "each link goes where it went in the .odt");
+    }
+
+    /// The other way: a `.docx` link names a relationship and an `.odt` has
+    /// none, so what goes there is the address the relationship held. Its name
+    /// would be a link to nowhere, and nothing would say so.
+    #[test]
+    fn a_cross_format_save_states_the_docx_links_in_the_odt() {
+        const ADDRESS: &str = "https://example.invalid/from-word";
+        let dir = scratch("cross-format-docx-links");
+        let source = dir.join("with-a-link.docx");
+        std::fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus/docx/minimal.docx"),
+            &source,
+        )
+        .expect("the corpus document is there");
+        let mut app = Scriva::new();
+        app.open_path(&source);
+
+        // No document in the corpus links outside itself, so this one is given
+        // a link the way a file Word wrote carries one: a relationship in the
+        // package, and a hyperlink in the text that names it.
+        let package = app
+            .package
+            .as_mut()
+            .expect("a .docx arrives in its package");
+        let id = wp_docx::link::relate(package, ADDRESS).expect("related");
+        app.parts = wp_docx::DocumentParts::locate_in(package).ok();
+        {
+            let mut paragraphs = app.document.paragraphs_mut();
+            let first = paragraphs.first_mut().expect("a paragraph");
+            first
+                .content
+                .push(wp_model::doc::Inline::Hyperlink(Box::new(
+                    wp_model::doc::Hyperlink {
+                        rel: Some(id.as_str().into()),
+                        anchor: None,
+                        tooltip: None,
+                        history: true,
+                        content: vec![wp_model::doc::Inline::Run(wp_model::doc::Run::of("a link"))],
+                    },
+                )));
+        }
+
+        let target = dir.join("as-odf.odt");
+        assert!(app.save_to(target.clone()), "the save reports success");
+
+        let (mut reopened, _, _) = wp_odf::open(&target).expect("it opens as OpenDocument text");
+        assert_eq!(
+            external_links(&mut reopened),
+            vec![ADDRESS.to_owned()],
+            "the link goes to the address, not to the name of a relationship"
+        );
+    }
+
+    /// The notes of an `.odt` saved as a `.docx` are in it.
+    ///
+    /// The text named them and the package did not hold them: the writer had
+    /// no notes part to author, and a reference to a note that is not there is
+    /// what Word means by a corrupted file. It refused the whole document.
+    #[test]
+    fn a_cross_format_save_carries_the_odt_notes_into_the_docx() {
+        let dir = scratch("cross-format-notes");
+        let source = dir.join("with-notes.odt");
+        std::fs::copy(corpus("second-producer.odt"), &source)
+            .expect("the corpus document is there");
+        let mut app = Scriva::new();
+        app.open_odt(&source);
+        let target = dir.join("as-word.docx");
+        assert!(app.save_to(target.clone()), "the save reports success");
+
+        let package = ooxml::Package::open(&target).expect("it opens as a package");
+        let document = wp_docx::read(&package).expect("it reads as a document");
+        let named: Vec<i32> = document
+            .paragraphs()
+            .iter()
+            .flat_map(|paragraph| paragraph.runs())
+            .flat_map(|run| run.content.iter())
+            .filter_map(|piece| match piece {
+                wp_model::doc::Piece::FootnoteRef { id, .. } => Some(*id),
+                _ => None,
+            })
+            .collect();
+        assert!(!named.is_empty(), "the corpus document has a footnote");
+        for id in named {
+            assert!(
+                document
+                    .footnotes
+                    .iter()
+                    .any(|note| note.id == id && !note.content.is_empty()),
+                "footnote {id} is named in the text and not in the package"
             );
         }
     }

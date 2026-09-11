@@ -2648,6 +2648,7 @@ dependencies = [
  "image",
  "metafile",
  "ooxml",
+ "quick-xml",
  "rfd",
  "ui-kit",
  "wp-doc",

@@ -294,6 +294,25 @@ fn collect_drawings_mut<'a>(content: &'a mut [Inline], into: &mut Vec<&'a mut Dr
     }
 }
 
+fn collect_hyperlinks_mut<'a>(content: &'a mut [Inline], into: &mut Vec<&'a mut Hyperlink>) {
+    for inline in content {
+        let nested: &mut Vec<Inline> = match inline {
+            // Not looked inside: neither format lets a link hold a link, and a
+            // reference to one and to what it holds cannot both be handed out.
+            Inline::Hyperlink(link) => {
+                into.push(link.as_mut());
+                continue;
+            }
+            Inline::Revised { content, .. } => content,
+            Inline::Structured(sdt) => &mut sdt.content,
+            Inline::Wrapper { content, .. } => content,
+            Inline::SimpleField { content, .. } => content,
+            Inline::Run(_) | Inline::Math(_) | Inline::Anchor(_) => continue,
+        };
+        collect_hyperlinks_mut(nested, into);
+    }
+}
+
 /// The `nth` drawing of a tree of inlines, to change.
 ///
 /// Written as a walk rather than as `runs_mut`, because handing out every run
@@ -1395,6 +1414,26 @@ impl Document {
         let mut out = Vec::new();
         for paragraph in paragraphs {
             collect_drawings_mut(&mut paragraph.content, &mut out);
+        }
+        out
+    }
+
+    /// Every hyperlink in the document, headers and footers included.
+    ///
+    /// For the same job as [`Document::drawings_mut`]: a link to somewhere
+    /// outside the document is named differently by the two package formats —
+    /// a `.docx` names a relationship that holds the address, an `.odt` states
+    /// the address where the link is — so what each link names has to be
+    /// translated when the document is put into a package of the other kind.
+    pub fn hyperlinks_mut(&mut self) -> Vec<&mut Hyperlink> {
+        let mut paragraphs = Vec::new();
+        walk_paragraphs_mut(&mut self.body, &mut paragraphs);
+        for header in &mut self.headers {
+            walk_paragraphs_mut(&mut header.content, &mut paragraphs);
+        }
+        let mut out = Vec::new();
+        for paragraph in paragraphs {
+            collect_hyperlinks_mut(&mut paragraph.content, &mut out);
         }
         out
     }

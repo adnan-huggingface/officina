@@ -22,6 +22,7 @@ pub mod blank;
 mod drawing;
 mod emit;
 mod headers_out;
+mod notes_out;
 mod numbering_out;
 mod splice;
 
@@ -60,6 +61,7 @@ pub fn flush(document: &mut Document, package: &mut Package) -> Result<()> {
     // before the document part writes the sectPr that names it.
     numbering_out::flush(document, package, &located)?;
     headers_out::flush(document, package, &located)?;
+    notes_out::flush(document, package, &located)?;
     let part = package
         .part(&located.document)
         .ok_or_else(|| Error::MissingPart {

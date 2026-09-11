@@ -47,3 +47,9 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 # already in the tree underneath arboard.
 [target.'cfg(windows)'.dependencies]
 clipboard-win = "5"
+
+# For the tests only: a saved part is checked the way Word and LibreOffice read
+# it, with every prefix resolved in its own scope. Not a new dependency either:
+# wp-docx and wp-odf already read every part through it.
+[dev-dependencies]
+quick-xml = "0.41.0"

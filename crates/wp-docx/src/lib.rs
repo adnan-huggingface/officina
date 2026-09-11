@@ -36,6 +36,7 @@ mod body;
 mod ctx;
 mod error;
 pub mod fonts;
+pub mod link;
 pub mod media;
 mod notes;
 mod numbering;

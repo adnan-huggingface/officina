@@ -28,6 +28,13 @@ use wp_model::table::{
 use super::splice::{escape_attr, escape_text, needs_space_preserve};
 
 /// The order `<w:rPr>`'s children must appear in.
+/// The relationships namespace, declared on each element that names a
+/// relationship rather than left to the document's root. A root Word wrote
+/// declares it; a root authored here, or written by another producer, need
+/// not — and an `r:id` under a root that does not is a part Word refuses. The
+/// drawings and the header references are written the same way.
+const R: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+
 const RUN_ORDER: [&str; 24] = [
     "rStyle",
     "rFonts",
@@ -927,7 +934,11 @@ fn block(out: &mut String, block: &Block, styles: &StyleTable) {
         }
         Block::Anchor(anchor) => self::anchor(out, anchor),
         Block::AltChunk { rel } => {
-            let _ = write!(out, r#"<w:altChunk r:id="{}"/>"#, escape_attr(rel));
+            let _ = write!(
+                out,
+                r#"<w:altChunk xmlns:r="{R}" r:id="{}"/>"#,
+                escape_attr(rel)
+            );
         }
     }
 }
@@ -938,7 +949,7 @@ fn inline(out: &mut String, inline: &Inline, styles: &StyleTable) {
         Inline::Hyperlink(link) => {
             out.push_str("<w:hyperlink");
             if let Some(rel) = &link.rel {
-                let _ = write!(out, r#" r:id="{}""#, escape_attr(rel));
+                let _ = write!(out, r#" xmlns:r="{R}" r:id="{}""#, escape_attr(rel));
             }
             if let Some(anchor) = &link.anchor {
                 let _ = write!(out, r#" w:anchor="{}""#, escape_attr(anchor));
