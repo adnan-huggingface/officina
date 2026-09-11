@@ -41,6 +41,7 @@
 mod auto;
 pub mod blank;
 mod emit;
+pub mod media;
 mod splice;
 
 use std::collections::HashMap;
@@ -116,7 +117,7 @@ fn rewritten(document: &Document, container: &Container) -> Result<(Vec<u8>, Opt
     // A first reading of the whole package, for the two things a walk cannot
     // work out from the bytes in front of it: the path inside the package each
     // minted picture name stands for, and the name each bookmark id came from.
-    let (pictures, bookmarks) = {
+    let (mut pictures, bookmarks) = {
         let mut ctx = Ctx::new(container);
         if let Some(styles) = styles {
             content::part(styles, &mut ctx, Which::Styles)?;
@@ -133,6 +134,17 @@ fn rewritten(document: &Document, container: &Container) -> Result<(Vec<u8>, Opt
                 .collect::<HashMap<_, _>>(),
         )
     };
+    // A picture the application put into the package, rather than one read out
+    // of it, has no minted name: its drawing names the path, and the path is its
+    // own answer. See `media::embed`.
+    for part in container.parts() {
+        let name = part.name().as_str().trim_start_matches('/');
+        if name.starts_with(media::PICTURES) {
+            pictures
+                .entry(name.to_owned())
+                .or_insert_with(|| name.to_owned());
+        }
+    }
 
     // The body. Its context is put back in the state the reader was in at the
     // moment it began reading `<office:text>` — the stylesheets of both parts

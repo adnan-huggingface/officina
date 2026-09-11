@@ -60,6 +60,19 @@ impl Pictures {
         &self.loose
     }
 
+    /// The bytes a drawing's name stands for, wherever they are kept: among
+    /// the loose pictures, or in the package through its relationships. For
+    /// carrying a picture into a package of the other format, where it has to
+    /// go in as bytes because a name means nothing there.
+    pub fn bytes<'a>(
+        &'a self,
+        package: Option<&'a ooxml::Package>,
+        parts: Option<&wp_docx::DocumentParts>,
+        rel: &str,
+    ) -> Option<&'a [u8]> {
+        raw(package, parts, &self.loose, rel)
+    }
+
     /// The texture for a relationship, decoding it the first time.
     ///
     /// `None` for an image this cannot decode — and it is asked for only once,

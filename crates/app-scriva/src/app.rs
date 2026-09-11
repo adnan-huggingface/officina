@@ -1074,10 +1074,11 @@ impl Scriva {
         // the container replacing it is on disk, so that a Save As into `.odt`
         // that fails leaves a `.docx` with the package it came in.
         let mut authored = None;
-        let mut links = Vec::new();
+        let (mut pictures, mut links, mut carried) = (Vec::new(), Vec::new(), Vec::new());
         if self.container.is_none() {
             match wp_odf::write::blank::container_for(&self.document) {
-                Ok(container) => {
+                Ok(mut container) => {
+                    (pictures, carried) = self.carry_pictures_into(&mut container);
                     links = self.state_addresses();
                     authored = Some(container);
                 }
@@ -1101,13 +1102,16 @@ impl Scriva {
                     self.container = Some(container);
                     self.package = None;
                     self.parts = None;
+                    // The package the pictures were painted from is gone; the
+                    // bytes carried into the container are what paints them now.
+                    self.pictures.adopt(carried);
                 }
                 self.dirty = false;
                 self.recent.remember(SCRIVA, path);
                 true
             }
             Err(error) => {
-                self.put_back(Vec::new(), links);
+                self.put_back(pictures, links);
                 self.message = Some((
                     "Cannot save".to_owned(),
                     format!(
@@ -1160,6 +1164,64 @@ impl Scriva {
             renamed.push((at, std::mem::replace(&mut drawing.rel, id)));
         }
         renamed
+    }
+
+    /// Puts the pictures of a document leaving its `.docx` into the
+    /// OpenDocument package being authored for it, and re-points its drawings
+    /// at them.
+    ///
+    /// ODF has no relationships: a frame names its picture by its path in the
+    /// package, so each picture goes in under `Pictures/` and its drawing names
+    /// that path, which is what the writer resolves it by. A drawing already in
+    /// ODF's own spelling is left alone. Answers what it re-pointed, and the
+    /// bytes it carried — taken up as loose pictures only once the save
+    /// succeeds, because until then the package they came from still paints
+    /// them.
+    fn carry_pictures_into(
+        &mut self,
+        container: &mut wp_odf::Container,
+    ) -> (Renamed, Vec<(String, Vec<u8>)>) {
+        let wanted: Vec<(usize, String)> = self
+            .document
+            .drawings_mut()
+            .iter()
+            .enumerate()
+            .filter(|(_, drawing)| drawing.source_in(wp_model::SourceFormat::Odf).is_none())
+            .filter_map(|(at, drawing)| Some((at, drawing.rel.as_deref()?.to_owned())))
+            .collect();
+        let mut placed: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        let mut carried = Vec::new();
+        let mut targets = Vec::new();
+        for (at, rel) in wanted {
+            if let Some(href) = placed.get(&rel) {
+                targets.push((at, href.clone()));
+                continue;
+            }
+            let Some(bytes) = self
+                .pictures
+                .bytes(self.package.as_ref(), self.parts.as_ref(), &rel)
+            else {
+                continue;
+            };
+            let Some(media_type) = image_content_type(bytes) else {
+                continue;
+            };
+            let Ok(href) = wp_odf::write::media::embed(container, bytes, media_type) else {
+                continue;
+            };
+            carried.push((href.clone(), bytes.to_vec()));
+            placed.insert(rel, href.clone());
+            targets.push((at, href));
+        }
+        let mut renamed = Vec::new();
+        let mut drawings = self.document.drawings_mut();
+        for (at, href) in targets {
+            if let Some(drawing) = drawings.get_mut(at) {
+                renamed.push((at, drawing.rel.replace(href.as_str().into())));
+            }
+        }
+        (renamed, carried)
     }
 
     /// Relates every link to an address outside the document, for a document
@@ -2395,8 +2457,15 @@ impl Scriva {
     /// drawable — and savable — the moment it is pasted rather than at the next
     /// save.
     fn insert_picture(&mut self, data: &[u8], content_type: &str, width: u32, height: u32) -> bool {
-        if self.refuse_in_open_document("Pictures cannot be added to an OpenDocument file yet") {
-            return false;
+        // An OpenDocument picture is one thing rather than three: the bytes go
+        // into the package under `Pictures/` and the drawing names that path.
+        // Taken up as a loose picture as well, which is what paints it.
+        if let Some(container) = &mut self.container {
+            let Ok(href) = wp_odf::write::media::embed(container, data, content_type) else {
+                return false;
+            };
+            self.pictures.adopt([(href.clone(), data.to_vec())]);
+            return self.place_picture(&href, width, height);
         }
         if self.package.is_none() {
             // A document that has never been in a file has no package to put a
@@ -2416,8 +2485,14 @@ impl Scriva {
         // built when the document was opened. A part added since is not in it.
         self.parts = wp_docx::DocumentParts::locate_in(package).ok();
 
+        self.place_picture(&rel, width, height)
+    }
+
+    /// Puts the drawing for a picture already in the package at the caret, as a
+    /// paragraph of its own.
+    fn place_picture(&mut self, rel: &str, width: u32, height: u32) -> bool {
         let clip = vec![picture_paragraph(
-            &rel,
+            rel,
             &self.document.section,
             width,
             height,
@@ -9627,8 +9702,7 @@ second line"
     /// A drawing keeps the bytes it was read as so that a save can put them
     /// back, and the ODF writer put back any bytes it was given — including a
     /// `<w:drawing>`, whose `w:`, `wp:` and `a:` prefixes no ODF part declares.
-    /// The pictures themselves do not come across yet, and the application
-    /// says so; what must come across is a file LibreOffice will open.
+    /// Whatever else comes across, what must is a file LibreOffice will open.
     #[test]
     fn a_cross_format_save_writes_no_docx_markup_into_the_odt() {
         let dir = scratch("cross-format-markup");
@@ -9807,5 +9881,97 @@ second line"
                 "footnote {id} is named in the text and not in the package"
             );
         }
+    }
+
+    /// The pictures of a `.docx` saved as an `.odt` are pictures in it.
+    ///
+    /// A `.docx` picture is a relationship naming a part, and ODF has no
+    /// relationships: the frame names the picture's path in the package. So the
+    /// bytes have to be carried across and the drawing re-pointed at where they
+    /// went. Until they were, a Word document saved as OpenDocument lost every
+    /// picture it had, and the application said so rather than doing it.
+    #[test]
+    fn a_cross_format_save_carries_the_docx_pictures_into_the_odt() {
+        let dir = scratch("cross-format-docx-pictures");
+        let source = dir.join("with-pictures.docx");
+        std::fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../corpus/docx/floating-image-wrap.docx"),
+            &source,
+        )
+        .expect("the corpus document is there");
+        let mut app = Scriva::new();
+        app.open_path(&source);
+        let pictures = app
+            .document
+            .drawings_mut()
+            .iter()
+            .filter(|drawing| drawing.rel.is_some())
+            .count();
+        assert!(pictures > 0, "the corpus document has pictures to carry");
+
+        let target = dir.join("as-odf.odt");
+        assert!(app.save_to(target.clone()), "the save reports success");
+        assert!(
+            app.document
+                .drawings_mut()
+                .iter()
+                .filter_map(|drawing| drawing.rel.as_deref())
+                .all(|rel| app.pictures.loose().contains_key(rel)),
+            "and every picture still has something to paint it, the .docx being gone"
+        );
+
+        let (mut reopened, media, _) =
+            wp_odf::open(&target).expect("it opens as OpenDocument text");
+        let named: Vec<String> = reopened
+            .drawings_mut()
+            .iter()
+            .filter_map(|drawing| drawing.rel.as_deref().map(str::to_owned))
+            .collect();
+        assert_eq!(named.len(), pictures, "every picture came across");
+        for rel in &named {
+            assert!(
+                media.iter().any(|picture| &*picture.rel == rel.as_str()),
+                "{rel} names no picture in the package"
+            );
+        }
+    }
+
+    /// A picture added to an `.odt` is saved in it.
+    ///
+    /// The application refused this outright, because a picture in a `.docx` is
+    /// three things and nothing authored them for ODF. In ODF it is one: a part
+    /// under `Pictures/`, named by its path from the frame.
+    #[test]
+    fn a_picture_added_to_an_odt_is_saved_in_it() {
+        let dir = scratch("odt-insert-picture");
+        let source = dir.join("gains-a-picture.odt");
+        std::fs::copy(corpus("second-producer.odt"), &source)
+            .expect("the corpus document is there");
+        let png = std::fs::read(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus/sample-image.png"),
+        )
+        .expect("the sample picture is there");
+
+        let mut app = Scriva::new();
+        app.open_odt(&source);
+        let before = app.document.drawings_mut().len();
+        assert!(
+            app.insert_picture(&png, "image/png", 160, 120),
+            "the picture goes in"
+        );
+        assert!(app.message.is_none(), "and nothing refuses it");
+        assert!(app.save(), "the save reports success");
+
+        let (mut reopened, media, _) = wp_odf::open(&source).expect("it opens again");
+        assert_eq!(
+            reopened.drawings_mut().len(),
+            before + 1,
+            "one picture more than it had"
+        );
+        assert!(
+            media.iter().any(|picture| picture.data == png),
+            "and its bytes are in the package"
+        );
     }
 }
