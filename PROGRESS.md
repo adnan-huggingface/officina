@@ -4391,3 +4391,93 @@ neither was touched here. The residue on `word-odf-export.odt`'s fifth page —
 a table some twenty-eight points left of where LibreOffice puts it, and a body
 running two and a half points high on the later pages — is still the next
 sitting's if anyone wants it.
+
+## Saving across the two formats (2026-09-11)
+
+The loop's round above ended mid-sitting on 3 September with its fixes written,
+tested and not committed. This sitting reviewed and committed them, and then
+went looking for what a Save As between `.odt` and `.docx` does — because the
+round had tested the save into each format and never the save *between* them.
+Six defects, none of them in any number the gates watch, and every one found
+the same way: by asking the application that owns the format to open the file.
+
+**A failed Save As into the other format lost the package the document came
+in.** The chokepoint let go of the old package *before* the write, so a Save As
+to `.docx` that failed — the target open in Word, the everyday case — sent the
+document back to its `.odt` with nothing to write it through, and the next
+Ctrl+S authored the file again from nothing. The fix is a principle rather than
+a patch: a package is let go only once its replacement is on disk. The loop's
+own S4 test had covered a failed save, and a failed Save As, but both into the
+format the document was already in, where nothing is dropped.
+
+**A drawing's kept bytes were pasted into the other format.** The ODF reader
+keeps each frame's own bytes so its writer can put them back untouched, and the
+`.docx` writer put back any bytes it was handed — so an `.odt` with pictures
+saved as `.docx` had `<draw:frame>` elements in WordprocessingML, and the other
+direction had `<w:drawing>` in an ODF body. `Drawing::source_format` now says
+which format the bytes are in, `Drawing::source_in` hands them only to that
+format's writer, and the other writer authors the drawing from the model.
+
+**A picture from an `.odt` was re-pointed by a prefix only `.doc` uses.** The
+bytes crossed into the `.docx`; the drawings kept naming `odf-picture-1`, which
+is no relationship of it. Re-pointing now goes by what the loose store actually
+minted rather than by the spelling of one reader's names.
+
+**Links named addresses where WordprocessingML wants relationships, and the
+other way round.** `Hyperlink::rel` holds a relationship id when read from a
+`.docx` and an address when read from an `.odt`, and each writer read the other
+format's meaning as its own: `r:id="https://…"` in one direction, with no `r:`
+declared above it, and `xlink:href="rId5"` in the other — a valid file whose
+every external link went nowhere. `wp_docx::link::relate` is the missing half of
+the first, and the crossing states each address for the second. The `.docx`
+writer now declares `r:` on every element that names a relationship, as the
+drawings and header references already did, because an authored root does not.
+
+**A footnote the text named was not in the package.** The `.docx` writer has
+never had a notes writer: a package Word wrote keeps its own, retained, and
+nothing else ever needed one. A document read out of an `.odt` or a `.doc`
+carried its notes in the model and nowhere else, and a reference to a note the
+package does not hold is what Word means by a corrupted file. `notes_out`
+authors the part, the two separators Word expects, and each note's own number,
+which a note read out of ODF does not carry. This one was found by bisecting —
+eight variants of the file, then thirty-nine, each handed to Word — after every
+other fix had made the file well-formed and Word still refused it.
+
+**Pictures now cross from `.docx` to `.odt`, and can be added to an `.odt`.**
+Both were stated limitations. They are one primitive, `wp_odf::write::media::
+embed`: ODF has no relationships, so a picture is a part under `Pictures/` and a
+frame naming its path, and the writer resolves a path as its own answer. The
+crossing carries the bytes and re-points the drawing; insertion does the same
+for a picture pasted in.
+
+Every renaming a crossing does is recorded and put back if the write fails,
+so a failed Save As leaves nothing named for a package that was never written.
+
+**How it was checked.** Each defect has a test that was seen to fail before its
+fix and to pass after it; the ones that passed on first writing were checked by
+taking the fix back out. Then the files themselves: an `.odt` saved as `.docx`
+is opened by Word — three pages, both pictures, the external link live, the
+footnote numbered under its rule — and the `.docx` saved as `.odt` by
+LibreOffice, pictures drawn and link live. `cargo xtask check` and `cargo xtask
+fidelity` stayed green at every commit, and S1–S4 prove themselves.
+
+**Not re-run: the keystroke drive.** U1 passed against the code as the loop
+left it. This sitting changed the save chokepoint it goes through, and the drive
+takes over the keyboard and the screen, so it was left for a person to run when
+they are away from the machine: `python .claude/hooks/drove_it.py`.
+
+### What is left
+
+- A floating picture crosses into an `.odt` anchored at its paragraph: the ODF
+  emitter does not yet write a frame's position or wrap from the model.
+- A footnote reference crosses into a `.docx` at the size of the text around it.
+  ODF raises a citation through the style its `text:notes-configuration` names,
+  the reader does not read that style, and so Scriva lays an `.odt`'s references
+  at full size too — a layout difference from LibreOffice, and one that needs
+  its own measured pass because it will move `LAYOUT.md`.
+- A link in a `.docx`'s header keeps its relationship's name on the way into an
+  `.odt`, because only the document part's own external targets are indexed.
+- The corpus has no `.docx` with a link to outside the document. The `.docx`
+  side of external links has been checked with one built in a test, and never
+  against a file Word wrote.
+- The residue on `word-odf-export.odt`'s fifth page, as above.

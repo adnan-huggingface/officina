@@ -1831,3 +1831,41 @@ one of them is a defect in what happens between a keystroke and a file. ADR 0002
 said so and was written about a different format; this is the second time the
 same afternoon has paid for itself. A save that has never been made by hand is a
 save that has never been made.
+
+**A field whose meaning depends on the format it was read from is a bug waiting
+for Save As.** `Drawing::source` held DrawingML or ODF depending on the reader;
+`Hyperlink::rel` held a relationship id or an address. Each writer took the
+field in its own format's meaning, and every test passed, because every test
+wrote a document back into the format it came from — the only direction in
+which the two meanings agree. The four defects this left behind were each
+invisible to the suite and each fatal to the file: Word refused the `.docx` and
+LibreOffice pointed the `.odt`'s links at nothing. What a model field holds has
+to mean the same thing whichever reader filled it, or it has to say which
+meaning it has; `Drawing::source_format` is the second kind.
+
+**Our readers cannot see what the owning application refuses.** Every reader in
+this repository matches local names and skips what it does not know, which is
+what makes them robust to other producers — and exactly what lets them reopen a
+file Word calls corrupted and find nothing wrong with it. An undeclared `r:`, an
+`r:id` holding an address, a footnote reference to a note that is not there: all
+three read back cleanly here. The check that caught them was the application,
+asked to open the file. The first scripted substitute for it was a substring
+test for `xmlns:` that passed a file Word refused, because a prefix is declared
+in a scope and not in a file; the one that replaced it resolves every element
+and attribute in its own scope, the way Word does.
+
+**Word's refusals are two different messages at two different layers.** "Word
+experienced an error trying to open the file" was the XML: a prefix it could not
+resolve. "The file appears to be corrupted" was the document: well-formed, and
+naming a footnote that did not exist. Fixing the first uncovered the second, and
+only bisecting found it — the body cut in half, then one paragraph at a time,
+each variant handed to Word — because nothing in the second is malformed.
+
+**Let go of the old package only once the new one is written.** A save into the
+other format drops the package the document arrived in, because it belongs to
+the format being left. Dropped before the write, a write that fails leaves the
+document with its old name and no package to save through, and the next save
+authors the file from nothing — silently, and with everything the reader did not
+model gone. The same holds for every name a crossing translates: pictures and
+links re-pointed for a package that was never written make every paragraph
+holding one read back as changed on the next save.

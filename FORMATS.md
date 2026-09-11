@@ -88,7 +88,7 @@ Three columns, because a file format has three different questions:
 
 ---
 
-## OpenDocument, and why it opens as a copy
+## OpenDocument
 
 ODF is read against the OASIS standard rather than against a running
 application: v1.4 became an OASIS Standard on 6 October 2025, and every decision
@@ -109,10 +109,11 @@ files or the frame carries them as base64. Footnotes and endnotes. Bookmarks and
 links. Tab stops. The faces the document names, and the ones it carries.
 
 **What is not read.** Change tracking, forms, embedded objects, charts, and the
-drawing layer beyond a frame holding a picture — a watermark written as a custom
-shape is one of those, and it is the visible gap on a page that has one. None of
-it is dropped on the way out: a `<draw:frame>` is kept as the bytes it was read
-as, and everything else rides through inside the paragraph it is in.
+drawing layer beyond a frame holding a picture and a custom shape that sets text
+along a path — which is how a watermark is written, and the only custom shape
+drawn. None of it is dropped on the way out: a `<draw:frame>` is kept as the
+bytes it was read as, and everything else rides through inside the paragraph it
+is in.
 
 **What is preserved.** Everything. `wp_odf::Container` reads every entry of the
 package into memory, filters none of them, and writes them all back — including
@@ -137,10 +138,41 @@ its widths, borders and shading in automatic styles named from every column, row
 and cell, so rewriting one would mean minting the lot. The cost is that a change
 to a table's structure — a row added, a column removed — is not yet written.
 
-Two gaps remain, and both are about authoring rather than preserving: a picture
-cannot yet be *added* to an ODF document, and a `.docx` saved as `.odt` gets a
-package authored from nothing, which carries the text, the styles and the page
-but not the pictures.
+A picture added to an `.odt` is one part and nothing else: its bytes go in under
+`Pictures/`, and the frame names that path. ODF has no relationships, so there
+is no second and third thing to author as there is for a `.docx`.
+
+**Between the two formats.** Save As from one to the other translates, at the
+moment the document crosses, everything the two formats name differently —
+because a name that means something in one means nothing in the other, and the
+application that owns the format refuses a file that uses it:
+
+- a picture is a relationship in a `.docx` and a path in an `.odt`, so its bytes
+  are carried into the new package and its drawing re-pointed at where they
+  went;
+- a link to somewhere outside the document names a relationship in a `.docx`
+  and states the address in an `.odt`, so each is related, or given its
+  address, on the way;
+- the bytes a drawing was read as are put back only by the writer of the format
+  they came out of — `Drawing::source_format` says which — and the other writer
+  authors the drawing from the model;
+- footnotes and endnotes a document brings into a `.docx` it did not come out of
+  get a notes part authored for them, because a reference to a note the package
+  does not hold is what Word calls a corrupted file.
+
+A crossing that fails — the target open in another program — puts every name
+back, so the document returns to the package it came in and the next Ctrl+S
+writes through that package rather than authoring one from nothing. Each
+direction is checked by opening the result in the application that owns the
+format: Word for the `.docx`, LibreOffice for the `.odt`.
+
+What does not cross yet: a floating picture arrives in an `.odt` anchored at its
+paragraph, because the frame's position and wrap are not yet written from the
+model; a footnote reference arrives in a `.docx` at the size of the text around
+it, because ODF raises it through the citation style its notes configuration
+names and that style is not read; and a link in a `.docx`'s header keeps the
+name of its relationship rather than taking its address, because only the
+document part's own external targets are indexed.
 
 ---
 
