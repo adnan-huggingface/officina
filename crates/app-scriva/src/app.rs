@@ -980,17 +980,20 @@ impl Scriva {
             Format::Odt => return self.save_odt(&path),
             other => return self.save_text(&path, other),
         }
+        // A new document, or one read out of a `.doc` or a `.odt`. Author the
+        // package once; from here on it is edited by the same splice writer
+        // that edits a document Word wrote. Whatever package the document
+        // arrived in is not this one, and is let go with the format it
+        // belonged to — **but only once this one is on disk**. Let go of it
+        // first and a Save As into `.docx` that fails sends the document back
+        // to the `.odt` it came from with nothing to write it through, and the
+        // next Ctrl+S authors that file again from nothing.
+        let mut authored = None;
         if self.package.is_none() {
-            // A new document, or one read out of a `.doc` or a `.odt`. Author
-            // the package once; from here on it is edited by the same splice
-            // writer that edits a document Word wrote. Whatever package the
-            // document arrived in is not this one, and is let go with the
-            // format it belonged to.
-            self.container = None;
             match wp_docx::write::blank::package_for(&self.document) {
                 Ok(mut package) => {
                     self.carry_loose_pictures(&mut package);
-                    self.package = Some(package);
+                    authored = Some(package);
                 }
                 Err(error) => {
                     self.message = Some(("Cannot save".to_owned(), error.to_string()));
@@ -998,11 +1001,20 @@ impl Scriva {
                 }
             }
         }
-        let Some(package) = &mut self.package else {
-            return self.save_as();
+        let package = match authored.as_mut() {
+            Some(package) => package,
+            None => match self.package.as_mut() {
+                Some(package) => package,
+                None => return self.save_as(),
+            },
         };
-        match wp_docx::save(&mut self.document, package, &path) {
+        let written = wp_docx::save(&mut self.document, package, &path);
+        match written {
             Ok(()) => {
+                if let Some(package) = authored {
+                    self.package = Some(package);
+                    self.container = None;
+                }
                 self.dirty = false;
                 self.recent.remember(SCRIVA, &path);
                 true
@@ -1050,22 +1062,34 @@ impl Scriva {
     /// `.docx` being saved as `.odt` — has a package authored for it once, and
     /// from then on it is edited by the same splice writer.
     fn save_odt(&mut self, path: &Path) -> bool {
+        // As in `save`: the package the document arrived in is let go only once
+        // the container replacing it is on disk, so that a Save As into `.odt`
+        // that fails leaves a `.docx` with the package it came in.
+        let mut authored = None;
         if self.container.is_none() {
-            self.package = None;
-            self.parts = None;
             match wp_odf::write::blank::container_for(&self.document) {
-                Ok(container) => self.container = Some(container),
+                Ok(container) => authored = Some(container),
                 Err(error) => {
                     self.message = Some(("Cannot save".to_owned(), error.to_string()));
                     return false;
                 }
             }
         }
-        let Some(container) = &mut self.container else {
-            return false;
+        let container = match authored.as_mut() {
+            Some(container) => container,
+            None => match self.container.as_mut() {
+                Some(container) => container,
+                None => return false,
+            },
         };
-        match wp_odf::save(&mut self.document, container, path) {
+        let written = wp_odf::save(&mut self.document, container, path);
+        match written {
             Ok(()) => {
+                if let Some(container) = authored {
+                    self.container = Some(container);
+                    self.package = None;
+                    self.parts = None;
+                }
                 self.dirty = false;
                 self.recent.remember(SCRIVA, path);
                 true
@@ -9295,5 +9319,84 @@ second line"
         #[allow(clippy::permissions_set_readonly_false)]
         writable.set_readonly(false);
         let _ = std::fs::set_permissions(&target, writable);
+    }
+
+    /// A Save As into the *other* format that fails, then Ctrl+S.
+    ///
+    /// **The path was only half of what a failed Save As has to put back.** A
+    /// save into the other format lets go of the package the document arrived
+    /// in, because that package belongs to the format being left. If the write
+    /// then fails — the target open in another program is the everyday case —
+    /// the document goes back to the file it came from under its old name, and
+    /// the next Ctrl+S has no package to write it through. It authors one from
+    /// nothing, and everything the reader did not model goes with the old one:
+    /// the pictures of an `.odt`, the custom XML of a `.docx`. Nothing says so;
+    /// the save reports success.
+    #[test]
+    fn a_cross_format_save_that_fails_keeps_the_odt_package_the_document_came_in() {
+        let dir = scratch("cross-format-odt");
+        let source = dir.join("original.odt");
+        std::fs::copy(corpus("second-producer.odt"), &source)
+            .expect("the corpus document is there");
+        let original = wp_odf::Container::open(&source).expect("the copy opens");
+
+        let mut app = Scriva::new();
+        app.open_odt(&source);
+        app.type_text("Kept. ");
+        let nowhere = dir.join("no-such-directory").join("elsewhere.docx");
+        assert!(!app.save_to(nowhere), "a save with nowhere to go fails");
+        assert!(
+            app.save(),
+            "and the save back to the file it came from works"
+        );
+
+        let saved = wp_odf::Container::open(&source).expect("what was saved opens");
+        for part in original.parts() {
+            let name = part.name().as_str();
+            if name.trim_start_matches('/') == "content.xml" {
+                continue;
+            }
+            assert_eq!(
+                saved.data(name),
+                Some(part.data()),
+                "{name} did not survive a failed Save As into .docx and the Ctrl+S after it"
+            );
+        }
+    }
+
+    /// The same, the other way: a `.docx` whose Save As into `.odt` failed.
+    #[test]
+    fn a_cross_format_save_that_fails_keeps_the_docx_package_the_document_came_in() {
+        let dir = scratch("cross-format-docx");
+        let source = dir.join("original.docx");
+        std::fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus/docx/content-controls.docx"),
+            &source,
+        )
+        .expect("the corpus document is there");
+        let original = ooxml::Package::open(&source).expect("the copy opens");
+
+        let mut app = Scriva::new();
+        app.open_path(&source);
+        app.type_text("Kept. ");
+        let nowhere = dir.join("no-such-directory").join("elsewhere.odt");
+        assert!(!app.save_to(nowhere), "a save with nowhere to go fails");
+        assert!(
+            app.save(),
+            "and the save back to the file it came from works"
+        );
+
+        let saved = ooxml::Package::open(&source).expect("what was saved opens");
+        for part in original.parts() {
+            if part.name.as_str() == "/word/document.xml" {
+                continue;
+            }
+            assert_eq!(
+                saved.part(&part.name).map(|part| part.data()),
+                Some(part.data()),
+                "{} did not survive a failed Save As into .odt and the Ctrl+S after it",
+                part.name.as_str()
+            );
+        }
     }
 }
