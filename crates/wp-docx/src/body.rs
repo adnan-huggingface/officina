@@ -494,6 +494,7 @@ fn read_math(reader: &mut Reader<&[u8]>, until: &[u8]) -> MathBlob {
 fn read_drawing(reader: &mut Reader<&[u8]>, ctx: &Ctx<'_>) -> Option<Drawing> {
     let mut drawing = Drawing {
         source: Vec::new().into(),
+        source_format: wp_model::SourceFormat::Ooxml,
         anchored: false,
         extent: (Emu(0), Emu(0)),
         rel: None,

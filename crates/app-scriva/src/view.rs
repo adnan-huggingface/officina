@@ -2407,6 +2407,7 @@ mod tests {
         let mut document = document(&[]);
         let drawing = wp_model::Drawing {
             source: Vec::new().into(),
+            source_format: wp_model::SourceFormat::Authored,
             anchored: false,
             extent: (
                 wp_model::Emu::from_points(60.0),
@@ -2471,6 +2472,7 @@ mod tests {
     fn page_sized(behind_text: bool) -> wp_model::Drawing {
         wp_model::Drawing {
             source: Vec::new().into(),
+            source_format: wp_model::SourceFormat::Authored,
             anchored: true,
             extent: (
                 wp_model::Emu::from_points(540.0),
@@ -2591,6 +2593,7 @@ mod tests {
         let mut document = document(&[]);
         let drawing = wp_model::Drawing {
             source: Vec::new().into(),
+            source_format: wp_model::SourceFormat::Authored,
             anchored: false,
             extent: (
                 wp_model::Emu::from_points(60.0),

@@ -323,8 +323,10 @@ fn note(out: &mut String, id: i32, endnote: bool, w: &mut Out<'_>) {
 /// written as is what the model holds: a box, and the path in the package the
 /// picture sits at.
 fn drawing(out: &mut String, drawing: &Drawing, w: &mut Out<'_>) {
-    if !drawing.source.is_empty() {
-        if let Ok(source) = std::str::from_utf8(&drawing.source) {
+    // Only bytes an ODF reader kept: a `<w:drawing>` put back here would be
+    // markup no part of this package declares, and a file LibreOffice refuses.
+    if let Some(source) = drawing.source_in(wp_model::SourceFormat::Odf) {
+        if let Ok(source) = std::str::from_utf8(source) {
             out.push_str(source);
             return;
         }

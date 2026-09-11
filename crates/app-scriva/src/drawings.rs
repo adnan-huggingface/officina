@@ -196,6 +196,7 @@ mod tests {
     fn drawing(anchored: bool) -> Drawing {
         Drawing {
             source: b"<w:drawing/>".to_vec().into(),
+            source_format: wp_model::SourceFormat::Ooxml,
             anchored,
             extent: (Emu::from_points(100.0), Emu::from_points(50.0)),
             rel: Some("rId5".into()),

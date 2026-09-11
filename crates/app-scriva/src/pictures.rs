@@ -229,6 +229,7 @@ mod tests {
     fn drawing(position: Option<DrawingPosition>) -> wp_model::Drawing {
         wp_model::Drawing {
             source: Vec::new().into(),
+            source_format: wp_model::SourceFormat::Authored,
             anchored: true,
             extent: (Emu::from_points(100.0), Emu::from_points(50.0)),
             rel: Some("rId5".into()),

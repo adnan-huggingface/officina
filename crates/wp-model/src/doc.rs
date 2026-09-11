@@ -695,6 +695,30 @@ pub enum Clear {
 }
 
 /// `<w:drawing>` — a picture, chart, shape or diagram.
+/// Which format a drawing's [`Drawing::source`] is spelled in.
+///
+/// **Bytes kept so that a writer can put them back are only any use to the
+/// writer of the format they came out of.** Handed to the other one they are
+/// not a picture it failed to understand but markup it has no namespace for:
+/// a `<draw:frame>` pasted into WordprocessingML, or a `<w:drawing>` into an
+/// ODF body, is a part that is not well-formed XML, and the application that
+/// owns the format refuses the file. A document is saved into the other format
+/// every time Save As crosses between them, so every drawing says which one
+/// its bytes belong to, and a writer handed another format's authors the
+/// drawing from the model as it would one made here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceFormat {
+    /// No markup is kept — the drawing was made here, or read out of a `.doc`,
+    /// whose pictures are binary records with no markup to keep — and any
+    /// writer authors it.
+    Authored,
+    /// WordprocessingML — a `<w:drawing>`, a `<w:pict>`, or the
+    /// `<mc:AlternateContent>` around them.
+    Ooxml,
+    /// OpenDocument — a `<draw:frame>` or a `<draw:custom-shape>`.
+    Odf,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Drawing {
     /// **The element exactly as it was read**, so a writer can put it back
@@ -710,6 +734,8 @@ pub struct Drawing {
     /// Empty for a drawing we authored, which by construction has nothing in it
     /// that is not modelled.
     pub source: Arc<[u8]>,
+    /// The format `source` is in, and so the only writer that may put it back.
+    pub source_format: SourceFormat,
     /// Inline drawings sit in the text like a very large character. Anchored
     /// ones are positioned on the page and the text flows round them, which is
     /// an entirely different layout problem.
@@ -747,6 +773,17 @@ pub struct Drawing {
     /// The shape drawn as itself — a rectangle with a line, a fill, or both.
     /// See [`ShapeOutline`].
     pub outline: Option<ShapeOutline>,
+}
+
+impl Drawing {
+    /// The bytes this drawing was read as, if a writer of `format` may put them
+    /// back: nothing when they are another format's, or when there are none.
+    pub fn source_in(&self, format: SourceFormat) -> Option<&[u8]> {
+        match self.source_format == format && !self.source.is_empty() {
+            true => Some(&self.source),
+            false => None,
+        }
+    }
 }
 
 /// A shape drawn as itself rather than as a picture or as words.

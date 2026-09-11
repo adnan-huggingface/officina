@@ -146,6 +146,7 @@ fn drawing(shape: &Shape, text: &str, face: Option<String>) -> Drawing {
     let rgb = fill(shape);
     Drawing {
         source: Vec::new().into(),
+        source_format: wp_model::SourceFormat::Ooxml,
         tone: None,
         // `position:absolute` is what makes a shape float; without it the
         // shape sits in the line like a letter, which is ordinary WordArt.

@@ -55,6 +55,7 @@ pub fn frame(
 
     let mut drawing = Drawing {
         source: Vec::new().into(),
+        source_format: wp_model::SourceFormat::Odf,
         // `as-char` is a picture in the line of text; everything else — to a
         // paragraph, to a page, to a character — floats. The distinction is the
         // one the layout engine turns on.
@@ -142,6 +143,7 @@ pub fn custom_shape(
     let opacity = graphic.and_then(|graphic| graphic.opacity);
     let mut drawing = Drawing {
         source: Vec::new().into(),
+        source_format: wp_model::SourceFormat::Odf,
         anchored: anchor != "as-char",
         extent: (
             Emu::from_points(width.map(|w| w.points()).unwrap_or(0.0)),

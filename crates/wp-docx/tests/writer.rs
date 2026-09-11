@@ -332,6 +332,7 @@ fn a_pasted_picture_becomes_a_part_a_relationship_and_a_drawing() {
 
     let drawing = Drawing {
         source: Vec::new().into(),
+        source_format: wp_model::SourceFormat::Ooxml,
         anchored: false,
         extent: (Emu(914_400), Emu(457_200)),
         rel: Some(rel.as_str().into()),
@@ -408,6 +409,7 @@ fn a_chart_pasted_from_calx_becomes_a_part_a_relationship_and_a_drawing() {
 
     let drawing = Drawing {
         source: Vec::new().into(),
+        source_format: wp_model::SourceFormat::Ooxml,
         anchored: false,
         extent: (Emu(5_486_400), Emu(3_200_400)),
         rel: None,

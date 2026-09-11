@@ -1134,8 +1134,11 @@ impl Scriva {
                 continue;
             };
             // Only the names this document minted for itself are re-pointed;
-            // anything else is a relationship the package already knows.
-            if !rel.starts_with("doc-picture-") {
+            // anything else is a relationship the package already knows. What
+            // was minted is what the loose store holds: each reader that hands
+            // pictures out loose names them its own way — `doc-picture-N` for a
+            // `.doc`, `odf-picture-N` for an `.odt` — and a prefix knew only one.
+            if !self.pictures.loose().contains_key(rel) {
                 continue;
             }
             drawing.rel = renamed.get(rel).map(|id| id.as_str().into());
@@ -2380,6 +2383,7 @@ impl Scriva {
             // Ours, and there is nothing in it the model does not hold — the
             // writer authors the element from these fields.
             source: Vec::new().into(),
+            source_format: wp_model::SourceFormat::Authored,
             anchored: false,
             extent: (wp_model::Emu(cx), wp_model::Emu(cy)),
             rel: None,
@@ -3634,6 +3638,7 @@ fn picture_paragraph(
         // Ours, and there is nothing in it the model does not hold — the writer
         // authors the element from these fields. See `wp_docx::write::drawing`.
         source: Vec::new().into(),
+        source_format: wp_model::SourceFormat::Authored,
         anchored: false,
         extent: (wp_model::Emu(cx), wp_model::Emu(cy)),
         rel: Some(rel.into()),
@@ -5394,6 +5399,7 @@ impl Scriva {
             // No source: the writer authors the VML afresh, which is what
             // makes an edited watermark actually reach the file.
             source: Vec::new().into(),
+            source_format: wp_model::SourceFormat::Authored,
             anchored: true,
             extent: (
                 wp_model::Emu::from_points(width),
@@ -8510,6 +8516,7 @@ mod tests {
         app.copied_drawing = Some(CopiedDrawing {
             drawing: wp_model::doc::Drawing {
                 source: Vec::new().into(),
+                source_format: wp_model::SourceFormat::Authored,
                 anchored: false,
                 extent: (wp_model::Emu(914_400), wp_model::Emu(457_200)),
                 rel: None,
@@ -9396,6 +9403,136 @@ second line"
                 Some(part.data()),
                 "{} did not survive a failed Save As into .odt and the Ctrl+S after it",
                 part.name.as_str()
+            );
+        }
+    }
+
+    /// The pictures of an `.odt` saved as a `.docx` are pictures in it.
+    ///
+    /// The bytes were always carried across; what went wrong was the name.
+    /// Each reader mints a name for a picture it hands out loose — `.doc`
+    /// pictures are `doc-picture-N`, ODF ones `odf-picture-N` — and authoring a
+    /// package re-points the drawings from that name to the relationship it
+    /// embeds the picture under. It re-pointed only the names beginning `doc-`,
+    /// so a drawing out of an `.odt` kept naming `odf-picture-1`, which is no
+    /// relationship of the document at all, and Word reports that as a damaged
+    /// file rather than as a missing picture.
+    #[test]
+    fn a_cross_format_save_carries_the_odt_pictures_into_the_docx() {
+        let dir = scratch("cross-format-pictures");
+        let source = dir.join("with-pictures.odt");
+        std::fs::copy(corpus("second-producer.odt"), &source)
+            .expect("the corpus document is there");
+        let mut app = Scriva::new();
+        app.open_odt(&source);
+        // `drawings_mut` because it is the one walk that takes in the headers as
+        // well as the body; nothing here is changed through it.
+        let pictures = app
+            .document
+            .drawings_mut()
+            .iter()
+            .filter(|drawing| drawing.rel.is_some())
+            .count();
+        assert!(pictures > 0, "the corpus document has pictures to carry");
+
+        let target = dir.join("as-word.docx");
+        assert!(app.save_to(target.clone()), "the save reports success");
+
+        let package = ooxml::Package::open(&target).expect("it opens as a package");
+        let parts = wp_docx::DocumentParts::locate_in(&package).expect("it has a document part");
+        let rels = package
+            .relationships(&parts.document)
+            .expect("the document part has relationships");
+        let mut document = wp_docx::read(&package).expect("it reads as a document");
+        let named: Vec<String> = document
+            .drawings_mut()
+            .into_iter()
+            .filter_map(|drawing| drawing.rel.as_deref().map(str::to_owned))
+            .collect();
+        assert_eq!(named.len(), pictures, "every picture came across");
+        let xml = String::from_utf8_lossy(
+            package
+                .part(&parts.document)
+                .expect("the document part is there")
+                .data(),
+        )
+        .into_owned();
+        assert_eq!(
+            undeclared_prefixes(&xml),
+            Vec::<String>::new(),
+            "the document part uses prefixes it never declares"
+        );
+        for rel in named {
+            assert!(
+                rels.get(&rel).is_some(),
+                "{rel} names no relationship of the document, which Word reports as a damaged file"
+            );
+        }
+    }
+
+    /// The prefixes a part uses on its elements and never declares.
+    ///
+    /// A part with one is not well-formed XML as far as a namespace-aware
+    /// reader is concerned, and both applications that own these formats are
+    /// namespace-aware: Word reports the file damaged and LibreOffice will not
+    /// open the part. This crate's own readers match local names and skip what
+    /// they do not know, so a reopen here passes over exactly this.
+    fn undeclared_prefixes(xml: &str) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for tag in xml.split('<').skip(1) {
+            let name: String = tag
+                .chars()
+                .take_while(|c| !c.is_whitespace() && *c != '>' && *c != '/')
+                .collect();
+            let Some((prefix, _)) = name.split_once(':') else {
+                continue;
+            };
+            if prefix.starts_with(['?', '!']) || prefix == "xml" {
+                continue;
+            }
+            if !xml.contains(&format!("xmlns:{prefix}=")) && !out.iter().any(|p| p == prefix) {
+                out.push(prefix.to_owned());
+            }
+        }
+        out
+    }
+
+    /// A `.docx` with pictures saved as `.odt` is an OpenDocument package, not
+    /// a WordprocessingML one wearing its name.
+    ///
+    /// A drawing keeps the bytes it was read as so that a save can put them
+    /// back, and the ODF writer put back any bytes it was given — including a
+    /// `<w:drawing>`, whose `w:`, `wp:` and `a:` prefixes no ODF part declares.
+    /// The pictures themselves do not come across yet, and the application
+    /// says so; what must come across is a file LibreOffice will open.
+    #[test]
+    fn a_cross_format_save_writes_no_docx_markup_into_the_odt() {
+        let dir = scratch("cross-format-markup");
+        let source = dir.join("with-pictures.docx");
+        std::fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../corpus/docx/floating-image-wrap.docx"),
+            &source,
+        )
+        .expect("the corpus document is there");
+        let mut app = Scriva::new();
+        app.open_path(&source);
+        assert!(
+            !app.document.drawings_mut().is_empty(),
+            "the corpus document has pictures"
+        );
+
+        let target = dir.join("as-odf.odt");
+        assert!(app.save_to(target.clone()), "the save reports success");
+
+        let saved = wp_odf::Container::open(&target).expect("it opens as a package");
+        for part in ["content.xml", "styles.xml"] {
+            let xml =
+                String::from_utf8_lossy(saved.data(part).expect("the part is there")).into_owned();
+            assert_eq!(
+                undeclared_prefixes(&xml),
+                Vec::<String>::new(),
+                "{part} uses prefixes it never declares"
             );
         }
     }

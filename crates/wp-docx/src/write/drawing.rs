@@ -27,10 +27,11 @@ use super::splice::Splicer;
 /// Byte-identical to `drawing.source` when the model agrees with it, which is
 /// every drawing in a document nobody has dragged.
 pub fn patch(drawing: &Drawing) -> Vec<u8> {
-    let source: &[u8] = &drawing.source;
-    if source.is_empty() {
+    // Bytes another format's reader kept are markup this part has no namespace
+    // for, so a drawing out of an `.odt` is authored like one made here.
+    let Some(source) = drawing.source_in(wp_model::SourceFormat::Ooxml) else {
         return author(drawing);
-    }
+    };
     // A `<w:pict>` is VML, and none of the DrawingML elements spliced below
     // exist in it — a watermark states its size and its place in a CSS
     // `style` attribute instead. There is nothing here that could edit one,
@@ -387,6 +388,7 @@ mod tests {
     fn drawing(source: &str) -> Drawing {
         Drawing {
             source: source.as_bytes().to_vec().into(),
+            source_format: wp_model::SourceFormat::Ooxml,
             anchored: true,
             extent: (Emu(914400), Emu(457200)),
             rel: None,

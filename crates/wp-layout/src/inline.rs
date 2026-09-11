@@ -3428,6 +3428,7 @@ mod tests {
     fn an_inline_picture_makes_the_line_as_tall_as_itself() {
         let drawing = wp_model::Drawing {
             source: Vec::new().into(),
+            source_format: wp_model::SourceFormat::Authored,
             anchored: false,
             extent: (
                 wp_model::Emu::from_points(50.0),
@@ -3517,6 +3518,7 @@ mod tests {
     fn picture(width: f64, height: f64) -> wp_model::Drawing {
         wp_model::Drawing {
             source: Vec::new().into(),
+            source_format: wp_model::SourceFormat::Authored,
             anchored: false,
             extent: (
                 wp_model::Emu::from_points(width),

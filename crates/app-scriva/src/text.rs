@@ -662,6 +662,7 @@ mod tests {
     fn picture(anchored: bool) -> Piece {
         Piece::Drawing(Box::new(wp_model::doc::Drawing {
             source: Vec::new().into(),
+            source_format: wp_model::SourceFormat::Authored,
             anchored,
             extent: (wp_model::Emu(914_400), wp_model::Emu(457_200)),
             rel: Some("rId9".into()),

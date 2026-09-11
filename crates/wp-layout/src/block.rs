@@ -4741,6 +4741,7 @@ mod tests {
         // of that one cell and Word centres it.
         let drawing = wp_model::Drawing {
             source: Vec::new().into(),
+            source_format: wp_model::SourceFormat::Authored,
             anchored: true,
             extent: (
                 wp_model::Emu::from_points(10.0),
@@ -5777,6 +5778,7 @@ mod tests {
     fn an_anchored_drawing_is_placed_on_the_page_rather_than_in_a_line() {
         let drawing = wp_model::Drawing {
             source: Vec::new().into(),
+            source_format: wp_model::SourceFormat::Authored,
             anchored: true,
             extent: (
                 wp_model::Emu::from_points(100.0),
@@ -5833,6 +5835,7 @@ mod tests {
         section.page.height = Twips::from_points(2000.0);
         let drawing = wp_model::Drawing {
             source: Vec::new().into(),
+            source_format: wp_model::SourceFormat::Authored,
             anchored: true,
             extent: (
                 wp_model::Emu::from_points(column),
@@ -5896,6 +5899,7 @@ mod tests {
         section.page.height = Twips::from_points(2000.0);
         let drawing = wp_model::Drawing {
             source: Vec::new().into(),
+            source_format: wp_model::SourceFormat::Authored,
             anchored: true,
             extent: (
                 wp_model::Emu::from_points(120.0),
@@ -5966,6 +5970,7 @@ mod tests {
         // that width alone would make them.
         let mut drawing = wp_model::Drawing {
             source: Vec::new().into(),
+            source_format: wp_model::SourceFormat::Authored,
             anchored: true,
             extent: (
                 wp_model::Emu::from_points(200.0),
@@ -6041,6 +6046,7 @@ mod tests {
         // watermark two thirds the height Word draws it.
         let mut drawing = wp_model::Drawing {
             source: Vec::new().into(),
+            source_format: wp_model::SourceFormat::Authored,
             anchored: true,
             extent: (
                 wp_model::Emu::from_points(400.0),
@@ -6113,6 +6119,7 @@ mod tests {
         // times as tall as that.
         let mut drawing = wp_model::Drawing {
             source: Vec::new().into(),
+            source_format: wp_model::SourceFormat::Authored,
             anchored: true,
             extent: (
                 wp_model::Emu::from_points(400.0),
@@ -6178,6 +6185,7 @@ mod tests {
         };
         let drawing = wp_model::Drawing {
             source: Vec::new().into(),
+            source_format: wp_model::SourceFormat::Authored,
             anchored: true,
             extent: (
                 wp_model::Emu::from_points(100.0),
@@ -6219,6 +6227,7 @@ mod tests {
         // the layout runs twice; see `Wraps`.
         let margin_arrow = |left: bool| wp_model::Drawing {
             source: Vec::new().into(),
+            source_format: wp_model::SourceFormat::Authored,
             anchored: true,
             extent: (
                 wp_model::Emu::from_points(80.0),
@@ -6306,6 +6315,7 @@ mod tests {
         };
         let drawing = wp_model::Drawing {
             source: Vec::new().into(),
+            source_format: wp_model::SourceFormat::Authored,
             anchored: true,
             extent: (
                 wp_model::Emu::from_points(100.0),

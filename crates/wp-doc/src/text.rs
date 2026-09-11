@@ -859,6 +859,7 @@ fn emu(twips: i32) -> wp_model::Emu {
 fn blank() -> Drawing {
     Drawing {
         source: Vec::new().into(),
+        source_format: wp_model::SourceFormat::Authored,
         anchored: false,
         extent: (wp_model::Emu(0), wp_model::Emu(0)),
         rel: None,
