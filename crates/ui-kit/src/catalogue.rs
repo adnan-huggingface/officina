@@ -51,8 +51,18 @@ pub fn file(name: &str, bold: bool, italic: bool) -> Option<&'static Path> {
         .map(PathBuf::as_path)
 }
 
+/// **A face is filed under the name Word calls it by first.** A font carries
+/// two family names: the legacy one (name 1), which is at most four faces —
+/// regular, bold, italic, bold italic — and is what Word and every document it
+/// writes use, and the typographic one (name 16), which gathers every weight
+/// and width into one family. Filed by the second, "Aptos Display" was filed
+/// as Aptos Regular and "Calibri Light" as Calibri Regular: a document naming
+/// either found nothing and was laid in a stand-in, and whether plain Aptos
+/// then got the Aptos file or the Display one depended on the order a
+/// directory happened to list them in. The typographic name still answers,
+/// but only for a face no file claims by its legacy name.
 fn build(dirs: &[PathBuf]) -> BTreeMap<FaceKey, PathBuf> {
-    let mut found = BTreeMap::new();
+    let mut faces = Vec::new();
     for dir in dirs {
         let Ok(entries) = std::fs::read_dir(dir) else {
             continue;
@@ -66,19 +76,38 @@ fn build(dirs: &[PathBuf]) -> BTreeMap<FaceKey, PathBuf> {
             if !matches!(extension.as_deref(), Some("ttf" | "otf")) {
                 continue;
             }
-            let Some((family, bold, italic)) = describe(&path) else {
-                continue;
-            };
-            // The first directory wins, which puts the system's own fonts
-            // ahead of a user's separately installed copy of the same name.
-            found.entry((family, bold, italic)).or_insert(path);
+            if let Some(names) = describe(&path) {
+                faces.push((names, path));
+            }
+        }
+    }
+    // The first directory wins, which puts the system's own fonts ahead of a
+    // user's separately installed copy of the same name.
+    let mut found = BTreeMap::new();
+    for (names, path) in &faces {
+        found
+            .entry(names.legacy.clone())
+            .or_insert_with(|| path.clone());
+    }
+    for (names, path) in &faces {
+        if let Some(typographic) = &names.typographic {
+            found
+                .entry(typographic.clone())
+                .or_insert_with(|| path.clone());
         }
     }
     found
 }
 
+/// The names one file answers to: its legacy family and style, and its
+/// typographic ones where it states them.
+struct Names {
+    legacy: FaceKey,
+    typographic: Option<FaceKey>,
+}
+
 /// The family and style of one font file, from its `name` and `head` tables.
-fn describe(path: &Path) -> Option<(String, bool, bool)> {
+fn describe(path: &Path) -> Option<Names> {
     let file = std::fs::File::open(path).ok()?;
     let header = read_at(&file, 0, 12)?;
     // A collection has no single name, and nothing here can draw with one.
@@ -100,30 +129,36 @@ fn describe(path: &Path) -> Option<(String, bool, bool)> {
     }
     let (offset, length) = name_table?;
     let names = read_at(&file, offset, length)?;
-    // 16 is the typographic family, which is what a document names when a
-    // family carries more than the four faces the older name 1 can describe.
-    let family = string(&names, 16).or_else(|| string(&names, 1))?;
-    let subfamily = string(&names, 17).or_else(|| string(&names, 2));
 
     // `head.macStyle` is the flag every file sets; the subfamily name is the
     // fallback for one whose flags disagree with its own name.
-    let mut bold = false;
-    let mut italic = false;
+    let mut flags = (false, false);
     if let Some((offset, length)) = head_table {
         if length >= 46 {
             if let Some(bytes) = read_at(&file, offset + 44, 2) {
                 let style = u16::from_be_bytes([bytes[0], bytes[1]]);
-                bold = style & 1 != 0;
-                italic = style & 2 != 0;
+                flags = (style & 1 != 0, style & 2 != 0);
             }
         }
     }
-    if let Some(subfamily) = subfamily.as_deref() {
-        let lower = subfamily.to_ascii_lowercase();
-        bold |= lower.contains("bold");
-        italic |= lower.contains("italic") || lower.contains("oblique");
-    }
-    Some((family.to_ascii_lowercase(), bold, italic))
+    let key = |family: String, subfamily: Option<String>| -> FaceKey {
+        let (mut bold, mut italic) = flags;
+        if let Some(subfamily) = subfamily {
+            let lower = subfamily.to_ascii_lowercase();
+            bold |= lower.contains("bold");
+            italic |= lower.contains("italic") || lower.contains("oblique");
+        }
+        (family.to_ascii_lowercase(), bold, italic)
+    };
+    let typographic = string(&names, 16).map(|family| key(family, string(&names, 17)));
+    let legacy = match string(&names, 1) {
+        Some(family) => key(family, string(&names, 2)),
+        None => typographic.clone()?,
+    };
+    Some(Names {
+        legacy,
+        typographic,
+    })
 }
 
 /// One name-table record, preferring the Windows Unicode encoding every
@@ -228,6 +263,118 @@ mod tests {
         let mut short = table();
         short.truncate(20);
         assert_eq!(string(&short, 1), None);
+    }
+
+    /// A font file with just enough in it to be catalogued: a `head` table
+    /// whose `macStyle` says `bold`, and Windows `name` records for `names`.
+    fn face(names: &[(u16, &str)], bold: bool) -> Vec<u8> {
+        let mut records = Vec::new();
+        let mut storage = Vec::new();
+        for (id, text) in names {
+            let bytes: Vec<u8> = text.encode_utf16().flat_map(u16::to_be_bytes).collect();
+            for value in [3, 1, 0x409, *id, bytes.len() as u16, storage.len() as u16] {
+                records.extend_from_slice(&u16::to_be_bytes(value));
+            }
+            storage.extend_from_slice(&bytes);
+        }
+        let mut name = Vec::new();
+        for value in [0, names.len() as u16, 6 + 12 * names.len() as u16] {
+            name.extend_from_slice(&u16::to_be_bytes(value));
+        }
+        name.extend_from_slice(&records);
+        name.extend_from_slice(&storage);
+        let mut head = vec![0u8; 54];
+        head[44..46].copy_from_slice(&u16::to_be_bytes(u16::from(bold)));
+
+        let mut file = vec![0, 1, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0];
+        let (head_at, name_at) = (12 + 32, 12 + 32 + head.len());
+        for (tag, at, length) in [
+            (b"head", head_at, head.len()),
+            (b"name", name_at, name.len()),
+        ] {
+            file.extend_from_slice(tag);
+            file.extend_from_slice(&[0; 4]);
+            file.extend_from_slice(&(at as u32).to_be_bytes());
+            file.extend_from_slice(&(length as u32).to_be_bytes());
+        }
+        file.extend_from_slice(&head);
+        file.extend_from_slice(&name);
+        file
+    }
+
+    /// "Aptos Display" is family 1 of its file and "Aptos" with a "Display"
+    /// style is family 16. Filed by 16, the Display face answered for plain
+    /// Aptos — here because its directory is looked in first — and nothing
+    /// answered for the name a document actually uses for its headings.
+    #[test]
+    fn a_face_is_found_by_the_name_word_uses_before_its_typographic_one() {
+        let root = std::env::temp_dir().join("ui-kit-catalogue-names");
+        let _ = std::fs::remove_dir_all(&root);
+        let (first, second) = (root.join("first"), root.join("second"));
+        std::fs::create_dir_all(&first).expect("a scratch directory");
+        std::fs::create_dir_all(&second).expect("a scratch directory");
+        let put = |dir: &Path, file: &str, names: &[(u16, &str)], bold: bool| {
+            std::fs::write(dir.join(file), face(names, bold)).expect("written");
+        };
+        put(
+            &first,
+            "display.ttf",
+            &[
+                (1, "Aptos Display"),
+                (2, "Regular"),
+                (16, "Aptos"),
+                (17, "Display"),
+            ],
+            false,
+        );
+        put(
+            &first,
+            "light.ttf",
+            &[
+                (1, "Calibri Light"),
+                (2, "Regular"),
+                (16, "Calibri"),
+                (17, "Light"),
+            ],
+            false,
+        );
+        put(&second, "plain.ttf", &[(1, "Aptos"), (2, "Regular")], false);
+        put(&second, "bold.ttf", &[(1, "Aptos"), (2, "Bold")], true);
+        put(
+            &second,
+            "calibri.ttf",
+            &[(1, "Calibri"), (2, "Regular")],
+            false,
+        );
+        put(
+            &second,
+            "sourcelight.ttf",
+            &[
+                (1, "Source Light"),
+                (2, "Regular"),
+                (16, "Source"),
+                (17, "Light"),
+            ],
+            false,
+        );
+
+        let found = build(&[first.clone(), second.clone()]);
+        let at = |family: &str, bold: bool| {
+            found
+                .get(&(family.to_owned(), bold, false))
+                .and_then(|path| path.file_name())
+                .map(|name| name.to_string_lossy().into_owned())
+        };
+        assert_eq!(at("aptos", false).as_deref(), Some("plain.ttf"));
+        assert_eq!(at("aptos", true).as_deref(), Some("bold.ttf"));
+        assert_eq!(at("aptos display", false).as_deref(), Some("display.ttf"));
+        assert_eq!(at("calibri", false).as_deref(), Some("calibri.ttf"));
+        assert_eq!(at("calibri light", false).as_deref(), Some("light.ttf"));
+        assert_eq!(
+            at("source", false).as_deref(),
+            Some("sourcelight.ttf"),
+            "a typographic family no file claims otherwise still answers"
+        );
     }
 
     #[test]
