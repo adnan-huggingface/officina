@@ -4826,3 +4826,35 @@ untouched save; and the drive's own sequence, New to Save As `.odt` and back,
 through the application. `LAYOUT.md` does not move — no corpus `.odt` uses
 `fo:break-after` — and `cargo xtask fidelity` holds. Not done here: opening the
 files in LibreOffice, which this machine does not have.
+
+## The measuring finds the type the application draws with (2026-09-12)
+
+With the corpus's own faces copied onto the Linux machine, `cargo xtask compare
+--check` still failed on the three documents set in Aptos — `watermark.docx`,
+`picture-watermark.docx` and `rtl-and-cjk.docx` — by exactly the same numbers
+as before the fonts were there. Two faults, each enough on its own.
+
+**The instrument asked for a document's faces only when the package embedded
+some.** The application hands every document's face names to `ui_kit::fonts`
+on every open, and that call is the only road by which a face outside the
+built-in table is found on the machine. `wp-compare` made it only for a package
+carrying type, so every other document was measured in whatever `install` had
+— on Windows Aptos arrives through Office's download cache and nothing looked
+wrong; anywhere else it was measured in a stand-in the application never uses.
+
+**The catalogue filed each face under its typographic family.** A font has a
+legacy family (name 1), at most four faces, which is what Word writes into a
+document, and a typographic one (name 16) gathering every weight and width.
+Filed by the second, "Aptos Display" was Aptos Regular and "Calibri Light" was
+Calibri Regular: a document naming either found nothing, and whether plain
+Aptos got its own file or the Display one depended on which a directory listed
+first. The legacy name is filed first now; the typographic one answers only for
+a face nothing claims otherwise. The test puts the Display face in the
+directory looked in first, and the old catalogue gave it to plain Aptos.
+
+With both, the check passes on this machine: twenty-seven documents, none worse
+than `LAYOUT.md` — and `headings-and-list.doc` better than its record, 11 words
+out and a worst of 3.06pt going to none and 0.31pt, because its Calibri Light
+headings are now found. The catalogue fault is not Linux's, so the same
+improvement should appear on the Windows machine the record was made on.
+`LAYOUT.md` is not re-recorded here; that is for the machine that owns it.

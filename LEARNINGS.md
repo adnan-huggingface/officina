@@ -1900,3 +1900,11 @@ states a table's widths and rules inside the table, ODF states them in styles,
 and a writer that wrote the elements and not the styles wrote a table that
 looked like text. Wherever the formats disagree about *where* a thing lives, the
 translation has to be written out — and tested with the thing present.
+
+**A font has two family names, and a document uses the older one.** Name 1 is
+the legacy family — regular, bold, italic, bold italic, and no more — and it is
+what Word writes: "Calibri Light", "Aptos Display". Name 16 is the typographic
+family, which folds every weight and width into one: "Calibri" with a style of
+"Light". A catalogue keyed on the second cannot find what documents name, and
+worse, files a light or display face under the plain family, where it competes
+with the real regular face on nothing firmer than directory order.

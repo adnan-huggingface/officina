@@ -267,10 +267,14 @@ fn open(path: &Path) -> Result<Opened, String> {
 fn fonts(opened: &Opened) -> egui::Context {
     let ctx = egui::Context::default();
     ui_kit::fonts::install(&ctx);
-    if !opened.faces.is_empty() {
-        let named = scriva::app::font_names(&opened.document);
-        ui_kit::fonts::embed_document(&ctx, &opened.faces, &named);
-    }
+    // Whether or not the package carries type, as the application does on
+    // every open: a face the document names and the built-in table does not —
+    // Aptos, Calibri Light — is found on the machine through this call and no
+    // other. Made only for a document with embedded faces, it measured every
+    // other document in a stand-in the application itself never draws with,
+    // wherever the face was not in the one place `install` looks for it.
+    let named = scriva::app::font_names(&opened.document);
+    ui_kit::fonts::embed_document(&ctx, &opened.faces, &named);
     let mut out = ctx.run_ui(egui::RawInput::default(), |_| {});
     out.textures_delta.clear();
     ctx
