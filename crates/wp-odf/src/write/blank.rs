@@ -283,6 +283,131 @@ mod tests {
         assert_eq!(read.text(), "Written from nothing.\nAnd a second line.");
     }
 
+    /// The keystroke drive's own document: a new one, a ruled two-by-two
+    /// table, and page breaks. Saved as `.odt`, the table came back as
+    /// unruled text with no column widths — the element was written, and
+    /// nothing that says what it looks like — and every page break was gone.
+    #[test]
+    fn a_new_documents_ruled_table_and_its_page_breaks_come_back() {
+        use wp_model::doc::{Break, Inline, Piece, Run};
+        use wp_model::prop::{Border, BorderStyle};
+        use wp_model::table::{Cell, Row, Table, TableBorders, TableProps};
+        use wp_model::units::{Eighth, Twips};
+
+        let rule = Border {
+            style: BorderStyle::Single,
+            size: Some(Eighth(4)),
+            ..Border::default()
+        };
+        let cell = |text: &str| Cell {
+            content: vec![Block::Paragraph(Paragraph::of(text))],
+            ..Cell::new()
+        };
+        let table = Table {
+            props: TableProps {
+                borders: TableBorders {
+                    top: Some(rule),
+                    start: Some(rule),
+                    bottom: Some(rule),
+                    end: Some(rule),
+                    inside_h: Some(rule),
+                    inside_v: Some(rule),
+                },
+                ..TableProps::default()
+            },
+            grid: vec![Twips(4680), Twips(2340)],
+            rows: vec![
+                Row {
+                    cells: vec![cell("A1"), cell("B1")],
+                    ..Row::new()
+                },
+                Row {
+                    cells: vec![cell("A2"), cell("B2")],
+                    ..Row::new()
+                },
+            ],
+        };
+        let ending = |text: &str| {
+            let mut run = Run::of(text);
+            run.content.push(Piece::Break(Break::Page));
+            Paragraph {
+                content: vec![Inline::Run(run)],
+                ..Paragraph::default()
+            }
+        };
+        let mut split = Run::of("left of it");
+        split.content.push(Piece::Break(Break::Page));
+        split.content.push(Piece::Text("right of it".into()));
+        let mut document = Document::new();
+        document.body = vec![
+            Block::Paragraph(Paragraph::of("Before the table.")),
+            Block::Table(table.clone()),
+            Block::Paragraph(ending("Ends its page.")),
+            Block::Paragraph(Paragraph::of("On the next.")),
+            Block::Paragraph(Paragraph {
+                content: vec![Inline::Run(split)],
+                ..Paragraph::default()
+            }),
+        ];
+
+        let mut container = container_for(&document).expect("a package");
+        super::super::flush(&mut document, &mut container).expect("it writes");
+        let (read, _) = crate::read(&container).expect("it reads");
+
+        let Some(Block::Table(back)) = read.body.get(1) else {
+            panic!("the table is a table: {:?}", read.body.get(1));
+        };
+        assert_eq!(
+            back.grid, table.grid,
+            "its columns are as wide as they were"
+        );
+        assert_eq!(back.rows.len(), 2);
+        for (r, row) in back.rows.iter().enumerate() {
+            for (c, cell) in row.cells.iter().enumerate() {
+                let edges = &cell.props.borders;
+                assert!(
+                    edges.top.is_some()
+                        && edges.bottom.is_some()
+                        && edges.start.is_some()
+                        && edges.end.is_some(),
+                    "cell {r},{c} is ruled on every side: {edges:?}"
+                );
+            }
+        }
+        assert_eq!(back.rows[1].cells[1].text(), "B2");
+
+        let paragraphs = read.paragraphs();
+        let ends_with_break = |at: usize| {
+            paragraphs[at]
+                .runs()
+                .last()
+                .and_then(|run| run.content.last())
+                .is_some_and(|piece| matches!(piece, Piece::Break(Break::Page)))
+        };
+        let texts: Vec<String> = paragraphs.iter().map(|p| p.text()).collect();
+        let at = texts
+            .iter()
+            .position(|t| t == "Ends its page.")
+            .expect("there");
+        assert!(
+            ends_with_break(at),
+            "the break at a paragraph's end is back where it was"
+        );
+        assert_eq!(texts[at + 1], "On the next.");
+        assert_eq!(texts[at + 2], "left of it");
+        assert_eq!(
+            texts[at + 3],
+            "right of it",
+            "a break inside a paragraph cuts it"
+        );
+        let starts_page = read
+            .styles
+            .resolve_paragraph(&paragraphs[at + 3].props, None)
+            .para
+            .page_break_before;
+        assert_eq!(starts_page, Some(true), "and what follows it starts a page");
+    }
+
     #[test]
     fn a_blank_package_is_a_file_that_opens_again() {
         let mut document = Document::new();

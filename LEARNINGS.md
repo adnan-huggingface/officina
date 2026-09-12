@@ -1888,3 +1888,15 @@ it; nothing that maps Word's built-in styles by id finds them, and an ODF
 style name, which must be an NCName, cannot hold it at all. The name before the
 first comma is the style's name, the rest are aliases, and the id is what Word
 itself would make of the name.
+
+**A structure one format keeps inside a paragraph, the other keeps between
+them.** WordprocessingML puts a page break in a run; ODF has only a paragraph
+that starts a page or one that ends it. The writer passed over the run's break
+expecting the paragraph's style to carry it, and nothing ever set the style —
+so every page break in a document saved as `.odt` was gone, silently, and the
+writer's own tests never saw it because none of them had a break to lose. The
+same shape of mistake left an authored table's geometry behind: WordprocessingML
+states a table's widths and rules inside the table, ODF states them in styles,
+and a writer that wrote the elements and not the styles wrote a table that
+looked like text. Wherever the formats disagree about *where* a thing lives, the
+translation has to be written out — and tested with the thing present.

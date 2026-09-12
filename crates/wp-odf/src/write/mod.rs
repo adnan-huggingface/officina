@@ -25,9 +25,11 @@
 //! row and cell, so re-emitting a table means minting that whole family of
 //! styles and hoping they say what the originals said. The splice goes *into*
 //! the table instead, down to the paragraphs in its cells, and every width and
-//! border in it is copied rather than restated. The cost is that a change to a
-//! table's *structure* — a row added, a column removed — is not written; the
-//! benefit is that a typo fixed in a cell does not resize the table.
+//! border in it is copied rather than restated, and a typo fixed in a cell
+//! does not resize the table. A row added at the end is written after the rows
+//! the file has, styled from the cells it copied; any other change to a
+//! table's *structure* — a row put in the middle, a column removed — is still
+//! not written.
 //!
 //! Direct formatting cannot be written where the run is. ODF states it as an
 //! automatic style, which stands in `<office:automatic-styles>` *before* the
@@ -714,6 +716,19 @@ fn rows_out<'a>(
                 }
             }
             Event::End(e) if end_local_name(e) == end => {
+                // Rows the model has and the file does not — Tab in a table's
+                // last cell adds one — have nothing to splice through, and were
+                // dropped: the table was written with the rows it came with.
+                // They go in before the table closes, written as a table
+                // authored here writes its rows, from the cells they copied.
+                if end == b"table" {
+                    let mut added = String::new();
+                    while *row < model.rows.len() {
+                        emit::row(&mut added, model, *row, w);
+                        *row += 1;
+                    }
+                    out.extend_from_slice(added.as_bytes());
+                }
                 out.extend_from_slice(splicer.bytes(span));
                 return;
             }
@@ -984,6 +999,73 @@ mod tests {
             text.contains("<text:p>alpha</text:p>"),
             "and so is the cell beside it: {text}"
         );
+    }
+
+    /// Tab in a table's last cell adds a row, and the splice wrote a table
+    /// with the rows its file came with: the new row was dropped on save with
+    /// nothing said. It goes in after them now, and nothing before it moves.
+    #[test]
+    fn a_row_added_at_the_end_of_a_spliced_table_is_written() {
+        let (mut document, mut container) = opened();
+        let Block::Table(table) = &mut document.body[3] else {
+            panic!("the fourth block is a table");
+        };
+        let mut row = table.rows[0].clone();
+        for (cell, text) in row.cells.iter_mut().zip(["gamma", "delta"]) {
+            cell.content = vec![Block::Paragraph(Paragraph::of(text))];
+        }
+        table.rows.push(row);
+
+        flush(&mut document, &mut container).expect("it writes");
+        let text = text_of(&container);
+        assert!(
+            text.contains(concat!(
+                r#"<table:table table:name="T1"><table:table-column table:number-columns-repeated="2"/>"#,
+                r#"<table:table-row><table:table-cell><text:p>alpha</text:p></table:table-cell>"#,
+                r#"<table:table-cell><text:p>beta</text:p></table:table-cell></table:table-row>"#,
+            )),
+            "the rows the file had are copied as they were: {text}"
+        );
+        let (read, _) = crate::read(&container).expect("it reads");
+        let Block::Table(back) = &read.body[3] else {
+            panic!("still a table");
+        };
+        let cells: Vec<Vec<String>> = back
+            .rows
+            .iter()
+            .map(|row| row.cells.iter().map(|cell| cell.text()).collect())
+            .collect();
+        assert_eq!(cells, [["alpha", "beta"], ["gamma", "delta"]]);
+    }
+
+    /// `fo:break-after` is how LibreOffice ends a page after a paragraph, and
+    /// the reader ignored it, so the break was gone from the page. It reads as
+    /// the break at the paragraph's end that the other format writes — and a
+    /// document that has one still saves untouched byte for byte.
+    #[test]
+    fn a_page_break_after_a_paragraph_is_read_and_left_alone() {
+        use wp_model::doc::{Break, Piece};
+        let content = CONTENT.replace(
+            r#"<style:style style:name="P1" style:family="paragraph" style:parent-style-name="Standard"/>"#,
+            r#"<style:style style:name="P1" style:family="paragraph" style:parent-style-name="Standard"><style:paragraph-properties fo:break-after="page"/></style:style>"#,
+        );
+        let mut container = package();
+        container
+            .put_part("content.xml", XML_MEDIA_TYPE, content.as_bytes().to_vec())
+            .expect("a part name");
+        let (mut document, _) = crate::read(&container).expect("it reads");
+        let first = &document.paragraphs()[1];
+        assert_eq!(first.text(), "first");
+        assert!(
+            first
+                .runs()
+                .last()
+                .and_then(|run| run.content.last())
+                .is_some_and(|piece| matches!(piece, Piece::Break(Break::Page))),
+            "the paragraph ends its page"
+        );
+        flush(&mut document, &mut container).expect("it writes");
+        assert_eq!(text_of(&container), content, "and nobody edited it");
     }
 
     /// A header is edited where it is drawn, so a save has to be able to write

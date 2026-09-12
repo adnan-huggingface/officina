@@ -366,6 +366,18 @@ fn paragraph(
     if !empty {
         paragraph.content = inlines(reader, name, ctx, &RunProps::default());
     }
+    // A page break after the paragraph is a page break at its end, where
+    // Ctrl+Enter puts one and Word writes one; without it a break made after
+    // a paragraph in LibreOffice, or saved there from here, was lost.
+    if style_name
+        .as_deref()
+        .is_some_and(|name| ctx.styles.breaks_after(&ctx.table, name))
+    {
+        paragraph.content.push(Inline::Run(wp_model::doc::Run {
+            content: vec![wp_model::doc::Piece::Break(wp_model::doc::Break::Page)],
+            ..wp_model::doc::Run::new()
+        }));
+    }
     paragraph
 }
 

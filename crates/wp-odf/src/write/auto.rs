@@ -107,25 +107,48 @@ impl Automatic {
     ///
     /// The style it already names where there is no direct formatting to place,
     /// and a minted one where there is.
-    pub(crate) fn paragraph_style(&mut self, props: &ParaProps) -> Option<String> {
+    ///
+    /// `break_after` is for a paragraph a page break ends. ODF has no page
+    /// break inside a paragraph, only one before or after it, and the one
+    /// after is a property no other format's paragraph has — so it is asked
+    /// for here rather than carried in the model's properties. The reader
+    /// gives it back as the break at the paragraph's end it came from.
+    pub(crate) fn paragraph_style(
+        &mut self,
+        props: &ParaProps,
+        break_after: bool,
+    ) -> Option<String> {
         let base = props
             .style
             .and_then(|id| self.name_of(id))
             .map(str::to_owned);
         let direct = paragraph_residue(props, base.as_deref(), &self.master_of_style);
-        if direct == ParaProps::default() {
+        if direct == ParaProps::default() && !break_after {
             return base;
         }
         let (parent, mut para, run) = self.foundation(base.as_deref());
         let parent = parent.or_else(|| self.default_paragraph());
         para.layer(&direct, Layer::Direct);
         let mut body = String::new();
-        paragraph_properties(&mut body, &para);
+        paragraph_properties_breaking(&mut body, &para, break_after);
         text_properties(&mut body, &run);
         if body.is_empty() {
             return base;
         }
-        Some(self.mint("paragraph", 'P', parent.as_deref(), base.as_deref(), &body))
+        Some(self.mint("paragraph", "P", parent.as_deref(), base.as_deref(), &body))
+    }
+
+    /// A style for one of a table's own families — the table, a column, a row
+    /// or a cell — holding `body`, or the one minted earlier that holds the
+    /// same. A fully ruled table is one cell style, however many cells.
+    pub(crate) fn table_style(&mut self, family: &str, body: &str) -> String {
+        let prefix = match family {
+            "table" => "Table",
+            "table-column" => "Column",
+            "table-row" => "Row",
+            _ => "Cell",
+        };
+        self.mint(family, prefix, None, None, body)
     }
 
     /// What a run's `text:style-name` should say, or nothing where the run has
@@ -149,7 +172,7 @@ impl Automatic {
         if body.is_empty() {
             return base;
         }
-        Some(self.mint("text", 'T', parent.as_deref(), None, &body))
+        Some(self.mint("text", "T", parent.as_deref(), None, &body))
     }
 
     /// What a minted paragraph style stands on when the paragraph names no
@@ -208,7 +231,7 @@ impl Automatic {
     fn mint(
         &mut self,
         family: &str,
-        letter: char,
+        prefix: &str,
         parent: Option<&str>,
         carry: Option<&str>,
         body: &str,
@@ -227,7 +250,7 @@ impl Automatic {
             return name.clone();
         }
         let name = loop {
-            let candidate = format!("{letter}{}", self.next);
+            let candidate = format!("{prefix}{}", self.next);
             self.next += 1;
             if self.taken.insert(candidate.clone()) {
                 break candidate;
@@ -383,6 +406,10 @@ pub(crate) fn text_properties(out: &mut String, run: &RunProps) {
 /// `<style:paragraph-properties>`, tab stops included — they are a child
 /// element rather than an attribute, which is why this closes its own tag.
 pub(crate) fn paragraph_properties(out: &mut String, para: &ParaProps) {
+    paragraph_properties_breaking(out, para, false);
+}
+
+fn paragraph_properties_breaking(out: &mut String, para: &ParaProps, break_after: bool) {
     let mut attrs = String::new();
     if let Some(justify) = para.justify {
         let value = match justify {
@@ -436,6 +463,9 @@ pub(crate) fn paragraph_properties(out: &mut String, para: &ParaProps) {
     }
     if para.page_break_before == Some(true) {
         attrs.push_str(r#" fo:break-before="page""#);
+    }
+    if break_after {
+        attrs.push_str(r#" fo:break-after="page""#);
     }
     if para.widow_control == Some(true) {
         attrs.push_str(r#" fo:orphans="2" fo:widows="2""#);
@@ -514,7 +544,7 @@ fn borders_out(attrs: &mut String, borders: &ParaBorders) {
 }
 
 /// `fo:border` is one string: a width, a style and a colour.
-fn border_words(border: &Border) -> String {
+pub(crate) fn border_words(border: &Border) -> String {
     let width = border
         .size
         .map(|size| points(size.points()))
@@ -579,7 +609,7 @@ fn always(on: bool) -> &'static str {
     }
 }
 
-fn hex(color: wp_model::Color) -> String {
+pub(crate) fn hex(color: wp_model::Color) -> String {
     match color {
         wp_model::Color::Rgb([r, g, b]) => format!("#{r:02x}{g:02x}{b:02x}"),
         // `auto` is "whatever the reader thinks contrasts", which ODF has no
@@ -593,7 +623,7 @@ fn hex(color: wp_model::Color) -> String {
 /// Points rather than inches because a twip *is* a twentieth of a point: every
 /// value the model holds comes out with at most two decimal places and reads
 /// back as exactly the number it went out as, where an inch would round.
-fn twips(value: Twips) -> String {
+pub(crate) fn twips(value: Twips) -> String {
     points(value.0 as f64 / 20.0)
 }
 
@@ -679,7 +709,7 @@ mod tests {
         };
 
         assert_eq!(
-            auto.paragraph_style(&props),
+            auto.paragraph_style(&props, false),
             None,
             "a paragraph with nothing to name names nothing"
         );

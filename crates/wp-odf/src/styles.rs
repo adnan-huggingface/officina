@@ -61,6 +61,9 @@ pub struct Styles {
     /// Which master page a paragraph style starts. ODF spells a section break
     /// as a property of the paragraph after it.
     pub master_of_style: HashMap<String, String>,
+    /// Which paragraph styles state `fo:break-after`, and what they state. See
+    /// [`Styles::breaks_after`].
+    pub break_after_of_style: HashMap<String, bool>,
     /// Where each `<text:list-style>` ended up in the numbering table.
     pub lists: crate::list::Lists,
     /// `<text:outline-style>`, the numbering of the headings, if it numbers
@@ -69,6 +72,29 @@ pub struct Styles {
 }
 
 impl Styles {
+    /// Whether a paragraph in this style ends its page: the nearest style up
+    /// the chain that says either way decides, as it does for every property.
+    pub fn breaks_after(&self, table: &StyleTable, name: &str) -> bool {
+        let mut name = name.to_owned();
+        // A chain is short, and one that loops is not a chain.
+        for _ in 0..32 {
+            if let Some(&brk) = self.break_after_of_style.get(&name) {
+                return brk;
+            }
+            let parent = self
+                .by_name
+                .get(&name)
+                .and_then(|&id| table.get(id))
+                .and_then(|style| style.based_on)
+                .and_then(|id| table.get(id));
+            match parent {
+                Some(style) => name = style.id.to_string(),
+                None => return false,
+            }
+        }
+        false
+    }
+
     /// The id a `text:style-name` stands for, interning it if the style itself
     /// has not been read yet.
     ///
@@ -202,6 +228,9 @@ fn one(
                 .map(|next| styles.id(table, next, StyleKind::Paragraph));
             if let Some(list) = props.list_style.clone() {
                 styles.list_of_style.insert(name.clone(), list);
+            }
+            if let Some(brk) = props.break_after {
+                styles.break_after_of_style.insert(name.clone(), brk);
             }
             if let Some(master) = props.master_page.clone() {
                 // An empty name is how ODF says "no break here", and it is not

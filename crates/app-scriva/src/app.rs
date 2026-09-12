@@ -7744,6 +7744,61 @@ mod tests {
         }
     }
 
+    /// The keystroke drive's repro: New, Insert ▸ Table…, Insert, Save As
+    /// `.odt`, open it again. The table came back as unruled text with no
+    /// widths, and the page break was gone, with nothing said.
+    #[test]
+    fn a_table_and_a_page_break_survive_a_save_as_odt() {
+        let dir = scratch("table-and-break-as-odt");
+        let target = dir.join("t.odt");
+        let mut app = Scriva::new();
+        app.type_text("Before.");
+        app.run(Command::PageBreak);
+        app.type_text("After the break.");
+        app.insert_table(2, 2);
+        app.type_text("A1");
+        let grid = match app
+            .document
+            .body
+            .iter()
+            .find(|b| matches!(b, Block::Table(_)))
+        {
+            Some(Block::Table(table)) => table.grid.clone(),
+            _ => panic!("the table is in"),
+        };
+        assert!(app.save_to(target.clone()), "the save reports success");
+
+        let mut reopened = Scriva::new();
+        reopened.open_path(&target);
+        let Some(Block::Table(table)) = reopened
+            .document
+            .body
+            .iter()
+            .find(|b| matches!(b, Block::Table(_)))
+        else {
+            panic!("the table came back as a table");
+        };
+        assert_eq!(table.grid, grid, "as wide as it was");
+        assert!(
+            table.rows[0].cells[0].props.borders.top.is_some(),
+            "and ruled"
+        );
+        assert_eq!(table.rows[0].cells[0].text(), "A1");
+        let broken = reopened.document.paragraphs().iter().any(|paragraph| {
+            paragraph
+                .runs()
+                .iter()
+                .flat_map(|run| run.content.iter())
+                .any(|piece| {
+                    matches!(
+                        piece,
+                        wp_model::doc::Piece::Break(wp_model::doc::Break::Page)
+                    )
+                })
+        });
+        assert!(broken, "the page break is still there");
+    }
+
     fn app_with(texts: &[&str]) -> Scriva {
         let mut app = Scriva::new();
         app.document.body = texts

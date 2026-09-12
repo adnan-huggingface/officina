@@ -135,8 +135,21 @@ hand mints a `<style:style style:family="text">` in `<office:automatic-styles>`
 — which stands before the body, and so is spliced in once the body is known. And
 a table that changed is spliced *into* rather than rewritten: an ODF table states
 its widths, borders and shading in automatic styles named from every column, row
-and cell, so rewriting one would mean minting the lot. The cost is that a change
-to a table's structure — a row added, a column removed — is not yet written.
+and cell, so rewriting one would mean minting the lot. A row added at the end —
+Tab in the last cell — is written after the rows the file has, with styles minted
+from the cells it copied; any other change to a table's structure, a row put in
+the middle or a column removed, is not yet written. A table the file never had —
+made in the application, or crossing in from a `.docx` — *is* written whole, and
+mints the lot: the table's width, a style per width of column, and a style per
+look of cell, the table's own rules handed out to its cells because ODF has no
+rules but a cell's.
+
+A page break is not a mark inside a paragraph in ODF, only a property of one:
+`fo:break-before` on the paragraph after it or `fo:break-after` on the one it
+ends. A break at a paragraph's end — Ctrl+Enter's — goes out as the paragraph's
+`break-after` and is read back as the break it was; one inside a paragraph cuts
+it in two, the second starting a page, which is the only way the format can say
+it.
 
 A picture added to an `.odt` is one part and nothing else: its bytes go in under
 `Pictures/`, and the frame names that path. ODF has no relationships, so there

@@ -62,6 +62,11 @@ pub struct Props {
     /// `style:master-page-name`. A section break, spelled as a property of the
     /// first paragraph after it.
     pub master_page: Option<String>,
+    /// `fo:break-after` on a paragraph style: whether the paragraph ends its
+    /// page. No other format's paragraph has the property, so it is not a
+    /// paragraph property in the model; the reader turns it into the break at
+    /// the end of the paragraph that the other format writes.
+    pub break_after: Option<bool>,
     /// How text goes round a frame in this style.
     pub wrap: Option<wp_model::doc::Wrap>,
     /// `draw:fill-color` and `draw:opacity` — what a shape is filled with, and
@@ -99,6 +104,9 @@ pub fn properties(reader: &mut Reader<&[u8]>, end: &[u8], faces: &FontFaces, pro
                     b"text-properties" => text_properties(&e, faces, &mut props.run),
                     b"paragraph-properties" => {
                         paragraph_properties(&e, &mut props.para);
+                        if let Some(brk) = attr_in(&e, b"fo", b"break-after") {
+                            props.break_after = Some(brk == "page" || brk == "column");
+                        }
                         if !empty {
                             para_children(reader, &mut props.para);
                         }

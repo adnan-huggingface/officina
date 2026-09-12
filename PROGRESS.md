@@ -4789,3 +4789,40 @@ before and after and compared whole.
 
 Not measured: how Word itself opens the copies. No Word on this machine; the
 drive's `.doc` should be saved again and opened in Word where there is one.
+
+## A table and a page break cross into an `.odt` (2026-09-12)
+
+Found by the keystroke drive: a new document with two ruled tables and two page
+breaks, saved as `.odt` and opened again, came back as one page of unruled text
+— and the title bar said the save had gone fine. The report had it that the
+tables were not written at all; they were, as bare `<table:table>` elements
+with no styles, which is why they read as text: an ODF table says what it looks
+like — its width, its columns' widths, every rule — in automatic styles, and
+`emit::table` wrote the elements and none of the styles. The page breaks were
+passed over outright: `Piece::Break(Page)` was treated as a property of the
+paragraph's style, and nothing ever set it.
+
+A table the file never had now mints its styles — the table's width and
+alignment, a style per width of column, one per row that states a height, and
+one per look of cell, the table's rules handed out to its cells because ODF has
+no rules but a cell's — and a vertical merge is written as the count of rows it
+spans. A page break inside a paragraph cuts it in two, the second part starting
+a page; a break at a paragraph's end, the shape Ctrl+Enter makes, is the
+paragraph's `fo:break-after`. The reader did not read `fo:break-after` either,
+so a break made after a paragraph in LibreOffice was lost on the way in; it now
+reads as the break at the paragraph's end, and a document that has one still
+saves untouched byte for byte.
+
+And a row added at the end of a table the file already had — Tab in the last
+cell, which the Tab fix above made one keystroke away — was dropped on save,
+because the splice walks the rows the file has. It is written after them now,
+styled from the cells it copied.
+
+Tests: a new document's ruled table comes back with its widths and every cell
+ruled, and its breaks — at a paragraph's end and in its middle — where they
+were; a row added to a spliced table is written and the rows before it are
+copied as they were; `fo:break-after` reads as a break and survives an
+untouched save; and the drive's own sequence, New to Save As `.odt` and back,
+through the application. `LAYOUT.md` does not move — no corpus `.odt` uses
+`fo:break-after` — and `cargo xtask fidelity` holds. Not done here: opening the
+files in LibreOffice, which this machine does not have.

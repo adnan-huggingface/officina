@@ -24,8 +24,10 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 
 use wp_model::doc::{Block, Break, Document, Drawing, Hyperlink, Inline, Paragraph, Piece, Run};
+use wp_model::prop::ParaProps;
 use wp_model::revision::Anchor;
 use wp_model::table::{Table, VMerge};
+use wp_model::units::Twips;
 
 use super::auto::Automatic;
 use super::splice::{escape_attr, escape_text};
@@ -57,22 +59,109 @@ pub(crate) fn block(out: &mut String, block: &Block, w: &mut Out<'_>) {
     }
 }
 
-/// `<text:p>`, or `<text:h>` where the paragraph says how deep it is.
+/// `<text:p>`, or `<text:h>` where the paragraph says how deep it is — and
+/// more than one of them where a page break stands inside it.
+///
+/// **ODF has no page break inside a paragraph**, only one before a paragraph
+/// (`fo:break-before`) or after it (`fo:break-after`), each a property of the
+/// paragraph's style. This writer passed over a `Piece::Break(Page)` as such a
+/// property and never set it, so every page break in a document saved as
+/// `.odt` was gone and its pages ran together. A paragraph is now cut at each
+/// break, every piece after the first starting a page. A break at the very
+/// end — the shape Ctrl+Enter makes — is the paragraph's own `break-after`,
+/// which the reader gives back as the break it was; one at the very start is
+/// its `break-before`.
 pub(crate) fn paragraph(out: &mut String, paragraph: &Paragraph, w: &mut Out<'_>) {
-    let tag = match paragraph.props.outline_level {
+    let mut parts = split_at_pages(&paragraph.content);
+    if parts.len() == 1 {
+        one(out, &paragraph.props, &paragraph.content, false, w);
+        return;
+    }
+    let trailing = parts.last().is_some_and(Vec::is_empty);
+    if trailing {
+        parts.pop();
+    }
+    let leading = parts.len() > 1 && parts.first().is_some_and(Vec::is_empty);
+    if leading {
+        parts.remove(0);
+    }
+    let last = parts.len() - 1;
+    for (at, content) in parts.iter().enumerate() {
+        let mut props = paragraph.props.clone();
+        if at > 0 || leading {
+            props.page_break_before = Some(true);
+        }
+        one(out, &props, content, trailing && at == last, w);
+    }
+}
+
+/// A paragraph's inlines, cut at every page or column break among its runs.
+/// The breaks themselves go; what is either side of each is a part.
+fn split_at_pages(content: &[Inline]) -> Vec<Vec<Inline>> {
+    let breaks = |piece: &Piece| matches!(piece, Piece::Break(Break::Page | Break::Column));
+    let mut parts: Vec<Vec<Inline>> = vec![Vec::new()];
+    for inline in content {
+        let Inline::Run(run) = inline else {
+            parts.last_mut().expect("never empty").push(inline.clone());
+            continue;
+        };
+        if !run.content.iter().any(breaks) {
+            parts.last_mut().expect("never empty").push(inline.clone());
+            continue;
+        }
+        let mut piece_run = Run {
+            content: Vec::new(),
+            ..run.clone()
+        };
+        for piece in &run.content {
+            if breaks(piece) {
+                if !piece_run.content.is_empty() {
+                    let done = std::mem::take(&mut piece_run.content);
+                    parts
+                        .last_mut()
+                        .expect("never empty")
+                        .push(Inline::Run(Run {
+                            content: done,
+                            ..run.clone()
+                        }));
+                }
+                parts.push(Vec::new());
+            } else {
+                piece_run.content.push(piece.clone());
+            }
+        }
+        if !piece_run.content.is_empty() {
+            parts
+                .last_mut()
+                .expect("never empty")
+                .push(Inline::Run(piece_run));
+        }
+    }
+    parts
+}
+
+/// One `<text:p>` or `<text:h>`.
+fn one(
+    out: &mut String,
+    props: &ParaProps,
+    content: &[Inline],
+    break_after: bool,
+    w: &mut Out<'_>,
+) {
+    let tag = match props.outline_level {
         Some(_) => "text:h",
         None => "text:p",
     };
     let _ = write!(out, "<{tag}");
-    if let Some(style) = w.auto.paragraph_style(&paragraph.props) {
+    if let Some(style) = w.auto.paragraph_style(props, break_after) {
         let _ = write!(out, r#" text:style-name="{}""#, escape_attr(&style));
     }
-    if let Some(level) = paragraph.props.outline_level {
+    if let Some(level) = props.outline_level {
         // The model counts outline levels from zero as its usual format does;
         // ODF counts a heading's depth from one.
         let _ = write!(out, r#" text:outline-level="{}""#, level as u32 + 1);
     }
-    if paragraph.content.is_empty() {
+    if content.is_empty() {
         out.push_str("/>");
         return;
     }
@@ -80,7 +169,7 @@ pub(crate) fn paragraph(out: &mut String, paragraph: &Paragraph, w: &mut Out<'_>
     // A space here would be the first thing on the line, and ODF drops one that
     // is, so the paragraph starts out owing `<text:s/>` for it.
     let mut fresh = true;
-    inlines(out, &paragraph.content, w, &mut fresh);
+    inlines(out, content, w, &mut fresh);
     let _ = write!(out, "</{tag}>");
 }
 
@@ -192,7 +281,8 @@ fn piece(out: &mut String, piece: &Piece, w: &mut Out<'_>, fresh: &mut bool) {
             *fresh = true;
         }
         // A page or column break is a property of a paragraph in this format,
-        // not a mark inside one, and the paragraph's style carries it.
+        // not a mark inside one: `paragraph` has already cut the paragraph at
+        // every one and given the pieces the styles that say so.
         Piece::Break(_) => {}
         Piece::Hyphen { breaking } => match breaking {
             true => self::text(out, "\u{00AD}", fresh),
@@ -367,61 +457,303 @@ fn drawing(out: &mut String, drawing: &Drawing, w: &mut Out<'_>) {
 /// A table the model holds and the file does not.
 ///
 /// **A table already in the file is never written by this.** It is spliced
-/// through instead — see `write::mod` — because an ODF table states its widths,
-/// its shading and its borders in automatic styles named from every column, row
-/// and cell, and rewriting one would mean minting the lot. This is for a table
-/// authored here, which by construction has nothing in it that is not modelled.
+/// through instead — see `write::mod` — so that everything this crate does not
+/// model about it survives. This is for a table authored here, or crossing in
+/// from the other format, and for the rows a spliced table gained.
+///
+/// **An ODF table says what it looks like in automatic styles, or not at all.**
+/// Written as bare elements, a table authored here lost its column widths and
+/// every rule on the way into the file, and came back — in LibreOffice and
+/// here — as a grid of unruled text. So the table, each width of column, each
+/// row that states a height and each look of cell mints a style, the way a run
+/// with direct formatting mints one; a fully ruled table is one cell style.
 pub(crate) fn table(out: &mut String, table: &Table, w: &mut Out<'_>) {
-    let columns = table.grid.len().max(
-        table
-            .rows
-            .iter()
-            .map(|row| {
-                row.cells
-                    .iter()
-                    .map(|c| c.props.grid_span.max(1) as usize)
-                    .sum()
-            })
-            .max()
-            .unwrap_or(1),
-    );
+    let columns = columns_of(table);
     out.push_str("<table:table");
     if let Some(name) = &table.props.caption {
         let _ = write!(out, r#" table:name="{}""#, escape_attr(name));
     }
-    out.push('>');
-    let _ = write!(
-        out,
-        r#"<table:table-column table:number-columns-repeated="{columns}"/>"#
-    );
-    for row in &table.rows {
-        out.push_str("<table:table-row>");
-        for cell in &row.cells {
-            if cell.props.v_merge == Some(VMerge::Continue) {
-                out.push_str("<table:covered-table-cell/>");
-                continue;
-            }
-            out.push_str("<table:table-cell");
-            if cell.props.grid_span > 1 {
-                let _ = write!(
-                    out,
-                    r#" table:number-columns-spanned="{}""#,
-                    cell.props.grid_span
-                );
-            }
-            out.push('>');
-            for block in &cell.content {
-                self::block(out, block, w);
-            }
-            out.push_str("</table:table-cell>");
-            // Every position a span covers is spelled out, or the row is short.
-            for _ in 1..cell.props.grid_span {
-                out.push_str("<table:covered-table-cell/>");
-            }
+    let style = w.auto.table_style("table", &table_body(table));
+    let _ = write!(out, r#" table:style-name="{}">"#, escape_attr(&style));
+    // One element per run of equal widths, which is how a producer writes it
+    // and how the reader counts it back out.
+    let mut at = 0;
+    while at < columns {
+        let width = table.grid.get(at).copied().unwrap_or(Twips(0));
+        let mut run = 1;
+        while at + run < columns && table.grid.get(at + run).copied().unwrap_or(Twips(0)) == width {
+            run += 1;
         }
-        out.push_str("</table:table-row>");
+        out.push_str("<table:table-column");
+        // A width of nothing is a width nobody stated, and stating none is
+        // how the reader is told so.
+        if width.0 > 0 {
+            let body = format!(
+                r#"<style:table-column-properties style:column-width="{}"/>"#,
+                super::auto::twips(width)
+            );
+            let name = w.auto.table_style("table-column", &body);
+            let _ = write!(out, r#" table:style-name="{}""#, escape_attr(&name));
+        }
+        if run > 1 {
+            let _ = write!(out, r#" table:number-columns-repeated="{run}""#);
+        }
+        out.push_str("/>");
+        at += run;
+    }
+    for index in 0..table.rows.len() {
+        row(out, table, index, w);
     }
     out.push_str("</table:table>");
+}
+
+/// How many grid columns a table has: its grid, or its widest row.
+fn columns_of(table: &Table) -> usize {
+    table.grid.len().max(
+        table
+            .rows
+            .iter()
+            .map(|row| {
+                row.props.grid_before as usize
+                    + row
+                        .cells
+                        .iter()
+                        .map(|c| c.props.span() as usize)
+                        .sum::<usize>()
+            })
+            .max()
+            .unwrap_or(1),
+    )
+}
+
+/// `<style:table-properties>`: the table's width and where it stands.
+fn table_body(table: &Table) -> String {
+    use wp_model::table::Width;
+    let mut attrs = String::new();
+    let measured: i32 = table.grid.iter().map(|width| width.0).sum();
+    match table.props.width {
+        Width::Fixed(width) if width.0 > 0 => {
+            let _ = write!(attrs, r#" style:width="{}""#, super::auto::twips(width));
+        }
+        Width::Percent(share) => {
+            if measured > 0 {
+                let _ = write!(
+                    attrs,
+                    r#" style:width="{}""#,
+                    super::auto::twips(Twips(measured))
+                );
+            }
+            let _ = write!(attrs, r#" style:rel-width="{}%""#, trim(share.percent()));
+        }
+        _ if measured > 0 => {
+            let _ = write!(
+                attrs,
+                r#" style:width="{}""#,
+                super::auto::twips(Twips(measured))
+            );
+        }
+        _ => {}
+    }
+    // Stated whatever the model says, because LibreOffice reads a table with
+    // no alignment as one stretched from margin to margin.
+    let align = match table.props.justify {
+        Some(wp_model::prop::Justify::Center) => "center",
+        Some(wp_model::prop::Justify::End) => "right",
+        _ => "left",
+    };
+    let _ = write!(attrs, r#" table:align="{align}""#);
+    if let Some(Width::Fixed(indent)) = table.props.indent {
+        let _ = write!(attrs, r#" fo:margin-left="{}""#, super::auto::twips(indent));
+    }
+    if let Some(fill) = table.props.shading.and_then(|shading| shading.fill) {
+        let _ = write!(
+            attrs,
+            r#" fo:background-color="{}""#,
+            super::auto::hex(fill)
+        );
+    }
+    format!("<style:table-properties{attrs}/>")
+}
+
+/// One row of a table, as it goes into a `.odt` for the first time.
+pub(crate) fn row(out: &mut String, table: &Table, index: usize, w: &mut Out<'_>) {
+    use wp_model::table::RowHeight;
+    let Some(this) = table.rows.get(index) else {
+        return;
+    };
+    let columns = columns_of(table);
+    let last_row = index + 1 == table.rows.len();
+    out.push_str("<table:table-row");
+    let mut attrs = String::new();
+    match this.props.height {
+        Some(RowHeight::AtLeast(height)) => {
+            let _ = write!(
+                attrs,
+                r#" style:min-row-height="{}""#,
+                super::auto::twips(height)
+            );
+        }
+        Some(RowHeight::Exact(height)) => {
+            let _ = write!(
+                attrs,
+                r#" style:row-height="{}""#,
+                super::auto::twips(height)
+            );
+        }
+        _ => {}
+    }
+    if this.props.cant_split {
+        attrs.push_str(r#" fo:keep-together="always""#);
+    }
+    if !attrs.is_empty() {
+        let body = format!("<style:table-row-properties{attrs}/>");
+        let name = w.auto.table_style("table-row", &body);
+        let _ = write!(out, r#" table:style-name="{}""#, escape_attr(&name));
+    }
+    out.push('>');
+    let mut column = this.props.grid_before as usize;
+    for cell in &this.cells {
+        let span = cell.props.span() as usize;
+        if cell.props.v_merge == Some(VMerge::Continue) {
+            out.push_str("<table:covered-table-cell/>");
+            column += span;
+            continue;
+        }
+        let edges = Edges {
+            first_row: index == 0,
+            last_row,
+            first_column: column == 0,
+            last_column: column + span >= columns,
+        };
+        out.push_str("<table:table-cell");
+        let body = cell_body(table, cell, edges);
+        if !body.is_empty() {
+            let name = w.auto.table_style("table-cell", &body);
+            let _ = write!(out, r#" table:style-name="{}""#, escape_attr(&name));
+        }
+        if span > 1 {
+            let _ = write!(out, r#" table:number-columns-spanned="{span}""#);
+        }
+        // A vertical merge is a count here, of the rows below that continue it.
+        if cell.props.v_merge == Some(VMerge::Restart) {
+            let below = table.rows[index + 1..]
+                .iter()
+                .take_while(|row| continues_at(row, column))
+                .count();
+            if below > 0 {
+                let _ = write!(out, r#" table:number-rows-spanned="{}""#, below + 1);
+            }
+        }
+        out.push('>');
+        for block in &cell.content {
+            self::block(out, block, w);
+        }
+        out.push_str("</table:table-cell>");
+        // Every position a span covers is spelled out, or the row is short.
+        for _ in 1..span {
+            out.push_str("<table:covered-table-cell/>");
+        }
+        column += span;
+    }
+    out.push_str("</table:table-row>");
+}
+
+/// Whether the cell of `row` standing at grid column `column` continues a
+/// vertical merge from above.
+fn continues_at(row: &wp_model::table::Row, column: usize) -> bool {
+    let mut at = row.props.grid_before as usize;
+    for cell in &row.cells {
+        if at == column {
+            return cell.props.v_merge == Some(VMerge::Continue);
+        }
+        at += cell.props.span() as usize;
+        if at > column {
+            return false;
+        }
+    }
+    false
+}
+
+/// Which of the table's outer edges a cell stands on.
+#[derive(Clone, Copy)]
+struct Edges {
+    first_row: bool,
+    last_row: bool,
+    first_column: bool,
+    last_column: bool,
+}
+
+/// `<style:table-cell-properties>`, or nothing where the cell has no look.
+///
+/// ODF has no table-wide rules, only a cell's own edges, so the table's are
+/// handed out to its cells: the outer ones to the cells on the outside and the
+/// inside ones to the rest — and a cell's own edge, where it states one, wins.
+fn cell_body(table: &Table, cell: &wp_model::table::Cell, at: Edges) -> String {
+    use wp_model::table::Width;
+    let rules = &table.props.borders;
+    let own = &cell.props.borders;
+    let top = if at.first_row {
+        own.top.or(rules.top)
+    } else {
+        own.top.or(rules.inside_h)
+    };
+    let bottom = if at.last_row {
+        own.bottom.or(rules.bottom)
+    } else {
+        own.bottom.or(rules.inside_h)
+    };
+    let left = if at.first_column {
+        own.start.or(rules.start)
+    } else {
+        own.start.or(rules.inside_v)
+    };
+    let right = if at.last_column {
+        own.end.or(rules.end)
+    } else {
+        own.end.or(rules.inside_v)
+    };
+    let mut attrs = String::new();
+    for (side, border) in [
+        ("top", top),
+        ("left", left),
+        ("bottom", bottom),
+        ("right", right),
+    ] {
+        if let Some(border) = border {
+            let _ = write!(
+                attrs,
+                r#" fo:border-{side}="{}""#,
+                super::auto::border_words(&border)
+            );
+        }
+    }
+    let fallback = &table.props.cell_margins;
+    for (side, own, table) in [
+        ("top", cell.props.margins.top, fallback.top),
+        ("left", cell.props.margins.start, fallback.start),
+        ("bottom", cell.props.margins.bottom, fallback.bottom),
+        ("right", cell.props.margins.end, fallback.end),
+    ] {
+        if let Some(Width::Fixed(pad)) = own.or(table) {
+            let _ = write!(attrs, r#" fo:padding-{side}="{}""#, super::auto::twips(pad));
+        }
+    }
+    if let Some(fill) = cell.props.shading.and_then(|shading| shading.fill) {
+        let _ = write!(
+            attrs,
+            r#" fo:background-color="{}""#,
+            super::auto::hex(fill)
+        );
+    }
+    match cell.props.v_align {
+        wp_model::table::CellVAlign::Center => attrs.push_str(r#" style:vertical-align="middle""#),
+        wp_model::table::CellVAlign::Bottom => attrs.push_str(r#" style:vertical-align="bottom""#),
+        _ => {}
+    }
+    match attrs.is_empty() {
+        true => String::new(),
+        false => format!("<style:table-cell-properties{attrs}/>"),
+    }
 }
 
 fn trim(value: f64) -> String {
