@@ -4211,9 +4211,7 @@ impl DocumentApp for Scriva {
                 self.run(command);
             }
         }
-        if self.finder.is_some() {
-            self.find_bar(ui);
-        }
+        let bar_held = self.finder.is_some() && self.find_bar(ui);
 
         // Ctrl+scroll and a trackpad pinch zoom the page, like Word.
         let zoom_delta = ui.input(|i| i.zoom_delta());
@@ -4235,7 +4233,7 @@ impl DocumentApp for Scriva {
             || self.paragraph_draft.is_some()
             || self.size_draft.is_some()
             || self.zoom_draft.is_some()
-            || self.finder_focused
+            || bar_held
             || egui::Popup::is_any_open(ui.ctx());
         if !blocked {
             if let Some(command) = self.keys(ui) {
@@ -6075,7 +6073,16 @@ impl Scriva {
     }
 
     /// The find bar across the top of the document.
-    fn find_bar(&mut self, ui: &mut egui::Ui) {
+    /// The find bar, and whether it held the keyboard at any point this frame.
+    ///
+    /// *At any point*, not at the end: a key that moves the focus out of the
+    /// bar arrives in the same frame it leaves, and the document must not have
+    /// it too. Tab did exactly that — the focus went on to the arrow buttons,
+    /// the bar said it no longer held the keyboard, and the same Tab was typed
+    /// over the match the search had just selected.
+    fn find_bar(&mut self, ui: &mut egui::Ui) -> bool {
+        // Wide enough for "Replaced 1000" in the bar's type.
+        const COUNT_WIDTH: f32 = 96.0;
         self.refresh_matches();
         let total = self.find_matches.len();
         let current = self.find_matches.iter().position(|(scope, found)| {
@@ -6083,7 +6090,7 @@ impl Scriva {
         });
 
         let Some(finder) = &self.finder else {
-            return;
+            return false;
         };
         let mut query = finder.query.clone();
         let mut replacement = finder.replacement.clone();
@@ -6091,15 +6098,20 @@ impl Scriva {
         let take_focus = finder.focus;
         let note = finder.note.clone();
         let bar_focused = self.finder_focused;
+        let query_id = egui::Id::new("scriva-find-query");
+        let replacement_id = egui::Id::new("scriva-find-replacement");
+        let focused = ui.memory(|m| m.focused());
+        let in_query = focused == Some(query_id);
+        let in_replacement = with_replace && focused == Some(replacement_id);
 
         let mut close = false;
         let mut forward = false;
         let mut back = false;
         let mut replace_one = false;
         let mut replace_every = false;
-        let mut focused_now = false;
+        let mut tab = false;
 
-        egui::Panel::top("scriva-find").show(ui, |ui| {
+        let panel = egui::Panel::top("scriva-find").show(ui, |ui| {
             // Read before the fields are drawn: a TextEdit consumes the Escape
             // and the Enter it is given, and by then the answer is gone.
             if bar_focused {
@@ -6114,7 +6126,7 @@ impl Scriva {
                 if escape {
                     close = true;
                 }
-                if enter || f3 {
+                if (enter && (in_query || in_replacement)) || f3 {
                     if shift {
                         back = true;
                     } else {
@@ -6122,18 +6134,34 @@ impl Scriva {
                     }
                 }
             }
+            // Tab goes between the two fields, as it goes between a dialog's.
+            // egui would hand the keyboard to the next widget along — an arrow
+            // button — so its move is called off, and the key is taken so that
+            // nothing after the bar sees it.
+            if in_query || in_replacement {
+                tab = ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Tab));
+                if tab {
+                    ui.memory_mut(|m| m.move_focus(egui::FocusDirection::None));
+                }
+            }
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 ui.label("Find");
                 let field = ui.add(
                     egui::TextEdit::singleline(&mut query)
+                        .id(query_id)
                         .desired_width(220.0)
                         .hint_text("Find in document"),
                 );
-                if take_focus || ((forward || back) && bar_focused) {
+                // Enter steps to the next match and leaves the keyboard in the
+                // field it was pressed in; a single-line field gives it up on
+                // Enter, so it is asked for back.
+                if take_focus
+                    || ((forward || back) && in_query)
+                    || (tab && (in_replacement || !with_replace))
+                {
                     field.request_focus();
                 }
-                focused_now |= field.has_focus();
                 if crate::icons::button(
                     ui,
                     crate::icons::Icon::ChevronUp,
@@ -6156,16 +6184,37 @@ impl Scriva {
                     None => match (current, total) {
                         (Some(index), _) => format!("{} of {total}", index + 1),
                         (None, 0) => "No matches".to_owned(),
+                        (None, 1) => "1 match".to_owned(),
                         (None, n) => format!("{n} matches"),
                     },
                 };
-                ui.label(egui::RichText::new(standing).weak());
+                // A slot of its own width. The count's words change with every
+                // step — "3 matches", "1 of 3", "Replaced 3" — and when the
+                // slot followed them, every control after it moved along the
+                // bar under a pointer that had not: a click aimed at Replace
+                // All pressed Replace, whose first press only finds, and the
+                // shorter count it left slid Replace All under the pointer to
+                // look as though it had been pressed and done nothing.
+                let height = ui.spacing().interact_size.y;
+                ui.allocate_ui_with_layout(
+                    egui::vec2(COUNT_WIDTH, height),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        ui.set_min_width(COUNT_WIDTH);
+                        ui.add(egui::Label::new(egui::RichText::new(standing).weak()).truncate());
+                    },
+                );
                 if with_replace {
                     ui.separator();
                     ui.label("Replace with");
-                    let field =
-                        ui.add(egui::TextEdit::singleline(&mut replacement).desired_width(180.0));
-                    focused_now |= field.has_focus();
+                    let field = ui.add(
+                        egui::TextEdit::singleline(&mut replacement)
+                            .id(replacement_id)
+                            .desired_width(180.0),
+                    );
+                    if ((forward || back) && in_replacement) || (tab && in_query) {
+                        field.request_focus();
+                    }
                     if ui.button("Replace").clicked() {
                         replace_one = true;
                     }
@@ -6190,14 +6239,23 @@ impl Scriva {
             finder.replacement = replacement;
             finder.focus = false;
         }
+        // Anything in the bar holding the keyboard is the bar holding it: a
+        // button pressed there keeps it, as a dialog's does, rather than
+        // passing the next keystroke to a document whose caret is not showing.
+        let bar = panel.response.rect;
+        let focused_now = ui
+            .memory(|m| m.focused())
+            .and_then(|id| ui.ctx().read_response(id))
+            .is_some_and(|widget| bar.contains_rect(widget.rect));
         self.finder_focused = focused_now;
+        let held = bar_focused || focused_now || tab;
         if close {
             self.finder = None;
             self.finder_focused = false;
             if let Some(id) = self.surface_id {
                 ui.ctx().memory_mut(|m| m.request_focus(id));
             }
-            return;
+            return held;
         }
         if replace_one {
             self.replace_current();
@@ -6211,6 +6269,7 @@ impl Scriva {
         if back {
             self.jump_match(false);
         }
+        held
     }
 
     fn finish(&mut self, command: Command, ctx: &egui::Context) {
@@ -7126,6 +7185,109 @@ mod tests {
                 .any(|b| matches!(b, Block::Table(_))),
             "Escape inserts nothing"
         );
+    }
+
+    /// One whole frame of the window's body, with `events` as its input.
+    fn frame_of(app: &mut Scriva, ctx: &egui::Context, events: Vec<egui::Event>) {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1600.0, 1000.0),
+            )),
+            events,
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| app.ui(ui));
+        out.textures_delta.clear();
+    }
+
+    fn key_event(key: egui::Key) -> egui::Event {
+        egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+
+    /// The most ordinary find and replace there is — type the word, Enter,
+    /// Tab to the other field, type its replacement — edited the document
+    /// instead: the Tab left the bar for an arrow button, the bar said it no
+    /// longer held the keyboard, and the same Tab was typed over the match.
+    #[test]
+    fn tab_in_the_find_bar_goes_to_the_replace_field_and_not_into_the_document() {
+        let mut app = app_with(&["the quick fox and the quick dog"]);
+        let ctx = egui::Context::default();
+        ui_kit::fonts::register(&ctx, &[]);
+        frame_of(&mut app, &ctx, vec![]);
+        app.run(Command::Replace);
+        frame_of(&mut app, &ctx, vec![]);
+        frame_of(&mut app, &ctx, vec![egui::Event::Text("quick".into())]);
+        frame_of(&mut app, &ctx, vec![key_event(egui::Key::Enter)]);
+        frame_of(&mut app, &ctx, vec![]);
+        assert_eq!(
+            app.selected_text().as_deref(),
+            Some("quick"),
+            "Enter selects the first match"
+        );
+        frame_of(&mut app, &ctx, vec![key_event(egui::Key::Tab)]);
+        frame_of(&mut app, &ctx, vec![]);
+        frame_of(&mut app, &ctx, vec![egui::Event::Text("slow".into())]);
+        frame_of(&mut app, &ctx, vec![]);
+
+        assert_eq!(
+            app.document.text(),
+            "the quick fox and the quick dog",
+            "neither the Tab nor the typing reached the document"
+        );
+        let finder = app.finder.as_ref().expect("the bar is still open");
+        assert_eq!(finder.query, "quick");
+        assert_eq!(finder.replacement, "slow", "the Tab went to Replace with");
+    }
+
+    /// Replace All with an empty field was reported as doing nothing. It
+    /// deletes every match, as Word's does; what was seen doing nothing was a
+    /// click that the moving count had put on Replace, below.
+    #[test]
+    fn a_replace_all_with_nothing_to_put_back_deletes_every_match() {
+        let mut app = app_with(&["a quick, quick fox"]);
+        app.finder = Some(Finder {
+            query: "quick".into(),
+            with_replace: true,
+            ..Finder::default()
+        });
+        app.replace_all();
+        assert_eq!(app.document.text(), "a ,  fox");
+        assert_eq!(
+            app.finder.as_ref().unwrap().note.as_deref(),
+            Some("Replaced 2")
+        );
+    }
+
+    /// "Replace All does nothing": the click had landed on Replace. The count
+    /// sat in a slot as wide as its words, and its words change with every
+    /// step, so each control after it moved along the bar — the pointer aimed
+    /// at Replace All was over Replace by the time it pressed, Replace only
+    /// found the first match, and the shorter count that left slid Replace
+    /// All back under the pointer. Nothing after the count moves now.
+    #[test]
+    fn the_find_bar_controls_stay_put_while_the_count_changes() {
+        let mut app = app_with(&["the quick fox and the quick dog"]);
+        let ctx = egui::Context::default();
+        ui_kit::fonts::register(&ctx, &[]);
+        frame_of(&mut app, &ctx, vec![]);
+        app.run(Command::Replace);
+        frame_of(&mut app, &ctx, vec![]);
+        frame_of(&mut app, &ctx, vec![egui::Event::Text("quick".into())]);
+        frame_of(&mut app, &ctx, vec![]);
+        let field = egui::Id::new("scriva-find-replacement");
+        let before = ctx.read_response(field).expect("the field is drawn").rect;
+        frame_of(&mut app, &ctx, vec![key_event(egui::Key::Enter)]);
+        frame_of(&mut app, &ctx, vec![]);
+        assert!(app.selected_text().is_some(), "the count now says 1 of 2");
+        let after = ctx.read_response(field).expect("still drawn").rect;
+        assert_eq!(before, after, "and Replace with did not move");
     }
 
     fn app_with(texts: &[&str]) -> Scriva {

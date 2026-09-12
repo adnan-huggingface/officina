@@ -4604,3 +4604,39 @@ The test opens Insert Table, presses Enter in a frame of the dialogs, and gets
 the table the fields describe; it failed with the old action row. Calx's forms
 have the same gap in several places and are not changed here: some hold
 drop-downs and one a multi-line note, and they want driving before changing.
+
+## The find bar keeps its keys and its buttons keep still (2026-09-12)
+
+Two reports from the keystroke drive, one bar, and neither was quite what it
+looked like.
+
+**"Enter hands the keyboard to the document."** It does not: after Enter the
+Find field still has the focus. It is the *Tab* after it that did the damage.
+egui moved the focus on to the next widget, an arrow button, in the frame the
+Tab arrived; the bar reported that it no longer held the keyboard; and in that
+same frame the document, no longer blocked, took the same Tab and typed it over
+the match the search had just selected — then took the replacement's letters
+too. The most ordinary find and replace there is, type, Enter, Tab, type,
+edited the document in a way nobody saw happen. Tab now goes between Find and
+Replace with, as it goes between a dialog's fields, and the key is taken so
+that nothing after the bar hears it; the bar counts as holding the keyboard in
+any frame it held it at all, and while any control in it — a button just
+pressed, too — has the focus. Enter steps to the next match and leaves the
+focus in the field it was pressed in, where before it always went back to Find.
+
+**"Replace All does nothing."** It does everything; the click never reached it.
+The match count sat in a slot as wide as its words, and its words change with
+every step — "2 matches", "1 of 2", "Replaced 2" — so every control after it
+moved along the bar. The drive's pointer, aimed at Replace All from a frame
+where the count was short, came down on Replace; Replace's first press only
+finds, as Word's does; the shorter count that left slid Replace All back under
+the pointer, lit, looking pressed and idle. Reproduced exactly on the running
+application. The count now has a slot of its own width and nothing after it
+moves. It also says "1 match". The companion report — Replace All with an empty
+field doing nothing — was the same click: an empty replacement deletes every
+match.
+
+Tests drive whole frames of the window: type, Enter, Tab, type, and the
+document is untouched with the replacement in its field (before: `"the \tslow
+fox"`); and the Replace with field is where it was after the count changes
+(before: moved). Both failed on the old bar.
