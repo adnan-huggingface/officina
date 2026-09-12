@@ -349,7 +349,9 @@ fn tabs_add(data: &[u8]) -> (Vec<TabStop>, usize) {
         .get(1 + count * 2..1 + count * 2 + count)
         .unwrap_or_default();
     let stops = positions
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .zip(descriptors)
         .map(|(pos, &tbd)| {
             let position = Twips(i16::from_le_bytes([pos[0], pos[1]]) as i32);
@@ -376,7 +378,9 @@ fn tabs_del(data: &[u8]) -> (Vec<TabStop>, usize) {
     let count = count as usize;
     let positions = data.get(1..1 + count * 2).unwrap_or_default();
     let stops = positions
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pos| TabStop {
             position: Twips(i16::from_le_bytes([pos[0], pos[1]]) as i32),
             kind: TabKind::Clear,
@@ -637,7 +641,9 @@ fn def_table(row: &mut TableRow, op: &[u8]) {
     };
     row.boundaries = Some(
         centers
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|c| i16::from_le_bytes([c[0], c[1]]) as i32)
             .collect(),
     );

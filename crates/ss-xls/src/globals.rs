@@ -190,7 +190,9 @@ fn raw_name(body: &[u8]) -> Option<RawName> {
         builtin(*raw.first()?)?.to_string()
     } else if wide {
         String::from_utf16_lossy(
-            &raw.chunks_exact(2)
+            &raw.as_chunks::<2>()
+                .0
+                .iter()
                 .map(|c| u16::from_le_bytes([c[0], c[1]]))
                 .collect::<Vec<_>>(),
         )

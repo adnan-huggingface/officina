@@ -111,7 +111,9 @@ impl Pieces {
                     let at = piece.offset + skip * 2;
                     let bytes = stream.get(at..at + count * 2).unwrap_or_default();
                     let units: Vec<u16> = bytes
-                        .chunks_exact(2)
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
                         .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
                         .collect();
                     out.push_str(&String::from_utf16_lossy(&units));

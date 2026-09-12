@@ -88,7 +88,9 @@ pub fn decode(bytes: &[u8]) -> (String, Encoding) {
 
 fn utf16(bytes: &[u8], little: bool) -> String {
     let units: Vec<u16> = bytes
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| {
             if little {
                 u16::from_le_bytes([pair[0], pair[1]])

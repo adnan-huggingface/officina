@@ -89,7 +89,7 @@ fn describe(path: &Path) -> Option<(String, bool, bool)> {
     let directory = read_at(&file, 12, tables.checked_mul(16)?)?;
     let mut name_table = None;
     let mut head_table = None;
-    for entry in directory.chunks_exact(16) {
+    for entry in directory.as_chunks::<16>().0 {
         let offset = u32::from_be_bytes([entry[8], entry[9], entry[10], entry[11]]) as u64;
         let length = u32::from_be_bytes([entry[12], entry[13], entry[14], entry[15]]) as usize;
         match &entry[..4] {
@@ -150,7 +150,9 @@ fn string(table: &[u8], want: u16) -> Option<String> {
         let text = match platform {
             0 | 3 => {
                 let units: Vec<u16> = bytes
-                    .chunks_exact(2)
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
                     .map(|pair| u16::from_be_bytes([pair[0], pair[1]]))
                     .collect();
                 String::from_utf16(&units).ok()?

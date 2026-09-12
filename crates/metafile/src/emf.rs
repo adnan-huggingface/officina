@@ -528,7 +528,7 @@ impl Player {
 
     /// The same for a run of cubics, each three points long, flattened.
     fn curve_to(&mut self, points: &[(f64, f64)]) {
-        for triple in points.chunks_exact(3) {
+        for triple in points.as_chunks::<3>().0 {
             let from = self.at;
             let cut: Vec<(f64, f64)> = (1..=CURVE_STEPS)
                 .map(|step| {
@@ -640,7 +640,9 @@ impl Player {
             return;
         };
         let units: Vec<u16> = bytes
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
             .collect();
         let text = String::from_utf16_lossy(&units);
@@ -700,7 +702,9 @@ fn log_font(data: &[u8], at: usize) -> Option<Font> {
     let name = data.get(at + 28..at + 92)?;
     let family: String = String::from_utf16_lossy(
         &name
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
             .take_while(|unit| *unit != 0)
             .collect::<Vec<u16>>(),

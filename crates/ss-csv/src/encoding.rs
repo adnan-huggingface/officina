@@ -44,7 +44,9 @@ impl Encoding {
             Encoding::Utf8 | Encoding::Utf8Bom => String::from_utf8_lossy(bytes).into_owned(),
             Encoding::Utf16Le | Encoding::Utf16Be => {
                 let units: Vec<u16> = bytes
-                    .chunks_exact(2)
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
                     .map(|pair| {
                         let pair = [pair[0], pair[1]];
                         if self == Encoding::Utf16Le {

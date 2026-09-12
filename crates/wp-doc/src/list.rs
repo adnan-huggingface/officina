@@ -59,7 +59,7 @@ fn definitions(fib: &crate::Fib, table: &[u8], fonts: &[Arc<str>], into: &mut Nu
     };
 
     let mut walk = 2 + count * LSTF;
-    for entry in records.chunks_exact(LSTF) {
+    for entry in records.as_chunks::<LSTF>().0 {
         let lsid = i32(entry, 0);
         let simple = entry[26] & 0x01 != 0;
         let mut definition = AbstractNum::new(lsid as u32);
@@ -130,7 +130,9 @@ fn level(plf: &[u8], at: usize, index: u8, fonts: &[Arc<str>]) -> Option<(Level,
 /// counted from one. A bullet has no placeholders at all.
 fn number_text(chars: &[u8], places: &[u8]) -> Arc<str> {
     let units: Vec<u16> = chars
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
         .collect();
     let mut holes = [false; 64];
@@ -208,7 +210,7 @@ fn instances(fib: &crate::Fib, table: &[u8], fonts: &[Arc<str>], into: &mut Numb
     // The overrides follow the whole array of LFOs, one variable-length record
     // each, so they can only be walked in step with it.
     let mut walk = 4 + count * LFO;
-    for (index, entry) in records.chunks_exact(LFO).enumerate() {
+    for (index, entry) in records.as_chunks::<LFO>().0.iter().enumerate() {
         let lsid = i32(entry, 0);
         // An instance whose definition is not in the file numbers nothing:
         // the model answers `None` for a definition it does not hold, which is

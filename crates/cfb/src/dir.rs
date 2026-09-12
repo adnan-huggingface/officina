@@ -36,7 +36,7 @@ pub struct Entry {
 
 pub(crate) fn parse_all(bytes: &[u8]) -> Result<Vec<Raw>> {
     let mut out = Vec::with_capacity(bytes.len() / ENTRY_SIZE);
-    for chunk in bytes.chunks_exact(ENTRY_SIZE) {
+    for chunk in bytes.as_chunks::<ENTRY_SIZE>().0 {
         out.push(Raw::parse(chunk)?);
     }
     Ok(out)

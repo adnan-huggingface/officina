@@ -225,7 +225,12 @@ impl Builder {
             mini_fat_bytes.extend_from_slice(&entry.to_le_bytes());
         }
         pad_to(&mut mini_fat_bytes, SECTOR);
-        for slot in mini_fat_bytes.chunks_exact_mut(4).skip(mini_fat.len()) {
+        for slot in mini_fat_bytes
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .skip(mini_fat.len())
+        {
             slot.copy_from_slice(&FREESECT.to_le_bytes());
         }
         blit(&mut out, mini_fat_at, &mini_fat_bytes);

@@ -4510,3 +4510,13 @@ a failure seen to go away.
   side of external links has been checked with one built in a test, and never
   against a file Word wrote.
 - The residue on `word-odf-export.odt`'s fifth page, as above.
+
+## The gate on clippy 1.98 (2026-09-12)
+
+Clippy 1.98 added `chunks_exact_to_as_chunks`, and with warnings denied the gate
+failed on the untouched tree at twenty-five places where a slice is walked in
+fixed-size pieces: the lint wants `as_chunks::<N>()`, which hands out arrays
+rather than slices and has been stable since 1.88, well inside the workspace's
+1.95. Clippy applied its own suggestion everywhere but the compound file
+reader, where one site walks the pieces mutably and skips some and was changed
+by hand. Nothing else about the code changes.

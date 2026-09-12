@@ -63,7 +63,9 @@ fn read(data: &[u8], at: usize, chars: usize, len_bytes: usize) -> Option<(Strin
 fn decode(bytes: &[u8], wide: bool) -> String {
     if wide {
         let units: Vec<u16> = bytes
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|c| u16::from_le_bytes([c[0], c[1]]))
             .collect();
         String::from_utf16_lossy(&units)

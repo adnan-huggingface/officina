@@ -145,7 +145,7 @@ fn font_key(text: &str) -> Option<[u8; 16]> {
         return None;
     }
     let mut key = [0u8; 16];
-    for (i, pair) in digits.chunks_exact(2).enumerate() {
+    for (i, pair) in digits.as_chunks::<2>().0.iter().enumerate() {
         key[15 - i] = pair[0] << 4 | pair[1];
     }
     Some(key)

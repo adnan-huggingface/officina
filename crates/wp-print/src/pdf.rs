@@ -573,7 +573,7 @@ fn write_image(writer: &mut Writer, raster: &Raster) -> u32 {
     let mut rgb = Vec::with_capacity(pixels * 3);
     let mut alpha = Vec::with_capacity(pixels);
     let mut transparent = false;
-    for pixel in raster.rgba.chunks_exact(4) {
+    for pixel in raster.rgba.as_chunks::<4>().0 {
         rgb.extend_from_slice(&pixel[..3]);
         alpha.push(pixel[3]);
         transparent |= pixel[3] != 255;

@@ -148,7 +148,9 @@ fn name_at(entry: &[u8], at: usize) -> String {
         return String::new();
     };
     let units: Vec<u16> = bytes
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
         .collect();
     String::from_utf16_lossy(&units)

@@ -946,7 +946,7 @@ impl Tone {
         // A lookup rather than the arithmetic per sample: a page-sized
         // watermark is several million of them, and there are 256 answers.
         let table: [u8; 256] = std::array::from_fn(|value| self.apply(value as u8));
-        for pixel in rgba.chunks_exact_mut(4) {
+        for pixel in rgba.as_chunks_mut::<4>().0 {
             for channel in &mut pixel[..3] {
                 *channel = table[*channel as usize];
             }
