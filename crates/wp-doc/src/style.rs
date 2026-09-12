@@ -93,8 +93,8 @@ pub fn read(
             bases.push(NIL);
             continue;
         }
-        let id = styles.intern(&name, kind);
-        let mut style = Style::new(name.as_str(), kind);
+        let id = styles.intern(&style_id(&name, &styles, by_istd.len()), kind);
+        let mut style = Style::new(styles.get(id).map_or("", |s| &*s.id), kind);
         style.name = Some(name.into());
         // The paragraph half comes first for a paragraph style and is absent
         // for a character one; the character half follows either way.
@@ -134,6 +134,33 @@ pub fn read(
         }
     }
     (styles, by_istd)
+}
+
+/// The id a style goes by in a `.docx`, made from its name.
+///
+/// A `.doc` names its styles and does not id them, and the name was used as
+/// the id — so a `.doc` saved as `.docx` said `w:styleId="Heading 1"` and
+/// `w:styleId="Caption,Figure"`. Word accepts any string, but it does not make
+/// ids like that and neither does anything that maps Word's built-in styles by
+/// id: `Heading1` is the id every other reader looks for. So the id is the
+/// name as Word would make it — the name before its first alias, letters and
+/// digits only — and the name itself, aliases and all, stays the name. Two
+/// names that come to the same id are told apart by a number, because two
+/// styles sharing an id are one style to every reader, this one included.
+fn style_id(name: &str, styles: &StyleTable, istd: usize) -> String {
+    let primary = name.split(',').next().unwrap_or(name);
+    let plain: String = primary.chars().filter(|c| c.is_alphanumeric()).collect();
+    let plain = match plain.is_empty() {
+        true => format!("Style{istd}"),
+        false => plain,
+    };
+    if styles.lookup(&plain).is_none() {
+        return plain;
+    }
+    (2..)
+        .map(|n| format!("{plain}{n}"))
+        .find(|candidate| styles.lookup(candidate).is_none())
+        .unwrap_or(plain)
 }
 
 /// `istdNil` — what a style that stands on nothing says its base is.

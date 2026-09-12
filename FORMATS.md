@@ -183,12 +183,18 @@ nothing is written back. It reads:
 
 text (through the piece table), the body separated from headers, footers,
 footnotes, endnotes and text boxes, paragraphs, tables, direct character and
-paragraph formatting, style names, and the first section's page setup.
+paragraph formatting, paragraph and character styles — name, chain, and both
+halves of their formatting, numbering and tab stops included — the lists, the
+settings that change the layout, and the first section's page setup.
 
 It does not read: pictures, drawings, fields, revision marks, table geometry
-(column widths, borders, cell shading), the style definitions themselves, or the
-page setup of the second and later sections. A `.doc` opens as a *copy* and says
-so, which is why the title bar shows a `.docx` name from the moment it opens.
+(column widths, borders, cell shading), the definitions of table and numbering
+styles, or the page setup of the second and later sections. A `.doc` opens as a
+*copy* and says so, which is why the title bar shows a `.docx` name from the
+moment it opens. The copy is written with the document's own defaults, styles
+and settings, and a style goes by the id Word would give it — `Heading1` for
+"Heading 1", `Caption` for "Caption,Figure" — while its name, aliases and all,
+stays its name.
 
 ---
 

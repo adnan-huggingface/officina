@@ -262,25 +262,11 @@ fn level_out(out: &mut String, level: &Level, styles: &StyleTable) {
         Justify::Distribute => "distribute",
     };
     let _ = write!(out, r#"<w:lvlJc w:val="{justify}"/>"#);
-    // Only the indent: it is the whole of what a level this crate authors
-    // states, and the reader reads the pPr back through the same properties
-    // parser paragraphs use.
-    let indent = &level.para.indent;
-    if !indent.is_empty() {
-        out.push_str("<w:pPr><w:ind");
-        if let Some(start) = indent.start {
-            let _ = write!(out, r#" w:left="{}""#, start.0);
-        }
-        if let Some(end) = indent.end {
-            let _ = write!(out, r#" w:right="{}""#, end.0);
-        }
-        if let Some(hanging) = indent.hanging {
-            let _ = write!(out, r#" w:hanging="{}""#, hanging.0);
-        } else if let Some(first) = indent.first_line {
-            let _ = write!(out, r#" w:firstLine="{}""#, first.0);
-        }
-        out.push_str("/></w:pPr>");
-    }
+    // The whole of the level's paragraph half, through the emitter paragraphs
+    // use and the reader reads back. A level made in the app states only an
+    // indent; one a `.doc` gave up states the tab stop its number is set to
+    // as well, and without it the text after every number moves.
+    emit::para_props_alone(out, &level.para, styles);
     emit::run_props(out, &level.run, styles);
     out.push_str("</w:lvl>");
 }

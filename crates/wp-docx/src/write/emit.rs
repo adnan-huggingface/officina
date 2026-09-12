@@ -126,6 +126,29 @@ fn para_props(out: &mut String, paragraph: &Paragraph, styles: &StyleTable) {
     out.push_str("</w:pPr>");
 }
 
+/// Writes a `<w:pPr>` that is paragraph properties and nothing else — a
+/// style's, a list level's, or the document's defaults — or nothing when
+/// there are none.
+///
+/// A paragraph's own `<w:pPr>` also names its style, carries its mark's run
+/// properties and may end a section; none of the three belongs anywhere else,
+/// and a style that names a style is a style based on itself.
+pub(crate) fn para_props_alone(out: &mut String, props: &ParaProps, styles: &StyleTable) {
+    let props = ParaProps {
+        style: None,
+        mark: None,
+        ..props.clone()
+    };
+    if props.is_empty() {
+        return;
+    }
+    out.push_str("<w:pPr>");
+    for name in PARA_ORDER {
+        para_prop(out, name, &props, styles);
+    }
+    out.push_str("</w:pPr>");
+}
+
 fn on_off(out: &mut String, name: &str, value: Option<bool>) {
     match value {
         // A bare element is true, which is how Word writes it.

@@ -4749,3 +4749,43 @@ touching while each space takes its point, and a run beginning with its space
 widens it once; both failed on the old spreading. Every corpus document measures
 exactly what it measured before — recorded on this machine before and after and
 compared whole — so `LAYOUT.md` does not move.
+
+## A document written from nothing says what the document says (2026-09-12)
+
+Two reports from the keystroke drive with one cause. **A new document**, drawn
+single-spaced with nothing after its paragraphs, reopened from its own first
+save with eight points after every one and a line of 1.08 — a third taller,
+nothing edited. **A Word 97 specification** of sixteen pages, saved as the
+`.docx` the user is told it will become, reopened as twenty-six: headings
+without their numbers, the table of contents without its dotted leaders, every
+paragraph spaced out.
+
+Both go through `wp_docx::write::blank::package_for`, the package authored for
+a document that never had one, and it wrote Word 2013's Normal template into
+`docDefaults` whatever the model said, then each style as its chain, a face, a
+weight and a size. The numbering, tab stops, spacing and indents of every style
+were in the model — the `.doc` reader reads both halves of a style — and never
+reached the file. The defaults are now the document's own, empty when it states
+none, which Word reads exactly as the layout does; styles and list levels go out
+whole through the emitter paragraphs use; `settings.xml` carries the settings
+that change the layout, among them the Word 97 `noLeading` that takes a quarter
+point off every line. A new document's Normal names its face for both Latin
+slots, so that with no defaults behind it Word does not draw "café" in two faces.
+
+And a `.doc`'s styles go by the ids Word would give them. The reader used the
+name as the id, so the copy said `w:styleId="Heading 1"` and
+`"Caption,Figure"`; the id is now the name before its first alias in letters
+and digits, and the name keeps its aliases.
+
+Tests: the authored package's defaults, styles and settings read back as they
+went; a new document's lines stand where they stood after save and reopen
+(before: the third line 18 points lower); and every corpus `.doc` resolves and
+lays out the same, paragraph for paragraph and line for line, before its first
+save and after its reopening, with no id Word would not make. The comparisons
+use the fixed-width shaper and resolved face *names*, so they say the same on a
+machine without the documents' fonts — which this one, on Linux, partly is.
+Each failed against the old writer. `LAYOUT.md` does not move: recorded here
+before and after and compared whole.
+
+Not measured: how Word itself opens the copies. No Word on this machine; the
+drive's `.doc` should be saved again and opened in Word where there is one.

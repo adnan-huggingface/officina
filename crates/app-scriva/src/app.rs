@@ -4000,7 +4000,13 @@ fn blank() -> Document {
     normal.default = true;
     normal.name = Some("Normal".into());
     normal.run.size = Some(HalfPoint::DEFAULT);
+    // Both Latin faces. Word draws a letter past U+007F in the `hAnsi` face,
+    // and a style that names only `ascii` leaves that face to the document
+    // defaults — which a new document does not state, and which Word then
+    // takes to be Times New Roman: "café" would be two faces in Word and one
+    // here.
     normal.run.fonts.ascii = Some("Calibri".into());
+    normal.run.fonts.high_ansi = Some("Calibri".into());
     normal.quick = true;
     normal.priority = Some(1);
     let normal = document.styles.insert(normal);
@@ -7587,6 +7593,155 @@ mod tests {
             app.run(Command::Undo);
         }
         assert_eq!(cells(&app), [["A1", "B1"], ["A2", "B2"]]);
+    }
+
+    /// File ▸ New, three lines, Save As, open what was saved. The window drew
+    /// the lines single-spaced with nothing after them; the file said eight
+    /// points after and a line of 1.08, because the package authored for a new
+    /// document wrote Word 2013's defaults whatever the document said, and the
+    /// document came back a third taller from its own first save.
+    #[test]
+    fn a_new_document_reopens_spaced_as_it_was_drawn() {
+        let dir = scratch("new-document-spacing");
+        let target = dir.join("new.docx");
+        let mut app = Scriva::new();
+        app.type_text("one");
+        app.key(egui::Key::Enter, egui::Modifiers::NONE);
+        app.type_text("two café");
+        app.key(egui::Key::Enter, egui::Modifiers::NONE);
+        app.type_text("three");
+        let drawn = fixed_lines(&app.document);
+        assert!(app.save_to(target.clone()), "the save reports success");
+
+        let mut reopened = Scriva::new();
+        reopened.open_path(&target);
+        assert_eq!(reopened.document.paragraphs().len(), 3);
+        assert_eq!(
+            fixed_lines(&reopened.document),
+            drawn,
+            "every line stands where it stood before the save"
+        );
+    }
+
+    /// Every line of every page, as (page, paragraph, y), laid out with the
+    /// fixed-width shaper.
+    ///
+    /// Fixed rather than the window's shaper, because the window's depends on
+    /// the machine: a face this one does not have is drawn in its substitute
+    /// on both sides of a save, and a substitute hides exactly what a round
+    /// trip can lose. Every glyph half its point size cannot hide a size, a
+    /// space, an indent, a tab stop or a number.
+    fn fixed_lines(document: &Document) -> Vec<(usize, usize, i64)> {
+        let theme = document.theme.clone();
+        let notes = wp_layout::NoteMarks::of(document);
+        let contents = wp_layout::field::Contents::of(document);
+        let ctx = wp_layout::inline::Context {
+            theme: &theme,
+            styles: &document.styles,
+            notes: &notes,
+            contents: &contents,
+            default_tab: document.settings.default_tab_stop,
+            no_leading: document.settings.no_leading,
+            close_up_justified: document.settings.compatibility_mode >= 15,
+            no_tab_for_hanging_indent: document.settings.no_tab_for_hanging_indent,
+            ..Default::default()
+        };
+        wp_layout::block::layout(document, &ctx, &mut wp_layout::Fixed)
+            .iter()
+            .enumerate()
+            .flat_map(|(page, laid)| {
+                laid.content
+                    .iter()
+                    .filter_map(move |placement| match &placement.kind {
+                        wp_layout::block::Placed::Line { paragraph, .. } => {
+                            Some((page, *paragraph, (placement.y * 100.0).round() as i64))
+                        }
+                        _ => None,
+                    })
+            })
+            .collect()
+    }
+
+    /// What every paragraph and every run of it resolves to through the
+    /// styles — faces by name, so this too is the same on any machine. The
+    /// style's own id is left out: it is a name, and names are allowed to
+    /// change on the way into a `.docx`.
+    fn resolved(
+        document: &Document,
+    ) -> Vec<(wp_model::prop::ParaProps, Vec<wp_model::prop::RunProps>)> {
+        document
+            .paragraphs()
+            .iter()
+            .map(|paragraph| {
+                let layers = document.styles.resolve_paragraph(&paragraph.props, None);
+                let runs = paragraph
+                    .runs()
+                    .iter()
+                    .map(|run| wp_model::prop::RunProps {
+                        style: None,
+                        ..document.styles.resolve_run(&layers, &run.props)
+                    })
+                    .collect();
+                let para = wp_model::prop::ParaProps {
+                    style: None,
+                    ..layers.para
+                };
+                (para, runs)
+            })
+            .collect()
+    }
+
+    /// A `.doc` is saved as `.docx` so that it can be written at all, and the
+    /// user is told so: the copy is meant to be the same document. It was not.
+    /// A sixteen-page specification came back as twenty-six, its headings
+    /// without their numbers and its contents without their leaders — Word
+    /// 2013's defaults over a Word 97 document, and every style written as its
+    /// chain and a face. Every corpus `.doc` now resolves and lays out the
+    /// same before its first save and after its reopening, and its styles go
+    /// by the ids Word would give them.
+    #[test]
+    fn a_doc_saved_as_docx_reopens_as_the_same_document() {
+        let dir = scratch("doc-as-docx");
+        let folder = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus/doc");
+        let mut names: Vec<PathBuf> = std::fs::read_dir(&folder)
+            .expect("the corpus has .doc files")
+            .map(|entry| entry.expect("an entry").path())
+            .filter(|path| path.extension().is_some_and(|e| e == "doc"))
+            .collect();
+        names.sort();
+        assert!(!names.is_empty());
+        for source in names {
+            let name = source.file_stem().unwrap().to_string_lossy().into_owned();
+            let mut app = Scriva::new();
+            app.open_path(&source);
+            let lines = fixed_lines(&app.document);
+            let properties = resolved(&app.document);
+            let target = dir.join(format!("{name}.docx"));
+            assert!(
+                app.save_to(target.clone()),
+                "{name}: the save reports success"
+            );
+
+            let mut reopened = Scriva::new();
+            reopened.open_path(&target);
+            let again = resolved(&reopened.document);
+            assert_eq!(again.len(), properties.len(), "{name}: every paragraph");
+            for (at, (came, went)) in again.iter().zip(&properties).enumerate() {
+                assert_eq!(came, went, "{name}: paragraph {at} resolves as it did");
+            }
+            assert_eq!(
+                fixed_lines(&reopened.document),
+                lines,
+                "{name}: every line where it was, on the page it was on"
+            );
+            for (_, style) in reopened.document.styles.iter() {
+                assert!(
+                    !style.id.contains([' ', ',']),
+                    "{name}: {:?} is not an id Word would make",
+                    style.id
+                );
+            }
+        }
     }
 
     fn app_with(texts: &[&str]) -> Scriva {

@@ -1869,3 +1869,22 @@ authors the file from nothing — silently, and with everything the reader did n
 model gone. The same holds for every name a crossing translates: pictures and
 links re-pointed for a package that was never written make every paragraph
 holding one read back as changed on the next save.
+
+**A package authored from nothing has to say what the document says —
+including where it says nothing.** The authored `styles.xml` carried Word
+2013's `docDefaults` whatever the model held, on the reasoning that a new
+document should look like Word's. But an absent default is not a gap for the
+writer to fill: Word reads no `pPrDefault` as no space after and single
+spacing, and so does the layout here, so the model's silence and the file's
+Word 2013 disagreed from the first save. A new document came back a third
+taller, and a Word 97 document — whose defaults are exactly that silence —
+sixteen pages became twenty-six. The rule the splice writer already lives by
+holds for the parts written from nothing as well: the file states what the
+model states, through the same emitter, or the two are different documents.
+
+**A `.doc` names its styles and does not id them.** The name was used as the id,
+so a copy said `w:styleId="Heading 1"` and `"Caption,Figure"`. Word tolerates
+it; nothing that maps Word's built-in styles by id finds them, and an ODF
+style name, which must be an NCName, cannot hold it at all. The name before the
+first comma is the style's name, the rest are aliases, and the id is what Word
+itself would make of the name.
