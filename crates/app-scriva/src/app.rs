@@ -222,6 +222,20 @@ enum Pending {
     Lossy(PathBuf, Format),
 }
 
+/// What a file chooser was opened for, done once it answers.
+///
+/// A chooser's answer arrives in a later frame than the one that asked — on
+/// Linux it is another program's window (see `ui_kit::chooser`) — so whatever
+/// was to follow it has to be carried along rather than run in the next line.
+enum Chosen {
+    /// Save As, and then whatever the save was standing in the way of: the
+    /// Close or Exit of a document that had never been saved.
+    SaveAs(Option<Box<Command>>),
+    Open,
+    ExportPdf,
+    Picture,
+}
+
 /// What a crossing into the other package format renamed: each drawing or
 /// link by its place in document order, and the name it had before. Kept so
 /// that a save that fails can put the names back.
@@ -274,6 +288,8 @@ pub struct Scriva {
     recent: Recent,
     message: Option<(String, String)>,
     pending: Option<Pending>,
+    /// A file chooser that is open, and what it was opened for.
+    asking: Option<ui_kit::chooser::Asking<Chosen>>,
     /// Where the pages are scrolled to, in screen points.
     scroll: f32,
     focused: bool,
@@ -451,6 +467,7 @@ impl Scriva {
             recent: Recent::load(SCRIVA),
             message: None,
             pending: None,
+            asking: None,
             scroll: 0.0,
             focused: true,
             sweeping: false,
@@ -976,9 +993,13 @@ impl Scriva {
         }
     }
 
+    /// Writes the document where it belongs, and says whether it did. A
+    /// document that belongs nowhere yet asks where, and is not saved by the
+    /// time this returns.
     fn save(&mut self) -> bool {
         let Some(path) = self.path.clone() else {
-            return self.save_as();
+            self.save_as(None);
+            return false;
         };
         match Format::of(&path) {
             Format::Docx => {}
@@ -1012,7 +1033,10 @@ impl Scriva {
             Some(package) => package,
             None => match self.package.as_mut() {
                 Some(package) => package,
-                None => return self.save_as(),
+                None => {
+                    self.save_as(None);
+                    return false;
+                }
             },
         };
         let written = wp_docx::save(&mut self.document, package, &path);
@@ -1305,19 +1329,54 @@ impl Scriva {
         }
     }
 
-    fn save_as(&mut self) -> bool {
+    /// Asks where to save, and saves there once the chooser answers — then
+    /// runs `after`, if the save was standing in its way.
+    fn save_as(&mut self, after: Option<Box<Command>>) {
+        // Proposed under its own name and beside itself, as Word proposes it.
+        // A `.doc` opened as a copy already has the `.docx` name it will be
+        // saved under, and Save As is the key pressed to choose where that
+        // copy goes, not to type its name again.
+        let name = self
+            .path
+            .as_ref()
+            .and_then(|path| path.file_name())
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "Document1.docx".to_owned());
         let mut chooser = rfd::FileDialog::new()
+            .set_title("Save As")
             .add_filter("Word document", &["docx"])
             .add_filter("OpenDocument text", &["odt"])
             .add_filter("Markdown", &["md"])
-            .add_filter("Plain text", &["txt"]);
-        if let Some(directory) = self.recent.directory() {
+            .add_filter("Plain text", &["txt"])
+            .set_file_name(name);
+        if let Some(directory) = self.path.as_ref().and_then(|path| path.parent()) {
+            chooser = chooser.set_directory(directory);
+        } else if let Some(directory) = self.recent.directory() {
             chooser = chooser.set_directory(directory);
         }
-        let Some(path) = chooser.save_file() else {
-            return false;
+        self.asking = Some(ui_kit::chooser::Asking::new(
+            move || chooser.save_file(),
+            Chosen::SaveAs(after),
+        ));
+    }
+
+    /// What a chooser's answer was for, done now that it has one.
+    fn chosen(&mut self, path: Option<PathBuf>, then: Chosen, ctx: &egui::Context) {
+        let Some(path) = path else {
+            return;
         };
-        self.save_to(path)
+        match then {
+            Chosen::SaveAs(after) => {
+                if self.save_to(path) {
+                    if let Some(command) = after {
+                        self.finish(*command, ctx);
+                    }
+                }
+            }
+            Chosen::Open => self.open_path(&path),
+            Chosen::ExportPdf => self.export_pdf_to(path),
+            Chosen::Picture => self.insert_picture_from(&path),
+        }
     }
 
     /// The whole of Save As once the chooser has closed: the name decides the
@@ -1400,6 +1459,7 @@ impl Scriva {
     fn export_pdf(&mut self) {
         let stem = self.published_name();
         let mut chooser = rfd::FileDialog::new()
+            .set_title("Export as PDF")
             .add_filter("PDF", &["pdf"])
             .set_file_name(format!("{stem}.pdf"));
         // Next to the document itself, which is where a resume's PDF belongs.
@@ -1408,9 +1468,15 @@ impl Scriva {
         } else if let Some(directory) = self.recent.directory() {
             chooser = chooser.set_directory(directory);
         }
-        let Some(path) = chooser.save_file() else {
-            return;
-        };
+        self.asking = Some(ui_kit::chooser::Asking::new(
+            move || chooser.save_file(),
+            Chosen::ExportPdf,
+        ));
+    }
+
+    /// The PDF itself, once the chooser has said where it goes.
+    fn export_pdf_to(&mut self, path: PathBuf) {
+        let stem = self.published_name();
         let path = if path.extension().is_none() {
             path.with_extension("pdf")
         } else {
@@ -1548,6 +1614,7 @@ impl Scriva {
             Command::New => self.close_document(),
             Command::Open => {
                 let mut chooser = rfd::FileDialog::new()
+                    .set_title("Open")
                     .add_filter(
                         "All documents",
                         &[
@@ -1562,18 +1629,17 @@ impl Scriva {
                 if let Some(directory) = self.recent.directory() {
                     chooser = chooser.set_directory(directory);
                 }
-                if let Some(path) = chooser.pick_file() {
-                    self.open_path(&path);
-                }
+                self.asking = Some(ui_kit::chooser::Asking::new(
+                    move || chooser.pick_file(),
+                    Chosen::Open,
+                ));
             }
             Command::Reopen(path) => self.open_path(&path),
             Command::ForgetRecent => self.recent.clear(SCRIVA),
             Command::Save => {
                 self.save();
             }
-            Command::SaveAs => {
-                self.save_as();
-            }
+            Command::SaveAs => self.save_as(None),
             Command::Print => self.print(),
             Command::ExportPdf => self.export_pdf(),
             Command::Close => self.close_document(),
@@ -2266,15 +2332,21 @@ impl Scriva {
     /// file the user chooses.
     fn insert_picture_from_file(&mut self) {
         let mut chooser = rfd::FileDialog::new()
+            .set_title("Insert Picture")
             .add_filter("Pictures", &["png", "jpg", "jpeg", "gif", "bmp"])
             .add_filter("All files", &["*"]);
         if let Some(directory) = self.recent.directory() {
             chooser = chooser.set_directory(directory);
         }
-        let Some(path) = chooser.pick_file() else {
-            return;
-        };
-        let read = std::fs::read(&path)
+        self.asking = Some(ui_kit::chooser::Asking::new(
+            move || chooser.pick_file(),
+            Chosen::Picture,
+        ));
+    }
+
+    /// The picture itself, once the chooser has said which.
+    fn insert_picture_from(&mut self, path: &Path) {
+        let read = std::fs::read(path)
             .map_err(|error| error.to_string())
             .and_then(|data| {
                 picture_bytes(data).ok_or_else(|| {
@@ -4048,6 +4120,17 @@ impl DocumentApp for Scriva {
     }
 
     fn overlay(&mut self, ctx: &egui::Context) {
+        if let Some(asking) = self.asking.take() {
+            match asking.answered() {
+                Ok((path, then)) => self.chosen(path, then, ctx),
+                Err(asking) => {
+                    if !ui_kit::chooser::waiting(ctx) {
+                        self.asking = Some(asking);
+                    }
+                    return;
+                }
+            }
+        }
         if let Some((title, body)) = self.message.clone() {
             let answered = dialog::message(
                 ctx,
@@ -4159,7 +4242,11 @@ impl DocumentApp for Scriva {
         match answer {
             Some(0) => {
                 self.pending = None;
-                if self.save() {
+                // A document that has never been saved asks where first, and
+                // what it was closing for waits for that answer too.
+                if self.path.is_none() {
+                    self.save_as(Some(command));
+                } else if self.save() {
                     self.finish(*command, ctx);
                 }
             }
@@ -4224,6 +4311,7 @@ impl DocumentApp for Scriva {
         // While a dialog or the find bar holds the keyboard, keys belong to it:
         // without this, searching for "bug" also types "bug" into the document.
         let blocked = self.pending.is_some()
+            || self.asking.is_some()
             || self.message.is_some()
             || self.drafting.is_some()
             || self.margins_draft.is_some()
@@ -4262,6 +4350,11 @@ impl DocumentApp for Scriva {
             if let Some(id) = self.surface_id {
                 ui.memory_mut(|m| m.request_focus(id));
             }
+        }
+        // A chooser asked this frame answers in a later one, and nothing but a
+        // frame will pick the answer up.
+        if self.asking.is_some() {
+            ui.ctx().request_repaint();
         }
     }
 }
@@ -9809,6 +9902,42 @@ second line"
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("a scratch directory");
         dir
+    }
+
+    /// A chooser answers frames after it was asked — on Linux from another
+    /// program's window, which used to hold this one's thread until it did —
+    /// so what was to follow a Save As rides along with the question. Here
+    /// that is the Close that asked for the save, and it happens once the
+    /// document is on disk and not before.
+    #[test]
+    fn a_save_as_answered_frames_later_saves_and_then_does_what_it_was_for() {
+        let dir = scratch("chooser-answer");
+        let target = dir.join("answered.docx");
+        let mut app = app_with(&["kept"]);
+        app.dirty = true;
+        let chosen = target.clone();
+        app.asking = Some(ui_kit::chooser::Asking::new(
+            move || Some(chosen),
+            Chosen::SaveAs(Some(Box::new(Command::Close))),
+        ));
+
+        let ctx = egui::Context::default();
+        ui_kit::fonts::register(&ctx, &[]);
+        for _ in 0..200 {
+            if app.asking.is_none() {
+                break;
+            }
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| app.overlay(ui.ctx()));
+            out.textures_delta.clear();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(app.asking.is_none(), "the answer was picked up");
+        let saved = wp_docx::open(&target).expect("the document was saved where the chooser said");
+        assert_eq!(saved.0.paragraphs()[0].text(), "kept");
+        assert!(
+            app.path.is_none() && !app.dirty,
+            "and the Close the save was standing in front of went ahead"
+        );
     }
 
     /// S1 — Save As to a different name. The new file holds the edit, the file

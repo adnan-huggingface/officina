@@ -4688,3 +4688,37 @@ table work that follows takes up.
 
 The test types the drive's sequence and reads the cells back; before the
 change they read `[["A1\tB1\tA2\tB2\tA3", ""], ["", ""]]`.
+
+## A file chooser no longer holds the window on Linux (2026-09-12)
+
+Found by the keystroke drive, and the first thing Linux has taught this project
+about itself: **every file chooser was asked on the thread that paints the
+window**, and on Linux the chooser is another program's. rfd asks the desktop
+portal over D-Bus and waits with no time limit. With a portal that answers, the
+window stops painting and reading keys for as long as the chooser is open. With
+one whose chooser never reaches the person — the drive's first run had its
+session's portal drawing the chooser on another display, and a portal that has
+hung does the same — the window can only be killed, with whatever was unsaved
+in it. The drive lost twenty minutes to that before it was understood. Where
+there is no portal at all rfd falls back to zenity, if it is installed, and
+that chooser does appear; a probe that found `save_file()` still waiting after
+forty seconds on a bus with no portal was looking at a zenity window on a
+display nobody was watching, which is the same fault from the other side.
+
+`ui_kit::chooser` puts the question on a thread of its own on Linux and hands
+the answer back through a channel, and both applications carry what was to
+follow the chooser — save there, open it, export to it, insert it, and then
+the Close that the save was standing in front of — rather than running it on
+the next line. While it waits the window paints a box that says what it is
+waiting for, with **Stop Waiting**, which forgets the chooser and gives the
+window back. Windows asks exactly as it did, synchronously, and picks the
+answer up a frame later; nothing about its dialogs changed.
+
+Two smaller things from the same note: Save As now proposes the document's own
+name beside the document, as Export as PDF already did — a `.doc` opened as a
+copy had to have its name typed again — and every chooser has a title.
+
+Tests: the chooser's own, including one that never answers and must not hold
+its caller, and one in Scriva that answers a Save As frames later and sees the
+save happen and then the Close it was for. What no test can open is the
+portal; the drive on the finished branch does.

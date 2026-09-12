@@ -142,6 +142,8 @@ struct Calx {
     inspector: inspector::State,
     /// What the user asked for that unsaved changes are standing in the way of.
     pending: Option<Pending>,
+    /// A file chooser that is open, and what it was opened for.
+    asking: Option<ui_kit::chooser::Asking<Chosen>>,
     /// The name box's buffer. Kept out of the selection because it holds what
     /// is being *typed*, which is not an address until Enter says so.
     name_box: String,
@@ -370,6 +372,19 @@ enum Pending {
     Browse,
 }
 
+/// What a file chooser was opened for, done once it answers.
+///
+/// A chooser's answer arrives in a later frame than the one that asked — on
+/// Linux it is another program's window (see `ui_kit::chooser`) — so whatever
+/// was to follow it has to be carried along rather than run in the next line.
+enum Chosen {
+    /// Save As, and then whatever the save was standing in the way of: the
+    /// Quit, Close, New or Open of a workbook that had never been saved.
+    SaveAs(Option<Pending>),
+    Open,
+    Picture,
+}
+
 /// Something the command surface asked for.
 ///
 /// The menus and the toolbar gather one of these and hand it back; the caller
@@ -451,6 +466,7 @@ impl Calx {
             edited: false,
             inspector: inspector::State::default(),
             pending: None,
+            asking: None,
             name_box: "A1".to_string(),
             last_body: egui::vec2(800.0, 600.0),
             dialog: None,
@@ -961,14 +977,20 @@ impl Calx {
     /// selection: a logo dropped onto a sheet should look like itself, and a
     /// picture is resized afterwards by dragging its corner.
     fn insert_picture(&mut self) {
-        let mut dialog =
-            rfd::FileDialog::new().add_filter("Images", &["png", "jpg", "jpeg", "gif", "bmp"]);
+        let mut dialog = rfd::FileDialog::new()
+            .set_title("Insert Picture")
+            .add_filter("Images", &["png", "jpg", "jpeg", "gif", "bmp"]);
         if let Some(directory) = self.start_directory() {
             dialog = dialog.set_directory(directory);
         }
-        let Some(path) = dialog.pick_file() else {
-            return;
-        };
+        self.asking = Some(ui_kit::chooser::Asking::new(
+            move || dialog.pick_file(),
+            Chosen::Picture,
+        ));
+    }
+
+    /// The picture itself, once the chooser has said which.
+    fn insert_picture_from(&mut self, path: PathBuf) {
         let data = match std::fs::read(&path) {
             Ok(data) => data,
             Err(e) => {
@@ -1105,7 +1127,14 @@ impl Calx {
     }
 
     fn save_as(&mut self) {
+        self.save_as_then(None);
+    }
+
+    /// Asks where to save, and saves there once the chooser answers — then
+    /// goes on with `then`, if the save was standing in its way.
+    fn save_as_then(&mut self, then: Option<Pending>) {
         let mut dialog = rfd::FileDialog::new()
+            .set_title("Save As")
             .add_filter("Excel workbook", &["xlsx"])
             .add_filter("Comma-separated values", &["csv"])
             .add_filter("Tab-separated values", &["tsv", "txt"]);
@@ -1115,8 +1144,28 @@ impl Calx {
         if let Some(name) = self.path.as_ref().and_then(|p| p.file_name()) {
             dialog = dialog.set_file_name(name.to_string_lossy());
         }
-        if let Some(path) = dialog.save_file() {
-            self.write(&path);
+        self.asking = Some(ui_kit::chooser::Asking::new(
+            move || dialog.save_file(),
+            Chosen::SaveAs(then),
+        ));
+    }
+
+    /// What a chooser's answer was for, done now that it has one.
+    fn chosen(&mut self, path: Option<PathBuf>, then: Chosen, ctx: &egui::Context) {
+        let Some(path) = path else {
+            return;
+        };
+        match then {
+            Chosen::SaveAs(then) => {
+                self.write(&path);
+                // Still edited means the save failed, and the thing it was
+                // standing in the way of must not happen.
+                if let Some(pending) = then.filter(|_| !self.edited) {
+                    self.finish(pending, ctx);
+                }
+            }
+            Chosen::Open => self.guard(Pending::Open(path)),
+            Chosen::Picture => self.insert_picture_from(path),
         }
     }
 
@@ -1164,6 +1213,7 @@ impl Calx {
 
     fn browse(&mut self) {
         let mut dialog = rfd::FileDialog::new()
+            .set_title("Open")
             .add_filter(
                 "Spreadsheets",
                 &["xlsx", "xlsm", "xls", "xlt", "csv", "tsv", "txt"],
@@ -1174,9 +1224,10 @@ impl Calx {
         if let Some(current) = self.start_directory() {
             dialog = dialog.set_directory(current);
         }
-        if let Some(path) = dialog.pick_file() {
-            self.guard(Pending::Open(path));
-        }
+        self.asking = Some(ui_kit::chooser::Asking::new(
+            move || dialog.pick_file(),
+            Chosen::Open,
+        ));
     }
 
     /// Where a file dialog should start: this document's own directory, or —
@@ -1630,6 +1681,12 @@ impl Calx {
         };
 
         match choice {
+            // A workbook that has never been saved asks where first, and what
+            // it was standing in the way of waits for that answer too.
+            Some(Choice::Save) if self.path.is_none() => {
+                self.pending = None;
+                self.save_as_then(Some(pending));
+            }
             Some(Choice::Save) => {
                 self.save();
                 // Still edited means the save failed or was cancelled, and the
@@ -7150,6 +7207,17 @@ impl DocumentApp for Calx {
     }
 
     fn overlay(&mut self, ctx: &egui::Context) {
+        if let Some(asking) = self.asking.take() {
+            match asking.answered() {
+                Ok((path, then)) => self.chosen(path, then, ctx),
+                Err(asking) => {
+                    if !ui_kit::chooser::waiting(ctx) {
+                        self.asking = Some(asking);
+                    }
+                    return;
+                }
+            }
+        }
         self.unsaved_prompt(ctx);
         self.dialogs(ctx);
     }
@@ -7166,7 +7234,7 @@ impl DocumentApp for Calx {
         let ctx = ui.ctx().clone();
         // While the prompt is up it owns the keyboard: Ctrl+S behind a modal
         // asking about Ctrl+S is not a question anyone can answer.
-        if self.pending.is_none() {
+        if self.pending.is_none() && self.asking.is_none() {
             self.file_keys(&ctx);
         }
 
@@ -7201,6 +7269,7 @@ impl DocumentApp for Calx {
         self.last_body = ui.available_size();
         self.grid.blocked = self.dialog.is_some()
             || self.pending.is_some()
+            || self.asking.is_some()
             || egui::Popup::is_any_open(ui.ctx())
             || elsewhere_before
             || keys_belong_elsewhere(ui.ctx());
@@ -7209,6 +7278,11 @@ impl DocumentApp for Calx {
 
         for action in self.grid.take_actions() {
             self.act(ui, action);
+        }
+        // A chooser asked this frame answers in a later one, and nothing but a
+        // frame will pick the answer up.
+        if self.asking.is_some() {
+            ui.ctx().request_repaint();
         }
     }
 }

@@ -9,6 +9,7 @@
 pub mod brand;
 pub mod catalogue;
 pub mod chart;
+pub mod chooser;
 pub mod dialog;
 pub mod fonts;
 pub mod keys;
