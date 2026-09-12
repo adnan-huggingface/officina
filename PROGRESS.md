@@ -4583,3 +4583,24 @@ second line are on; before the fix it read back one paragraph,
 Not done: a page break typed in a table cell is still not laid out as one.
 Whether Word breaks the page there, splits the table, or ignores it could not
 be measured on the machine this was fixed on.
+
+## Enter answers a dialog (2026-09-12)
+
+Found by the keystroke drive: Insert ▸ Table…, Enter, and nothing happened —
+the page stayed dimmed behind the box, and what was typed next went into its
+fields, until a fragment of it reached the document. Word inserts on Enter, and
+so does every Windows form with a default button.
+
+The message boxes already answered Enter and Escape; the forms built on
+`dialog::confirm` answered only the pointer, and each of them checked Escape by
+hand. `dialog::submit` is `confirm` with both keys, and seven of Scriva's forms
+use it — Margins, Insert Table, colour, Paragraph, Columns, Watermark and Cell
+Margins. `confirm` itself does not take Enter, because the comment box is a
+multi-line field where Enter is a new line; and `submit` leaves Enter alone
+while a drop-down is open, where it belongs to the list. Picture Size and Zoom
+already handled Enter themselves and are unchanged.
+
+The test opens Insert Table, presses Enter in a frame of the dialogs, and gets
+the table the fields describe; it failed with the old action row. Calx's forms
+have the same gap in several places and are not changed here: some hold
+drop-downs and one a multi-line note, and they want driving before changing.

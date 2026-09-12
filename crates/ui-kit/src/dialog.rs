@@ -279,6 +279,31 @@ pub fn confirm(ui: &mut egui::Ui, action: &str) -> Option<bool> {
     })
 }
 
+/// [`confirm`], answering the keys a Windows dialog answers to: Enter presses
+/// the action and Escape presses Cancel.
+///
+/// A form that only answered to the pointer took Enter as nothing at all, and
+/// what was typed next went into its fields — Insert ▸ Table…, Enter, and the
+/// words meant for the first cell were the table's column count. Not
+/// [`confirm`] itself, because in a dialog with a multi-line field Enter is a
+/// new line; and Enter is left alone while a drop-down is open, where it
+/// belongs to the list.
+pub fn submit(ui: &mut egui::Ui, action: &str) -> Option<bool> {
+    let clicked = confirm(ui, action);
+    // After the buttons, so a click this frame wins over a key that arrived in
+    // the same one.
+    let listing = egui::Popup::is_any_open(ui.ctx());
+    let (enter, escape) = ui.input_mut(|i| {
+        (
+            !listing && i.consume_key(egui::Modifiers::NONE, egui::Key::Enter),
+            i.consume_key(egui::Modifiers::NONE, egui::Key::Escape),
+        )
+    });
+    clicked
+        .or_else(|| enter.then_some(true))
+        .or_else(|| escape.then_some(false))
+}
+
 /// Draws `choices` into an action row and reports which one was pressed.
 pub fn one_of(ui: &mut egui::Ui, choices: &[Choice<'_>]) -> Option<usize> {
     let mut chosen = None;

@@ -4296,11 +4296,8 @@ impl Scriva {
                         });
                     }
                     ui.add_space(12.0);
-                    if let Some(answer) = dialog::confirm(ui, "Set") {
+                    if let Some(answer) = dialog::submit(ui, "Set") {
                         done = Some(answer);
-                    }
-                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                        done = Some(false);
                     }
                 });
             });
@@ -4356,11 +4353,8 @@ impl Scriva {
                         });
                     }
                     ui.add_space(12.0);
-                    if let Some(answer) = dialog::confirm(ui, "Insert") {
+                    if let Some(answer) = dialog::submit(ui, "Insert") {
                         done = Some(answer);
-                    }
-                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                        done = Some(false);
                     }
                 });
             });
@@ -4408,11 +4402,8 @@ impl Scriva {
                         ui.add(egui::TextEdit::singleline(&mut draft).desired_width(64.0));
                     });
                     ui.add_space(12.0);
-                    if let Some(answer) = dialog::confirm(ui, "Apply") {
+                    if let Some(answer) = dialog::submit(ui, "Apply") {
                         done = Some(answer);
-                    }
-                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                        done = Some(false);
                     }
                 });
             });
@@ -4652,11 +4643,8 @@ impl Scriva {
                             .weak(),
                     );
                     ui.add_space(12.0);
-                    if let Some(answer) = dialog::confirm(ui, "Apply") {
+                    if let Some(answer) = dialog::submit(ui, "Apply") {
                         done = Some(answer);
-                    }
-                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                        done = Some(false);
                     }
                 });
             });
@@ -4743,11 +4731,8 @@ impl Scriva {
                         ui.add(egui::TextEdit::singleline(&mut draft).desired_width(64.0));
                     });
                     ui.add_space(12.0);
-                    if let Some(answer) = dialog::confirm(ui, "Apply") {
+                    if let Some(answer) = dialog::submit(ui, "Apply") {
                         done = Some(answer);
-                    }
-                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                        done = Some(false);
                     }
                 });
             });
@@ -5406,11 +5391,8 @@ impl Scriva {
                         }
                         ui.add_space(6.0);
                     }
-                    if let Some(answer) = dialog::confirm(ui, "Apply") {
+                    if let Some(answer) = dialog::submit(ui, "Apply") {
                         done = Some(answer);
-                    }
-                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                        done = Some(false);
                     }
                 });
             });
@@ -5705,11 +5687,8 @@ impl Scriva {
                             .weak(),
                     );
                     ui.add_space(12.0);
-                    if let Some(answer) = dialog::confirm(ui, "Apply") {
+                    if let Some(answer) = dialog::submit(ui, "Apply") {
                         done = Some(answer);
-                    }
-                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                        done = Some(false);
                     }
                 });
             });
@@ -7091,6 +7070,61 @@ mod tests {
         assert_eq!(
             pressed(&mut app, egui::Key::Equals, ctrl),
             Some(Command::Subscript)
+        );
+    }
+
+    /// Frames of `overlay` — the dialogs — each with one key pressed.
+    fn press_in_dialogs(app: &mut Scriva, keys: &[egui::Key]) {
+        let ctx = egui::Context::default();
+        ui_kit::fonts::register(&ctx, &[]);
+        let mut warm = ctx.run_ui(egui::RawInput::default(), |ui| app.overlay(ui.ctx()));
+        warm.textures_delta.clear();
+        for &key in keys {
+            let mut input = egui::RawInput::default();
+            input.events.push(egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            });
+            let mut out = ctx.run_ui(input, |ui| app.overlay(ui.ctx()));
+            out.textures_delta.clear();
+        }
+    }
+
+    /// Insert ▸ Table…, Enter. The form answered only to the pointer, so the
+    /// Enter did nothing and what was typed next went into its fields.
+    #[test]
+    fn enter_inserts_the_table_the_dialog_describes() {
+        let mut app = app_with(&["before"]);
+        app.run(Command::InsertTable);
+        app.table_draft = Some(["3".to_owned(), "2".to_owned()]);
+        press_in_dialogs(&mut app, &[egui::Key::Enter]);
+        assert!(app.table_draft.is_none(), "Enter closes the dialog");
+        let table = app
+            .document
+            .body
+            .iter()
+            .find_map(|block| match block {
+                Block::Table(table) => Some(table),
+                _ => None,
+            })
+            .expect("and inserts the table");
+        assert_eq!(table.rows.len(), 2);
+        assert_eq!(table.rows[0].cells.len(), 3);
+
+        // And Escape is still the way out, with nothing inserted.
+        let mut app = app_with(&["before"]);
+        app.run(Command::InsertTable);
+        press_in_dialogs(&mut app, &[egui::Key::Escape]);
+        assert!(app.table_draft.is_none());
+        assert!(
+            !app.document
+                .body
+                .iter()
+                .any(|b| matches!(b, Block::Table(_))),
+            "Escape inserts nothing"
         );
     }
 
