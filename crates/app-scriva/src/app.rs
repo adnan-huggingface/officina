@@ -1019,6 +1019,12 @@ impl Scriva {
         match written {
             Ok(()) => {
                 if let Some(package) = authored {
+                    // The drawings name the package's relationships now, not
+                    // the loose pictures, and the painter resolves those
+                    // through this index. Without it every picture is a box
+                    // from the next layout on, as at the other places a part
+                    // is added.
+                    self.parts = wp_docx::DocumentParts::locate_in(&package).ok();
                     self.package = Some(package);
                     self.container = None;
                 }
@@ -9723,6 +9729,42 @@ second line"
             assert!(
                 rels.get(&rel).is_some(),
                 "{rel} names no relationship of the document, which Word reports as a damaged file"
+            );
+        }
+    }
+
+    /// Authoring a package re-points every loose picture's drawing at the
+    /// relationship it now has, and the painter finds a relationship's bytes
+    /// through `parts`, the package's index. The save set the package and not
+    /// its index, so from the next edit — the first layout to paint the new
+    /// names — every picture in the window was an empty box, and a PDF made
+    /// then would have had none.
+    #[test]
+    fn the_pictures_still_paint_after_the_save_that_authored_their_package() {
+        let dir = scratch("pictures-after-first-save");
+        let source = dir.join("with-pictures.odt");
+        std::fs::copy(corpus("second-producer.odt"), &source)
+            .expect("the corpus document is there");
+        let mut app = Scriva::new();
+        app.open_odt(&source);
+        assert!(
+            app.save_to(dir.join("as-word.docx")),
+            "the save reports success"
+        );
+
+        let named: Vec<String> = app
+            .document
+            .drawings_mut()
+            .into_iter()
+            .filter_map(|drawing| drawing.rel.as_deref().map(str::to_owned))
+            .collect();
+        assert!(!named.is_empty(), "the corpus document has pictures");
+        for rel in named {
+            assert!(
+                app.pictures
+                    .bytes(app.package.as_ref(), app.parts.as_ref(), &rel)
+                    .is_some(),
+                "{rel} is a picture the window can no longer find"
             );
         }
     }

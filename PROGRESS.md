@@ -4542,3 +4542,20 @@ applications' shortcuts go through it.
 The test that presses each shifted key was written before the fix and seen to
 fail for the reason above; it now also presses the unshifted keys, so the fix
 cannot pass by breaking them.
+
+## A picture still paints after the save that authored its package (2026-09-12)
+
+Found by the keystroke drive: open a `.doc` with pictures, save it, type one
+letter, and **every picture in the window became an empty box**. The file was
+whole and reopened whole; what lied was the window, and a PDF exported in that
+state would have taken its pictures from the same place and had none.
+
+Saving a document that arrived without a `.docx` package authors one, embeds
+the loose pictures in it and re-points each drawing at its new relationship.
+The painter finds a relationship's bytes through `parts`, the package's index,
+and `save` set the package without it — the one place of four that adds a part
+and forgot. The pictures survived the save itself only because the pages on
+screen still carried the old loose names; the first edit laid them out again
+under the new ones. The test saves the corpus `.odt` with pictures as `.docx`
+and asks the window for every picture's bytes; it failed before the one-line
+fix and passes after.
