@@ -4461,10 +4461,25 @@ footnote numbered under its rule — and the `.docx` saved as `.odt` by
 LibreOffice, pictures drawn and link live. `cargo xtask check` and `cargo xtask
 fidelity` stayed green at every commit, and S1–S4 prove themselves.
 
-**Not re-run: the keystroke drive.** U1 passed against the code as the loop
-left it. This sitting changed the save chokepoint it goes through, and the drive
-takes over the keyboard and the screen, so it was left for a person to run when
-they are away from the machine: `python .claude/hooks/drove_it.py`.
+**The keystroke drive, re-run on the finished branch.** This sitting changed
+the save chokepoint the drive goes through, so it was run again once the person
+at the machine had stepped away from it. The second run passed — both paragraphs,
+the bold made through the Format menu, the header in `styles.xml`, and the
+reopened document the same — and its screenshots were read, not counted.
+
+The first did not, and the way it failed is worth more than the pass. Everything
+typed before **Format ▸ Bold** was missing from the page *before the save*, and
+everything typed after it was there; the save wrote exactly what the editor
+held. That run launched Scriva straight after a five-minute rebuild, and the
+likeliest account is the driver's rather than the editor's: after File ▸ New it
+waits for a title beginning `Document`, which the window has from the moment it
+opens, so the wait passes before New has run. A New that lands late, on a
+document not yet dirty when it is processed, discards what was typed ahead of it
+without asking. That is inferred from one frame and not reproduced. The fix it
+points at is in the driver — wait for New to have *happened*, not for a title
+that was already true — and the question it leaves for the editor is whether a
+command and the typing queued behind it can be applied out of order on a slow
+frame.
 
 ### What is left
 
@@ -4481,3 +4496,6 @@ they are away from the machine: `python .claude/hooks/drove_it.py`.
   side of external links has been checked with one built in a test, and never
   against a file Word wrote.
 - The residue on `word-odf-export.odt`'s fifth page, as above.
+- The drive's wait after File ▸ New is satisfied by the title the window opens
+  with, so on a cold start it does not wait for New at all. One run in three
+  lost the text typed ahead of a late New.
