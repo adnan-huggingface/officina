@@ -4722,3 +4722,30 @@ Tests: the chooser's own, including one that never answers and must not hold
 its caller, and one in Scriva that answers a Save As frames later and sees the
 save happen and then the Close it was for. What no test can open is the
 portal; the drive on the finished branch does.
+
+## A justified line widens its spaces, not its run boundaries (2026-09-12)
+
+Found by the keystroke drive on a Word 97 specification: a justified paragraph
+read "The two chip **so lution**", with a double gap in "microcontroller  to"
+and "non- intelligent" parted at its hyphen. Centred, the words were whole. The
+saved `.docx` showed why those places and no others: the text is cut into runs
+there — `so` | `lution`, `microcontroller` | ` to`, `non-` | `intelligent` —
+and Word documents are cut like that everywhere, by the spelling checker, by
+revision saves, by pasting.
+
+The slack of a justified line was spread evenly between every pair of
+fragments, and a fragment ends at a run boundary as well as at a space. Word
+widens the spaces, each alike, so a gap's share is now the number of spaces
+ending the fragment before it: a seam inside a word takes nothing, and a run
+that begins with its space is widened once rather than twice. Two of Word's
+exceptions come with it. Only the spaces after a line's last tab are widened,
+because what stands before a tab is placed by its stop. And Chinese and
+Japanese, which have no spaces to widen, are still justified between their
+characters. `distribute` spreads between every fragment as it did; spacing the
+letters apart is what it is for.
+
+Tests with the fixed shaper: a word split across two runs keeps its halves
+touching while each space takes its point, and a run beginning with its space
+widens it once; both failed on the old spreading. Every corpus document measures
+exactly what it measured before — recorded on this machine before and after and
+compared whole — so `LAYOUT.md` does not move.

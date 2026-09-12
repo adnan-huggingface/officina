@@ -2077,9 +2077,9 @@ fn finish(
         // is the whole difference between it and `both`.
         let is_last = index == last;
         // A line parted by a float is not stretched. Justification spreads
-        // one gap evenly between every pair of fragments, and one of those
-        // pairs straddles the hole — so it would widen the float itself. What
-        // Word does with the two channels of such a line has not been measured;
+        // the slack between the line's words, and one of those gaps may
+        // straddle the hole — so it would widen the float itself. What Word
+        // does with the two channels of such a line has not been measured;
         // spreading them is the one answer that is certainly wrong.
         let stretch = !gap.parted(limit)
             && match justify {
@@ -2096,14 +2096,80 @@ fn finish(
             };
 
         if stretch && line.fragments.len() > 1 && give != 0.0 {
-            let gaps = (line.fragments.len() - 1) as f64;
-            let extra = give / gaps;
-            for (position, fragment) in line.fragments.iter_mut().enumerate() {
-                fragment.x += extra * position as f64;
+            let shares = shares(&line.fragments, justify);
+            let total: f64 = shares.iter().sum();
+            if total > 0.0 {
+                let extra = give / total;
+                let mut moved = 0.0;
+                for (fragment, share) in line.fragments.iter_mut().zip(&shares) {
+                    moved += extra * share;
+                    fragment.x += moved;
+                }
+                line.width = limit;
             }
-            line.width = limit;
         }
     }
+}
+
+/// How much of a justified line's slack goes in front of each fragment.
+///
+/// **The spaces take it, and nothing else does.** A fragment ends wherever the
+/// measuring had to change — a new run, a new script, a field — as well as at
+/// a space, and Word documents are cut into runs in the middle of words all
+/// the time: a spelling check, a revision, a pasted phrase. Spread between
+/// every pair of fragments, the slack opened "so lution" in the middle of a
+/// word, doubled the gap beside a run that began with its space, and parted
+/// "non- intelligent" at its hyphen. Word widens the spaces, each one alike,
+/// so a gap's share is the number of spaces ending the fragment before it.
+///
+/// Two exceptions, both Word's. Only the spaces after the line's last tab are
+/// stretched — what stands before a tab is placed by the tab stop, and moving
+/// it would move the stop. And text with no spaces to widen, Chinese and
+/// Japanese, is justified between its characters, so a gap between two of
+/// them takes one share. `distribute` spreads between every fragment, as it
+/// always has: it is the setting that spaces letters apart.
+fn shares(fragments: &[Fragment], justify: Justify) -> Vec<f64> {
+    if justify == Justify::Distribute {
+        return (0..fragments.len())
+            .map(|at| if at == 0 { 0.0 } else { 1.0 })
+            .collect();
+    }
+    let after_tab = fragments
+        .iter()
+        .rposition(|fragment| matches!(fragment.content, Content::Tab { .. }))
+        .map_or(0, |tab| tab + 1);
+    fn text(fragment: &Fragment) -> Option<&str> {
+        match &fragment.content {
+            Content::Text { text, .. } => Some(text),
+            _ => None,
+        }
+    }
+    let wide = |c: char| crate::resolve::face_for(c) == wp_model::prop::Script::EastAsian;
+    let mut shares = vec![0.0; fragments.len()];
+    for at in after_tab.max(1)..fragments.len() {
+        let Some(before) = text(&fragments[at - 1]) else {
+            continue;
+        };
+        let spaces = before
+            .chars()
+            .rev()
+            .take_while(|&c| c == ' ' || c == '\u{3000}')
+            .count();
+        shares[at] = if spaces > 0 {
+            spaces as f64
+        } else {
+            let joins_wide = before.chars().next_back().is_some_and(wide)
+                && text(&fragments[at])
+                    .and_then(|after| after.chars().next())
+                    .is_some_and(wide);
+            if joins_wide {
+                1.0
+            } else {
+                0.0
+            }
+        };
+    }
+    shares
 }
 
 /// The gap a face asks for between its lines, as this document lays them out.
@@ -2568,6 +2634,96 @@ mod tests {
             last.width < 40.0,
             "the last line is left alone: {}",
             last.width
+        );
+    }
+
+    fn text_of(fragment: &Fragment) -> &str {
+        match &fragment.content {
+            Content::Text { text, .. } => text,
+            _ => "",
+        }
+    }
+
+    fn runs(texts: &[&str]) -> Paragraph {
+        Paragraph {
+            content: texts
+                .iter()
+                .map(|text| Inline::Run(Run::of(text)))
+                .collect(),
+            ..Paragraph::new()
+        }
+    }
+
+    /// "The two chip so|lution": a run boundary in the middle of a word,
+    /// which Word documents are full of. The slack was spread between every
+    /// pair of fragments, and a run boundary is a fragment boundary, so the
+    /// word opened in the middle. Only the spaces are widened.
+    #[test]
+    fn a_justified_line_widens_its_spaces_and_not_a_run_boundary_inside_a_word() {
+        let mut layers = layers();
+        layers.para.justify = Some(Justify::Both);
+        // Five points a character: "aa bb cc dd" is fifty-five, and a column
+        // of fifty-eight leaves three to spread over its three spaces.
+        let laid = lay_with(runs(&["aa bb c", "c dd ee ff"]), layers, 58.0);
+        let first = &laid.lines[0];
+        let words: Vec<&str> = first.fragments.iter().map(text_of).collect();
+        assert_eq!(words, ["aa ", "bb ", "c", "c ", "dd "]);
+        let at = |n: usize| &first.fragments[n];
+        assert!(
+            (at(2).x + at(2).width - at(3).x).abs() < 1e-9,
+            "the two halves of \"cc\" still touch: {} + {} against {}",
+            at(2).x,
+            at(2).width,
+            at(3).x
+        );
+        for (before, after, grown) in [(0, 1, 1.0), (1, 2, 1.0), (3, 4, 1.0)] {
+            let gap = at(after).x - (at(before).x + at(before).width);
+            assert!(
+                (gap - grown).abs() < 1e-9,
+                "each space took its point: {gap} between {before} and {after}"
+            );
+        }
+        assert!(
+            (first.width - 58.0).abs() < 1e-9,
+            "and the line fills the column"
+        );
+    }
+
+    /// A run that begins with its space: two fragments either side of one
+    /// gap, and the gap was widened twice.
+    #[test]
+    fn a_run_that_begins_with_a_space_widens_it_once() {
+        let mut layers = layers();
+        layers.para.justify = Some(Justify::Both);
+        let laid = lay_with(runs(&["aa bb", " cc dd ee ff"]), layers, 58.0);
+        let first = &laid.lines[0];
+        let starts: Vec<f64> = first.fragments.iter().map(|f| f.x).collect();
+        let words: Vec<&str> = first.fragments.iter().map(text_of).collect();
+        // "aa ", "bb", " ", "cc ", "dd ": three spaces, one point each.
+        assert_eq!(words, ["aa ", "bb", " ", "cc ", "dd "]);
+        assert!(
+            (starts[2] - (starts[1] + 10.0)).abs() < 1e-9,
+            "nothing is spread between a word and the run after it"
+        );
+        assert!((starts[3] - (starts[2] + 6.0)).abs() < 1e-9);
+    }
+
+    /// Text with no spaces in it is still justified where it is Word's to
+    /// justify: between the characters of Chinese and Japanese.
+    #[test]
+    fn east_asian_text_is_justified_between_its_characters() {
+        let mut layers = layers();
+        layers.para.justify = Some(Justify::Both);
+        let laid = lay_with(
+            Paragraph::of("\u{6f22}\u{5b57}\u{306e}\u{6587}\u{7ae0}\u{3067}\u{3059}"),
+            layers,
+            22.0,
+        );
+        assert!(laid.lines.len() >= 2);
+        assert!(
+            (laid.lines[0].width - 22.0).abs() < 1e-9,
+            "the first line fills the column: {}",
+            laid.lines[0].width
         );
     }
 
