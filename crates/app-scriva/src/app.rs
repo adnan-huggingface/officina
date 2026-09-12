@@ -7013,6 +7013,62 @@ mod tests {
         assert!(app.message.is_some(), "a dangling link is reported");
     }
 
+    /// egui's `consume_key` ignores an extra Shift or Alt, and says so: the
+    /// more specific shortcut has to be asked for first. Every plain entry in
+    /// `keys` is asked before its shifted sibling, so Ctrl+Shift+S saves
+    /// without a dialog and Ctrl+Shift+M indents further.
+    fn pressed(app: &mut Scriva, key: egui::Key, modifiers: egui::Modifiers) -> Option<Command> {
+        let ctx = egui::Context::default();
+        ui_kit::fonts::register(&ctx, &[]);
+        let mut warm = ctx.run_ui(egui::RawInput::default(), |_| {});
+        warm.textures_delta.clear();
+        let mut input = egui::RawInput::default();
+        input.events.push(egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        });
+        let mut found = None;
+        let mut out = ctx.run_ui(input, |ui| {
+            found = app.keys(ui);
+        });
+        out.textures_delta.clear();
+        found
+    }
+
+    #[test]
+    fn a_shifted_shortcut_is_not_taken_by_its_unshifted_sibling() {
+        let mut app = app_with(&["text"]);
+        let ctrl_shift = egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT);
+        let ctrl_alt = egui::Modifiers::COMMAND.plus(egui::Modifiers::ALT);
+        assert_eq!(
+            pressed(&mut app, egui::Key::S, ctrl_shift),
+            Some(Command::SaveAs)
+        );
+        assert_eq!(
+            pressed(&mut app, egui::Key::M, ctrl_shift),
+            Some(Command::Indent(-1))
+        );
+        assert_eq!(
+            pressed(&mut app, egui::Key::Z, ctrl_shift),
+            Some(Command::Redo)
+        );
+        assert_eq!(
+            pressed(&mut app, egui::Key::E, ctrl_shift),
+            Some(Command::TrackChanges)
+        );
+        assert_eq!(
+            pressed(&mut app, egui::Key::M, ctrl_alt),
+            Some(Command::AddComment)
+        );
+        assert_eq!(
+            pressed(&mut app, egui::Key::Equals, ctrl_shift),
+            Some(Command::Superscript)
+        );
+    }
+
     fn app_with(texts: &[&str]) -> Scriva {
         let mut app = Scriva::new();
         app.document.body = texts
