@@ -4248,6 +4248,19 @@ impl DocumentApp for Scriva {
         }
 
         self.surface(ui);
+        // Nothing holding the keyboard is the document holding it. Left to
+        // nobody — after a dialog closes, or before the first click — the
+        // keyboard is egui's to hand round: each Tab walked it one title along
+        // the menu bar while the page took the same Tab as its own, a title
+        // holding it takes Enter as a click, and the next paragraph mark typed
+        // opened a menu, whose letters then ate the words that followed —
+        // struck through, bolded, realigned. The surface holds on to Tab once
+        // it has the keyboard, so having it is the whole of the fix.
+        if !blocked && ui.memory(|m| m.focused().is_none()) {
+            if let Some(id) = self.surface_id {
+                ui.memory_mut(|m| m.request_focus(id));
+            }
+        }
     }
 }
 
@@ -7288,6 +7301,79 @@ mod tests {
         assert!(app.selected_text().is_some(), "the count now says 1 of 2");
         let after = ctx.read_response(field).expect("still drawn").rect;
         assert_eq!(before, after, "and Replace with did not move");
+    }
+
+    /// One whole frame of the window as the shell lays it out — dialogs, the
+    /// menu bar and toolbar, and the page — with `events` as its input.
+    fn window_frame(app: &mut Scriva, ctx: &egui::Context, events: Vec<egui::Event>) {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1600.0, 1000.0),
+            )),
+            events,
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| {
+            app.overlay(ui.ctx());
+            egui::Panel::top("test-toolbar").show(ui, |ui| app.toolbar(ui));
+            egui::CentralPanel::no_frame().show(ui, |ui| app.ui(ui));
+        });
+        out.textures_delta.clear();
+    }
+
+    /// Observed once on a keystroke drive and then reproduced: letters typed
+    /// after a table were eaten, the rest struck through, and a menu title
+    /// sat highlighted with no menu open. Nothing held the keyboard, so each
+    /// Tab also walked egui's focus along the menu bar; the title it stopped
+    /// on took the next Enter as a click and opened its menu, and the menu
+    /// took the typing as its commands.
+    #[test]
+    fn tab_and_enter_stay_in_the_document_when_nothing_else_has_the_keyboard() {
+        let mut app = app_with(&["text"]);
+        let ctx = egui::Context::default();
+        ui_kit::fonts::register(&ctx, &[]);
+        window_frame(&mut app, &ctx, vec![]);
+        window_frame(&mut app, &ctx, vec![]);
+        for _ in 0..5 {
+            window_frame(
+                &mut app,
+                &ctx,
+                vec![egui::Event::Key {
+                    key: egui::Key::Tab,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+            );
+        }
+        window_frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        window_frame(&mut app, &ctx, vec![]);
+        assert!(
+            !egui::Popup::is_any_open(&ctx),
+            "Enter opened a menu instead of ending the paragraph"
+        );
+        assert_eq!(
+            app.document.paragraphs().len(),
+            2,
+            "Enter split the paragraph"
+        );
+        assert_eq!(
+            ctx.memory(|m| m.focused()),
+            app.surface_id,
+            "and the page holds the keyboard"
+        );
     }
 
     fn app_with(texts: &[&str]) -> Scriva {

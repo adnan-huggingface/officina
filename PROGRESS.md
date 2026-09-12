@@ -4640,3 +4640,27 @@ Tests drive whole frames of the window: type, Enter, Tab, type, and the
 document is untouched with the replacement in its field (before: `"the \tslow
 fox"`); and the Replace with field is where it was after the count changes
 (before: moved). Both failed on the old bar.
+
+## The keyboard stays in the document (2026-09-12)
+
+The keystroke drive recorded one episode it could not repeat: after a table was
+inserted and typed into, "After the table." came out as `erheable.`, struck
+through and bold italic, and a later header lost half its letters, while the
+Format title sat highlighted with no menu open. Driving the finished fixes
+reproduced its shape exactly: Insert ▸ Table…, Enter, Tab from cell to cell,
+Enter — and the Paragraph menu opened, and "After the table." was eaten by its
+mnemonics down to a right-aligned "table.".
+
+Nothing held the keyboard. When the dialog closed its field went with it, and
+egui's focus went nowhere — and from nowhere, each Tab walked egui's own focus
+one title along the menu bar (File, Edit, View, Format, Paragraph) while the
+page took the same Tab as its own. The title the walk stopped on took the next
+Enter as a click, opened its menu, and an open menu owns the keyboard: every
+letter that is one of its mnemonics runs its command. The page already keeps
+Tab for itself once it has the keyboard; now it takes the keyboard back
+whenever nothing else is meant to have it.
+
+The test draws the whole window, menu bar included, presses Tab five times and
+then Enter, and asks that no menu opened and the paragraph was split; without
+the fix Enter opened a menu. Calx's grid may well have the same gap and is not
+changed here.
