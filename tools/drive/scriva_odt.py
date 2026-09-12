@@ -354,6 +354,21 @@ class Scriva:
         of assuming is not a failed step: a letter meant for a menu that never
         opened is a letter typed into the document, and the run would go on
         looking well until something read what it wrote.
+
+        **And it is seen to close before this returns**, for the same reason
+        the other way round. A letter typed while the menu is still open goes
+        to the menu, not to the document. On a frame slow enough — the first
+        launch of a freshly built binary is one — the typing queued behind the
+        item arrives in the same frame as the item: the menu takes the item,
+        swallows the rest, and the run carries on with two lines of the document
+        never typed. The first run of this drive on a cold build did exactly
+        that. The window's title cannot be the wait either: File ▸ New on the
+        untouched document the window opens with gives a window that is called
+        the same and looks the same. What *can* be seen is the menu going, and
+        `app.rs` runs the command in the frame the menu closes in — so the
+        frame without the menu is one the command has already happened in. A
+        command that opens a native dialog is the exception, and `await_command`
+        says how it is seen instead.
         """
         for _ in range(3):
             before = self.look()
@@ -363,8 +378,17 @@ class Scriva:
             # frame shows the menu that has not opened yet.
             for _ in range(8):
                 if differs(before, self.look()) >= 0.004:
-                    for item in items:
+                    *through, last = items
+                    for item in through:
                         self.press(item, pause=0.5)
+                    # The open menu as it finally stands — submenus opened, any
+                    # fade finished — so that what changes next is its going.
+                    opened = self.settled()
+                    self.press(last, pause=0.1)
+                    self.await_command(
+                        opened,
+                        f"Alt+{top.upper()} then {' '.join(items).upper()} left the menu open",
+                    )
                     return
                 time.sleep(0.3)
             # Escape first, in case a menu did open and this could not see it:
@@ -373,9 +397,50 @@ class Scriva:
         self.shot(f"no-{top}-menu")
         raise Wall(f"Alt+{top.upper()} opened no menu")
 
+    def settled(self, seconds: float = 10.0):
+        """The window once it has stopped changing, or as it is after `seconds`.
+
+        Stopped means two looks a fifth of a second apart that differ by less
+        than a blinking caret would make them.
+        """
+        deadline = time.time() + seconds
+        last = self.look()
+        while time.time() < deadline:
+            time.sleep(0.2)
+            now = self.look()
+            if differs(last, now) < 0.0005:
+                return now
+            last = now
+        return last
+
+    def await_command(self, opened, what: str, seconds: float = 30.0) -> None:
+        """Waits for the command a menu item ran to have been run.
+
+        Two signs of it, and either will do. The window stops looking the way it
+        did in `opened`, because the menu has gone. Or a dialog of this process
+        takes the focus — because a command that opens a native dialog opens it
+        *inside* the frame it runs in, that frame does not finish until the
+        dialog closes, and the window goes on showing the open menu the whole
+        time. The first version of this waited only for the menu to go, and
+        timed out on every File ▸ Save As with the dialog open and waiting.
+
+        Half a minute, because the frame this is waiting on is the slow one: a
+        first launch that stalls for several seconds is the case this exists
+        for, and a short wait would turn it back into a guess.
+        """
+        deadline = time.time() + seconds
+        while time.time() < deadline:
+            if focused_dialog(self):
+                return
+            if differs(opened, self.look()) >= 0.004:
+                return
+            time.sleep(0.2)
+        self.shot("menu-stayed-open")
+        raise Wall(what)
+
     # ------------------------------------------------------- what it looks like
 
-    def look(self):
+    def look(self, hwnd: int | None = None):
         """The window as it is on the screen, read back rather than filed away.
 
         From the screen rather than from the window itself: a `PrintWindow` of a
@@ -385,7 +450,9 @@ class Scriva:
         from PIL import Image
 
         self.guard("a look at the window")
-        left, top, width, height = window_rect(self.hwnd)
+        # The application's window unless another of its windows is named — a
+        # dialog, which opens where it likes and not inside the one it belongs to.
+        left, top, width, height = window_rect(hwnd or self.hwnd)
         if width <= 0 or height <= 0:
             raise Wall(f"the window measures {width}x{height}")
         screen = user32.GetDC(0)
@@ -425,7 +492,7 @@ class Scriva:
 
         return Image.frombuffer("RGB", (width, height), buffer, "raw", "BGRX", 0, 1)
 
-    def shot(self, name: str):
+    def shot(self, name: str, hwnd: int | None = None):
         """A look that is kept, so that a person can spend a minute on the run.
 
         What is checked here is coarse — a window that painted, a page with ink
@@ -433,7 +500,7 @@ class Scriva:
         for `cargo xtask compare`, and whether it reads right is a question for
         eyes on these files.
         """
-        image = self.look()
+        image = self.look(hwnd)
         self.shots += 1
         image.save(self.out / f"{self.shots:02d}-{name}.png")
         return image
@@ -498,17 +565,37 @@ def dialog_of(app: Scriva, seconds: float = 30.0) -> int:
     then waited a minute for a window that will outlive the application to shut.
     Waiting for the focus to move is waiting for the thing that actually
     happened.
+
+    **And for it to stay there.** A file dialog does not arrive in one piece:
+    the focus can pass through a window of the dialog's own on its way to the
+    one that takes a name, and a name typed at the first window the focus lands
+    on is a name typed into that. It went unseen while `menu` paused half a
+    second after every item, and was found the day it stopped: the Open dialog
+    stayed open with a name typed into it, three runs out of three. The same
+    window holding the focus for half a second is the dialog, settled.
     """
     deadline = time.time() + seconds
+    held, since = None, 0.0
     while time.time() < deadline:
-        hwnd = user32.GetForegroundWindow()
-        owner = wintypes.DWORD()
-        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
-        name = title_of(hwnd)
-        if owner.value == app.pid and hwnd != app.hwnd and name and not name.endswith("Scriva"):
-            return hwnd
-        time.sleep(0.2)
+        hwnd = focused_dialog(app)
+        if hwnd and hwnd == held:
+            if time.time() - since >= 0.5:
+                return hwnd
+        else:
+            held, since = hwnd, time.time()
+        time.sleep(0.1)
     raise Wall("no dialog opened")
+
+
+def focused_dialog(app: Scriva) -> int | None:
+    """The dialog of this process that has the focus, if one has — see `dialog_of`."""
+    hwnd = user32.GetForegroundWindow()
+    owner = wintypes.DWORD()
+    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
+    name = title_of(hwnd)
+    if owner.value == app.pid and hwnd != app.hwnd and name and not name.endswith("Scriva"):
+        return hwnd
+    return None
 
 
 def gone(hwnd: int, seconds: float) -> bool:
@@ -536,6 +623,9 @@ def name_the_file(app: Scriva, hwnd: int, path: Path) -> None:
         app.press("return", pause=1.0)
         if gone(hwnd, 8.0):
             return
+    # The dialog, not the application behind it: what is in its name box is the
+    # one thing that says why it would not go.
+    app.shot("dialog-would-not-close", hwnd)
     raise Wall("the dialog is still open after the name was typed into it")
 
 
@@ -549,6 +639,8 @@ def drive(exe: Path, out: Path) -> Path:
 
         # A document of its own, made the way the first thing a person does is
         # made — through the menu rather than through the shortcut beside it.
+        # `menu` is what waits for New to have happened; the title below cannot,
+        # being what the window was called before New ran as well as after.
         app.menu("f", "n")
         app.await_title(lambda t: t.startswith("Document"), "File ▸ New gave no new document")
 

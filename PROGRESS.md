@@ -4470,16 +4470,30 @@ reopened document the same — and its screenshots were read, not counted.
 The first did not, and the way it failed is worth more than the pass. Everything
 typed before **Format ▸ Bold** was missing from the page *before the save*, and
 everything typed after it was there; the save wrote exactly what the editor
-held. That run launched Scriva straight after a five-minute rebuild, and the
-likeliest account is the driver's rather than the editor's: after File ▸ New it
-waits for a title beginning `Document`, which the window has from the moment it
-opens, so the wait passes before New has run. A New that lands late, on a
-document not yet dirty when it is processed, discards what was typed ahead of it
-without asking. That is inferred from one frame and not reproduced. The fix it
-points at is in the driver — wait for New to have *happened*, not for a title
-that was already true — and the question it leaves for the editor is whether a
-command and the typing queued behind it can be applied out of order on a slow
-frame.
+held. That run launched Scriva straight after a five-minute rebuild.
+
+The first account written here blamed a late File ▸ New discarding what had been
+typed, and the code says otherwise: `app.rs` runs a menu's command in the frame
+the menu closes in, and on a document not yet dirty it asks nothing. What fits
+both the frame and the code is the driver's: `menu` pressed the item and went
+straight on, so on a frame slow enough the typing queued behind the item reached
+a menu that was *still open*. The menu takes its letter and swallows the rest,
+and the document never hears of them. The wait after it could not catch this —
+it asked for a title beginning `Document`, which the window has from the moment
+it opens. `menu` now waits to see the command happen before anything is typed:
+the menu gone from the window, which is the frame the command has already run
+in — or, for a command that opens a native dialog, the dialog taking the focus,
+because that frame blocks inside the dialog and goes on showing the open menu
+until it closes. The first version waited only for the menu to go and timed out
+on every Save As. The second found that the focus can pass through a window of
+the dialog's own before settling, and typed a file name into it: `dialog_of`
+now waits for the same dialog to hold the focus for half a second.
+
+Checked the way it failed, not only the way it passes: a freshly built binary
+before each cold run, two cold runs and two warm, all four clean, their frames
+and saved files read. The old driver was run cold as well, to see the failure
+again, and it passed — so what was fixed is a race the code shows is there, not
+a failure seen to go away.
 
 ### What is left
 
@@ -4496,6 +4510,3 @@ frame.
   side of external links has been checked with one built in a test, and never
   against a file Word wrote.
 - The residue on `word-odf-export.odt`'s fifth page, as above.
-- The drive's wait after File ▸ New is satisfied by the title the window opens
-  with, so on a cold start it does not wait for New at all. One run in three
-  lost the text typed ahead of a late New.
