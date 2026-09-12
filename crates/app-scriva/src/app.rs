@@ -3128,7 +3128,9 @@ impl Scriva {
             }
             Key::Tab => {
                 // At the start of a list item, Tab goes a level deeper and
-                // Shift+Tab comes back up. Anywhere else it is a tab.
+                // Shift+Tab comes back up. In a table it goes from cell to
+                // cell, and Ctrl+Tab is how a tab gets into one. Anywhere else
+                // it is a tab.
                 if self.selection.is_empty()
                     && caret.offset == 0
                     && self.numbering_at(caret.paragraph).is_some()
@@ -3143,7 +3145,7 @@ impl Scriva {
                             };
                         }
                     });
-                } else {
+                } else if modifiers.command || !self.tab_to_cell(modifiers.shift) {
                     let caret = edit::type_text(
                         &mut self.document,
                         self.scope,
@@ -5616,6 +5618,75 @@ impl Scriva {
 
     /// Runs one edit against the table the caret is in, as one undo step, or
     /// says why nothing happened.
+    /// Tab in a table: to the next cell, or with Shift to the one before,
+    /// selecting what is in it so that typing replaces it — Word's way of
+    /// filling a table in from the keyboard. Tab in the last cell adds a row
+    /// and goes to its first cell. Says whether the caret was in a table at
+    /// all; the first cell's Shift+Tab goes nowhere, and is still answered.
+    ///
+    /// A cell that only continues a vertical merge is not a place to stop:
+    /// its text belongs to the cell above.
+    fn tab_to_cell(&mut self, back: bool) -> bool {
+        let Some((block, row, cell)) =
+            edit::table_cell_at(&self.document, self.scope, self.caret())
+        else {
+            return false;
+        };
+        let Some(Block::Table(table)) = self.document.blocks(self.scope).get(block) else {
+            return false;
+        };
+        let stops: Vec<(usize, usize)> = table
+            .rows
+            .iter()
+            .enumerate()
+            .flat_map(|(r, row)| {
+                row.cells
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, cell)| {
+                        cell.props.v_merge != Some(wp_model::table::VMerge::Continue)
+                    })
+                    .map(move |(c, _)| (r, c))
+            })
+            .collect();
+        let here = stops.iter().position(|&stop| stop == (row, cell));
+        let target = match (here, back) {
+            (Some(0), true) | (None, true) => return true,
+            (Some(at), true) => stops[at - 1],
+            (Some(at), false) if at + 1 < stops.len() => stops[at + 1],
+            _ => {
+                let rows = table.rows.len();
+                edit::append_row(&mut self.document, self.scope, &mut self.history, block);
+                self.changed();
+                (rows, 0)
+            }
+        };
+        let Some(range) =
+            edit::cell_paragraphs(&self.document, self.scope, block, target.0, target.1)
+        else {
+            return true;
+        };
+        let last = range.end.saturating_sub(1).max(range.start);
+        let end = self
+            .document
+            .paragraphs_in(self.scope)
+            .get(last)
+            .map(|paragraph| text::len(paragraph))
+            .unwrap_or(0);
+        self.selection = Selection {
+            anchor: Caret {
+                paragraph: range.start,
+                offset: 0,
+            },
+            head: Caret {
+                paragraph: last,
+                offset: end,
+            },
+        };
+        self.reveal = Some(self.caret());
+        true
+    }
+
     fn edit_table(&mut self, change: impl FnOnce(&mut wp_model::table::Table, usize, usize)) {
         let caret = self.caret();
         let Some((index, row, cell)) = edit::table_cell_at(&self.document, self.scope, caret)
@@ -7374,6 +7445,55 @@ mod tests {
             app.surface_id,
             "and the page holds the keyboard"
         );
+    }
+
+    /// The keystroke drive's own sequence: A1, Tab, B1, Tab, A2, Tab, B2, Tab,
+    /// A3. Every Tab was a tab character, and all of it landed in the first
+    /// cell — a table could only be filled in by clicking every cell.
+    #[test]
+    fn tab_fills_a_table_in_cell_by_cell_and_adds_a_row_at_the_end() {
+        let mut app = app_with(&["after"]);
+        app.insert_table(2, 2);
+        let cells = |app: &Scriva| -> Vec<Vec<String>> {
+            let Some(Block::Table(table)) = app
+                .document
+                .body
+                .iter()
+                .find(|block| matches!(block, Block::Table(_)))
+            else {
+                panic!("the table is there");
+            };
+            table
+                .rows
+                .iter()
+                .map(|row| row.cells.iter().map(|cell| cell.text()).collect())
+                .collect()
+        };
+        for (at, word) in ["A1", "B1", "A2", "B2", "A3"].into_iter().enumerate() {
+            if at > 0 {
+                app.key(egui::Key::Tab, egui::Modifiers::NONE);
+            }
+            app.type_text(word);
+        }
+        assert_eq!(
+            cells(&app),
+            [["A1", "B1"], ["A2", "B2"], ["A3", ""]],
+            "one cell each, and a third row from the Tab in the last cell"
+        );
+
+        // Shift+Tab goes back and selects the cell's text, so typing replaces it.
+        app.key(egui::Key::Tab, egui::Modifiers::SHIFT);
+        assert_eq!(app.selected_text().as_deref(), Some("B2"));
+        app.type_text("X");
+        // And Ctrl+Tab is how a tab gets into a cell.
+        app.key(egui::Key::Tab, egui::Modifiers::COMMAND);
+        assert_eq!(cells(&app)[1], ["A2", "X\t"]);
+
+        // The row the Tab added comes out with an undo of its own.
+        for _ in 0..4 {
+            app.run(Command::Undo);
+        }
+        assert_eq!(cells(&app), [["A1", "B1"], ["A2", "B2"]]);
     }
 
     fn app_with(texts: &[&str]) -> Scriva {

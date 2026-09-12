@@ -427,6 +427,77 @@ pub fn table_cell_at(
     None
 }
 
+/// The paragraphs of one cell, as a range of the flow's flattened walk — what
+/// Tab selects when it arrives in the cell.
+pub fn cell_paragraphs(
+    document: &Document,
+    scope: Scope,
+    block: usize,
+    row: usize,
+    cell: usize,
+) -> Option<std::ops::Range<usize>> {
+    use wp_model::doc::Block;
+    let Some(Block::Table(table)) = document.blocks(scope).get(block) else {
+        return None;
+    };
+    let mut first = paragraphs_before_block(document, scope, block);
+    for (at_row, cells) in table.rows.iter().map(|row| &row.cells).enumerate() {
+        for (at_cell, here) in cells.iter().enumerate() {
+            let held: usize = here.content.iter().map(paragraphs_in_block).sum();
+            if (at_row, at_cell) == (row, cell) {
+                return Some(first..first + held);
+            }
+            first += held;
+        }
+    }
+    None
+}
+
+/// Adds a row to the end of the table at `block`, shaped and formatted as its
+/// last row and empty, undoably — what Tab does in a table's last cell.
+///
+/// Each new cell takes its old one's properties and the formatting of the
+/// paragraph it ends with, so that text typed into the new row looks like the
+/// text above it. A vertical merge is not carried: a new row starts no merge
+/// and continues none.
+pub fn append_row(document: &mut Document, scope: Scope, history: &mut History, block: usize) {
+    use wp_model::doc::Block;
+    let Some(Block::Table(table)) = document.blocks(scope).get(block) else {
+        return;
+    };
+    let Some(last) = table.rows.last() else {
+        return;
+    };
+    let mut row = last.clone();
+    row.props.revision = None;
+    for cell in &mut row.cells {
+        let mark = cell.content.iter().rev().find_map(|block| match block {
+            Block::Paragraph(paragraph) => Some(paragraph.props.clone()),
+            _ => None,
+        });
+        cell.props.v_merge = None;
+        cell.content = vec![Block::Paragraph(Paragraph {
+            props: mark.unwrap_or_default(),
+            ..Paragraph::default()
+        })];
+    }
+    let before = document.blocks(scope)[block].clone();
+    history.push(
+        scope,
+        Change::Blocks {
+            index: block,
+            before: vec![before],
+            now: 1,
+        },
+    );
+    if let Some(Block::Table(table)) = document
+        .blocks_mut(scope)
+        .and_then(|blocks| blocks.get_mut(block))
+    {
+        table.rows.push(row);
+    }
+}
+
 /// Inserts a block above the paragraph the caret is in, undoably.
 ///
 /// Above rather than at the caret's offset: a table is not a character, and

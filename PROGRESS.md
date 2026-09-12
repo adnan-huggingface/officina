@@ -4664,3 +4664,27 @@ The test draws the whole window, menu bar included, presses Tab five times and
 then Enter, and asks that no menu opened and the paragraph was split; without
 the fix Enter opened a menu. Calx's grid may well have the same gap and is not
 changed here.
+
+## Tab goes from cell to cell (2026-09-12)
+
+Found by the keystroke drive: A1, Tab, B1, Tab, A2 … and all of it landed in
+the first cell as `A1→B1→A2→B2→A3`. Tab was a tab character wherever the caret
+was, so a table — the thing a person fills in from the keyboard — could only
+be filled in by clicking every cell.
+
+Tab now does what it does in Word's tables: the next cell, with its text
+selected so that typing replaces it; Shift+Tab the one before; Tab in the last
+cell adds a row, formatted as the last one and empty, and goes to it; Ctrl+Tab
+is how a tab gets into a cell. A cell that only continues a vertical merge is
+passed over, since its text belongs to the cell above. The start of a list item
+still takes Tab as a level deeper, in a cell as out of one.
+
+The added row is the first way Scriva has of adding a row at all, and it is one
+undo. It goes out through the `.docx` writer as a changed table does, whole.
+It does **not** yet go out through the `.odt` writer when the table came from
+an `.odt` file: that writer splices only the rows the file already has
+(FORMATS.md says so), so the row would be dropped on save — which the `.odt`
+table work that follows takes up.
+
+The test types the drive's sequence and reads the cells back; before the
+change they read `[["A1\tB1\tA2\tB2\tA3", ""], ["", ""]]`.
