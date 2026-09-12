@@ -8251,6 +8251,33 @@ mod tests {
         app
     }
 
+    /// The keystroke drive's own sequence: type, Ctrl+Enter, type. The break
+    /// went in and the caret stayed at its offset — the near side of it — so
+    /// the second text was typed onto the first page and the second was empty.
+    #[test]
+    fn what_is_typed_after_a_page_break_is_on_the_next_page() {
+        let mut app = laid_app("", 200.0);
+        app.type_text("First.");
+        app.run(Command::PageBreak);
+        app.type_text("On page two.");
+        let shaper = app.shaper.as_mut().expect("laid out");
+        app.view.refresh(
+            &app.document,
+            &wp_layout::FieldValues::new(),
+            app.stamp,
+            shaper,
+        );
+        let texts: Vec<String> = app.document.paragraphs().iter().map(|p| p.text()).collect();
+        assert_eq!(texts, ["First.", "On page two."]);
+        assert_eq!(app.view.pages().len(), 2, "one break, one new page");
+        assert_eq!(app.caret_page(), 1, "and the caret is on it");
+
+        app.run(Command::Undo);
+        app.run(Command::Undo);
+        let texts: Vec<String> = app.document.paragraphs().iter().map(|p| p.text()).collect();
+        assert_eq!(texts, ["First."], "the typing, then the break, undo away");
+    }
+
     #[test]
     fn home_and_end_move_on_the_visual_line_not_the_paragraph() {
         let text = "aa bb cc dd ee ff gg hh";

@@ -4559,3 +4559,27 @@ screen still carried the old loose names; the first edit laid them out again
 under the new ones. The test saves the corpus `.odt` with pictures as `.docx`
 and asks the window for every picture's bytes; it failed before the one-line
 fix and passes after.
+
+## What is typed after a page break is on the next page (2026-09-12)
+
+Found by the keystroke drive: type a line, Ctrl+Enter, type another, and the
+status bar said "Page 1 of 2" while **the second line sat on page one, run on
+to the first**, with page two empty. The saved file said why:
+`<w:t>First.On page two.</w:t><w:br w:type="page"/>`.
+
+A break is not a byte of text, so a caret — a paragraph and a byte offset —
+has no address for the far side of one. The break went in at the caret's
+offset, the caret stayed at that offset, and typing there joined the text
+before the break. Ctrl+Enter now does what Word writes for it: the break, then
+a paragraph mark, with the caret at the head of the new paragraph. The layout
+already let a paragraph mark ride the line its break ended rather than open a
+line on the new page, so nothing moves on the page but the caret. Break and
+mark are one change, and one undo takes them both.
+
+The test types the drive's sequence and asks which page the caret and the
+second line are on; before the fix it read back one paragraph,
+`"First.On page two."`.
+
+Not done: a page break typed in a table cell is still not laid out as one.
+Whether Word breaks the page there, splits the table, or ignores it could not
+be measured on the machine this was fixed on.

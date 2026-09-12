@@ -494,11 +494,16 @@ pub fn set_section(
     );
 }
 
-/// Inserts a break — a page break, mostly — at the caret, Ctrl+Enter's job.
+/// Inserts a break — a page break, mostly — at the caret, Ctrl+Enter's job,
+/// and ends the paragraph after it, which is what Word writes for the key.
 ///
-/// The caret's offset does not move for a page break: a break is not a byte
-/// of text, so the caret's world has no address for the far side of it. The
-/// line the caret is drawn on follows the text that now sits after the break.
+/// The paragraph mark is what gives the caret somewhere to go. A break is not
+/// a byte of text, so an offset cannot say which side of it the caret is on,
+/// and a caret left at the break's offset typed everything that followed onto
+/// the page the break was meant to leave. After the mark the caret is at the
+/// head of the next paragraph, on the new page, and the layout already lets
+/// the mark ride the line its break ended rather than open a line of its own.
+/// One undo takes both away.
 pub fn insert_break(
     document: &mut Document,
     scope: Scope,
@@ -510,21 +515,25 @@ pub fn insert_break(
     let Some(before) = paragraph_at(document, scope, caret.paragraph) else {
         return caret;
     };
+    let (mut head, tail) = text::split(&before, caret.offset);
+    text::insert_piece(&mut head, caret.offset, wp_model::doc::Piece::Break(kind));
     history.push(
         scope,
-        Change::Paragraph {
-            index: caret.paragraph,
-            before: Box::new(before),
+        Change::Range {
+            first: caret.paragraph,
+            before: vec![before],
+            now: 2,
         },
     );
-    let mut paragraphs = document.paragraphs_in_mut(scope);
-    let Some(target) = paragraphs.get_mut(caret.paragraph) else {
-        return caret;
-    };
-    let added = text::insert_piece(target, caret.offset, wp_model::doc::Piece::Break(kind));
+    replace_range(
+        document,
+        scope,
+        caret.paragraph..caret.paragraph + 1,
+        vec![head, tail],
+    );
     Caret {
-        paragraph: caret.paragraph,
-        offset: caret.offset + added,
+        paragraph: caret.paragraph + 1,
+        offset: 0,
     }
 }
 
@@ -1307,30 +1316,38 @@ mod tests {
             at(0, 5),
             Break::Page,
         );
-        // A break is not a byte of text: nothing the caret counts has changed.
+        // The break ends its paragraph, and the caret is at the head of the
+        // next one: the far side of the break, which an offset alone cannot say.
         assert_eq!(
             caret,
             Caret {
-                paragraph: 0,
-                offset: 5
+                paragraph: 1,
+                offset: 0
             }
         );
-        let has_break = |document: &Document| {
-            document.paragraphs()[0]
+        let pieces = |document: &Document, index: usize| -> Vec<Piece> {
+            document.paragraphs()[index]
                 .runs()
                 .iter()
-                .flat_map(|run| run.content.iter())
-                .any(|piece| matches!(piece, Piece::Break(Break::Page)))
+                .flat_map(|run| run.content.iter().cloned())
+                .collect()
         };
-        assert!(has_break(&document), "the break is in the paragraph");
-        assert_eq!(
-            document.paragraphs()[0].text(),
-            "hello world",
-            "and the text reads straight through it"
+        assert_eq!(document.paragraphs().len(), 2);
+        assert!(
+            matches!(pieces(&document, 0).last(), Some(Piece::Break(Break::Page))),
+            "the break is the last thing in the paragraph it ends"
         );
+        assert_eq!(document.paragraphs()[0].text(), "hello");
+        assert_eq!(document.paragraphs()[1].text(), " world");
 
         history.undo(&mut document).map(|(_, caret)| caret);
-        assert!(!has_break(&document), "undo takes the break out");
+        assert_eq!(document.paragraphs().len(), 1, "one undo takes it all back");
+        assert!(
+            !pieces(&document, 0)
+                .iter()
+                .any(|piece| matches!(piece, Piece::Break(_))),
+            "break and paragraph mark both"
+        );
         assert_eq!(document.paragraphs()[0].text(), "hello world");
     }
 
