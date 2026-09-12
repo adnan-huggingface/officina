@@ -11,6 +11,7 @@ pub mod catalogue;
 pub mod chart;
 pub mod dialog;
 pub mod fonts;
+pub mod keys;
 pub mod menu;
 pub mod paths;
 pub mod recent;

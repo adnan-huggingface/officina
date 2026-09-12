@@ -13,7 +13,7 @@ use ss_formula::cond;
 use ss_formula::edit::{self, Change, Geometry, Patch};
 use ss_model::style::{BorderStyle, Pattern, Underline, VAlign};
 use ss_model::{Axis, CellRange, CellRef, Color, Fill, HAlign, Shift, Workbook};
-use ui_kit::{dialog, egui, menu, paths, AppId, DocumentApp, Recent, CALX};
+use ui_kit::{dialog, egui, keys, menu, paths, AppId, DocumentApp, Recent, CALX};
 
 use calx::grid::{self, Action, BorderPreset, Editor, Format, GridView, Mode};
 use calx::icons::{self, Icon};
@@ -1237,18 +1237,21 @@ impl Calx {
     fn file_keys(&mut self, ctx: &egui::Context) {
         let (save, save_as, open, new, close) = ctx.input_mut(|i| {
             (
-                i.consume_key(egui::Modifiers::COMMAND, egui::Key::S),
-                i.consume_key(
+                keys::take(i, egui::Modifiers::COMMAND, egui::Key::S),
+                keys::take(
+                    i,
                     egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
                     egui::Key::S,
                 ),
-                i.consume_key(egui::Modifiers::COMMAND, egui::Key::O),
-                i.consume_key(egui::Modifiers::COMMAND, egui::Key::N),
-                i.consume_key(egui::Modifiers::COMMAND, egui::Key::W),
+                keys::take(i, egui::Modifiers::COMMAND, egui::Key::O),
+                keys::take(i, egui::Modifiers::COMMAND, egui::Key::N),
+                keys::take(i, egui::Modifiers::COMMAND, egui::Key::W),
             )
         });
-        // `consume_key` matches modifiers exactly, so Ctrl+Shift+S is not also a
-        // Ctrl+S; the `else` is belt and braces against that changing.
+        // `keys::take` matches the modifiers exactly, so Ctrl+Shift+S is not also
+        // a Ctrl+S. egui's `consume_key`, which this used to say did the same,
+        // ignores the Shift: Ctrl+S was asked first and took the press, and
+        // Ctrl+Shift+S saved in place. The `else` is belt and braces.
         if save_as {
             self.save_as();
         } else if save {
@@ -1273,15 +1276,16 @@ impl Calx {
         // throwing away what has been typed.
         let (find, replace) = ctx.input_mut(|i| {
             (
-                i.consume_key(egui::Modifiers::COMMAND, egui::Key::F),
-                i.consume_key(egui::Modifiers::COMMAND, egui::Key::H),
+                keys::take(i, egui::Modifiers::COMMAND, egui::Key::F),
+                keys::take(i, egui::Modifiers::COMMAND, egui::Key::H),
             )
         });
         if find || replace {
             self.open_find(replace);
         }
         if ctx.input_mut(|i| {
-            i.consume_key(
+            keys::take(
+                i,
                 egui::Modifiers::COMMAND | egui::Modifiers::ALT,
                 egui::Key::V,
             )
@@ -1290,25 +1294,26 @@ impl Calx {
                 how: Default::default(),
             });
         }
-        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Num1)) {
+        if ctx.input_mut(|i| keys::take(i, egui::Modifiers::COMMAND, egui::Key::Num1)) {
             self.open_format_cells();
         }
         // Excel's Ctrl+F3, and it is worth having: a workbook full of names
         // nobody can see is a workbook full of formulas nobody can read.
-        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::F3)) {
+        if ctx.input_mut(|i| keys::take(i, egui::Modifiers::COMMAND, egui::Key::F3)) {
             self.open_names();
         }
         // Go To, under both of Excel's keys.
         if ctx.input_mut(|i| {
-            i.consume_key(egui::Modifiers::COMMAND, egui::Key::G)
-                | i.consume_key(egui::Modifiers::NONE, egui::Key::F5)
+            keys::take(i, egui::Modifiers::COMMAND, egui::Key::G)
+                | keys::take(i, egui::Modifiers::NONE, egui::Key::F5)
         }) {
             self.dialog = Some(Dialog::GoTo {
                 text: String::new(),
             });
         }
         if ctx.input_mut(|i| {
-            i.consume_key(
+            keys::take(
+                i,
                 egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
                 egui::Key::L,
             )
@@ -1316,14 +1321,14 @@ impl Calx {
             self.toggle_filter();
         }
         // Alt+= writes the SUM the toolbar button writes.
-        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::ALT, egui::Key::Equals)) {
+        if ctx.input_mut(|i| keys::take(i, egui::Modifiers::ALT, egui::Key::Equals)) {
             self.autosum();
         }
         // Alt+F1 charts the selection where it stands. Excel's F11 puts the
         // same chart on a sheet of its own, which needs a chart sheet — a
         // sheet kind this workbook model keeps a slot for but cannot draw —
         // so only the embedded half of that pair is here.
-        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::ALT, egui::Key::F1)) {
+        if ctx.input_mut(|i| keys::take(i, egui::Modifiers::ALT, egui::Key::F1)) {
             self.insert_chart(
                 ss_model::ChartKind::Bar,
                 ss_model::chart::Grouping::Clustered,
@@ -1333,7 +1338,7 @@ impl Calx {
         // F9 recalculates. Everything here recalculates after every edit, so
         // the key is for the volatile functions — NOW, TODAY, RAND — whose
         // answers go stale on their own with nothing having been typed.
-        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::F9)) {
+        if ctx.input_mut(|i| keys::take(i, egui::Modifiers::NONE, egui::Key::F9)) {
             self.recalculate();
             if !self.status.starts_with("circular") {
                 self.status = "Recalculated".to_string();

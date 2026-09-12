@@ -4520,3 +4520,25 @@ rather than slices and has been stable since 1.88, well inside the workspace's
 1.95. Clippy applied its own suggestion everywhere but the compound file
 reader, where one site walks the pieces mutably and skips some and was changed
 by hand. Nothing else about the code changes.
+
+## A shifted shortcut is its own shortcut (2026-09-12)
+
+Found by a keystroke drive of the deployed Scriva on Linux (the bug notes live
+outside the repository, with the document that found them): **Ctrl+Shift+S saved
+in place without asking where**, and Ctrl+Shift+M, Ctrl+Shift+E, Ctrl+Shift+Z,
+Ctrl+Alt+M and Ctrl+Shift+= each ran their unshifted sibling — indent for
+outdent, centre for Track Changes, Undo for Redo. On a `.doc` opened as a copy
+the first one wrote a `.docx` beside the original, from the very key a person
+presses because they want to choose where the copy goes.
+
+egui's `consume_key` ignores a Shift or an Alt the shortcut does not name, and
+its documentation says to ask for the most specific shortcut first. Both
+applications' lists had drifted out of that order; Calx's Ctrl+S was asked
+before its Ctrl+Shift+S under a comment saying the match was exact. Keeping two
+lists in order by hand is a rule that has already failed once, so the order no
+longer matters: `ui_kit::keys::take` matches the modifiers exactly, and both
+applications' shortcuts go through it.
+
+The test that presses each shifted key was written before the fix and seen to
+fail for the reason above; it now also presses the unshifted keys, so the fix
+cannot pass by breaking them.

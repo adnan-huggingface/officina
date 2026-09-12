@@ -2792,8 +2792,10 @@ impl Scriva {
         let ctrl = egui::Modifiers::COMMAND;
         let ctrl_shift = egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT);
 
+        // Exactly these modifiers, so that the order of the list below does not
+        // decide which command a shifted key runs.
         let taken = |ui: &egui::Ui, modifiers: egui::Modifiers, key: Key| -> bool {
-            ui.input_mut(|i| i.consume_key(modifiers, key))
+            ui.input_mut(|i| ui_kit::keys::take(i, modifiers, key))
         };
 
         for (modifiers, key, command) in [
@@ -7013,10 +7015,11 @@ mod tests {
         assert!(app.message.is_some(), "a dangling link is reported");
     }
 
-    /// egui's `consume_key` ignores an extra Shift or Alt, and says so: the
-    /// more specific shortcut has to be asked for first. Every plain entry in
-    /// `keys` is asked before its shifted sibling, so Ctrl+Shift+S saves
-    /// without a dialog and Ctrl+Shift+M indents further.
+    /// One key press, through `keys`, in a frame of its own.
+    ///
+    /// egui's `consume_key` ignores an extra Shift or Alt, and every plain entry
+    /// in `keys` was asked before its shifted sibling, so Ctrl+Shift+S saved
+    /// without a dialog and Ctrl+Shift+M indented further.
     fn pressed(app: &mut Scriva, key: egui::Key, modifiers: egui::Modifiers) -> Option<Command> {
         let ctx = egui::Context::default();
         ui_kit::fonts::register(&ctx, &[]);
@@ -7066,6 +7069,22 @@ mod tests {
         assert_eq!(
             pressed(&mut app, egui::Key::Equals, ctrl_shift),
             Some(Command::Superscript)
+        );
+        // And the unshifted ones still answer for themselves.
+        let ctrl = egui::Modifiers::COMMAND;
+        assert_eq!(pressed(&mut app, egui::Key::S, ctrl), Some(Command::Save));
+        assert_eq!(
+            pressed(&mut app, egui::Key::M, ctrl),
+            Some(Command::Indent(1))
+        );
+        assert_eq!(pressed(&mut app, egui::Key::Z, ctrl), Some(Command::Undo));
+        assert_eq!(
+            pressed(&mut app, egui::Key::E, ctrl),
+            Some(Command::Align(Justify::Center))
+        );
+        assert_eq!(
+            pressed(&mut app, egui::Key::Equals, ctrl),
+            Some(Command::Subscript)
         );
     }
 
