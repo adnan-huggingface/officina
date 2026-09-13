@@ -4037,6 +4037,7 @@ version = "0.1.0"
 dependencies = [
  "cfb-reader",
  "flate2",
+ "ooxml",
  "wp-docx",
  "wp-model",
 ]

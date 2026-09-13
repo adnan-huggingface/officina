@@ -97,14 +97,34 @@ fn part_out(kind: Kind, notes: &[Note], styles: &StyleTable) -> Vec<u8> {
         r#"<w:{} xmlns:w="{WML}" xmlns:r="{REL_BASE}">"#,
         kind.plural
     ));
+    // A separator the model holds without a word in it is Word's own rule: a
+    // `.doc` reader brings one across as an empty paragraph, because the
+    // character its story held stood for the rule rather than being text.
+    // Written as the element Word draws the rule from, and under the id Word
+    // gives it, so that the rule is there when Word opens the file.
+    let wordless = |note: &Note| {
+        note.kind != NoteKind::Normal
+            && note.content.iter().all(|block| match block {
+                Block::Paragraph(paragraph) => paragraph.text().trim().is_empty(),
+                _ => false,
+            })
+    };
     let has = |wanted: NoteKind| notes.iter().any(|note| note.kind == wanted);
-    if !has(NoteKind::Separator) {
+    if !has(NoteKind::Separator)
+        || notes
+            .iter()
+            .any(|n| n.kind == NoteKind::Separator && wordless(n))
+    {
         separator(&mut out, kind, -1, "separator");
     }
-    if !has(NoteKind::ContinuationSeparator) {
+    if !has(NoteKind::ContinuationSeparator)
+        || notes
+            .iter()
+            .any(|n| n.kind == NoteKind::ContinuationSeparator && wordless(n))
+    {
         separator(&mut out, kind, 0, "continuationSeparator");
     }
-    for note in notes {
+    for note in notes.iter().filter(|note| !wordless(note)) {
         let what = match note.kind {
             NoteKind::Normal => "",
             NoteKind::Separator => r#" w:type="separator""#,

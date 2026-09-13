@@ -367,8 +367,12 @@ impl Reader<'_> {
         let acp = plcfhdd(&self.doc.fib, &self.doc.table);
         if let (Some(&start), Some(&end)) = (acp.first(), acp.get(1)) {
             if end > start {
+                // Minus one, which is the id Word gives its own separator; a
+                // zero here collided with the continuation separator the
+                // writer adds, and Word refused the file for the two notes of
+                // one id.
                 notes.push(wp_model::Note {
-                    id: 0,
+                    id: -1,
                     kind: wp_model::NoteKind::Separator,
                     content: self.blocks(header_doc_from + start, header_doc_from + end - 1),
                 });
@@ -772,7 +776,13 @@ fn pieces(
                 out.extend(drawing(character, cp));
             }
             mark::CELL => flush(&mut buffer, &mut out, code.last().copied().unwrap_or(false)),
-            '\u{0}' => {}
+            // The separator stories hold one character each, U+0003 for the
+            // rule above the notes and U+0004 for the rule above a
+            // continuation, standing for the rule rather than being text: a
+            // reader that kept them wrote a control character into a `<w:t>`,
+            // which is not XML, and Word called the file corrupt. The writer
+            // draws the rule from the note's kind, and needs no character.
+            '\u{0}' | '\u{3}' | '\u{4}' => {}
             other => buffer.push(other),
         }
     }

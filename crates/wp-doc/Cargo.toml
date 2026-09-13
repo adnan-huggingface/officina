@@ -17,6 +17,7 @@ flate2 = "1"
 wp-model.workspace = true
 
 [dev-dependencies]
+ooxml.workspace = true
 # The escape hatch a `.doc` is read for: proving it can be written out again as
 # a modern document is part of proving the reader is worth anything.
 wp-docx.workspace = true

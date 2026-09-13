@@ -104,6 +104,11 @@ impl<'a> Splicer<'a> {
 ///
 /// `>` is escaped as well as `<` and `&`. It does not have to be, and Word does
 /// it, and the point of this writer is to look like Word.
+///
+/// A control character is dropped rather than written: XML 1.0 has no way to
+/// carry one, escaped or not, and Word reports a file holding one as corrupt.
+/// The model gets them from a legacy `.doc`, whose stories use them as marks
+/// — the tab, the line feed and the carriage return are the three it allows.
 pub(crate) fn escape_text(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for c in text.chars() {
@@ -111,6 +116,8 @@ pub(crate) fn escape_text(text: &str) -> String {
             '&' => out.push_str("&amp;"),
             '<' => out.push_str("&lt;"),
             '>' => out.push_str("&gt;"),
+            '\t' | '\n' | '\r' => out.push(c),
+            control if control.is_control() && (control as u32) < 0x20 => {}
             other => out.push(other),
         }
     }
@@ -195,6 +202,11 @@ mod tests {
     #[test]
     fn text_is_escaped_the_way_word_escapes_it() {
         assert_eq!(escape_text("R&D < 5 > 3"), "R&amp;D &lt; 5 &gt; 3");
+        assert_eq!(
+            escape_text("a\u{3}b\tc\u{1f}"),
+            "ab\tc",
+            "a control character has no place in XML; a tab does"
+        );
         assert_eq!(escape_attr(r#"a "b" & c"#), "a &quot;b&quot; &amp; c");
         assert_eq!(escape_attr("a\tb"), "a&#9;b");
     }

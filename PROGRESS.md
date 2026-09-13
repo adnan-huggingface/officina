@@ -4935,3 +4935,26 @@ writers now open the target for writing before a byte is written, and stop
 there if they cannot; the temporary is never made. The read-only test passes
 on Linux, and `ooxml` has one of its own that the file is left as it was and
 nothing is left beside it.
+
+## A legacy document's footnote separator no longer corrupts the file it is saved as (2026-09-13)
+
+With Word reachable again, every file the recent fixes write was opened in it:
+the six `.doc` copies saved as `.docx`, three `.docx` saved as `.odt`, and a new
+document both ways. Word refused one — `header-footer-footnote.doc` as `.docx`,
+"the file appears to be corrupted" — and LibreOffice and Word opened the rest.
+The `.doc` keeps the rule above the footnotes as a story holding one control
+character, U+0003, which the reader had kept as text; written into a `<w:t>`
+it made a file that is not XML. And the separator was given the id zero, which
+is the continuation separator's. The reader drops the characters that stand for
+the two rules and gives the separator Word's own id; a separator the model
+holds without a word in it is written as the element Word draws the rule from;
+and no control character reaches a text node from anywhere, since XML has no
+way to carry one. Word opens the file.
+
+Measured on the way: a `<w:br w:type="page"/>` inside a table cell is nothing
+to Word, mid-paragraph, alone in a paragraph, or at the end of one — the page
+does not break, and mid-paragraph the two halves run together — and so is
+`pageBreakBefore` on a cell's paragraph. Word's own Ctrl+Enter in a cell splits
+the table before the caret's row and puts the break between the halves. The
+layout already ignores a break in a cell, which is right; the editor's half is
+written down in the story's notes, not done.

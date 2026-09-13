@@ -1933,3 +1933,8 @@ catalogue that listed `/usr/share/fonts` saw nothing there but folders — the
 faces are in `truetype/crosextra`, `truetype/liberation`, `opentype/noto` — and
 so answered that a machine with Carlito had no Carlito. Windows and macOS keep
 their fonts flat; the walk into subfolders costs them nothing.
+
+**XML has no way to carry a control character.** A `.doc` story uses them as
+marks — U+0003 stands for the rule above the footnotes — and a reader that
+kept one as text wrote it into a `<w:t>`, escaped or not, and Word called the
+file corrupt. Tab, line feed and carriage return are the three XML allows.

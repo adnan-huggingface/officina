@@ -191,6 +191,55 @@ fn a_legacy_document_can_be_saved_as_a_modern_one() {
 }
 
 #[test]
+fn the_footnote_separator_of_a_legacy_document_is_written_as_words_own() {
+    // The `.doc` keeps the rule above the notes as a story holding one control
+    // character, U+0003. Read as text and written into a `<w:t>`, it made a
+    // file that is not XML, and Word called it corrupt; and the separator's
+    // id of zero collided with the continuation separator's.
+    let mut document = open("header-footer-footnote.doc");
+    let separator = document
+        .footnotes
+        .iter()
+        .find(|note| note.kind == wp_model::NoteKind::Separator)
+        .expect("the separator story is read");
+    assert_eq!(separator.id, -1, "the id Word gives its own");
+    let words: String = separator
+        .content
+        .iter()
+        .filter_map(|block| match block {
+            wp_model::doc::Block::Paragraph(paragraph) => Some(paragraph.text()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        words.chars().all(|c| !c.is_control()),
+        "the character that stood for the rule is not text: {words:?}"
+    );
+
+    let mut package = wp_docx::write::blank::package_for(&document).expect("a package");
+    let path = std::env::temp_dir().join("wp-doc-footnote-separator.docx");
+    wp_docx::write::save(&mut document, &mut package, &path).expect("it writes");
+    let written = ooxml::Package::open(&path).expect("and is a package");
+    let _ = std::fs::remove_file(&path);
+    let name = ooxml::PartName::new("/word/footnotes.xml").expect("a part name");
+    let footnotes = written.part(&name).expect("the footnotes part is there");
+    let xml = String::from_utf8_lossy(footnotes.data());
+    assert!(
+        !xml.chars()
+            .any(|c| c.is_control() && !matches!(c, '\n' | '\r' | '\t')),
+        "no control character reaches the file"
+    );
+    assert!(
+        xml.contains(r#"w:type="separator" w:id="-1""#) && xml.contains("<w:separator/>"),
+        "Word's own rule, under Word's own id: {xml}"
+    );
+    assert!(
+        xml.contains(r#"w:type="continuationSeparator" w:id="0""#),
+        "and the continuation separator beside it"
+    );
+}
+
+#[test]
 fn the_page_setup_comes_from_the_file_rather_than_from_a_default() {
     // A document written on A4 that opens as Letter reflows on its first line
     // and paginates differently for the whole of its length.
