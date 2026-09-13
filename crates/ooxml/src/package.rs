@@ -279,6 +279,16 @@ impl Package {
         let mut buf = Vec::new();
         self.write(Cursor::new(&mut buf))?;
 
+        // A target that is there but cannot be opened for writing is not one to
+        // replace. Windows refuses the rename itself; Unix asks the directory
+        // and not the file, and would swap out a file the user made read-only
+        // as if that choice had never been made. Asked before a byte is
+        // written, so that a refusal leaves nothing behind.
+        if path.exists() {
+            if let Err(e) = std::fs::OpenOptions::new().write(true).open(path) {
+                return Err(e.into());
+            }
+        }
         let temporary = temporary_beside(path);
         if let Err(e) = std::fs::write(&temporary, &buf) {
             let _ = std::fs::remove_file(&temporary);
@@ -525,5 +535,42 @@ mod tests {
     fn non_zip_input_is_rejected_cleanly() {
         let err = Package::read(Cursor::new(b"this is not a zip file".to_vec()));
         assert!(matches!(err, Err(Error::NotAPackage(_))));
+    }
+
+    /// A file the user made read-only stays as the user left it. On Unix a
+    /// rename asks the directory's permission and not the file's, so the
+    /// write-then-rename swapped such a file out and reported success; the
+    /// refusal has to be asked for before a byte is written.
+    #[test]
+    fn a_read_only_target_is_refused_and_left_as_it_was() {
+        let dir = std::env::temp_dir().join("ooxml-read-only-target");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        let path = dir.join("locked.docx");
+        let package = Package::read(Cursor::new(sample_package())).expect("the sample opens");
+        package.save(&path).expect("the first save writes it");
+        let before = std::fs::read(&path).expect("and it is there");
+
+        let original = std::fs::metadata(&path).expect("metadata").permissions();
+        let mut readonly = original.clone();
+        readonly.set_readonly(true);
+        std::fs::set_permissions(&path, readonly).expect("made read-only");
+
+        let refused = package.save(&path);
+        assert!(refused.is_err(), "a read-only file is not replaced");
+        assert_eq!(
+            std::fs::read(&path).expect("still there"),
+            before,
+            "and what is on disk is what was there"
+        );
+        let left: Vec<_> = std::fs::read_dir(&dir)
+            .expect("the directory")
+            .flatten()
+            .map(|entry| entry.file_name())
+            .collect();
+        assert_eq!(left.len(), 1, "no temporary is left beside it: {left:?}");
+
+        let _ = std::fs::set_permissions(&path, original);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

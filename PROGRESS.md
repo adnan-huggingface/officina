@@ -4923,3 +4923,15 @@ moves. Not done: Calibri Light, Cambria, Consolas and Aptos have no twin and
 are said so; a table of a missing face's own widths, which would give exact
 breaks without the face, was decided against as legally grey and against the
 spirit of bundling nothing.
+
+## A file the user made read-only is not replaced on Linux either (2026-09-13)
+
+The one test `main` failed on this machine: a save over a read-only file
+succeeded. The package writers write beside the target and rename over it,
+and on Unix a rename asks the directory's permission, not the file's, so a
+file the user had deliberately locked was swapped out and the save reported
+success — where Windows refuses the rename and the message says so. Both
+writers now open the target for writing before a byte is written, and stop
+there if they cannot; the temporary is never made. The read-only test passes
+on Linux, and `ooxml` has one of its own that the file is left as it was and
+nothing is left beside it.

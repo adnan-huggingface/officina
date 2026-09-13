@@ -278,6 +278,16 @@ impl Container {
         let mut buf = Vec::new();
         self.write(Cursor::new(&mut buf))?;
 
+        // A target that is there but cannot be opened for writing is not one to
+        // replace. Windows refuses the rename itself; Unix asks the directory
+        // and not the file, and would swap out a file the user made read-only
+        // as if that choice had never been made. Asked before a byte is
+        // written, so that a refusal leaves nothing behind.
+        if path.exists() {
+            if let Err(e) = std::fs::OpenOptions::new().write(true).open(path) {
+                return Err(e.into());
+            }
+        }
         let temporary = temporary_beside(path);
         if let Err(e) = std::fs::write(&temporary, &buf) {
             let _ = std::fs::remove_file(&temporary);
