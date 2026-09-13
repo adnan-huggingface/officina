@@ -330,6 +330,11 @@ pub struct Scriva {
     /// Set for the one frame between handing egui new fonts and it having
     /// built them, during which nothing measured is to be believed.
     fonts_settling: bool,
+    /// The faces this document names that the machine draws in something
+    /// else, for the status bar to say so and the listing to say what.
+    substitutions: Vec<ui_kit::fonts::Substitution>,
+    /// Whether the listing of substituted faces is open.
+    fonts_listing: bool,
     watermark_draft: Option<WatermarkDraft>,
     /// The paragraph dialog: what it opened with, and what has been typed
     /// since, so that only the fields the user touched are applied.
@@ -483,6 +488,8 @@ impl Scriva {
             cell_margin_draft: None,
             pending_fonts: None,
             fonts_settling: false,
+            substitutions: Vec::new(),
+            fonts_listing: false,
             watermark_draft: None,
             paragraph_draft: None,
             size_draft: None,
@@ -4092,6 +4099,28 @@ impl DocumentApp for Scriva {
                 ui.label("Selection");
                 ui.separator();
             }
+            // Word keeps quiet about a face it had to stand in for, and a user
+            // whose every line breaks somewhere else is left to wonder why.
+            // One phrase here, and the whole story one click away.
+            if !self.substitutions.is_empty() {
+                let label = match self.substitutions.len() {
+                    1 => "1 font substituted".to_owned(),
+                    n => format!("{n} fonts substituted"),
+                };
+                let hover: Vec<String> = self
+                    .substitutions
+                    .iter()
+                    .map(|s| format!("{} \u{2192} {}", s.asked, s.shown))
+                    .collect();
+                if ui
+                    .add(egui::Button::new(label).frame(false))
+                    .on_hover_text(hover.join("\n"))
+                    .clicked()
+                {
+                    self.fonts_listing = true;
+                }
+                ui.separator();
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 // Word's corner, right to left: the percentage (click it to
                 // type an exact one), zoom in, the slider with its 100%
@@ -4188,6 +4217,10 @@ impl DocumentApp for Scriva {
             self.zoom_dialog(ctx);
             return;
         }
+        if self.fonts_listing {
+            self.fonts_dialog(ctx);
+            return;
+        }
         if self.size_draft.is_some() {
             self.size_dialog(ctx);
             return;
@@ -4275,7 +4308,7 @@ impl DocumentApp for Scriva {
         // shaper is thrown away and the page is laid out again in the face the
         // document actually asked for.
         if let Some((faces, named)) = self.pending_fonts.take() {
-            ui_kit::fonts::embed_document(ui.ctx(), &faces, &named);
+            self.substitutions = ui_kit::fonts::embed_document(ui.ctx(), &faces, &named);
             self.fonts_settling = true;
             self.shaper = None;
             self.view.invalidate();
@@ -6094,6 +6127,68 @@ impl Scriva {
     }
 
     /// Word's Zoom box: presets, the two fits, and a percent you can type.
+    /// The faces the document asks for that this machine draws in others,
+    /// and what that means for the page. Word's Font Substitution box, with
+    /// the one thing it leaves out: whether the lines still break where Word
+    /// broke them.
+    fn fonts_dialog(&mut self, ctx: &egui::Context) {
+        use ui_kit::fonts::Shown;
+        let mut close = false;
+        egui::Modal::new(egui::Id::new("scriva-fonts"))
+            .frame(dialog::frame(ctx))
+            .show(ctx, |ui| {
+                dialog::form_style(ui.style_mut());
+                dialog::body(ui, |ui| {
+                    ui.set_width(520.0);
+                    ui.label(
+                        egui::RichText::new("Fonts this document asks for")
+                            .font(dialog::heading_font(16.0)),
+                    );
+                    ui.add_space(8.0);
+                    dialog::paragraph(
+                        ui,
+                        "These faces are not installed on this computer. Each is shown in the face beside it.",
+                    );
+                    ui.add_space(10.0);
+                    egui::Grid::new("scriva-fonts-grid")
+                        .num_columns(3)
+                        .spacing([18.0, 6.0])
+                        .show(ui, |ui| {
+                            for shown in &self.substitutions {
+                                ui.label(egui::RichText::new(&shown.asked).strong());
+                                ui.label(&shown.shown);
+                                ui.label(match shown.how {
+                                    Shown::Twin => "same widths: lines and pages break as in Word",
+                                    Shown::Embedded => "the copy carried in the document",
+                                    Shown::StandIn => "the face Word itself stands in",
+                                    Shown::Generic => "different widths: lines may break elsewhere",
+                                });
+                                ui.end_row();
+                            }
+                        });
+                    ui.add_space(12.0);
+                    dialog::paragraph(
+                        ui,
+                        "Installing a face the document names makes it look as it does in Word.\n\
+                         A face with the same widths already lays the document out as Word does.",
+                    );
+                    // Nothing to decide, so one button, answering Enter and
+                    // Escape alike.
+                    if dialog::row(ui, |ui| dialog::button(ui, "OK", true).clicked()) {
+                        close = true;
+                    }
+                    let keyed = ui.input_mut(|i| {
+                        i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)
+                            || i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)
+                    });
+                    close |= keyed;
+                });
+            });
+        if close {
+            self.fonts_listing = false;
+        }
+    }
+
     fn zoom_dialog(&mut self, ctx: &egui::Context) {
         let Some(mut draft) = self.zoom_draft.clone() else {
             return;

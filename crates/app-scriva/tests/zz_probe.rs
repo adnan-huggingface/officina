@@ -59,7 +59,7 @@ fn probe() {
             embedded.len(),
             named.len()
         );
-        ui_kit::fonts::embed_document(&ctx, &embedded, &named);
+        let _ = ui_kit::fonts::embed_document(&ctx, &embedded, &named);
         let mut out = ctx.run_ui(egui::RawInput::default(), |_| {});
         out.textures_delta.clear();
         shaper = scriva::shaper::Egui::new(&ctx);

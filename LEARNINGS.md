@@ -1908,3 +1908,28 @@ family, which folds every weight and width into one: "Calibri" with a style of
 "Light". A catalogue keyed on the second cannot find what documents name, and
 worse, files a light or display face under the plain family, where it competes
 with the real regular face on nothing firmer than directory order.
+
+**A metric twin is a measurement, not a reputation.** Carlito is said to be
+metric-compatible with Calibri and Caladea with Cambria, and the fontconfig
+table every distribution ships says both. Laid out by Word itself — the same
+five hundred words on facing pages, one face each — Carlito put every word of
+Calibri's where Calibri had it, and so did Liberation Sans for Arial, Liberation
+Serif for Times New Roman and Liberation Mono for Courier New. Caladea did not:
+its digits are not Cambria's digits and its lines are not Cambria's height, and
+the document was a line longer. A face that fails the measurement is not a twin,
+whatever it says of itself, and only the measured pairs are in the table.
+
+**A document without a compatibility setting is a Word 2007 document, and Word
+lays it out differently.** The first probes of the twins had no `settings.xml`;
+Word read them in compatibility mode 12 and Carlito's lines ran two points
+longer than Calibri's, with Arial and Liberation Sans drifting a tenth of a
+point on a word here and there. With `compatibilityMode` 15 the same pages
+agreed to the hundredth of a point. Whatever metrics mode 12 lays text with,
+they are not the font's own advances that mode 15 uses, so a probe meant to
+measure Word as it lays out documents written by Word has to say it is one.
+
+**Fonts on Linux live in folders under the fonts directory, not in it.** A
+catalogue that listed `/usr/share/fonts` saw nothing there but folders — the
+faces are in `truetype/crosextra`, `truetype/liberation`, `opentype/noto` — and
+so answered that a machine with Carlito had no Carlito. Windows and macOS keep
+their fonts flat; the walk into subfolders costs them nothing.

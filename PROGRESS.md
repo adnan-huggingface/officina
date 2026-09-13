@@ -4885,3 +4885,41 @@ Proof: `minimal.docx` renewed through Word on the other machine and
 `second-producer.odt` through its LibreOffice both came back identical to the
 committed readings. Tests: the filter, and `without_office.rs` now unsets the
 service address so that it measures a machine with no route to Word at all.
+
+## A document in a face the machine lacks is laid in its metric twin, and says so (2026-09-13)
+
+Most documents a Scriva user opens were written in Word and name Microsoft's
+faces. A machine without Office — any Linux machine — laid them in the generic
+face of their shape and said nothing, and nearly every line broke somewhere
+else: 21 of the 27 corpus documents worse than `LAYOUT.md` with the Office
+faces taken away, `headers-footers.docx` by 529 words.
+
+**Metric twins.** Four pairs were measured in Word itself, through the service
+on the other machine: the same three paragraphs in both faces on facing pages,
+five hundred words, Word 2013 layout. Calibri and Carlito, Arial and Liberation
+Sans, Times New Roman and Liberation Serif, Courier New and Liberation Mono each
+put every word on the same line at the same place. Caladea failed the same
+test against Cambria and is not in the table; nothing has Aptos's widths or
+Consolas's pitch. A missing face is now registered from its installed twin
+under its own name — at start-up for the named table, so a spreadsheet's column
+widths count in the right digits too, and per document for anything else — so
+layout, drawing, printing and the PDF all use it, and a document laid in a twin
+breaks its lines and pages where Word breaks them. The catalogue now walks the
+folders under a fonts directory, which is where a distribution keeps them;
+until it did, the twin was on the machine and unfindable.
+
+**The notice.** `embed_document` returns what the document asked for and did
+not get: each face with what draws it and why — a twin, the copy carried in
+the package, the face Word itself stands in, or the generic shape. Scriva's
+status bar says "3 fonts substituted", the phrase hovers into the list, and a
+click opens it with the honest word on each: same widths and the same breaks,
+or different widths and lines that may break elsewhere. Word's Font
+Substitution box, with the one thing it leaves out.
+
+Measured with the Office faces taken away again: 5 of 27 worse, and those are
+the three Aptos documents, one document with a bullet's 0.7pt, and the `.odt`
+whose count wanders by two from run to run. With the faces present nothing
+moves. Not done: Calibri Light, Cambria, Consolas and Aptos have no twin and
+are said so; a table of a missing face's own widths, which would give exact
+breaks without the face, was decided against as legally grey and against the
+spirit of bundling nothing.

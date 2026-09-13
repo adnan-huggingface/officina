@@ -13,7 +13,7 @@
 //! built-in face, so a machine with no fonts at all still starts.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock, RwLock};
 
 use eframe::egui;
@@ -283,18 +283,139 @@ const NAMED: &[(&str, [&str; 4])] = &[
 /// and a 13.96pt line at 10.5pt, which is Segoe UI's 1.33em — and DejaVu Sans
 /// at Verdana's, the closest advance fingerprint of all 270 installed
 /// families by a factor of arbitrariness over the runner-up, which was
-/// Verdana's own metric clone. The Liberation faces are metric clones of the
-/// classic trio by design, and their `w:altName` says the same.
+/// Verdana's own metric clone. The Liberation faces were listed here too; they
+/// are metric twins of the classic trio, which is a stronger fact than a
+/// stand-in and is kept in [`TWINS`].
 ///
-/// Applied only when the exact face is not installed; keys and values are the
-/// lowercase the tables above use.
-const SUBSTITUTES: &[(&str, &str)] = &[
-    ("dejavu sans", "Verdana"),
-    ("open sans", "Segoe UI"),
-    ("liberation sans", "Arial"),
-    ("liberation serif", "Times New Roman"),
-    ("liberation mono", "Courier New"),
+/// Applied only when the exact face is not installed and no twin is; keys and
+/// values are the lowercase the tables above use.
+const SUBSTITUTES: &[(&str, &str)] = &[("dejavu sans", "Verdana"), ("open sans", "Segoe UI")];
+
+/// Faces that set type to the same widths and the same line height.
+///
+/// Measured, not asserted. Each pair here was laid out by Word 16 — the same
+/// three paragraphs of prose and figures in both faces, on facing pages of one
+/// document in Word 2013 layout — and every word of five hundred landed on the
+/// same line, at the same x, on the same baseline (2026-09-13). What is *not*
+/// here failed the same test: Caladea broke its lines differently from
+/// Cambria's and its digits are not Cambria's digits, and no open face has
+/// Consolas's pitch or Aptos's widths. Word 2007 layout is another matter:
+/// laid in that mode, Carlito drifted two points a line from Calibri, so the
+/// probe has to say which layout it is asking for.
+///
+/// Either face may be the one the document names and the other the one the
+/// machine has: a Calibri document on a machine with Carlito and a Carlito
+/// document on a machine with Calibri are one case. A document laid in a twin
+/// breaks its lines and its pages where Word did; it merely looks a little
+/// different, which is what the notice in the status bar is for.
+const TWINS: &[&[&str]] = &[
+    &["Calibri", "Carlito"],
+    &["Arial", "Liberation Sans"],
+    &["Times New Roman", "Liberation Serif"],
+    &["Courier New", "Liberation Mono"],
 ];
+
+/// The four styles, in the order every table here keeps them.
+const STYLES: [(bool, bool); 4] = [(false, false), (true, false), (false, true), (true, true)];
+
+/// The metric twins of a face — every other member of its group, in display
+/// case. Asked with any case, and with a `Liberation Sans;Arial` chain.
+pub fn twins_of(name: &str) -> impl Iterator<Item = &'static str> {
+    let name = first_name(name).to_ascii_lowercase();
+    let group = TWINS
+        .iter()
+        .copied()
+        .find(|group| {
+            group
+                .iter()
+                .any(|member| member.eq_ignore_ascii_case(&name))
+        })
+        .unwrap_or(&[]);
+    group
+        .iter()
+        .copied()
+        .filter(move |member| !member.eq_ignore_ascii_case(&name))
+}
+
+/// An installed twin of a face, with a file for each style: the twin the
+/// catalogue has by name, under whatever file name a distribution gave it.
+fn twin_files(name: &str) -> Option<(&'static str, [Option<PathBuf>; 4])> {
+    twins_of(name).find_map(|twin| {
+        crate::catalogue::file(twin, false, false)?;
+        let files = STYLES.map(|(bold, italic)| {
+            crate::catalogue::file(twin, bold, italic).map(Path::to_path_buf)
+        });
+        Some((twin, files))
+    })
+}
+
+/// Whether [`register`] gave epaint a face of exactly this name and style,
+/// from the machine's own fonts — a twin registered under the name counts,
+/// because it is what that name draws with.
+fn installed_face(name: &str, bold: bool, italic: bool) -> bool {
+    NAMED_FACES
+        .get()
+        .is_some_and(|faces| faces.contains_key(&(name.to_ascii_lowercase(), bold, italic)))
+}
+
+/// A face the machine has under another name: what a document asked for, and
+/// what it is shown in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Substitution {
+    /// The name the document uses, in its own spelling.
+    pub asked: String,
+    /// The face that draws it.
+    pub shown: String,
+    pub how: Shown,
+}
+
+/// Why a face is shown in another, which is also what the user can expect of
+/// the page.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Shown {
+    /// A metric twin: the same widths and line height, so lines and pages
+    /// break where Word breaks them.
+    Twin,
+    /// The copy the document carries in its own package.
+    Embedded,
+    /// The face Word itself stands in for this one.
+    StandIn,
+    /// The generic face of its shape; lines may well break elsewhere.
+    Generic,
+}
+
+/// What a document's face is shown in, and why — or `None` for a face the
+/// machine simply has.
+///
+/// `present` answers whether the machine has a face of a name; `twin` is the
+/// installed twin if there is one; `embedded` whether the package carries the
+/// face; `generic` names the face of its shape that draws anything else.
+fn explain(
+    asked: &str,
+    present: impl Fn(&str) -> bool,
+    twin: Option<&str>,
+    embedded: bool,
+    generic: &str,
+) -> Option<Substitution> {
+    let name = first_name(asked);
+    if present(name) {
+        return None;
+    }
+    let (shown, how) = if embedded {
+        (format!("{name} (from the document)"), Shown::Embedded)
+    } else if let Some(twin) = twin {
+        (twin.to_owned(), Shown::Twin)
+    } else if let Some(sub) = substitute(&name.to_ascii_lowercase()).filter(|sub| present(sub)) {
+        (sub.to_owned(), Shown::StandIn)
+    } else {
+        (generic.to_owned(), Shown::Generic)
+    };
+    Some(Substitution {
+        asked: name.to_owned(),
+        shown,
+        how,
+    })
+}
 
 /// Word's substitute for a missing face. Asked with a lowercase name;
 /// answers in display case, for a caller that hands the name on to GDI.
@@ -325,6 +446,31 @@ static NAMED_FACES: OnceLock<BTreeMap<(String, bool, bool), egui::FontFamily>> =
 /// What [`register`] built out of the machine's own fonts, kept so a document's
 /// own faces can be laid over it without reading every file again.
 static SYSTEM: OnceLock<egui::FontDefinitions> = OnceLock::new();
+
+/// The named faces [`register`] found missing and drew in a metric twin: the
+/// lowercase name, and the twin's own name for the notice that says so.
+static TWINNED: OnceLock<BTreeMap<String, &'static str>> = OnceLock::new();
+
+/// The file each generic face was loaded from, so a notice can say which
+/// family a nameless fallback actually is.
+static GENERIC_FILES: OnceLock<BTreeMap<(Family, bool, bool), PathBuf>> = OnceLock::new();
+
+/// The family name of the generic face of a shape, as the file states it —
+/// or a description, on a machine where none was found.
+pub fn generic_family(family: Family) -> String {
+    GENERIC_FILES
+        .get()
+        .and_then(|files| files.get(&(family, false, false)))
+        .and_then(|path| crate::catalogue::display_family(path))
+        .unwrap_or_else(|| {
+            match family {
+                Family::Sans => "the default sans-serif face",
+                Family::Serif => "the default serif face",
+                Family::Mono => "the default monospaced face",
+            }
+            .to_owned()
+        })
+}
 
 /// The faces the open document carries in its own package, which outrank
 /// anything the machine has under the same name — the author embedded them
@@ -535,37 +681,45 @@ pub(crate) fn font_directories() -> Vec<PathBuf> {
         "/usr/share/fonts/dejavu",
         "/usr/share/fonts/TTF",
         "/usr/share/fonts",
+        "/usr/local/share/fonts",
     ] {
         dirs.push(PathBuf::from(path));
     }
     if let Some(home) = std::env::var_os("HOME") {
-        dirs.push(PathBuf::from(home).join(".local/share/fonts"));
+        dirs.push(PathBuf::from(&home).join(".local/share/fonts"));
+        dirs.push(PathBuf::from(&home).join(".fonts"));
     }
     dirs
 }
 
-fn load(family: Family, bold: bool, italic: bool, dirs: &[PathBuf]) -> Option<Vec<u8>> {
+fn load(family: Family, bold: bool, italic: bool, dirs: &[PathBuf]) -> Option<(PathBuf, Vec<u8>)> {
     candidates(family, bold, italic)
         .iter()
-        .find_map(|name| read_face(name, dirs))
+        .find_map(|name| read_face_at(name, dirs))
 }
 
-/// One font file by its bare name, from wherever it is.
-fn read_face(name: &str, dirs: &[PathBuf]) -> Option<Vec<u8>> {
+/// One font file by its bare name, and where it was found.
+fn read_face_at(name: &str, dirs: &[PathBuf]) -> Option<(PathBuf, Vec<u8>)> {
     if name.is_empty() {
         return None;
     }
     for dir in dirs {
-        if let Ok(bytes) = std::fs::read(dir.join(name)) {
-            // A collection needs an index to pick a face out of; anything
-            // that is not a single face is skipped rather than guessed at.
+        let path = dir.join(name);
+        if let Ok(bytes) = std::fs::read(&path) {
             if bytes.len() > 4 && &bytes[..4] == b"ttcf" {
                 continue;
             }
-            return Some(bytes);
+            return Some((path, bytes));
         }
     }
     None
+}
+
+/// One font file by its bare name, from wherever it is.
+fn read_face(name: &str, dirs: &[PathBuf]) -> Option<Vec<u8>> {
+    // A collection needs an index to pick a face out of; anything that is not
+    // a single face is skipped rather than guessed at.
+    read_face_at(name, dirs).map(|(_, bytes)| bytes)
 }
 
 /// Registers every face that could be found, and returns which ones are real.
@@ -586,6 +740,7 @@ pub fn install(ctx: &egui::Context) -> Loaded {
 pub fn register(ctx: &egui::Context, dirs: &[PathBuf]) -> Loaded {
     let mut definitions = egui::FontDefinitions::default();
     let mut loaded = Loaded::default();
+    let mut generic_files = BTreeMap::new();
 
     for family in [Family::Sans, Family::Serif, Family::Mono] {
         for (bold, italic) in [(false, false), (true, false), (false, true), (true, true)] {
@@ -604,12 +759,13 @@ pub fn register(ctx: &egui::Context, dirs: &[PathBuf]) -> Loaded {
                 .cloned()
                 .unwrap_or_default();
 
-            if let Some(bytes) = load(family, bold, italic, dirs) {
+            if let Some((path, bytes)) = load(family, bold, italic, dirs) {
                 definitions
                     .font_data
                     .insert(key.clone(), Arc::new(egui::FontData::from_owned(bytes)));
                 chain.insert(0, key);
                 loaded.faces.insert((family, bold, italic), true);
+                generic_files.insert((family, bold, italic), path);
             } else {
                 loaded.faces.insert((family, bold, italic), false);
             }
@@ -671,9 +827,53 @@ pub fn register(ctx: &egui::Context, dirs: &[PathBuf]) -> Loaded {
         definitions.families.insert(family.clone(), chain);
         named.insert((name, bold, italic), family);
     }
+    // A named face this machine lacks, drawn in its metric twin under the
+    // name the document will ask for: Calibri in Carlito on a machine without
+    // Office, Liberation Sans in Arial on one without LibreOffice. Registered
+    // here rather than per document, because a spreadsheet's column widths
+    // are counted in its face's digits too. The catalogue is consulted only
+    // for the twins' families and only when a face is really missing, and
+    // never in a test that registered no directories — those are about the
+    // names, not the machine.
+    let mut twinned = BTreeMap::new();
+    if !dirs.is_empty() {
+        for member in TWINS.iter().flat_map(|group| group.iter()) {
+            let lower = member.to_ascii_lowercase();
+            let known = NAMED.iter().any(|(name, _)| *name == lower);
+            if !known || named.contains_key(&(lower.clone(), false, false)) {
+                continue;
+            }
+            let Some((twin, files)) = twin_files(member) else {
+                continue;
+            };
+            for ((bold, italic), path) in STYLES.into_iter().zip(files) {
+                let Some(bytes) = path.and_then(|path| std::fs::read(path).ok()) else {
+                    continue;
+                };
+                let key = format!("twin-{lower}-{}{}", bold as u8, italic as u8);
+                let family = egui::FontFamily::Name(
+                    format!("{lower}-{}{}", bold as u8, italic as u8).into(),
+                );
+                let mut chain: Vec<String> = definitions
+                    .families
+                    .get(&face(Family::of(member), bold, italic))
+                    .cloned()
+                    .unwrap_or_default();
+                definitions
+                    .font_data
+                    .insert(key.clone(), Arc::new(egui::FontData::from_owned(bytes)));
+                chain.insert(0, key);
+                definitions.families.insert(family.clone(), chain);
+                named.insert((lower.clone(), bold, italic), family);
+            }
+            twinned.insert(lower, twin);
+        }
+    }
     // A second registration keeps the first process-wide answer — which is
     // fine, because it is also the set of families epaint was actually given.
     let _ = NAMED_FACES.set(named);
+    let _ = TWINNED.set(twinned);
+    let _ = GENERIC_FILES.set(generic_files);
     let _ = SYSTEM.set(definitions.clone());
 
     ctx.set_fonts(definitions);
@@ -691,39 +891,53 @@ pub fn register(ctx: &egui::Context, dirs: &[PathBuf]) -> Loaded {
 /// would have had, so nothing downstream needs to know where the type came
 /// from; the generic chain still follows it, so a glyph the embedded subset
 /// lacks is drawn from a system face rather than coming out as tofu.
+///
+/// Returns what the document asked for and did not get as named: each such
+/// face with the face it is shown in and why, for the notice that tells the
+/// user so. Empty when every face the document names is on the machine.
 pub fn embed_document(
     ctx: &egui::Context,
     faces: &[(String, bool, bool, Vec<u8>)],
     named: &[String],
-) {
+) -> Vec<Substitution> {
     let had = DOCUMENT_FACES
         .read()
         .ok()
         .map(|held| held.is_some())
         .unwrap_or(false);
 
-    // Every face this document could want, from the two places one can come
-    // from. The machine's own copy is preferred over the package's: an
+    // Every face this document could want, from the three places one can
+    // come from. The machine's own copy is preferred over the package's: an
     // embedded font is what Word falls back to when the face is missing, not
     // something it draws with in preference to the real thing — see
-    // [`crate::catalogue`].
+    // [`crate::catalogue`]. The package's copy is preferred over a metric
+    // twin, because it *is* the face, in the glyphs the author chose; the
+    // twin is for a document that names a face and carries nothing.
     let mut wanted: Vec<(String, bool, bool, Vec<u8>)> = Vec::new();
     let mut seen: BTreeMap<(String, bool, bool), usize> = BTreeMap::new();
+    let mut twinned: BTreeMap<String, &'static str> = BTreeMap::new();
     let mut want = |name: &str, bold: bool, italic: bool, fallback: Option<&Vec<u8>>| {
         let key = (name.to_ascii_lowercase(), bold, italic);
         if seen.contains_key(&key) {
             return;
         }
-        // Already known to the named-face table, and registered from the same
-        // file: registering it twice would only cost the atlas.
-        if NAMED.iter().any(|(known, _)| *known == key.0) {
+        // Registered from the machine's own fonts already, under this very
+        // name: registering it twice would only cost the atlas.
+        if installed_face(&key.0, bold, italic) {
             return;
         }
-        let bytes = match crate::catalogue::file(name, bold, italic) {
-            Some(path) => std::fs::read(path).ok(),
-            None => None,
-        };
-        let Some(bytes) = bytes.or_else(|| fallback.cloned()) else {
+        let read = |path: &Path| std::fs::read(path).ok();
+        let bytes = crate::catalogue::file(name, bold, italic)
+            .and_then(read)
+            .or_else(|| fallback.cloned())
+            .or_else(|| {
+                let (twin, files) = twin_files(name)?;
+                let index = STYLES.iter().position(|style| *style == (bold, italic))?;
+                let bytes = files[index].as_deref().and_then(read)?;
+                twinned.insert(key.0.clone(), twin);
+                Some(bytes)
+            });
+        let Some(bytes) = bytes else {
             return;
         };
         seen.insert(key, wanted.len());
@@ -733,13 +947,41 @@ pub fn embed_document(
         want(name, *bold, *italic, Some(bytes));
     }
     for name in named {
-        for (bold, italic) in [(false, false), (true, false), (false, true), (true, true)] {
+        for (bold, italic) in STYLES {
             want(name, bold, italic, None);
         }
     }
 
+    // What the document asked for by name and is shown in something else,
+    // one line per family, in the document's own order and spelling.
+    let mut report = Vec::new();
+    let mut reported = std::collections::BTreeSet::new();
+    for name in named {
+        let lower = first_name(name).to_ascii_lowercase();
+        if !reported.insert(lower.clone()) {
+            continue;
+        }
+        let present = |name: &str| {
+            let lower = first_name(name).to_ascii_lowercase();
+            (installed_face(&lower, false, false)
+                && !TWINNED
+                    .get()
+                    .is_some_and(|twins| twins.contains_key(&lower)))
+                || crate::catalogue::file(name, false, false).is_some()
+        };
+        let twin = twinned
+            .get(&lower)
+            .copied()
+            .or_else(|| TWINNED.get().and_then(|twins| twins.get(&lower).copied()));
+        let embedded = faces
+            .iter()
+            .any(|(face, _, _, _)| face.eq_ignore_ascii_case(first_name(name)));
+        let generic = generic_family(Family::of(name));
+        report.extend(explain(name, present, twin, embedded, &generic));
+    }
+
     if wanted.is_empty() && !had {
-        return;
+        return report;
     }
     let faces = &wanted;
 
@@ -772,6 +1014,7 @@ pub fn embed_document(
         *held = Some(registered);
     }
     ctx.set_fonts(definitions);
+    report
 }
 
 /// The font file a document's face name resolves to, and where it came from.
@@ -783,55 +1026,59 @@ pub fn embed_document(
 /// embed it once.
 pub fn face_file(name: &str, bold: bool, italic: bool) -> Option<(PathBuf, Vec<u8>)> {
     let dirs = font_directories();
-    let index = match (bold, italic) {
-        (false, false) => 0,
-        (true, false) => 1,
-        (false, true) => 2,
-        (true, true) => 3,
-    };
-    // The exact face, then Word's substitute for it, then the generic shape —
-    // the same order the screen resolves in. The substitute's own generic
-    // shape matters: Liberation Serif's stand-in is Times New Roman, which is
-    // not in the exact-name table but is the serif chain's first candidate.
+    let index = STYLES
+        .iter()
+        .position(|style| *style == (bold, italic))
+        .unwrap_or(0);
     let name = first_name(name);
     let lower = name.to_ascii_lowercase();
-    let mut files: Vec<&str> = Vec::new();
-    let push_named = |files: &mut Vec<&str>, name: &str| {
-        if let Some((_, faces)) = NAMED.iter().find(|(named, _)| *named == name) {
-            if !faces[index].is_empty() {
-                files.push(faces[index]);
-            }
+    let read = |path: &Path| -> Option<(PathBuf, Vec<u8>)> {
+        let bytes = std::fs::read(path).ok()?;
+        if bytes.len() > 4 && &bytes[..4] == b"ttcf" {
+            return None;
         }
+        Some((path.to_path_buf(), bytes))
     };
-    push_named(&mut files, &lower);
-    if let Some(sub) = substitute(&lower) {
-        push_named(&mut files, &sub.to_ascii_lowercase());
-        files.extend(candidates(Family::of(sub), bold, italic));
-    }
-    files.extend(candidates(Family::of(name), bold, italic));
+    let named_file = |name: &str| -> Option<(PathBuf, Vec<u8>)> {
+        let (_, files) = NAMED.iter().find(|(named, _)| *named == name)?;
+        read_face_at(files[index], &dirs)
+    };
+
+    // The exact face, wherever the machine keeps it: the shipped table's file,
+    // Office's download cache, or any file the catalogue knows by that name.
     // A cloud face is found by family, not by file name, so it is asked for
-    // separately — and before the generic candidates, because it is the exact
-    // face the document named.
+    // on its own.
+    if let Some(found) = named_file(&lower) {
+        return Some(found);
+    }
     if let Some((_, _, _, path)) = cloud_faces()
         .into_iter()
         .find(|(family, b, i, _)| *family == lower && *b == bold && *i == italic)
     {
-        if let Ok(bytes) = std::fs::read(&path) {
-            return Some((path, bytes));
+        if let Some(found) = read(&path) {
+            return Some(found);
         }
     }
-    for file in files {
-        for dir in &dirs {
-            let path = dir.join(file);
-            if let Ok(bytes) = std::fs::read(&path) {
-                if bytes.len() > 4 && &bytes[..4] == b"ttcf" {
-                    continue;
-                }
-                return Some((path, bytes));
-            }
+    if let Some(found) = crate::catalogue::file(name, bold, italic).and_then(read) {
+        return Some(found);
+    }
+    // Then its metric twin, then Word's stand-in, then the generic shape —
+    // the same order the screen resolves in. The stand-in's own generic shape
+    // matters: a face whose stand-in is a serif is drawn in the serif chain.
+    if let Some((_, files)) = twin_files(name) {
+        if let Some(found) = files[index].as_deref().and_then(read) {
+            return Some(found);
         }
     }
-    None
+    let mut files: Vec<&str> = Vec::new();
+    if let Some(sub) = substitute(&lower) {
+        if let Some(found) = named_file(&sub.to_ascii_lowercase()) {
+            return Some(found);
+        }
+        files.extend(candidates(Family::of(sub), bold, italic));
+    }
+    files.extend(candidates(Family::of(name), bold, italic));
+    files.into_iter().find_map(|file| read_face_at(file, &dirs))
 }
 
 /// The family name GDI should be asked for, mirroring what the screen shows.
@@ -844,8 +1091,30 @@ pub fn face_file(name: &str, bold: bool, italic: bool) -> Option<(PathBuf, Vec<u
 pub fn gdi_family(name: &str) -> String {
     let name = first_name(name);
     let lower = name.to_ascii_lowercase();
-    if exact_face(&lower, false, false).is_some() {
+    if exact_face(&lower, false, false).is_some()
+        && !TWINNED
+            .get()
+            .is_some_and(|twins| twins.contains_key(&lower))
+    {
         return name.to_owned();
+    }
+    // A face drawn in its twin prints in that twin. A face this process never
+    // registered prints as the Windows face of its group — the first member,
+    // which is the one GDI has wherever GDI is — and that is the face itself
+    // for Courier New and Times New Roman for Liberation Serif.
+    if let Some(twin) = TWINNED.get().and_then(|twins| twins.get(&lower)) {
+        return (*twin).to_owned();
+    }
+    if let Some(windows) = TWINS
+        .iter()
+        .find(|group| {
+            group
+                .iter()
+                .any(|member| member.eq_ignore_ascii_case(&lower))
+        })
+        .and_then(|group| group.first())
+    {
+        return (*windows).to_owned();
     }
     if let Some(sub) = substitute(&lower) {
         return sub.to_owned();
@@ -942,8 +1211,92 @@ mod tests {
     fn a_missing_face_substitutes_the_face_word_would() {
         assert_eq!(substitute("dejavu sans"), Some("Verdana"));
         assert_eq!(substitute("open sans"), Some("Segoe UI"));
-        assert_eq!(substitute("liberation sans"), Some("Arial"));
         assert_eq!(substitute("verdana"), None, "real faces are not mapped");
+        assert_eq!(
+            substitute("liberation sans"),
+            None,
+            "a metric twin is not a stand-in"
+        );
+    }
+
+    /// A twin answers in either direction, and a chain by its first name.
+    #[test]
+    fn a_metric_twin_is_known_from_both_ends() {
+        assert_eq!(twins_of("Calibri").collect::<Vec<_>>(), ["Carlito"]);
+        assert_eq!(twins_of("carlito").collect::<Vec<_>>(), ["Calibri"]);
+        assert_eq!(
+            twins_of("Liberation Sans;Arial").collect::<Vec<_>>(),
+            ["Arial"]
+        );
+        assert_eq!(twins_of("Aptos").count(), 0, "no open face has its widths");
+        assert_eq!(
+            twins_of("Cambria").count(),
+            0,
+            "Caladea failed the measurement"
+        );
+        for group in TWINS {
+            assert!(group.len() >= 2, "{group:?} is nobody's twin");
+        }
+    }
+
+    /// The notice tells the truth about each face: present, and it says
+    /// nothing; otherwise the document's own copy, then a twin, then Word's
+    /// stand-in, then the shape.
+    #[test]
+    fn a_face_is_explained_by_what_draws_it() {
+        let has = |names: &'static [&str]| {
+            move |name: &str| names.iter().any(|n| n.eq_ignore_ascii_case(name))
+        };
+        assert_eq!(
+            explain("Arial", has(&["Arial"]), None, false, "Liberation Sans"),
+            None
+        );
+        let twin = explain(
+            "Calibri;Arial",
+            has(&[]),
+            Some("Carlito"),
+            false,
+            "Liberation Sans",
+        )
+        .expect("missing, so explained");
+        assert_eq!(
+            (twin.asked.as_str(), twin.shown.as_str(), twin.how),
+            ("Calibri", "Carlito", Shown::Twin)
+        );
+        let own = explain(
+            "Calibri",
+            has(&[]),
+            Some("Carlito"),
+            true,
+            "Liberation Sans",
+        )
+        .expect("explained");
+        assert_eq!(
+            own.how,
+            Shown::Embedded,
+            "the document's own copy beats a twin"
+        );
+        let word = explain(
+            "Open Sans",
+            has(&["Segoe UI"]),
+            None,
+            false,
+            "Liberation Sans",
+        )
+        .expect("explained");
+        assert_eq!(
+            (word.shown.as_str(), word.how),
+            ("Segoe UI", Shown::StandIn)
+        );
+        let none =
+            explain("Open Sans", has(&[]), None, false, "Liberation Sans").expect("explained");
+        assert_eq!(
+            (none.shown.as_str(), none.how),
+            ("Liberation Sans", Shown::Generic),
+            "a stand-in the machine lacks is no stand-in"
+        );
+        let aptos = explain("Aptos", has(&[]), None, false, "Liberation Sans").expect("explained");
+        assert_eq!(aptos.how, Shown::Generic);
     }
 
     #[test]

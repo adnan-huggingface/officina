@@ -274,7 +274,11 @@ fn fonts(opened: &Opened) -> egui::Context {
     // other document in a stand-in the application itself never draws with,
     // wherever the face was not in the one place `install` looks for it.
     let named = scriva::app::font_names(&opened.document);
-    ui_kit::fonts::embed_document(&ctx, &opened.faces, &named);
+    // Said aloud, because a measurement in a stand-in is a measurement of the
+    // stand-in, and the numbers should not be read without knowing it.
+    for shown in ui_kit::fonts::embed_document(&ctx, &opened.faces, &named) {
+        eprintln!("  {} is shown in {}", shown.asked, shown.shown);
+    }
     let mut out = ctx.run_ui(egui::RawInput::default(), |_| {});
     out.textures_delta.clear();
     ctx

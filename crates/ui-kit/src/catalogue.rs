@@ -64,22 +64,7 @@ pub fn file(name: &str, bold: bool, italic: bool) -> Option<&'static Path> {
 fn build(dirs: &[PathBuf]) -> BTreeMap<FaceKey, PathBuf> {
     let mut faces = Vec::new();
     for dir in dirs {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let extension = path
-                .extension()
-                .and_then(|e| e.to_str())
-                .map(str::to_ascii_lowercase);
-            if !matches!(extension.as_deref(), Some("ttf" | "otf")) {
-                continue;
-            }
-            if let Some(names) = describe(&path) {
-                faces.push((names, path));
-            }
-        }
+        gather(dir, 0, &mut faces);
     }
     // The first directory wins, which puts the system's own fonts ahead of a
     // user's separately installed copy of the same name.
@@ -99,11 +84,51 @@ fn build(dirs: &[PathBuf]) -> BTreeMap<FaceKey, PathBuf> {
     found
 }
 
+/// Every font file under a directory, described.
+///
+/// Into subdirectories too, because that is how a Linux distribution keeps
+/// its fonts: `/usr/share/fonts/truetype/crosextra/Carlito-Regular.ttf`, one
+/// package to a folder, and a machine without Office has Carlito nowhere else.
+/// Windows and macOS keep theirs flat, and lose nothing by the walk. Three
+/// levels is one more than any distribution uses, and stops a link loop.
+fn gather(dir: &Path, depth: usize, into: &mut Vec<(Names, PathBuf)>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if depth < 3 {
+                gather(&path, depth + 1, into);
+            }
+            continue;
+        }
+        let extension = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(str::to_ascii_lowercase);
+        if !matches!(extension.as_deref(), Some("ttf" | "otf")) {
+            continue;
+        }
+        if let Some(names) = describe(&path) {
+            into.push((names, path));
+        }
+    }
+}
+
 /// The names one file answers to: its legacy family and style, and its
 /// typographic ones where it states them.
 struct Names {
     legacy: FaceKey,
     typographic: Option<FaceKey>,
+    /// The legacy family as the file spells it, for a notice to a person.
+    display: String,
+}
+
+/// The family name a file states, in its own case — for telling a user which
+/// face a nameless fallback turned out to be.
+pub fn display_family(path: &Path) -> Option<String> {
+    describe(path).map(|names| names.display)
 }
 
 /// The family and style of one font file, from its `name` and `head` tables.
@@ -151,6 +176,7 @@ fn describe(path: &Path) -> Option<Names> {
         (family.to_ascii_lowercase(), bold, italic)
     };
     let typographic = string(&names, 16).map(|family| key(family, string(&names, 17)));
+    let display = string(&names, 1).or_else(|| string(&names, 16))?;
     let legacy = match string(&names, 1) {
         Some(family) => key(family, string(&names, 2)),
         None => typographic.clone()?,
@@ -158,6 +184,7 @@ fn describe(path: &Path) -> Option<Names> {
     Some(Names {
         legacy,
         typographic,
+        display,
     })
 }
 
@@ -300,6 +327,41 @@ mod tests {
         file.extend_from_slice(&head);
         file.extend_from_slice(&name);
         file
+    }
+
+    /// A distribution keeps each font package in a folder of its own under
+    /// the fonts directory, so the face a document needs is two levels down
+    /// from anywhere a bare file name would be looked for.
+    #[test]
+    fn a_face_in_a_packages_own_folder_is_catalogued() {
+        let root = std::env::temp_dir().join("ui-kit-catalogue-folders");
+        let _ = std::fs::remove_dir_all(&root);
+        let deep = root.join("truetype").join("crosextra");
+        std::fs::create_dir_all(&deep).expect("a scratch directory");
+        std::fs::write(
+            deep.join("Carlito-Regular.ttf"),
+            face(&[(1, "Carlito"), (2, "Regular")], false),
+        )
+        .expect("written");
+        std::fs::write(
+            deep.join("Carlito-Bold.ttf"),
+            face(&[(1, "Carlito"), (2, "Bold")], true),
+        )
+        .expect("written");
+        let found = build(std::slice::from_ref(&root));
+        assert_eq!(
+            found.get(&("carlito".to_owned(), false, false)),
+            Some(&deep.join("Carlito-Regular.ttf"))
+        );
+        assert_eq!(
+            found.get(&("carlito".to_owned(), true, false)),
+            Some(&deep.join("Carlito-Bold.ttf"))
+        );
+        assert_eq!(
+            display_family(&deep.join("Carlito-Regular.ttf")).as_deref(),
+            Some("Carlito"),
+            "and the notice gets the name as the file spells it"
+        );
     }
 
     /// "Aptos Display" is family 1 of its file and "Aptos" with a "Display"

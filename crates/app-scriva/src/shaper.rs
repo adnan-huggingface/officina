@@ -611,7 +611,7 @@ mod tests {
         let ctx = context();
         let name = "Nonesuch Grotesk";
         let faces = [(name.to_owned(), false, false, vec![0u8; 64])];
-        ui_kit::fonts::embed_document(&ctx, &faces, &[]);
+        let _ = ui_kit::fonts::embed_document(&ctx, &faces, &[]);
         let mut shaper = Egui::new(&ctx);
         let font = FontRequest::new(name, 12.0);
         assert_eq!(
