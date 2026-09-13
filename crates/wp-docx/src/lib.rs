@@ -97,10 +97,12 @@ pub fn read(package: &Package) -> Result<Document> {
             document.settings = bits::settings(part.data());
         }
     }
+    let mode = document.settings.compatibility_mode;
 
     if let Some(name) = &parts.numbering {
         if let Some(part) = package.part(name) {
             let mut ctx = Ctx::new(&mut document.styles, &mut headers);
+            ctx.compat_mode = mode;
             document.numbering = numbering::read(part.data(), &mut ctx);
         }
     }
@@ -114,6 +116,7 @@ pub fn read(package: &Package) -> Result<Document> {
     {
         let data = main.data();
         let mut ctx = Ctx::of_part(&mut document.styles, &mut headers, data);
+        ctx.compat_mode = mode;
         let (blocks, section) = read_body(data, &mut ctx);
         document.body = blocks;
         if let Some(section) = section {
@@ -124,18 +127,21 @@ pub fn read(package: &Package) -> Result<Document> {
     if let Some(name) = &parts.footnotes {
         if let Some(part) = package.part(name) {
             let mut ctx = Ctx::of_part(&mut document.styles, &mut headers, part.data());
+            ctx.compat_mode = mode;
             document.footnotes = notes::read_notes(part.data(), &mut ctx, b"footnote");
         }
     }
     if let Some(name) = &parts.endnotes {
         if let Some(part) = package.part(name) {
             let mut ctx = Ctx::of_part(&mut document.styles, &mut headers, part.data());
+            ctx.compat_mode = mode;
             document.endnotes = notes::read_notes(part.data(), &mut ctx, b"endnote");
         }
     }
     if let Some(name) = &parts.comments {
         if let Some(part) = package.part(name) {
             let mut ctx = Ctx::of_part(&mut document.styles, &mut headers, part.data());
+            ctx.compat_mode = mode;
             document.comments = notes::read_comments(part.data(), &mut ctx);
         }
     }

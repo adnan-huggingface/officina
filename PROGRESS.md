@@ -4958,3 +4958,29 @@ does not break, and mid-paragraph the two halves run together — and so is
 the table before the caret's row and puts the break between the halves. The
 layout already ignores a break in a cell, which is right; the editor's half is
 written down in the story's notes, not done.
+
+## A new document is the document Word makes, and says which Word it is for (2026-09-13)
+
+Word was asked what a new document is on the reference machine, and what it
+writes into the file: twelve points, eight points after every paragraph, a
+line of 278 to 240, and `compatibilityMode` 15. A Scriva document was eleven
+points, single-spaced with nothing after, and stated none of it — on the
+reasoning that a file which states nothing is single-spaced to Word. It is not:
+Word lays a file that states no defaults with those same defaults of its own,
+so the new document that drew single-spaced here came back from Word with
+eight points after every paragraph and its table's empty rows twice as tall,
+forty points down the page by the third line. A new document now carries
+Word's defaults in its document defaults and its mode in its settings, and is
+laid out here with them; measured against Word's rendering of the file it
+writes, no word is out.
+
+A `.doc` is stated as the Word 2003 document its own converter makes of it,
+mode 11, and that turned up what a table's `<w:tblInd>` means. Measured, the
+same table with an indent of zero and cell margins of 108: as a Word 2013
+document its rule stands on the margin, as a Word 2007 one its *text* does,
+the rule a padding out. The model keeps the rule's position, as it did; the
+reader now takes the padding off an older file's number and the writer puts
+it back, so the six `.doc` copies saved as `.docx` — which stated the edge in
+a file Word read as 2007's — have their tables where the `.doc` has them.
+`simple-table.doc` as `.docx` measured 5.4pt out on every cell before and none
+after. No corpus `.docx` states an indent, which is why nothing had noticed.

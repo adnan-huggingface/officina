@@ -75,7 +75,12 @@ pub(crate) fn flush(
         package.put_part(
             name.clone(),
             kind.content_type,
-            part_out(kind, notes, &document.styles),
+            part_out(
+                kind,
+                notes,
+                &document.styles,
+                document.settings.compatibility_mode,
+            ),
         );
 
         let mut rels = package.relationships(&located.document)?;
@@ -91,7 +96,7 @@ pub(crate) fn flush(
     Ok(())
 }
 
-fn part_out(kind: Kind, notes: &[Note], styles: &StyleTable) -> Vec<u8> {
+fn part_out(kind: Kind, notes: &[Note], styles: &StyleTable, mode: u32) -> Vec<u8> {
     let mut out = String::from(DECL);
     out.push_str(&format!(
         r#"<w:{} xmlns:w="{WML}" xmlns:r="{REL_BASE}">"#,
@@ -139,7 +144,7 @@ fn part_out(kind: Kind, notes: &[Note], styles: &StyleTable) -> Vec<u8> {
         for block in numbered.as_deref().unwrap_or(&note.content) {
             match block {
                 Block::Paragraph(paragraph) => emit::paragraph(&mut out, paragraph, styles),
-                Block::Table(table) => emit::table(&mut out, table, styles),
+                Block::Table(table) => emit::table(&mut out, table, styles, mode),
                 _ => {}
             }
         }

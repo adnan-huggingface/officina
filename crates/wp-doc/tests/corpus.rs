@@ -239,6 +239,50 @@ fn the_footnote_separator_of_a_legacy_document_is_written_as_words_own() {
     );
 }
 
+/// Word reads the file this writes as a Word 2003 document, which is what
+/// its own converter makes of a `.doc`, and in that mode a table's indent is
+/// measured to its text: the `.doc`'s tables sit flush with the margin, and
+/// so must the `.docx`'s. Measured in Word 16 (2026-09-13): written as the
+/// edge, -108, every cell of this table stood 5.4pt left of where the `.doc`
+/// puts it.
+#[test]
+fn a_legacy_documents_table_is_written_where_word_2003_reads_it() {
+    let mut document = open("simple-table.doc");
+    assert_eq!(document.settings.compatibility_mode, 11);
+    let table = document
+        .body
+        .iter()
+        .find_map(|block| match block {
+            wp_model::doc::Block::Table(table) => Some(table),
+            _ => None,
+        })
+        .expect("the table");
+    assert_eq!(
+        table.props.indent,
+        Some(wp_model::table::Width::Fixed(wp_model::Twips(-108))),
+        "the model keeps the edge: a padding into the margin"
+    );
+
+    let mut package = wp_docx::write::blank::package_for(&document).expect("a package");
+    let path = std::env::temp_dir().join("wp-doc-table-indent.docx");
+    wp_docx::write::save(&mut document, &mut package, &path).expect("it writes");
+    let written = ooxml::Package::open(&path).expect("and is a package");
+    let _ = std::fs::remove_file(&path);
+    let part = |name: &str| {
+        let name = ooxml::PartName::new(name).expect("a part name");
+        String::from_utf8_lossy(written.part(&name).expect("the part is there").data()).into_owned()
+    };
+    assert!(
+        part("/word/document.xml").contains(r#"<w:tblInd w:w="0" w:type="dxa"/>"#),
+        "the file states the text's position, which is the margin"
+    );
+    assert!(
+        part("/word/settings.xml").contains(r#"w:name="compatibilityMode""#)
+            && part("/word/settings.xml").contains(r#"w:val="11""#),
+        "and says which Word it is a document for"
+    );
+}
+
 #[test]
 fn the_page_setup_comes_from_the_file_rather_than_from_a_default() {
     // A document written on A4 that opens as Letter reflows on its first line

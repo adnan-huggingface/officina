@@ -929,7 +929,30 @@ fn read_table_props(reader: &mut Reader<&[u8]>, ctx: &mut Ctx<'_>) -> TableProps
             _ => {}
         }
     }
+    // The model keeps the edge Word rules, which is what a Word 2013 file
+    // states. An older file states the text's own position, a cell's padding
+    // further in — see [`Ctx::compat_mode`] — and the padding comes off here
+    // so that the layout has one thing to mean by an indent. The writer puts
+    // it back for the same file.
+    if ctx.compat_mode < 15 {
+        if let Some(wp_model::table::Width::Fixed(text)) = props.indent {
+            let padding = start_padding(ctx.styles, &props);
+            props.indent = Some(wp_model::table::Width::Fixed(wp_model::Twips(
+                text.0 - padding,
+            )));
+        }
+    }
     props
+}
+
+/// The padding inside a table's first cell, in twips: the table's own, or its
+/// style's, or nothing — Word pads a table that states none and has no style
+/// by nothing at all.
+pub(crate) fn start_padding(styles: &wp_model::StyleTable, props: &TableProps) -> i32 {
+    match styles.resolve_cell_margins(props).start {
+        Some(wp_model::table::Width::Fixed(twips)) => twips.0,
+        _ => 0,
+    }
 }
 
 fn float_anchor(text: Option<&str>) -> FloatAnchor {
@@ -1231,8 +1254,13 @@ mod tests {
     use crate::ctx::test_ctx;
 
     fn table_of(xml: &str) -> wp_model::table::Table {
+        table_of_mode(xml, 0)
+    }
+
+    fn table_of_mode(xml: &str, mode: u32) -> wp_model::table::Table {
         let (mut styles, mut headers) = test_ctx();
         let mut ctx = Ctx::new(&mut styles, &mut headers);
+        ctx.compat_mode = mode;
         let mut reader = Reader::from_reader(xml.as_bytes());
         loop {
             match reader.read_event() {
@@ -1243,6 +1271,44 @@ mod tests {
                 _ => {}
             }
         }
+    }
+
+    /// Measured in Word 16 (2026-09-13): a table stating `tblInd` 0 with cell
+    /// margins of 108 has its rule on the margin as a Word 2013 document and
+    /// its text on the margin — the rule 108 twips out — as a Word 2007 one.
+    /// The model keeps the rule's position either way.
+    #[test]
+    fn a_tables_indent_means_the_edge_in_either_mode() {
+        let xml = r#"<w:tbl>
+            <w:tblPr><w:tblInd w:w="0" w:type="dxa"/>
+              <w:tblCellMar><w:left w:w="108" w:type="dxa"/><w:right w:w="108" w:type="dxa"/></w:tblCellMar>
+            </w:tblPr>
+            <w:tblGrid><w:gridCol w:w="3120"/></w:tblGrid>
+            <w:tr><w:tc><w:p/></w:tc></w:tr>
+        </w:tbl>"#;
+        use wp_model::table::Width;
+        assert_eq!(
+            table_of_mode(xml, 15).props.indent,
+            Some(Width::Fixed(wp_model::Twips(0))),
+            "a Word 2013 file states the edge"
+        );
+        assert_eq!(
+            table_of_mode(xml, 12).props.indent,
+            Some(Width::Fixed(wp_model::Twips(-108))),
+            "a Word 2007 file states the text, a padding further in"
+        );
+        assert_eq!(
+            table_of_mode(xml, 0).props.indent,
+            Some(Width::Fixed(wp_model::Twips(-108))),
+            "and a file that states no mode is a Word 2007 file"
+        );
+        let unpadded = r#"<w:tbl><w:tblPr><w:tblInd w:w="0" w:type="dxa"/></w:tblPr>
+            <w:tblGrid><w:gridCol w:w="3120"/></w:tblGrid><w:tr><w:tc><w:p/></w:tc></w:tr></w:tbl>"#;
+        assert_eq!(
+            table_of_mode(unpadded, 12).props.indent,
+            Some(Width::Fixed(wp_model::Twips(0))),
+            "a table with no padding and no style is padded by nothing"
+        );
     }
 
     #[test]

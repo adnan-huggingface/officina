@@ -218,7 +218,12 @@ fn paragraph_out(
     while let Some(Item::Table(table)) = model.get(*next) {
         *next += 1;
         let mut text = String::new();
-        emit::table(&mut text, table, &document.styles);
+        emit::table(
+            &mut text,
+            table,
+            &document.styles,
+            document.settings.compatibility_mode,
+        );
         out.extend_from_slice(text.as_bytes());
     }
     // No paragraph here means the model has fewer than the file: this one was
@@ -254,7 +259,13 @@ fn table_out(
     // the model holds here still has a file counterpart ahead.
     if let Some(Item::Table(table)) = model.get(*next) {
         *next += 1;
-        if same_table(bytes, table, styles, headers) {
+        if same_table(
+            bytes,
+            table,
+            styles,
+            headers,
+            document.settings.compatibility_mode,
+        ) {
             // Unchanged: the producer's own bytes, exactly — rsids, `tblPrEx`,
             // sdt-wrapped rows and everything else this crate does not model.
             out.extend_from_slice(bytes);
@@ -263,7 +274,12 @@ fn table_out(
             // rewrites the whole element from the model. That is the accepted
             // cost of pairing tables as units.
             let mut text = String::new();
-            emit::table(&mut text, table, &document.styles);
+            emit::table(
+                &mut text,
+                table,
+                &document.styles,
+                document.settings.compatibility_mode,
+            );
             out.extend_from_slice(text.as_bytes());
         }
     }
@@ -276,7 +292,12 @@ fn append_rest(out: &mut Vec<u8>, model: &[Item<'_>], next: &mut usize, document
         let mut text = String::new();
         match item {
             Item::Paragraph(paragraph) => emit::paragraph(&mut text, paragraph, &document.styles),
-            Item::Table(table) => emit::table(&mut text, table, &document.styles),
+            Item::Table(table) => emit::table(
+                &mut text,
+                table,
+                &document.styles,
+                document.settings.compatibility_mode,
+            ),
         }
         out.extend_from_slice(text.as_bytes());
     }
@@ -309,8 +330,10 @@ fn same_table(
     table: &wp_model::table::Table,
     styles: &mut wp_model::StyleTable,
     headers: &mut HeaderIndex,
+    mode: u32,
 ) -> bool {
     let mut ctx = Ctx::of_part(styles, headers, bytes);
+    ctx.compat_mode = mode;
     let mut reader = quick_xml::Reader::from_reader(bytes);
     reader.config_mut().trim_text(false);
     let (read, _) = crate::body::read_blocks_for_writer(&mut reader, &mut ctx, b"tbl");
@@ -673,7 +696,7 @@ mod tests {
         let table = built_table(&styles);
 
         let mut xml = String::new();
-        emit::table(&mut xml, &table, &styles);
+        emit::table(&mut xml, &table, &styles, 0);
         let bytes = xml.as_bytes();
         let mut headers = HeaderIndex::default();
         let mut ctx = Ctx::of_part(&mut styles, &mut headers, bytes);

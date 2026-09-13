@@ -41,6 +41,7 @@ pub(crate) fn flush(
     if document.headers.is_empty() {
         return Ok(());
     }
+    let mode = document.settings.compatibility_mode;
     let (headers, styles) = (&mut document.headers, &mut document.styles);
     let mut assigned: Vec<(wp_model::section::HeaderId, std::sync::Arc<str>)> = Vec::new();
     for header in headers.iter_mut() {
@@ -72,7 +73,7 @@ pub(crate) fn flush(
                     continue;
                 }
                 let content_type = part.content_type.clone();
-                let data = part_out(header.footer, &header.content, styles);
+                let data = part_out(header.footer, &header.content, styles, mode);
                 package.put_part(name, &content_type, data);
             }
             None => {
@@ -85,7 +86,7 @@ pub(crate) fn flush(
                 } else {
                     HEADER_TYPE
                 };
-                let data = part_out(header.footer, &header.content, styles);
+                let data = part_out(header.footer, &header.content, styles, mode);
                 package.put_part(name.clone(), content_type, data);
 
                 let mut rels = package.relationships(&located.document)?;
@@ -138,7 +139,7 @@ fn emitable(content: &[Block]) -> bool {
         .all(|block| matches!(block, Block::Paragraph(_) | Block::Table(_)))
 }
 
-fn part_out(footer: bool, content: &[Block], styles: &StyleTable) -> Vec<u8> {
+fn part_out(footer: bool, content: &[Block], styles: &StyleTable, mode: u32) -> Vec<u8> {
     let root = if footer { "ftr" } else { "hdr" };
     let mut out = String::from(DECL);
     // `xmlns:r` up front because an edited header may keep a picture, whose
@@ -149,7 +150,7 @@ fn part_out(footer: bool, content: &[Block], styles: &StyleTable) -> Vec<u8> {
     for block in content {
         match block {
             Block::Paragraph(paragraph) => emit::paragraph(&mut out, paragraph, styles),
-            Block::Table(table) => emit::table(&mut out, table, styles),
+            Block::Table(table) => emit::table(&mut out, table, styles, mode),
             _ => {}
         }
     }

@@ -1934,6 +1934,23 @@ faces are in `truetype/crosextra`, `truetype/liberation`, `opentype/noto` — an
 so answered that a machine with Carlito had no Carlito. Windows and macOS keep
 their fonts flat; the walk into subfolders costs them nothing.
 
+**A file that states no document defaults is not single-spaced to Word.** Word
+lays it with the defaults it would give a new document — eight points after
+every paragraph and a line of 278 to 240, measured on Word 16 — whether or not
+the file carries a `styles.xml`. A writer that leaves `<w:docDefaults>` empty
+meaning "nothing" has said "whatever Word's defaults are today", and a
+document that drew single-spaced comes back a third taller. What the layout
+here assumes has to be written down in the file.
+
+**What `<w:tblInd>` measures to depends on the document's compatibility
+mode, and a file that states none is a Word 2007 file.** From mode 15 the
+indent is the position of the rule Word draws at the table's edge; before it,
+the indent is the position of the text in the first cell, the rule a cell
+padding further out. The same number moves a table by its padding between the
+two readings, and the two are told apart only by `compatibilityMode` in
+`settings.xml` — absent, Word reads mode 12. A `.doc` saved by Word's own
+converter is stated as mode 11.
+
 **XML has no way to carry a control character.** A `.doc` story uses them as
 marks — U+0003 stands for the rule above the footnotes — and a reader that
 kept one as text wrote it into a `<w:t>`, escaped or not, and Word called the

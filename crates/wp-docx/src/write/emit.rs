@@ -610,9 +610,9 @@ fn jc(out: &mut String, justify: Option<Justify>) {
 /// stand. Anything the reader treats as absent-by-default is therefore not
 /// written at all, and every properties element follows the schema's child
 /// order — a `<w:tblPr>` out of sequence is a file Word calls damaged.
-pub(crate) fn table(out: &mut String, table: &Table, styles: &StyleTable) {
+pub(crate) fn table(out: &mut String, table: &Table, styles: &StyleTable, mode: u32) {
     out.push_str("<w:tbl>");
-    table_props(out, &table.props, styles);
+    table_props(out, &table.props, styles, mode);
     // `<w:tblGrid>` is required even when there is nothing to say about the
     // columns; the reader treats the empty spelling and an absent one alike.
     if table.grid.is_empty() {
@@ -625,7 +625,7 @@ pub(crate) fn table(out: &mut String, table: &Table, styles: &StyleTable) {
         out.push_str("</w:tblGrid>");
     }
     for row in &table.rows {
-        table_row(out, row, styles);
+        table_row(out, row, styles, mode);
     }
     out.push_str("</w:tbl>");
 }
@@ -692,7 +692,7 @@ fn float_anchor(anchor: FloatAnchor) -> &'static str {
     }
 }
 
-fn table_props(out: &mut String, props: &TableProps, styles: &StyleTable) {
+fn table_props(out: &mut String, props: &TableProps, styles: &StyleTable, mode: u32) {
     let mut inner = String::new();
     if let Some(style) = props.style.and_then(|id| styles.get(id)) {
         let _ = write!(inner, r#"<w:tblStyle w:val="{}"/>"#, escape_attr(&style.id));
@@ -734,7 +734,16 @@ fn table_props(out: &mut String, props: &TableProps, styles: &StyleTable) {
         width_element(&mut inner, "tblCellSpacing", spacing);
     }
     if let Some(indent) = props.indent {
-        width_element(&mut inner, "tblInd", indent);
+        // The model's indent is the edge; a file in a mode before 15 states
+        // the text's position instead, a padding further in — the reader's
+        // conversion, undone. See `Ctx::compat_mode`.
+        let stated = match indent {
+            Width::Fixed(edge) if mode < 15 => Width::Fixed(wp_model::Twips(
+                edge.0 + crate::body::start_padding(styles, props),
+            )),
+            other => other,
+        };
+        width_element(&mut inner, "tblInd", stated);
     }
     if !props.borders.is_empty() {
         borders_element(&mut inner, "tblBorders", &props.borders, (None, None));
@@ -786,11 +795,11 @@ fn table_props(out: &mut String, props: &TableProps, styles: &StyleTable) {
     }
 }
 
-fn table_row(out: &mut String, row: &Row, styles: &StyleTable) {
+fn table_row(out: &mut String, row: &Row, styles: &StyleTable, mode: u32) {
     out.push_str("<w:tr>");
     row_props(out, &row.props);
     for cell in &row.cells {
-        table_cell(out, cell, styles);
+        table_cell(out, cell, styles, mode);
     }
     out.push_str("</w:tr>");
 }
@@ -860,7 +869,7 @@ fn row_props(out: &mut String, props: &RowProps) {
     out.push_str("</w:trPr>");
 }
 
-fn table_cell(out: &mut String, cell: &Cell, styles: &StyleTable) {
+fn table_cell(out: &mut String, cell: &Cell, styles: &StyleTable, mode: u32) {
     out.push_str("<w:tc>");
     cell_props(out, &cell.props);
     // A `<w:tc>` with no `<w:p>` in it is a document Word calls damaged.
@@ -869,7 +878,7 @@ fn table_cell(out: &mut String, cell: &Cell, styles: &StyleTable) {
         out.push_str("<w:p/>");
     }
     for item in &cell.content {
-        block(out, item, styles);
+        block(out, item, styles, mode);
     }
     out.push_str("</w:tc>");
 }
@@ -931,10 +940,10 @@ fn cell_props(out: &mut String, props: &CellProps) {
 /// One block of a cell's content. Paragraphs and nested tables are the ordinary
 /// cases; the rest are carried so that rewriting a table does not drop what a
 /// cell legally holds.
-fn block(out: &mut String, block: &Block, styles: &StyleTable) {
+fn block(out: &mut String, block: &Block, styles: &StyleTable, mode: u32) {
     match block {
         Block::Paragraph(paragraph) => self::paragraph(out, paragraph, styles),
-        Block::Table(table) => self::table(out, table, styles),
+        Block::Table(table) => self::table(out, table, styles, mode),
         // The same trade as the inline control in `inline`: the wrapper is
         // written with the properties this crate models, and the rest is the
         // stated cost of rewriting a table that holds one.
@@ -951,7 +960,7 @@ fn block(out: &mut String, block: &Block, styles: &StyleTable) {
             }
             out.push_str("</w:sdtPr><w:sdtContent>");
             for inner in &sdt.content {
-                self::block(out, inner, styles);
+                self::block(out, inner, styles, mode);
             }
             out.push_str("</w:sdtContent></w:sdt>");
         }
@@ -1381,6 +1390,39 @@ mod tests {
             "{xml}"
         );
         assert!(xml.contains(r#"w:fldCharType="end""#), "{xml}");
+    }
+
+    /// The reader's conversion, undone: the same model table states its
+    /// indent as the edge for a Word 2013 file and as the text for an older
+    /// one, so that Word reads either file as the table the model holds.
+    #[test]
+    fn a_tables_indent_is_written_as_the_files_mode_reads_it() {
+        use wp_model::table::{CellMargins, Table, TableProps, Width};
+        let table = Table {
+            props: TableProps {
+                indent: Some(Width::Fixed(Twips(-108))),
+                cell_margins: CellMargins {
+                    start: Some(Width::Fixed(Twips(108))),
+                    end: Some(Width::Fixed(Twips(108))),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let styles = StyleTable::new();
+        let mut modern = String::new();
+        super::table(&mut modern, &table, &styles, 15);
+        assert!(
+            modern.contains(r#"<w:tblInd w:w="-108" w:type="dxa"/>"#),
+            "{modern}"
+        );
+        let mut legacy = String::new();
+        super::table(&mut legacy, &table, &styles, 11);
+        assert!(
+            legacy.contains(r#"<w:tblInd w:w="0" w:type="dxa"/>"#),
+            "{legacy}"
+        );
     }
 
     #[test]

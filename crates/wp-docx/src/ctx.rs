@@ -50,6 +50,14 @@ impl HeaderIndex {
 pub(crate) struct Ctx<'a> {
     pub styles: &'a mut StyleTable,
     headers: &'a mut HeaderIndex,
+    /// The document's `compatibilityMode`, which decides what a table's
+    /// `<w:tblInd>` measures to: the cell's edge from Word 2013 on, the text
+    /// inside the first cell before that — and a file that states no mode is
+    /// a Word 2007 file to Word. Measured (2026-09-13): the same table with
+    /// `tblInd` 0 and cell margins of 108 has its rule on the margin in mode
+    /// 15 and its *text* on the margin in mode 12. Zero until the settings
+    /// part has been read, which is the older meaning.
+    pub compat_mode: u32,
     /// The bytes of the part being read.
     ///
     /// Needed so that an element the model does not fully understand — a
@@ -71,6 +79,7 @@ impl<'a> Ctx<'a> {
         Ctx {
             styles,
             headers,
+            compat_mode: 0,
             part: &[],
             scope: None,
         }
@@ -84,6 +93,7 @@ impl<'a> Ctx<'a> {
         Ctx {
             styles,
             headers,
+            compat_mode: 0,
             part,
             scope: None,
         }
@@ -100,6 +110,7 @@ impl<'a> Ctx<'a> {
         Ctx {
             styles,
             headers,
+            compat_mode: 0,
             part,
             scope: Some(scope),
         }

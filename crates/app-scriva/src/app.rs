@@ -4003,10 +4003,41 @@ fn blank() -> Document {
         body: vec![Block::Paragraph(Paragraph::new())],
         ..Document::new()
     };
+    // The layout here measures type the way Word 2013 and later do — with
+    // the face's own advances — and a document that says nothing about it is
+    // a Word 2007 document to Word, laid out with other metrics: the same
+    // paragraph in Calibri and its twin Carlito broke its lines two points
+    // apart in that mode and identically in this one. Saying so is what
+    // makes the file come back from Word as it was drawn here.
+    document.settings.compatibility_mode = 15;
+    // What a new document is in Word today, measured on the reference machine
+    // (Word 16.0.20326, 2026-09-13): twelve points, eight points after every
+    // paragraph, and a line of 278 to 240 — the document defaults Word writes
+    // into a new file's `styles.xml`. Stated here and written out, because a
+    // file that states nothing is *not* single-spaced to Word: it lays such a
+    // file with these same defaults, and a new document that drew single
+    // spaced here came back from Word a third taller. Word's kerning and
+    // ligature defaults are left out: the layout here measures type without
+    // them, and a file that asks for them would be laid out differently there.
+    document
+        .styles
+        .set_doc_defaults(wp_model::style::DocDefaults {
+            para: wp_model::prop::ParaProps {
+                spacing: wp_model::prop::Spacing {
+                    after: Some(Twips(160)),
+                    line: Some(LineSpacing::Multiple(Line240(278))),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            run: wp_model::prop::RunProps {
+                size: Some(HalfPoint(24)),
+                ..Default::default()
+            },
+        });
     let mut normal = wp_model::Style::new("Normal", wp_model::StyleKind::Paragraph);
     normal.default = true;
     normal.name = Some("Normal".into());
-    normal.run.size = Some(HalfPoint::DEFAULT);
     // Both Latin faces. Word draws a letter past U+007F in the `hAnsi` face,
     // and a style that names only `ascii` leaves that face to the document
     // defaults — which a new document does not state, and which Word then
@@ -9026,6 +9057,19 @@ mod tests {
         assert_eq!(
             app.document.styles.get(normal).unwrap().id.as_ref(),
             "Normal"
+        );
+        assert_eq!(
+            app.document.settings.compatibility_mode, 15,
+            "a new document is a Word 2013 document, which is how it is laid out"
+        );
+        // Word's own defaults for a new document, which are also what Word
+        // lays a file that states none with.
+        let defaults = app.document.styles.doc_defaults();
+        assert_eq!(defaults.run.size, Some(HalfPoint(24)));
+        assert_eq!(defaults.para.spacing.after, Some(Twips(160)));
+        assert_eq!(
+            defaults.para.spacing.line,
+            Some(LineSpacing::Multiple(Line240(278)))
         );
     }
 

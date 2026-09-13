@@ -93,6 +93,11 @@ pub fn document(doc: &Doc) -> (wp_model::Document, Vec<Media>) {
     document.settings.even_and_odd_headers = facing_pages(&doc.fib, &doc.table);
     document.settings.no_leading = no_leading(&doc.fib, &doc.table);
     document.settings.no_tab_for_hanging_indent = no_tab_for_hanging_indent(&doc.fib, &doc.table);
+    // What Word's own converter says of a `.doc` saved as `.docx`, measured
+    // on Word 16: a Word 2003 document, laid out with that Word's rules. The
+    // number decides how a table's indent is written, among other things, and
+    // a file that stated nothing would be laid out by Word as a 2007 one.
+    document.settings.compatibility_mode = 11;
     document.numbering = numbering;
     document.footnotes = read.footnotes(footnotes.0, headers.0);
     document.headers = bodies;
