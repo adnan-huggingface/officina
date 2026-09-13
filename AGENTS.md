@@ -55,6 +55,9 @@ and the file it renews says plainly when it is out of date, and which
 application it wants. `crates/wp-compare/tests/without_office.rs` runs the whole
 check with nothing on its PATH, so that this is measured rather than merely
 designed.
+A machine without either can still renew a reading through one that has
+them: `tools/probe/service.ps1` on that machine, and `OFFICINA_WORD_SERVICE`
+(with `OFFICINA_WORD_TOKEN`) here — see `tools/probe/README.md`.
 
 Which application answers for a document is decided by the document: Word for
 `.docx` and `.doc`, LibreOffice for `.odt`. Word reads ODF through a converter

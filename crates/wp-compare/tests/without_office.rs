@@ -31,6 +31,9 @@ fn without_word(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_wp-compare"))
         .args(args)
         .env("PATH", "")
+        // A developer who reaches Word over the network has it set in every
+        // shell; these tests are about a machine with no route to Word at all.
+        .env_remove("OFFICINA_WORD_SERVICE")
         .output()
         .expect("the binary under test is an absolute path and needs no PATH to start")
 }

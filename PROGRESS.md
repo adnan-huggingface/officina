@@ -4858,3 +4858,30 @@ out and a worst of 3.06pt going to none and 0.31pt, because its Calibri Light
 headings are now found. The catalogue fault is not Linux's, so the same
 improvement should appear on the Windows machine the record was made on.
 `LAYOUT.md` is not re-recorded here; that is for the machine that owns it.
+
+## The measuring reaches Word and LibreOffice on another machine (2026-09-13)
+
+The Linux machine this project is now worked on from has neither application,
+so every question that needed Word's answer waited for a session on a Windows
+machine: renewing a reading, recording `LAYOUT.md`, measuring a face's line
+pitch. `tools/probe/service.ps1` is a small HTTP front for both applications,
+run on a Windows machine in its desktop session; `cargo xtask compare` renders
+through it when `OFFICINA_WORD_SERVICE` names it. The document and the probe
+script are sent, so what runs is what the stamp hashed; the PDF comes back and
+the reading is taken here as before. Reached by `curl` rather than a dependency
+the instrument would carry for one route, and never from a check: `--check`
+still renews nothing.
+
+Two smaller things the route needed. The reading is taken by `python`, which a
+Linux distribution does not have — `python3`, then, and `OFFICINA_PYTHON` for a
+machine whose system Python refuses packages. And PyMuPDF's compatibility shim
+announces its deprecation on standard output, where the probe prints its rows;
+only the three kinds of row the parser knows are kept now, so nothing the
+interpreter says for itself is committed as a measurement. The readings under
+`corpus/rendered/` are LF from here on, having been CRLF from Python on
+Windows; nothing in them but the line endings changed.
+
+Proof: `minimal.docx` renewed through Word on the other machine and
+`second-producer.odt` through its LibreOffice both came back identical to the
+committed readings. Tests: the filter, and `without_office.rs` now unsets the
+service address so that it measures a machine with no route to Word at all.

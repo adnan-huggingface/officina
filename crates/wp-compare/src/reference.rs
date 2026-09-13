@@ -30,6 +30,17 @@
 //! of the document it read, so a reading of somebody's real document is that
 //! document's text, and those are looked at from `manual_examples/` and never
 //! committed — the same rule, for the same reason, one step further along.
+//!
+//! **The applications need not be on this machine.** A developer without Word
+//! — any Linux machine — can point `OFFICINA_WORD_SERVICE` at another machine
+//! running `tools/probe/service.ps1`, a small HTTP front for Word and
+//! LibreOffice, with `OFFICINA_WORD_TOKEN` for its token. The document and the
+//! probe script go over, the rendering comes back, and everything downstream
+//! is unchanged: the reading is still taken here, by the same `pdfink.py` the
+//! stamp hashes, so a reading renewed over the wire is stamped exactly as one
+//! renewed on the machine that owns the application. Reached by `curl`, which
+//! every platform this runs on has, rather than by a dependency the instrument
+//! would carry for one route.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -280,6 +291,9 @@ fn probe(name: &str) -> PathBuf {
 /// is not, but the script that drives it is, and a claim to run anywhere that
 /// nothing here ever runs is prose rather than a capability.
 fn render(who: Renderer, path: &Path, pdf: &Path) -> Result<(), String> {
+    if let Some(service) = Service::from_env() {
+        return service.render(who, path, pdf);
+    }
     if !cfg!(windows) {
         return Err(format!(
             "{}'s half of the comparison needs Windows and an installed {0}",
@@ -330,22 +344,179 @@ fn extract(pdf: &Path) -> Result<String, String> {
     if !script.exists() {
         return Err(format!("{} is missing", script.display()));
     }
-    let out = Command::new("python")
-        .arg(&script)
-        .arg(pdf)
-        .output()
-        .map_err(|e| {
-            format!(
-                "the rendering is made but nothing here can read it: {e}.\n\
-                 {} needs Python and PyMuPDF — `python -m pip install pymupdf`.",
-                script.display()
-            )
-        })?;
+    let out = python(&[script.as_os_str(), pdf.as_os_str()]).map_err(|e| {
+        format!(
+            "the rendering is made but nothing here can read it: {e}.\n\
+             {} needs Python and PyMuPDF — `python -m pip install pymupdf`, or \
+             `OFFICINA_PYTHON` naming an interpreter that has it.",
+            script.display()
+        )
+    })?;
     if !out.status.success() {
         let why = String::from_utf8_lossy(&out.stderr);
         return Err(format!("reading {} failed:\n{}", pdf.display(), why.trim()));
     }
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    Ok(measurements(&String::from_utf8_lossy(&out.stdout)))
+}
+
+/// Python, wherever this machine keeps it.
+///
+/// `OFFICINA_PYTHON` names the interpreter outright, for a machine whose
+/// system Python refuses packages and keeps PyMuPDF in an environment of its
+/// own. Otherwise `python`, and then `python3`: Windows and most virtual
+/// environments have the first, a Linux distribution has only the second, and
+/// which of them a machine has is not the developer's fault.
+fn python(args: &[&std::ffi::OsStr]) -> std::io::Result<std::process::Output> {
+    if let Some(named) = std::env::var_os("OFFICINA_PYTHON").filter(|v| !v.is_empty()) {
+        return Command::new(named).args(args).output();
+    }
+    match Command::new("python").args(args).output() {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            Command::new("python3").args(args).output()
+        }
+        other => other,
+    }
+}
+
+/// The rows of a reading, and nothing else the interpreter said.
+///
+/// The probe prints its measurements to standard output, and so does anything
+/// else in the process that talks: PyMuPDF's compatibility shim announces on
+/// the same stream that its old name is deprecated. A reading is committed, so
+/// a line that is not a measurement would be committed with it, and would
+/// change every time the shim changed its mind about the wording. Only the
+/// three kinds of row [`parse`] knows are kept.
+fn measurements(stdout: &str) -> String {
+    stdout
+        .lines()
+        .filter(|line| {
+            ["word\t", "mark\t", "picture\t"]
+                .iter()
+                .any(|kind| line.starts_with(kind))
+        })
+        .map(|line| format!("{line}\n"))
+        .collect()
+}
+
+/// Word and LibreOffice on another machine, reached over the network.
+///
+/// The script that renders is sent along with the document rather than found
+/// on the other side, so what runs is what the stamp hashed, and the other
+/// machine needs nothing of this repository but the service itself.
+struct Service {
+    url: String,
+    token: String,
+}
+
+impl Service {
+    fn from_env() -> Option<Service> {
+        let url = std::env::var("OFFICINA_WORD_SERVICE").ok()?;
+        let url = url.trim().trim_end_matches('/').to_owned();
+        if url.is_empty() {
+            return None;
+        }
+        let token = std::env::var("OFFICINA_WORD_TOKEN").unwrap_or_default();
+        Some(Service { url, token })
+    }
+
+    fn render(&self, who: Renderer, path: &Path, pdf: &Path) -> Result<(), String> {
+        let script = probe(who.script());
+        if !script.exists() {
+            return Err(format!("{} is missing", script.display()));
+        }
+        // Named for the document and its digest, so two documents of one name
+        // — a corpus file and a copy of it elsewhere — cannot answer for each
+        // other in the service's work directory.
+        let stamp = digest(path);
+        let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+        let stem: String = stem
+            .chars()
+            .map(|c| if c.is_alphanumeric() { c } else { '-' })
+            .collect();
+        let ext = path.extension().unwrap_or_default().to_string_lossy();
+        let remote_doc = format!("{stem}-{stamp:08x}.{ext}");
+        let remote_pdf = format!("{stem}-{stamp:08x}.pdf");
+        let remote_script = format!("scripts/{}", who.script());
+
+        self.put(&remote_script, &script)?;
+        self.put(&remote_doc, path)?;
+        let request = format!(
+            r#"{{"script": "work/{remote_script}", "args": {{"Path": "{{work}}/{remote_doc}", "Out": "{{work}}/{remote_pdf}"}}, "timeout": 600}}"#
+        );
+        let answer = self.curl(
+            &[
+                "-X",
+                "POST",
+                "-H",
+                "Content-Type: application/json",
+                "--data-binary",
+                &request,
+            ],
+            "/run",
+            None,
+        )?;
+        let fetched = self.curl(
+            &["-o", &pdf.to_string_lossy()],
+            &format!("/files/{remote_pdf}"),
+            None,
+        );
+        for name in [&remote_doc, &remote_pdf] {
+            let _ = self.curl(&["-X", "DELETE"], &format!("/files/{name}"), None);
+        }
+        match fetched {
+            Ok(_) if pdf.exists() => Ok(()),
+            _ => Err(format!(
+                "{} at {} would not render {}. The service answered:\n{}",
+                who.name(),
+                self.url,
+                path.display(),
+                answer.trim()
+            )),
+        }
+    }
+
+    fn put(&self, name: &str, file: &Path) -> Result<(), String> {
+        let from = format!("@{}", file.display());
+        self.curl(
+            &[
+                "-X",
+                "PUT",
+                "-H",
+                "Content-Type: application/octet-stream",
+                "--data-binary",
+                &from,
+            ],
+            &format!("/files/{name}"),
+            Some(file),
+        )
+        .map(|_| ())
+    }
+
+    /// One request, and what came back. `-f` makes an HTTP error an error
+    /// here, so a service that refused the token or lost the file says so
+    /// rather than handing back a page of JSON as if it were a PDF.
+    fn curl(&self, args: &[&str], route: &str, about: Option<&Path>) -> Result<String, String> {
+        let token = format!("X-Officina-Token: {}", self.token);
+        let out = Command::new("curl")
+            .args(["-sS", "-f", "-m", "900", "-H", &token])
+            .args(args)
+            .arg(format!("{}{route}", self.url))
+            .output()
+            .map_err(|e| {
+                format!("OFFICINA_WORD_SERVICE is set, and reaching it needs curl: {e}")
+            })?;
+        if !out.status.success() {
+            let what = about
+                .map(|p| format!(" for {}", p.display()))
+                .unwrap_or_default();
+            return Err(format!(
+                "the Word service at {} refused {route}{what}:\n{}",
+                self.url,
+                String::from_utf8_lossy(&out.stderr).trim()
+            ));
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    }
 }
 
 /// The word with any tab leader taken off the end of it.
@@ -526,6 +697,22 @@ mod tests {
     #[test]
     fn an_empty_answer_is_an_error_rather_than_a_clean_bill() {
         assert!(parse("").is_err());
+    }
+
+    /// PyMuPDF's compatibility shim talks on the same stream as the probe, and
+    /// what it says must not become a row of a committed reading.
+    #[test]
+    fn what_the_interpreter_said_for_itself_is_not_a_measurement() {
+        let said = "warning: The `fitz` API is deprecated and will be removed in future.\n\
+                    word\t1\t72.000\t100.000\tkept\n\
+                    mark\t1\t72.000\t72.000\t540.000\t72.480\n\
+                    picture\t2\t72.000\t72.000\t192.000\t162.000\n\
+                    Traceback (most recent call last):\n";
+        let kept = measurements(said);
+        assert_eq!(kept.lines().count(), 3);
+        assert!(kept.starts_with("word\t"));
+        assert!(!kept.contains("deprecated"));
+        assert!(!kept.contains("Traceback"));
     }
 
     /// The guarantee a check rests on, tested where it is hardest to see: on a

@@ -88,3 +88,25 @@ more work.
 
 Probe documents are throwaways: generate, measure, delete. They are not
 corpus files and must not become test dependencies.
+
+## The applications on another machine
+
+`service.ps1` is a small HTTP front for Word and LibreOffice, for a developer
+whose own machine has neither — any Linux machine. It runs on a Windows machine
+that has them, in the logged-in desktop session (Word automation hangs on any
+dialog outside one), listens on one port for the local network, and does five
+things for a caller presenting its token: keeps a work directory of files, runs
+a probe script from this directory against them, opens a document in Word and
+reports what Word made of it, lists the machine's fonts, and pulls its copy of
+the repository. Set `OFFICINA_WORD_SERVICE` to its address and
+`OFFICINA_WORD_TOKEN` to the token, and `cargo xtask compare` renders through
+it: the document and the probe script go over, the PDF comes back, and the
+reading is taken here by the same `pdfink.py` the stamp hashes — so a reading
+renewed over the wire is stamped exactly as one renewed beside Word. Set
+`OFFICINA_PYTHON` where the system Python refuses packages and PyMuPDF lives in
+an environment of its own. Both readings of the corpus renewed this way, one
+through Word and one through LibreOffice, came back identical to the ones
+committed from the machine that has the applications.
+
+Nothing about the machine that runs it is in this repository: the token, the
+address and the firewall rule are that machine's business.
