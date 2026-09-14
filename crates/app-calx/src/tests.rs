@@ -855,3 +855,57 @@ fn sheets_are_added_renamed_hidden_and_shown_from_the_keyboard() {
     drive.settle(&mut app);
     assert!(app.dialog.is_none());
 }
+
+/// Tools ▸ Define Names… by its letters, New reached by Tab, a name typed,
+/// Enter to finish the row and Enter to save: a defined name, from the
+/// keyboard. The new row's field had no keyboard, and Enter did nothing while
+/// a row was open.
+#[test]
+fn a_name_is_defined_from_the_keyboard() {
+    let drive = ui_kit::drive::Driver::new();
+    let mut app = Calx::new();
+    type_into(&mut app, "A1", "10");
+    drive.settle(&mut app);
+    drive.menu(&mut app, 'T', 'N');
+    assert!(matches!(app.dialog, Some(Dialog::Names { .. })));
+    // Cancel, Save, New.
+    for _ in 0..3 {
+        drive.press(&mut app, "Tab");
+    }
+    drive.press(&mut app, "Enter");
+    drive.settle(&mut app);
+    assert!(
+        matches!(
+            app.dialog,
+            Some(Dialog::Names {
+                editing: Some(0),
+                ..
+            })
+        ),
+        "New opened a row"
+    );
+    drive.type_text(&mut app, "Sales");
+    if let Some(Dialog::Names { names, .. }) = &app.dialog {
+        assert_eq!(
+            names[0].name, "Sales",
+            "the name typed replaced the one offered"
+        );
+    }
+    drive.press(&mut app, "Enter");
+    drive.settle(&mut app);
+    assert!(
+        matches!(app.dialog, Some(Dialog::Names { editing: None, .. })),
+        "Enter finished the row and left the box up"
+    );
+    drive.press(&mut app, "Enter");
+    drive.settle(&mut app);
+    assert!(app.dialog.is_none(), "the second Enter saved");
+    let names: Vec<(String, String)> = app
+        .doc
+        .workbook
+        .defined_names
+        .iter()
+        .map(|n| (n.name.clone(), n.refers_to.clone()))
+        .collect();
+    assert_eq!(names, vec![("Sales".to_owned(), "Sheet1!$A$1".to_owned())]);
+}

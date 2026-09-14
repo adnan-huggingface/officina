@@ -712,6 +712,9 @@ impl Calx {
                 );
                 let mut save = false;
                 let mut remove: Option<usize> = None;
+                // A row opened this frame, by a button the Enter key pressed:
+                // that Enter is spent, and must not also finish the row.
+                let before = *editing;
                 modal(ctx, "Names", |ui| {
                     ui.set_min_width(560.0);
                     egui::ScrollArea::vertical()
@@ -730,9 +733,16 @@ impl Calx {
                                     for (index, entry) in names.iter_mut().enumerate() {
                                         let open = *editing == Some(index);
                                         if open {
-                                            ui.add(
-                                                egui::TextEdit::singleline(&mut entry.name)
-                                                    .desired_width(120.0),
+                                            // The row just opened — by New or
+                                            // by Edit — takes the keyboard in
+                                            // its name, selected, as Excel's
+                                            // New Name box does: what is typed
+                                            // next is the name.
+                                            dialog::first_field(
+                                                ui,
+                                                egui::Id::new(("calx-names-row", index)),
+                                                &mut entry.name,
+                                                120.0,
                                             );
                                             ui.add(
                                                 egui::TextEdit::singleline(&mut entry.refers_to)
@@ -835,8 +845,16 @@ impl Calx {
                             *editing = Some(names.len() - 1);
                         }
                     });
+                    // Enter finishes the row being edited, and saves the list
+                    // when no row is: the first Enter is "this name is done",
+                    // the second "these names are done". Before, Enter did
+                    // nothing while a row was open, and the only key that
+                    // left it was Escape, which threw the whole list away.
+                    let opened = editing.is_some() && *editing != before;
                     match dialog::answered(ui) {
+                        Some(true) if opened => {}
                         Some(true) if editing.is_none() => save = true,
+                        Some(true) => *editing = None,
                         Some(false) => keep = false,
                         _ => {}
                     }

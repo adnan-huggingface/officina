@@ -5246,3 +5246,14 @@ steps from the showing sheet's place among the shown ones — which a sheet just
 hidden no longer has — so it returned without moving, and the hidden sheet
 stayed on the screen taking what was typed. It now moves to the nearest shown
 sheet, the next one first.
+
+## A defined name can be made from the keyboard (2026-09-14)
+
+Handoff open item 1, Names row editing. Tools ▸ Define Names…, Tab to New,
+Enter: the new row opened with no keyboard in it, so the name typed next went
+nowhere; and while a row was open Enter did nothing, so the only key that left
+it was Escape, which threw the whole list away. The opened row's name now
+takes the keyboard with its text selected, as Excel's New Name box does;
+Enter finishes the row, and a second Enter saves the list. The Enter that
+presses New or Edit is spent on the button and does not also finish the row
+it opened.
