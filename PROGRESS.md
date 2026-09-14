@@ -5075,3 +5075,22 @@ repeatable, which a second test pins, because nothing above holds otherwise.
 First reading, of a heading, mixed emphasis, a wrapping bullet, a filled
 table, a page break, a centred line, a numbered list and a justified
 paragraph: 183 words matched, none out, worst 0.78pt; 8 rules matched.
+
+## Both applications can be driven by keystroke inside a test (2026-09-13)
+
+The handoff's second wish. Every keystroke drive so far has run on a hidden
+display, a screenshot read as a picture after each key, and each bug it found
+was then pinned by a test that ran the same frames headless in eighty
+milliseconds — once a frame helper had been written by hand, for the third
+time, in the third place, and each time in a different order from the
+window's. The order is now written once: `ui_kit::shell::frame` is what the
+window runs — dialogs, then the toolbar with the menus, then the document —
+and `ui_kit::drive::Driver` runs that frame with the events a keyboard would
+have put into it: a key with its modifiers and the text a printable key also
+sends, a menu opened by its Alt letter and an item chosen by its own, text as
+typed. The same key names serve the corpus script and a test, through one
+parser. Two of the rig's own sequences are tests now: Scriva's Alt+I, T,
+Enter puts a table in the document and types no letter on the way, and
+Calx's Alt+E, G, C5, Enter lands the cursor on C5 and nothing in the grid.
+The display is still what the file choosers and the look of a page need, and
+nothing else.

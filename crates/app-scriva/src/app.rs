@@ -7508,6 +7508,39 @@ mod tests {
         );
     }
 
+    /// The rig's own sequence — Alt+I, T, Enter — as a test, through the
+    /// frame the window runs: the menu opens on its letter, the item on its
+    /// own, the dialog answers Enter in the overlay, and neither letter is
+    /// typed into the document on the way past.
+    #[test]
+    fn insert_table_by_menu_letters_and_enter_puts_a_table_in_the_document() {
+        let drive = ui_kit::drive::Driver::new();
+        let mut app = app_with(&["before"]);
+        drive.settle(&mut app);
+        drive.menu(&mut app, 'I', 'T');
+        assert!(app.table_draft.is_some(), "Alt+I, T opened Insert Table");
+        drive.press(&mut app, "Enter");
+        drive.settle(&mut app);
+        assert!(app.table_draft.is_none(), "Enter answered it");
+        let table = app
+            .document
+            .body
+            .iter()
+            .find_map(|block| match block {
+                Block::Table(table) => Some(table),
+                _ => None,
+            })
+            .expect("and the table is in the document");
+        assert_eq!((table.rows.len(), table.rows[0].cells.len()), (2, 2));
+        let text: String = app
+            .document
+            .paragraphs()
+            .iter()
+            .map(|paragraph| paragraph.text())
+            .collect();
+        assert_eq!(text, "before", "no letter of the sequence was typed");
+    }
+
     /// One whole frame of the window's body, with `events` as its input.
     fn frame_of(app: &mut Scriva, ctx: &egui::Context, events: Vec<egui::Event>) {
         let input = egui::RawInput {

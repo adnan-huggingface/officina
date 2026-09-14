@@ -7709,6 +7709,34 @@ mod tests {
         assert_eq!(width, Some(20.0), "and applies nothing");
     }
 
+    /// The same drive by menu, through the frame the window runs: Alt+E, G
+    /// opens Go To, the reference is typed into its box and not into the
+    /// grid, Enter answers it, and the cursor is on C5 with nothing typed.
+    #[test]
+    fn go_to_by_menu_letters_takes_the_typed_reference_and_nothing_else_does() {
+        let drive = ui_kit::drive::Driver::new();
+        let mut app = Calx::new();
+        drive.settle(&mut app);
+        drive.menu(&mut app, 'E', 'G');
+        assert!(
+            matches!(app.dialog, Some(Dialog::GoTo { .. })),
+            "Alt+E, G opened Go To"
+        );
+        drive.type_text(&mut app, "C5");
+        drive.press(&mut app, "Enter");
+        drive.settle(&mut app);
+        assert!(app.dialog.is_none(), "Enter answered it");
+        assert_eq!(
+            app.grid.selection.cursor(),
+            CellRef::from_a1("C5").expect("valid")
+        );
+        let a1 = CellRef::from_a1("A1").expect("valid");
+        assert!(
+            app.doc.workbook.sheet(0).and_then(|s| s.get(a1)).is_none(),
+            "nothing of the sequence was typed into the grid"
+        );
+    }
+
     /// Driven on the rig: Ctrl+G, C5, Enter landed on C6 — the Enter that
     /// answered the box reached the grid too and walked the cursor. With a
     /// copy pending it pasted the clipboard at the target instead.

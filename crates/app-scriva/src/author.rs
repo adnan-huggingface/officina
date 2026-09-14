@@ -72,7 +72,7 @@ fn step(word: &str, rest: &str) -> Result<Step, String> {
     Ok(match word {
         "type" => Step::Type(quoted(rest)),
         "key" => {
-            let (key, modifiers) = key(rest)?;
+            let (key, modifiers) = ui_kit::drive::key_spec(rest)?;
             Step::Key(key, modifiers)
         }
         "table" => {
@@ -158,32 +158,6 @@ fn quoted(rest: &str) -> String {
         Some(inner) if rest.len() >= 2 => inner.to_owned(),
         _ => rest.to_owned(),
     }
-}
-
-/// `ctrl+shift+Home`: modifiers in front, egui's own key names last.
-fn key(spec: &str) -> Result<(egui::Key, egui::Modifiers), String> {
-    let mut modifiers = egui::Modifiers::NONE;
-    let mut parts = spec.split('+').peekable();
-    let mut name = None;
-    while let Some(part) = parts.next() {
-        if parts.peek().is_none() {
-            name = Some(part);
-            break;
-        }
-        match part.to_ascii_lowercase().as_str() {
-            "ctrl" | "control" | "cmd" => modifiers = modifiers.plus(egui::Modifiers::COMMAND),
-            "shift" => modifiers = modifiers.plus(egui::Modifiers::SHIFT),
-            "alt" => modifiers = modifiers.plus(egui::Modifiers::ALT),
-            other => return Err(format!("`{other}` is not a modifier (ctrl, shift, alt)")),
-        }
-    }
-    let name = name
-        .filter(|n| !n.is_empty())
-        .ok_or("`key` wants a key name")?;
-    let key = egui::Key::from_name(name).ok_or_else(|| {
-        format!("`{name}` is not a key name egui knows (Enter, Tab, ArrowDown, Home, A)")
-    })?;
-    Ok((key, modifiers))
 }
 
 /// A new document with the script run through it, as the user would have left

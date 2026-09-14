@@ -384,36 +384,47 @@ impl<A: DocumentApp> eframe::App for Host<A> {
             self.title = title;
         }
 
-        self.app.overlay(&ctx);
-
-        // The bottom panel is declared before the centre so that it keeps its
-        // height when the window is short: panels are allotted space in the
-        // order they are added, and the centre takes what is left. The status
-        // of the document is never the thing to drop.
-        let chrome = ui.visuals().panel_fill;
-        egui::Panel::top("shell-toolbar")
-            .resizable(false)
-            .frame(
-                egui::Frame::new()
-                    .fill(chrome)
-                    .inner_margin(egui::Margin::symmetric(6, 4)),
-            )
-            .show(ui, |ui| self.app.toolbar(ui));
-
-        egui::Panel::bottom("shell-status")
-            .resizable(false)
-            .exact_size(STATUS_HEIGHT)
-            .frame(
-                egui::Frame::new()
-                    .fill(chrome)
-                    .inner_margin(egui::Margin::symmetric(6, 3)),
-            )
-            .show(ui, |ui| self.app.status(ui));
-
-        egui::CentralPanel::no_frame()
-            .frame(egui::Frame::new().fill(egui::Color32::WHITE))
-            .show(ui, |ui| self.app.ui(ui));
+        frame(&mut self.app, ui);
     }
+}
+
+/// One frame of the window's body, in the order the shell runs it: the
+/// dialogs first, then the toolbar with the menus in it, the status bar, and
+/// the document with what is left of the keyboard.
+///
+/// The one place the order is written, so that a test driving an application
+/// through [`crate::drive`] runs the frame the window runs and not a
+/// second arrangement of the same parts. The bugs the keystroke drives found
+/// were all in this order — a dialog that closed in the overlay and let its
+/// Enter through to the grid below — and a harness that ran the parts in
+/// another order would have been green for every one of them.
+pub fn frame<A: DocumentApp>(app: &mut A, ui: &mut egui::Ui) {
+    let ctx = ui.ctx().clone();
+    app.overlay(&ctx);
+
+    let chrome = ui.visuals().panel_fill;
+    egui::Panel::top("shell-toolbar")
+        .resizable(false)
+        .frame(
+            egui::Frame::new()
+                .fill(chrome)
+                .inner_margin(egui::Margin::symmetric(6, 4)),
+        )
+        .show(ui, |ui| app.toolbar(ui));
+
+    egui::Panel::bottom("shell-status")
+        .resizable(false)
+        .exact_size(STATUS_HEIGHT)
+        .frame(
+            egui::Frame::new()
+                .fill(chrome)
+                .inner_margin(egui::Margin::symmetric(6, 3)),
+        )
+        .show(ui, |ui| app.status(ui));
+
+    egui::CentralPanel::no_frame()
+        .frame(egui::Frame::new().fill(egui::Color32::WHITE))
+        .show(ui, |ui| app.ui(ui));
 }
 
 #[cfg(test)]
