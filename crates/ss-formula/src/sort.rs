@@ -360,34 +360,48 @@ pub fn region(sheet: &Sheet, at: CellRef) -> CellRange {
 
 /// Whether the first row of `range` looks like headings rather than data.
 ///
-/// The signal is what is *at the top*, not how it compares to what is below.
-/// A row of text over a column of numbers is the easy case and every guess
-/// gets it right; the case that decides the rule is a text column under a text
-/// heading, which is what most exported data looks like — timestamps, ids,
-/// statuses, all of them strings. There is nothing in the values to tell the
-/// heading apart, and both answers are wrong sometimes:
+/// **Excel's guess, measured, and no cleverer.** Excel 16 was asked, through
+/// `Range.Sort` and `Range.RemoveDuplicates` with `Header:=xlGuess` — the
+/// ribbon's own guess — what it made of five columns. `pear, apple, fig,
+/// banana` it sorted whole: text over text is data, whatever most exported
+/// tables look like. `amount, 3, 1, 2` kept its first cell: text over a
+/// number is a heading. A **bold** `pear` over a plain `apple` kept its first
+/// cell too: a formatting difference is a heading as much as a type
+/// difference is. `3, 1, 4, 2` sorted whole, and `x, y, x, z` sorted whole
+/// and lost one `x` to Remove Duplicates.
 ///
-/// - Call it data, and a quick A→Z files the word `topic` in among the topics.
-/// - Call it a heading, and a list that genuinely has none loses its first row
-///   from the sort.
-///
-/// Excel takes the second, and so do we, because the two mistakes are not
-/// equally visible: a heading sitting in the middle of the data is obvious
-/// from the screen, and a row quietly left out of the sort is not. The Sort
-/// dialog's checkbox is there for the times the guess is wrong, and a quick
-/// sort says in the status bar when it kept a row back.
+/// So the signal is a *difference* between the first row and the second, and
+/// never the first row alone. The earlier rule here called any text-topped
+/// column a heading, because a text column under a text heading is what most
+/// exported data looks like and a heading sorted into the data is the more
+/// visible mistake; it was a reasonable rule and it was not Excel's, and a
+/// user who knows what Excel does with a plain list is not served by a
+/// spreadsheet that quietly does the other thing. The dialog's checkbox is
+/// there for the times the guess is wrong, as it is in Excel.
 ///
 /// A number, a date or a boolean at the top is still data, and vetoes the
 /// whole guess: nobody heads a column with `2024`.
-pub fn looks_like_headers(sheet: &Sheet, range: CellRange) -> bool {
+pub fn looks_like_headers(book: &Workbook, sheet: usize, range: CellRange) -> bool {
+    let Some(sheet) = book.sheet(sheet) else {
+        return false;
+    };
     if range.rows() < 3 {
         return false;
     }
     let kind = |at: CellRef| sheet.get(at).map(|c| c.value);
-    let mut any = false;
+    let bold = |at: CellRef| book.styles.font(sheet.style_at(at)).bold;
+    let mut differs = false;
     for col in range.start.col..=range.end.col {
-        match kind(CellRef::new(range.start.row, col)) {
-            Some(CellValue::Text(_)) => any = true,
+        let top = CellRef::new(range.start.row, col);
+        let below = CellRef::new(range.start.row + 1, col);
+        match kind(top) {
+            Some(CellValue::Text(_)) => {
+                differs |= matches!(
+                    kind(below),
+                    Some(CellValue::Number(_) | CellValue::Bool(_) | CellValue::Error(_))
+                );
+                differs |= bold(top) && !bold(below);
+            }
             // A column with nothing at the top says nothing either way — a
             // calculated column with no heading is an ordinary shape, and
             // letting it veto the guess would mean every such table sorted its
@@ -396,7 +410,7 @@ pub fn looks_like_headers(sheet: &Sheet, range: CellRange) -> bool {
             _ => return false,
         }
     }
-    any
+    differs
 }
 
 #[cfg(test)]
@@ -780,41 +794,63 @@ mod tests {
         put(&mut book, "B2", CellValue::Number(1.0));
         text(&mut book, "A3", "bob");
         put(&mut book, "B3", CellValue::Number(2.0));
-        assert!(looks_like_headers(&book.sheets[0], range("A1", "B3")));
+        assert!(looks_like_headers(&book, 0, range("A1", "B3")));
         assert!(
-            looks_like_headers(&book.sheets[0], range("A1", "C3")),
+            looks_like_headers(&book, 0, range("A1", "C3")),
             "an empty column C does not veto the guess"
         );
         // A number at the top of a column is data, whatever its neighbours say.
         put(&mut book, "C1", CellValue::Number(2024.0));
-        assert!(!looks_like_headers(&book.sheets[0], range("A1", "C3")));
+        assert!(!looks_like_headers(&book, 0, range("A1", "C3")));
 
-        // Text over text — what most exported data looks like, and the case
-        // the rule exists to decide. Excel calls it a heading; so do we.
+        // Text over text — what most exported data looks like. Excel, asked,
+        // sorts it whole: `pear, apple, fig, banana` came back `apple, banana,
+        // fig, pear` from `Range.Sort` with `Header:=xlGuess`.
         let mut all_text = book_of_text();
-        assert!(looks_like_headers(&all_text.sheets[0], range("A1", "A3")));
+        assert!(!looks_like_headers(&all_text, 0, range("A1", "A3")));
         put(&mut all_text, "A1", CellValue::Number(1.0));
         assert!(
-            !looks_like_headers(&all_text.sheets[0], range("A1", "A3")),
+            !looks_like_headers(&all_text, 0, range("A1", "A3")),
             "nobody heads a column with a number"
         );
     }
 
+    /// A column of strings under a string is data, unless the string on top
+    /// is set apart. Measured on Excel 16: `topic, beta, alpha, gamma` sorts
+    /// whole — the earlier rule here kept `topic` back, on the argument that
+    /// a heading sorted into the data is the more visible mistake, and it
+    /// was not what Excel does — and the same column with `topic` in bold
+    /// keeps it at the top.
     #[test]
-    fn a_column_of_strings_under_a_string_is_a_heading() {
-        // The workbook this came from: 140k rows of an export, every column a
-        // timestamp or an id or a status, all of them text. Guessing "no" here
-        // filed the word `topic` in among the topics.
+    fn a_column_of_strings_under_a_string_is_data_unless_the_top_is_bold() {
         let mut book = book();
         for (row, value) in ["topic", "beta", "alpha", "gamma"].into_iter().enumerate() {
             text(&mut book, &format!("A{}", row + 1), value);
         }
-        assert!(looks_like_headers(&book.sheets[0], range("A1", "A4")));
-
-        let change = sort(&mut book, 0, range("A1", "A4"), &ascending(0), true).expect("sortable");
+        assert!(!looks_like_headers(&book, 0, range("A1", "A4")));
+        let change = sort(&mut book, 0, range("A1", "A4"), &ascending(0), false).expect("sortable");
         apply(&mut book, change);
         let column: Vec<String> = (1..=4).map(|r| shown(&book, &format!("A{r}"))).collect();
-        assert_eq!(column, ["topic", "alpha", "beta", "gamma"]);
+        assert_eq!(column, ["alpha", "beta", "gamma", "topic"]);
+
+        let mut with_bold = Workbook::blank();
+        for (row, value) in ["topic", "beta", "alpha", "gamma"].into_iter().enumerate() {
+            text(&mut with_bold, &format!("A{}", row + 1), value);
+        }
+        let mut look = with_bold.styles.look(StyleId::DEFAULT);
+        look.font.bold = true;
+        let bold = with_bold.styles.style_for(&look);
+        let at = CellRef::from_a1("A1").expect("a1");
+        let mut cell = with_bold.sheets[0]
+            .get(at)
+            .cloned()
+            .expect("the cell is there");
+        cell.style = bold;
+        with_bold.sheets[0].set(at, cell);
+        assert!(
+            looks_like_headers(&with_bold, 0, range("A1", "A4")),
+            "a bold word over plain ones is a heading"
+        );
     }
 
     fn book_of_text() -> Workbook {

@@ -324,11 +324,24 @@ fn entry(ui: &mut egui::Ui, label: &str, shortcut: &str, checked: Option<bool>) 
     // rather than merely read, which is what stops the row above from also
     // answering to it — and what stops the letter reaching the grid, where it
     // would start typing into a cell.
-    let by_key = ui.is_enabled() && marked.taken(ui, egui::Modifiers::NONE);
+    let by_key = ui.is_enabled() && !submenu_open(ui) && marked.taken(ui, egui::Modifiers::NONE);
     if response.clicked() || by_key {
         ui.close();
     }
     Item { response, by_key }
+}
+
+/// Whether a submenu of this menu is open, in which case the keyboard is the
+/// submenu's and none of this menu's letters may take a key.
+///
+/// The letters of a menu stayed live while its submenu was open: Insert,
+/// Page Number, and the P meant for "Plain Number" went to "Picture…" one row
+/// up, which opened a file chooser over the footer being edited. Windows
+/// hands the keyboard to the innermost open menu and nothing above it, and
+/// so does this — a row hovered or chosen opens its submenu, and from then on
+/// its parent's letters wait.
+fn submenu_open(ui: &egui::Ui) -> bool {
+    egui::containers::menu::MenuState::from_ui(ui, |state, _| state.open_item.is_some())
 }
 
 /// A submenu, opened by resting on its row — or by its letter.
@@ -343,7 +356,7 @@ pub fn sub<R>(ui: &mut egui::Ui, label: &str, add: impl FnOnce(&mut egui::Ui) ->
     let button = egui::Button::new(atoms)
         .gap(0.0)
         .right_text(egui::containers::menu::SubMenuButton::RIGHT_ARROW);
-    let by_key = ui.is_enabled() && marked.taken(ui, egui::Modifiers::NONE);
+    let by_key = ui.is_enabled() && !submenu_open(ui) && marked.taken(ui, egui::Modifiers::NONE);
 
     let (response, inner) =
         egui::containers::menu::SubMenuButton::from_button(button).ui(ui, |ui| {

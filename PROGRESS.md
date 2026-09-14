@@ -5122,3 +5122,60 @@ carry. The bases in `measured_base()` were taken from the old probes and are
 left as they are, since the documents they answer for are mode 15 and the
 records they hold have not moved; a base measured again is a base measured
 in the mode the documents are in.
+
+## A box that opens puts the keyboard in its first field, text selected (2026-09-13)
+
+The first bug the in-process driver found, on its first afternoon. Alt+I, T,
+`4`, Enter — Insert Table by its letters, a number, Enter — inserted a table
+of two columns: the `4` went nowhere. A box opened from the keyboard had no
+keyboard; only Zoom and the find bar asked for it, each in its own way. Calx's
+boxes were right already, one focus request each. `ui_kit::dialog::focus_on_open`
+does it once for both: on the frame a box appears, read off egui's frame
+counter, its first field takes the keyboard with its text selected, so that a
+number typed replaces the one offered rather than landing after it — `2` and
+`4` made `24` on the first try. Applied to every Scriva box with a field:
+Margins, Insert Table, Colour, Paragraph, Column Width, Watermark, Cell
+Margins, Picture Size. Word does the same. A test opens each by its command,
+types, and reads the field back.
+
+## Sort and Remove Duplicates guess a heading the way Excel does (2026-09-13)
+
+The second. `pear, apple, fig, banana`, Data ▸ Sort Ascending: Calx kept
+`pear` at the top as a heading. The rule said any text-topped column is
+headed, and its comment said Excel takes that side. Excel was asked — five
+columns through `Range.Sort` and `Range.RemoveDuplicates` with `xlGuess`, the
+ribbon's own guess, on the laptop — and it does not: a column of text sorts
+whole; a text cell over a number is a heading; a bold cell over a plain one is
+a heading; a number on top is never one. The signal is a difference between
+the first row and the second, never the first row alone. `looks_like_headers`
+now compares the two, needs the workbook for the fonts, and the tests state
+what Excel measured. The earlier rule was reasoned rather than measured —
+a heading sorted into the data is the more visible mistake — and the
+reasoning was sound; it was still not what Excel does, and a user who knows
+what Excel does with a plain list is not served by a spreadsheet that
+quietly does the other thing.
+
+## A comment is posted with Ctrl+Enter, as Word's is (2026-09-13)
+
+The third from the driver. Ctrl+A, Review ▸ New Comment by its letters, the
+note typed — and no key would add it: Enter is a new line in a note, as it
+should be, Tab is a tab in a multi-line field and cannot walk to the Add
+button, and the box asked for the keyboard on every frame so nothing could
+have taken it. Only the mouse added a comment. Word posts one on Ctrl+Enter,
+and now so does this; the box says so under the note, asks for the keyboard
+once on opening, and Escape still cancels.
+
+## A menu's letters wait while its submenu is open (2026-09-13)
+
+The fourth, and the one the rig would have paid most for. Insert ▸ Page
+Number ▸ Plain Number by its letters, Alt+I, N, P, put no field in the
+footer: the P had gone to Insert ▸ Picture…, one row up in the parent menu,
+whose letters were still live while the submenu was open, and a file chooser
+opened over the footer being edited. Footer ▸ Edit Footer had worked only
+because no Insert row is marked E. Windows hands the keyboard to the innermost
+open menu and nothing above it; `ui_kit::menu` now does the same — a row takes
+its letter only while no submenu of its own menu is open — with a test in
+`ui_kit::drive` and the footer test in Scriva, which asserts the field is
+there and no chooser opened. The four bugs of this entry and the three before
+it were found in one sitting, each in under a second of test time, by driving
+the applications the way ADR 0002 asks and a display never had to be up.

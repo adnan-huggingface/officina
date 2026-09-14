@@ -332,6 +332,45 @@ pub fn one_of(ui: &mut egui::Ui, choices: &[Choice<'_>]) -> Option<usize> {
 /// a combo, a checkbox, a text box, a slider, a colour well — goes through
 /// here: a white field with an edge, the edge darkening under the pointer and
 /// turning the accent colour while the control is open or held.
+/// The first field of a box that has just opened takes the keyboard, with
+/// its text selected.
+///
+/// A box opened from the keyboard is typed at straight away — Insert Table,
+/// a number, Enter — and a field nobody has clicked has no keyboard: what was
+/// typed went nowhere, which on a screen reads as the box ignoring the user.
+/// Word puts the keyboard in a dialog's first field the moment it opens with
+/// the field's text selected, so that a number typed replaces the one
+/// offered rather than landing after it; so does this, once, on the frame
+/// the box appears. After that the keyboard goes where the user sends it,
+/// Tab and click included. "Appears" is read off the frame counter rather
+/// than kept as a flag in every box: a box drawn this frame that was not
+/// drawn last frame has just opened. `chars` is the length of the field's
+/// text, which is what the selection has to cover.
+pub fn focus_on_open(
+    ui: &egui::Ui,
+    dialog: impl Into<egui::Id>,
+    first: &egui::Response,
+    chars: usize,
+) {
+    let id = dialog.into().with("dialog-drawn-frame");
+    let ctx = ui.ctx();
+    let now = ctx.cumulative_frame_nr();
+    let last: Option<u64> = ctx.data(|d| d.get_temp(id));
+    ctx.data_mut(|d| d.insert_temp(id, now));
+    if matches!(last, Some(last) if last + 1 == now) {
+        return;
+    }
+    first.request_focus();
+    let mut state = egui::text_edit::TextEditState::load(ctx, first.id).unwrap_or_default();
+    state
+        .cursor
+        .set_char_range(Some(egui::text::CCursorRange::two(
+            egui::text::CCursor::new(0),
+            egui::text::CCursor::new(chars),
+        )));
+    state.store(ctx, first.id);
+}
+
 pub fn form<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
     ui.scope(|ui| {
         form_style(ui.style_mut());

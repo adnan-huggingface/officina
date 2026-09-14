@@ -4467,7 +4467,12 @@ impl Scriva {
                         }
                         ui.horizontal(|ui| {
                             ui.add_sized([56.0, 20.0], egui::Label::new(label));
-                            ui.add(egui::TextEdit::singleline(field).desired_width(64.0));
+                            let chars = field.chars().count();
+                            let field =
+                                ui.add(egui::TextEdit::singleline(field).desired_width(64.0));
+                            if index == 0 {
+                                dialog::focus_on_open(ui, "scriva-margins", &field, chars);
+                            }
                             ui.label("in");
                         });
                     }
@@ -4522,10 +4527,19 @@ impl Scriva {
                     ui.set_width(260.0);
                     ui.label(egui::RichText::new("Insert Table").font(dialog::heading_font(16.0)));
                     ui.add_space(8.0);
-                    for (label, field) in ["Columns:", "Rows:"].into_iter().zip(draft.iter_mut()) {
+                    for (index, (label, field)) in ["Columns:", "Rows:"]
+                        .into_iter()
+                        .zip(draft.iter_mut())
+                        .enumerate()
+                    {
                         ui.horizontal(|ui| {
                             ui.add_sized([72.0, 20.0], egui::Label::new(label));
-                            ui.add(egui::TextEdit::singleline(field).desired_width(64.0));
+                            let chars = field.chars().count();
+                            let field =
+                                ui.add(egui::TextEdit::singleline(field).desired_width(64.0));
+                            if index == 0 {
+                                dialog::focus_on_open(ui, "scriva-table", &field, chars);
+                            }
                         });
                     }
                     ui.add_space(12.0);
@@ -4575,7 +4589,10 @@ impl Scriva {
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
                         ui.add_sized([72.0, 20.0], egui::Label::new("Hex:"));
-                        ui.add(egui::TextEdit::singleline(&mut draft).desired_width(64.0));
+                        let chars = draft.chars().count();
+                        let field =
+                            ui.add(egui::TextEdit::singleline(&mut draft).desired_width(64.0));
+                        dialog::focus_on_open(ui, "scriva-color", &field, chars);
                     });
                     ui.add_space(12.0);
                     if let Some(answer) = dialog::submit(ui, "Apply") {
@@ -4789,12 +4806,19 @@ impl Scriva {
                     ui.label(egui::RichText::new("Paragraph").font(dialog::heading_font(16.0)));
                     ui.add_space(8.0);
                     ui.label(egui::RichText::new("Spacing").strong());
-                    for (label, field) in
+                    for (index, (label, field)) in
                         [("Before:", &mut draft.before), ("After:", &mut draft.after)]
+                            .into_iter()
+                            .enumerate()
                     {
                         ui.horizontal(|ui| {
                             ui.add_sized([80.0, 20.0], egui::Label::new(label));
-                            ui.add(egui::TextEdit::singleline(field).desired_width(64.0));
+                            let chars = field.chars().count();
+                            let field =
+                                ui.add(egui::TextEdit::singleline(field).desired_width(64.0));
+                            if index == 0 {
+                                dialog::focus_on_open(ui, "scriva-paragraph", &field, chars);
+                            }
                             ui.label("pt");
                         });
                     }
@@ -4904,7 +4928,10 @@ impl Scriva {
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
                         ui.add_sized([72.0, 20.0], egui::Label::new("Inches:"));
-                        ui.add(egui::TextEdit::singleline(&mut draft).desired_width(64.0));
+                        let chars = draft.chars().count();
+                        let field =
+                            ui.add(egui::TextEdit::singleline(&mut draft).desired_width(64.0));
+                        dialog::focus_on_open(ui, "scriva-column", &field, chars);
                     });
                     ui.add_space(12.0);
                     if let Some(answer) = dialog::submit(ui, "Apply") {
@@ -5538,7 +5565,10 @@ impl Scriva {
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
                         ui.add_sized([56.0, 20.0], egui::Label::new("Text:"));
-                        ui.add(egui::TextEdit::singleline(&mut draft.text).desired_width(232.0));
+                        let chars = draft.text.chars().count();
+                        let field = ui
+                            .add(egui::TextEdit::singleline(&mut draft.text).desired_width(232.0));
+                        dialog::focus_on_open(ui, "scriva-watermark", &field, chars);
                     });
                     ui.horizontal(|ui| {
                         ui.add_sized([56.0, 20.0], egui::Label::new("Font:"));
@@ -5915,13 +5945,19 @@ impl Scriva {
                     ui.set_width(280.0);
                     ui.label(egui::RichText::new("Cell Margins").font(dialog::heading_font(16.0)));
                     ui.add_space(8.0);
-                    for (label, field) in ["Top:", "Left:", "Bottom:", "Right:"]
+                    for (index, (label, field)) in ["Top:", "Left:", "Bottom:", "Right:"]
                         .into_iter()
                         .zip(draft.iter_mut())
+                        .enumerate()
                     {
                         ui.horizontal(|ui| {
                             ui.add_sized([64.0, 20.0], egui::Label::new(label));
-                            ui.add(egui::TextEdit::singleline(field).desired_width(64.0));
+                            let chars = field.chars().count();
+                            let field =
+                                ui.add(egui::TextEdit::singleline(field).desired_width(64.0));
+                            if index == 0 {
+                                dialog::focus_on_open(ui, "scriva-cell-margins", &field, chars);
+                            }
                             ui.label("pt");
                         });
                     }
@@ -6097,10 +6133,13 @@ impl Scriva {
                                 true => &mut draft.width,
                                 false => &mut draft.height,
                             };
-                            if ui
-                                .add(egui::TextEdit::singleline(field).desired_width(64.0))
-                                .changed()
-                            {
+                            let chars = field.chars().count();
+                            let field =
+                                ui.add(egui::TextEdit::singleline(field).desired_width(64.0));
+                            if horizontal {
+                                dialog::focus_on_open(ui, "scriva-size", &field, chars);
+                            }
+                            if field.changed() {
                                 typed = Some(horizontal);
                             }
                             ui.label("in");
@@ -6353,16 +6392,30 @@ impl Scriva {
                     ui.set_width(420.0);
                     ui.label(egui::RichText::new("New comment").font(dialog::heading_font(16.0)));
                     ui.add_space(8.0);
+                    let chars = text.chars().count();
                     let field = ui.add(
                         egui::TextEdit::multiline(&mut text)
                             .desired_rows(4)
                             .desired_width(f32::INFINITY)
                             .hint_text("What is there to say about this?"),
                     );
-                    field.request_focus();
-                    ui.add_space(12.0);
+                    dialog::focus_on_open(ui, "scriva-comment", &field, chars);
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new("Ctrl+Enter adds the comment")
+                            .small()
+                            .weak(),
+                    );
+                    ui.add_space(8.0);
+                    // Enter is a new line in a note, and Tab is a tab, so
+                    // neither can reach the buttons: Ctrl+Enter is the key
+                    // that posts a comment in Word, and it is the key here.
+                    let posted =
+                        ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter));
                     if let Some(answer) = dialog::confirm(ui, "Add") {
                         done = Some(answer);
+                    } else if posted {
+                        done = Some(true);
                     }
                     if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                         done = Some(false);
@@ -7539,6 +7592,293 @@ mod tests {
             .map(|paragraph| paragraph.text())
             .collect();
         assert_eq!(text, "before", "no letter of the sequence was typed");
+    }
+
+    /// Format ▸ Watermark… by its letters, the text typed, Enter: what a
+    /// keyboard user does, and never driven before.
+    #[test]
+    fn watermark_by_menu_letters_takes_the_typed_text() {
+        let drive = ui_kit::drive::Driver::new();
+        let mut app = app_with(&["body text"]);
+        drive.settle(&mut app);
+        drive.menu(&mut app, 'O', 'W');
+        assert!(app.watermark_draft.is_some(), "Alt+O, W opened Watermark");
+        drive.type_text(&mut app, "DRAFT");
+        assert_eq!(
+            app.document.paragraphs()[0].text(),
+            "body text",
+            "nothing typed at the box reached the document"
+        );
+        assert_eq!(
+            app.watermark_draft.as_ref().map(|d| d.text.as_str()),
+            Some("DRAFT"),
+            "typing after opening the box goes into its text field"
+        );
+        drive.press(&mut app, "Enter");
+        drive.settle(&mut app);
+        assert!(app.watermark_draft.is_none(), "Enter applied it");
+        assert!(
+            !app.document.headers.is_empty(),
+            "a header carries the watermark"
+        );
+        assert_eq!(app.document.paragraphs()[0].text(), "body text");
+    }
+
+    /// File ▸ Save As a Markdown file asks first, and Enter is "Save".
+    #[test]
+    fn saving_as_markdown_asks_and_enter_writes_the_file() {
+        let drive = ui_kit::drive::Driver::new();
+        let dir = scratch("markdown-by-key");
+        let target = dir.join("note.md");
+        let mut app = app_with(&["A heading", "Some words."]);
+        drive.settle(&mut app);
+        assert!(
+            !app.save_to(target.clone()),
+            "not written before the question"
+        );
+        assert!(matches!(app.pending, Some(Pending::Lossy(..))));
+        drive.settle(&mut app);
+        drive.press(&mut app, "Enter");
+        drive.settle(&mut app);
+        assert!(app.pending.is_none(), "Enter answered the question");
+        let text = std::fs::read_to_string(&target).expect("the file was written");
+        assert!(text.contains("Some words."), "{text}");
+    }
+
+    /// Every corpus document, opened as the command line opens one, laid out
+    /// and drawn in a frame. The readers have their own tests; this is the
+    /// application around them, which is where a document that reads fine
+    /// has panicked before.
+    #[test]
+    fn every_corpus_document_opens_and_draws_in_a_frame() {
+        let drive = ui_kit::drive::Driver::new();
+        let corpus = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus");
+        let mut seen = 0;
+        for kind in ["docx", "doc", "odt"] {
+            let Ok(entries) = std::fs::read_dir(corpus.join(kind)) else {
+                continue;
+            };
+            let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+            paths.sort();
+            for path in paths {
+                let name = path.file_name().unwrap().to_string_lossy().into_owned();
+                let mut app = Scriva::opening(path.clone());
+                drive.settle(&mut app);
+                drive.press(&mut app, "ctrl+End");
+                drive.settle(&mut app);
+                // A `.doc` says it was opened as a copy, which is a notice
+                // and not a fault; anything that could not be done is.
+                if let Some((title, why)) = &app.message {
+                    assert!(!title.starts_with("Cannot"), "{name}: {title}: {why}");
+                }
+                assert!(!app.view.pages().is_empty(), "{name}: no page was laid");
+                seen += 1;
+            }
+        }
+        assert!(seen >= 25, "only {seen} documents");
+    }
+
+    /// Review ▸ Track Changes by its letters, words typed, Accept All: the
+    /// revisions are kept as revisions and then settled, by menu alone.
+    #[test]
+    fn tracking_and_accepting_by_menu_letters() {
+        let drive = ui_kit::drive::Driver::new();
+        let mut app = app_with(&["before"]);
+        drive.settle(&mut app);
+        drive.press(&mut app, "ctrl+End");
+        drive.menu(&mut app, 'R', 'T');
+        assert!(
+            app.document.settings.track_changes,
+            "Alt+R, T switched tracking on"
+        );
+        drive.type_text(&mut app, " and after");
+        assert_eq!(app.document.paragraphs()[0].text(), "before and after");
+        assert!(
+            !crate::revise::tracked(&app.document).is_empty(),
+            "typed as a tracked insertion"
+        );
+        drive.menu(&mut app, 'R', 'L');
+        assert_eq!(app.document.paragraphs()[0].text(), "before and after");
+        assert!(
+            crate::revise::tracked(&app.document).is_empty(),
+            "Accept All settled it"
+        );
+    }
+
+    /// The dialogs nobody had driven, opened by their letters and answered
+    /// with Enter as they stand: Paragraph…, Custom Margins…, Column Width…
+    /// each leaves the document as it was and closes.
+    #[test]
+    fn paragraph_margins_and_column_width_dialogs_answer_enter_unchanged() {
+        let drive = ui_kit::drive::Driver::new();
+        let mut app = app_with(&["a paragraph"]);
+        drive.settle(&mut app);
+        let before = app.document.clone();
+
+        drive.menu(&mut app, 'P', 'P');
+        assert!(app.paragraph_draft.is_some(), "Alt+P, P opened Paragraph");
+        drive.press(&mut app, "Enter");
+        drive.settle(&mut app);
+        assert!(app.paragraph_draft.is_none(), "Enter closed Paragraph");
+
+        drive.menu(&mut app, 'L', 'M');
+        drive.press(&mut app, "C");
+        drive.settle(&mut app);
+        assert!(
+            app.margins_draft.is_some(),
+            "Alt+L, M, C opened Custom Margins"
+        );
+        drive.press(&mut app, "Enter");
+        drive.settle(&mut app);
+        assert!(app.margins_draft.is_none(), "Enter closed Custom Margins");
+        assert_eq!(app.document.section.margins, before.section.margins);
+        assert_eq!(
+            app.document.paragraphs()[0].props,
+            before.paragraphs()[0].props,
+            "nothing about the paragraph changed"
+        );
+
+        app.insert_table(2, 2);
+        drive.settle(&mut app);
+        drive.menu(&mut app, 'A', 'W');
+        assert!(app.column_draft.is_some(), "Alt+A, W opened Column Width");
+        drive.press(&mut app, "Enter");
+        drive.settle(&mut app);
+        assert!(app.column_draft.is_none(), "Enter closed Column Width");
+    }
+
+    /// Every box with a text field, opened by its command and typed at
+    /// straight away, as a keyboard user does: the first field has the
+    /// keyboard, and what is typed lands in it and nowhere else.
+    #[test]
+    fn a_box_that_opens_puts_the_keyboard_in_its_first_field() {
+        let drive = ui_kit::drive::Driver::new();
+        let mut failures = Vec::new();
+        let mut check = |name: &str,
+                         command: Command,
+                         typed: &str,
+                         read: &dyn Fn(&Scriva) -> Option<String>| {
+            let mut app = app_with(&["body text"]);
+            if matches!(command, Command::ColumnWidth | Command::CellMargins) {
+                app.insert_table(2, 2);
+            }
+            drive.settle(&mut app);
+            app.run(command);
+            drive.settle(&mut app);
+            drive.type_text(&mut app, typed);
+            let got = read(&app);
+            let body: String = app.document.paragraphs().iter().map(|p| p.text()).collect();
+            if got.as_deref() != Some(typed) || !body.contains("body text") {
+                failures.push(format!("{name}: field {got:?}, body {body:?}"));
+            }
+        };
+        check("Insert Table", Command::InsertTable, "4", &|app| {
+            app.table_draft.as_ref().map(|d| d[0].clone())
+        });
+        check("Watermark", Command::Watermark, "DRAFT", &|app| {
+            app.watermark_draft.as_ref().map(|d| d.text.clone())
+        });
+        check("Custom Margins", Command::CustomMargins, "2", &|app| {
+            app.margins_draft.as_ref().map(|d| d[0].clone())
+        });
+        check("Column Width", Command::ColumnWidth, "3", &|app| {
+            app.column_draft.clone()
+        });
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// Insert ▸ Footer ▸ Edit Footer by its letters, words typed, Insert ▸
+    /// Page Number ▸ Plain Number by its letters, Escape: the footer holds
+    /// the words and the field, and the caret is back in the text.
+    #[test]
+    fn a_footer_with_a_page_number_by_menu_letters() {
+        let drive = ui_kit::drive::Driver::new();
+        let mut app = app_with(&["body text"]);
+        drive.settle(&mut app);
+        drive.menu(&mut app, 'I', 'F');
+        drive.press(&mut app, "E");
+        drive.settle(&mut app);
+        assert!(
+            matches!(app.scope, wp_model::Scope::Chrome(_)),
+            "Alt+I, F, E opened the footer"
+        );
+        drive.type_text(&mut app, "Page ");
+        drive.menu(&mut app, 'I', 'N');
+        drive.press(&mut app, "P");
+        drive.settle(&mut app);
+        // The field's cached result reads as text, so the footer says "Page 1".
+        assert_eq!(
+            app.paragraph_text(0),
+            "Page 1",
+            "the words are in the footer"
+        );
+        assert!(app.asking.is_none(), "and no chooser was opened by the P");
+        let footer = app
+            .document
+            .paragraphs_in(app.scope)
+            .first()
+            .cloned()
+            .expect("the footer has a paragraph");
+        assert!(
+            footer
+                .runs()
+                .iter()
+                .flat_map(|run| run.content.iter())
+                .any(|piece| matches!(piece, wp_model::doc::Piece::FieldStart { .. })),
+            "and a page field"
+        );
+        drive.press(&mut app, "Escape");
+        drive.settle(&mut app);
+        assert_eq!(app.scope, wp_model::Scope::Body, "Escape left the footer");
+        assert_eq!(app.document.paragraphs()[0].text(), "body text");
+    }
+
+    /// Review ▸ New Comment by its letters on a selection, the note typed,
+    /// Ctrl+Enter — Word's key for posting a comment: the comment is on the
+    /// document. Tab cannot leave a multi-line field, so the box needed the
+    /// mouse for its Add button before it had the key.
+    #[test]
+    fn a_comment_by_menu_letters_and_keys() {
+        let drive = ui_kit::drive::Driver::new();
+        let mut app = app_with(&["a word to comment on"]);
+        drive.settle(&mut app);
+        drive.press(&mut app, "ctrl+A");
+        assert!(app.has_selection(), "Ctrl+A selected the text");
+        drive.menu(&mut app, 'R', 'C');
+        assert!(app.drafting.is_some(), "Alt+R, C opened the comment box");
+        drive.type_text(&mut app, "a note");
+        assert_eq!(
+            app.drafting.as_deref(),
+            Some("a note"),
+            "typed into the box"
+        );
+        drive.press(&mut app, "Enter");
+        assert_eq!(
+            app.drafting.as_deref(),
+            Some("a note\n"),
+            "Enter is a new line in the note"
+        );
+        drive.press(&mut app, "Backspace");
+        drive.press(&mut app, "ctrl+Enter");
+        drive.settle(&mut app);
+        assert!(
+            app.drafting.is_none(),
+            "Ctrl+Enter added it and closed the box"
+        );
+        assert_eq!(
+            app.document.comments.len(),
+            1,
+            "and the comment is on the document"
+        );
+        let said: String = app.document.comments[0]
+            .content
+            .iter()
+            .filter_map(|block| match block {
+                Block::Paragraph(paragraph) => Some(paragraph.text()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(said, "a note");
     }
 
     /// One whole frame of the window's body, with `events` as its input.

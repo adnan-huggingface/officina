@@ -1965,3 +1965,19 @@ wide, the second column as wide as the word "B1" and an empty column under a
 point. Word's own new table writes `<w:tblW w:w="0" w:type="auto"/>` and a
 `<w:tcW>` in every cell; with the cells stating the grid's widths the same
 document measures within a point of Word, every rule matched.
+
+**Excel guesses a header row from a difference between the first row and
+the second, never from the first row alone.** Measured on Excel 16 through
+`Range.Sort` and `Range.RemoveDuplicates` with `Header:=xlGuess`, which is
+what the ribbon's A→Z button asks: `pear, apple, fig, banana` sorts whole,
+`amount, 3, 1, 2` keeps `amount` on top, a bold `pear` over a plain `apple`
+stays on top, and `3, 1, 4, 2` sorts whole. Text over text is data to Excel,
+however much an export looks like a table of headed text columns; the dialog's
+checkbox is the way out, there as here.
+
+**Calibri Light is not Calibri thinned.** The same 294 words at 11pt set in
+each, in Word: the Light face is about six per cent narrower, one line in
+seventeen, and every line after the first breaks elsewhere, while the
+baselines agree to the hundredth of a point. Carlito is Calibri's twin, again,
+and is nobody's stand-in for Calibri Light; a document naming the Light face
+on a machine without it has no face that keeps its lines.

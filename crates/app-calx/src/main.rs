@@ -853,7 +853,7 @@ impl Calx {
         let Some(sheet) = self.doc.workbook.sheet(index) else {
             return;
         };
-        let header = ss_formula::sort::looks_like_headers(sheet, range);
+        let header = ss_formula::sort::looks_like_headers(&self.doc.workbook, index, range);
         let name = sheet.name.clone();
         // A scatter reads its first column as X whatever is in it — numbers
         // are the point — where every other kind only surrenders the column
@@ -1560,7 +1560,11 @@ impl Calx {
                 .collect(),
             // The same guess the sort dialog makes, and for the same reason:
             // a first row of text over columns of numbers is a heading row.
-            header: ss_formula::sort::looks_like_headers(sheet, range),
+            header: ss_formula::sort::looks_like_headers(
+                &self.doc.workbook,
+                self.grid.sheet_index,
+                range,
+            ),
         });
     }
 
@@ -2238,11 +2242,7 @@ impl Calx {
             .cursor()
             .col
             .clamp(range.start.col, range.end.col);
-        let header = self
-            .doc
-            .workbook
-            .sheet(sheet_index)
-            .is_some_and(|s| ss_formula::sort::looks_like_headers(s, range));
+        let header = ss_formula::sort::looks_like_headers(&self.doc.workbook, sheet_index, range);
         let keys = [ss_formula::sort::SortKey { col, descending }];
         match ss_formula::sort::sort(&mut self.doc.workbook, sheet_index, range, &keys, header) {
             Ok(change) if change.is_empty() => {
@@ -2271,11 +2271,8 @@ impl Calx {
         let Some(range) = self.data_range() else {
             return;
         };
-        let header = self
-            .doc
-            .workbook
-            .sheet(self.grid.sheet_index)
-            .is_some_and(|s| ss_formula::sort::looks_like_headers(s, range));
+        let header =
+            ss_formula::sort::looks_like_headers(&self.doc.workbook, self.grid.sheet_index, range);
         let mut levels = [SortLevel::default(); 3];
         levels[0].col = Some(
             self.grid
@@ -4457,8 +4454,14 @@ impl Calx {
                 let index = *index;
                 let mut accept = false;
                 modal(ctx, "Rename sheet", |ui| {
+                    let chars = text.chars().count();
                     let field = ui.text_edit_singleline(text);
-                    field.request_focus();
+                    dialog::focus_on_open(
+                        ui,
+                        egui::Id::new(("calx-modal", "Rename sheet")),
+                        &field,
+                        chars,
+                    );
                     if field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                         accept = true;
                     }
@@ -5012,8 +5015,14 @@ impl Calx {
                 let mut accept = false;
                 modal(ctx, title, |ui| {
                     ui.horizontal(|ui| {
+                        let chars = text.chars().count();
                         let field = ui.add(egui::TextEdit::singleline(text).desired_width(90.0));
-                        field.request_focus();
+                        dialog::focus_on_open(
+                            ui,
+                            egui::Id::new(("calx-modal", title)),
+                            &field,
+                            chars,
+                        );
                         if field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                             accept = true;
                         }
@@ -5084,6 +5093,7 @@ impl Calx {
                         if *fresh {
                             select_zoom_percent(ui.ctx(), text);
                         }
+                        let chars = text.chars().count();
                         let field = ui.add(
                             egui::TextEdit::singleline(text)
                                 .id(egui::Id::new("calx-zoom-percent"))
@@ -5093,7 +5103,12 @@ impl Calx {
                         if field.changed() || field.clicked() || field.dragged() {
                             *fresh = false;
                         }
-                        field.request_focus();
+                        dialog::focus_on_open(
+                            ui,
+                            egui::Id::new(("calx-modal", "Zoom")),
+                            &field,
+                            chars,
+                        );
                     });
                     match dialog::submit(ui, "OK") {
                         Some(true) => accept = true,
@@ -7735,6 +7750,268 @@ mod tests {
             app.doc.workbook.sheet(0).and_then(|s| s.get(a1)).is_none(),
             "nothing of the sequence was typed into the grid"
         );
+    }
+
+    fn texts(app: &Calx, cells: &[&str]) -> Vec<String> {
+        cells
+            .iter()
+            .map(|at| app.display_text(0, CellRef::from_a1(at).expect("valid")))
+            .collect()
+    }
+
+    /// Data ▸ Sort Ascending by its letters, on a typed column.
+    #[test]
+    fn sort_ascending_by_menu_letters_orders_the_typed_column() {
+        let drive = ui_kit::drive::Driver::new();
+        let mut app = Calx::new();
+        for (at, text) in [
+            ("A1", "pear"),
+            ("A2", "apple"),
+            ("A3", "fig"),
+            ("A4", "banana"),
+        ] {
+            type_into(&mut app, at, text);
+        }
+        drive.settle(&mut app);
+        drive.menu(&mut app, 'D', 'A');
+        assert_eq!(
+            texts(&app, &["A1", "A2", "A3", "A4"]),
+            vec!["apple", "banana", "fig", "pear"]
+        );
+        drive.menu(&mut app, 'D', 'D');
+        assert_eq!(
+            texts(&app, &["A1", "A2", "A3", "A4"]),
+            vec!["pear", "fig", "banana", "apple"]
+        );
+    }
+
+    /// Data ▸ Sort… by its letters, answered with Enter as it stands: the
+    /// cursor's column, A to Z.
+    #[test]
+    fn sort_dialog_by_menu_letters_and_enter_sorts_by_the_cursors_column() {
+        let drive = ui_kit::drive::Driver::new();
+        let mut app = Calx::new();
+        for (at, text) in [
+            ("A1", "3"),
+            ("B1", "c"),
+            ("A2", "1"),
+            ("B2", "a"),
+            ("A3", "2"),
+            ("B3", "b"),
+        ] {
+            type_into(&mut app, at, text);
+        }
+        drive.settle(&mut app);
+        drive.menu(&mut app, 'D', 'S');
+        assert!(
+            matches!(app.dialog, Some(Dialog::Sort { .. })),
+            "Alt+D, S opened Sort"
+        );
+        drive.press(&mut app, "Enter");
+        drive.settle(&mut app);
+        assert!(app.dialog.is_none(), "Enter sorted and closed");
+        assert_eq!(texts(&app, &["A1", "A2", "A3"]), vec!["1", "2", "3"]);
+        assert_eq!(
+            texts(&app, &["B1", "B2", "B3"]),
+            vec!["a", "b", "c"],
+            "rows moved whole"
+        );
+    }
+
+    /// Edit ▸ Find… by its letters, the word typed, Enter: the cursor lands
+    /// on the cell that holds it, and nothing is typed into the grid.
+    #[test]
+    fn find_by_menu_letters_takes_the_typed_word_and_lands_on_it() {
+        let drive = ui_kit::drive::Driver::new();
+        let mut app = Calx::new();
+        for (at, text) in [("A1", "pear"), ("A2", "apple"), ("B3", "fig")] {
+            type_into(&mut app, at, text);
+        }
+        drive.settle(&mut app);
+        drive.menu(&mut app, 'E', 'F');
+        assert!(
+            matches!(app.dialog, Some(Dialog::Find { .. })),
+            "Alt+E, F opened Find"
+        );
+        drive.type_text(&mut app, "fig");
+        drive.press(&mut app, "Enter");
+        drive.settle(&mut app);
+        assert_eq!(
+            app.grid.selection.cursor(),
+            CellRef::from_a1("B3").expect("valid"),
+            "Enter found it"
+        );
+        drive.press(&mut app, "Escape");
+        drive.settle(&mut app);
+        assert!(app.dialog.is_none(), "Escape closed Find");
+        assert_eq!(
+            texts(&app, &["A1", "A2", "B3"]),
+            vec!["pear", "apple", "fig"]
+        );
+    }
+
+    /// Edit ▸ Replace… by its letters: the word, Tab, its replacement, and
+    /// Replace all reached by Tab and Enter, as a keyboard user would.
+    #[test]
+    fn replace_all_by_menu_letters_and_keys_replaces_every_match() {
+        let drive = ui_kit::drive::Driver::new();
+        let mut app = Calx::new();
+        for (at, text) in [("A1", "fig"), ("A2", "apple"), ("B3", "fig")] {
+            type_into(&mut app, at, text);
+        }
+        drive.settle(&mut app);
+        drive.menu(&mut app, 'E', 'E');
+        assert!(
+            matches!(
+                app.dialog,
+                Some(Dialog::Find {
+                    replacing: true,
+                    ..
+                })
+            ),
+            "Alt+E, E opened Replace"
+        );
+        drive.type_text(&mut app, "fig");
+        drive.press(&mut app, "Tab");
+        drive.type_text(&mut app, "kiwi");
+        if let Some(Dialog::Find { query, with, .. }) = &app.dialog {
+            assert_eq!(
+                (query.needle.as_str(), with.as_str()),
+                ("fig", "kiwi"),
+                "both fields took their text"
+            );
+        }
+        // Backwards along the focus order from the second field: past the
+        // first field, round to Find next, Find previous, Replace — and
+        // Replace all, which Enter then presses.
+        for _ in 0..5 {
+            drive.press(&mut app, "shift+Tab");
+        }
+        drive.press(&mut app, "Enter");
+        drive.settle(&mut app);
+        assert_eq!(
+            texts(&app, &["A1", "A2", "B3"]),
+            vec!["kiwi", "apple", "kiwi"],
+            "Replace all was reached and pressed from the keyboard"
+        );
+    }
+
+    /// Edit ▸ Paste Special… by its letters opens the box and Enter answers
+    /// it. What it pastes comes off the system clipboard, which a test has
+    /// none of, so the paste itself is Calx's own clipboard tests' business.
+    #[test]
+    fn paste_special_by_menu_letters_opens_and_enter_answers() {
+        let drive = ui_kit::drive::Driver::new();
+        let mut app = Calx::new();
+        type_into(&mut app, "A1", "=1+1");
+        drive.settle(&mut app);
+        drive.press(&mut app, "ctrl+C");
+        assert!(app.clip.is_some(), "Ctrl+C copied the cell");
+        drive.press(&mut app, "ArrowRight");
+        assert_eq!(
+            app.grid.selection.cursor(),
+            CellRef::from_a1("B1").expect("valid")
+        );
+        drive.menu(&mut app, 'E', 'S');
+        assert!(
+            matches!(app.dialog, Some(Dialog::PasteSpecial { .. })),
+            "Alt+E, S opened Paste Special"
+        );
+        drive.press(&mut app, "Enter");
+        drive.settle(&mut app);
+        assert!(app.dialog.is_none(), "Enter answered it");
+        assert_eq!(
+            texts(&app, &["A1"]),
+            vec!["2"],
+            "and the copy is still there"
+        );
+    }
+
+    /// Data ▸ Text to Columns… and Remove Duplicates… by their letters,
+    /// answered with Enter as they stand.
+    #[test]
+    fn text_to_columns_and_remove_duplicates_by_menu_letters_and_enter() {
+        let drive = ui_kit::drive::Driver::new();
+        let mut app = Calx::new();
+        type_into(&mut app, "A1", "a,b,c");
+        drive.settle(&mut app);
+        drive.menu(&mut app, 'D', 'T');
+        assert!(
+            matches!(app.dialog, Some(Dialog::TextToColumns { .. })),
+            "Alt+D, T opened Text to Columns"
+        );
+        drive.press(&mut app, "Enter");
+        drive.settle(&mut app);
+        assert!(app.dialog.is_none());
+        assert_eq!(texts(&app, &["A1", "B1", "C1"]), vec!["a", "b", "c"]);
+
+        let mut app = Calx::new();
+        for (at, text) in [("A1", "x"), ("A2", "y"), ("A3", "x"), ("A4", "z")] {
+            type_into(&mut app, at, text);
+        }
+        drive.settle(&mut app);
+        drive.menu(&mut app, 'D', 'U');
+        assert!(
+            matches!(app.dialog, Some(Dialog::RemoveDuplicates { .. })),
+            "Alt+D, U opened Remove Duplicates"
+        );
+        drive.press(&mut app, "Enter");
+        drive.settle(&mut app);
+        assert!(app.dialog.is_none());
+        assert_eq!(
+            texts(&app, &["A1", "A2", "A3", "A4"]),
+            vec!["x", "y", "z", ""]
+        );
+    }
+
+    /// Format ▸ Column ▸ Width… by its letters, a number typed over the one
+    /// offered, Enter: the number typed is the width, not the two run
+    /// together.
+    #[test]
+    fn column_width_by_menu_letters_takes_the_typed_number_in_place_of_the_offered_one() {
+        let drive = ui_kit::drive::Driver::new();
+        let mut app = Calx::new();
+        drive.settle(&mut app);
+        drive.menu(&mut app, 'O', 'N');
+        drive.press(&mut app, "W");
+        drive.settle(&mut app);
+        assert!(
+            matches!(
+                app.dialog,
+                Some(Dialog::Size {
+                    axis: Axis::Columns,
+                    ..
+                })
+            ),
+            "Alt+O, N, W opened Column Width"
+        );
+        drive.type_text(&mut app, "20");
+        drive.press(&mut app, "Enter");
+        drive.settle(&mut app);
+        assert!(app.dialog.is_none(), "Enter answered it");
+        let width = app
+            .doc
+            .workbook
+            .sheet(0)
+            .and_then(|s| s.column_widths.get(&0).copied());
+        assert_eq!(width, Some(20.0));
+    }
+
+    /// Tools ▸ Define Names… by its letters opens the list, and Escape
+    /// closes it; a new name is added from its own row.
+    #[test]
+    fn names_by_menu_letters_opens_and_escape_closes() {
+        let drive = ui_kit::drive::Driver::new();
+        let mut app = Calx::new();
+        drive.settle(&mut app);
+        drive.menu(&mut app, 'T', 'N');
+        assert!(
+            matches!(app.dialog, Some(Dialog::Names { .. })),
+            "Alt+T, N opened Names"
+        );
+        drive.press(&mut app, "Escape");
+        drive.settle(&mut app);
+        assert!(app.dialog.is_none(), "Escape closed it");
     }
 
     /// Driven on the rig: Ctrl+G, C5, Enter landed on C6 — the Enter that

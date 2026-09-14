@@ -110,13 +110,24 @@ impl Driver {
 /// difference is where a bug lived: a menu letter that was consumed as a key
 /// and still typed as text.
 pub fn key_events(key: egui::Key, modifiers: egui::Modifiers) -> Vec<egui::Event> {
-    let mut events = vec![egui::Event::Key {
+    let mut events = Vec::new();
+    // The platform turns Ctrl+C and Ctrl+X into events of their own, and
+    // sends the key press as well: a grid reads the one and a shortcut table
+    // the other, and both arrive.
+    if modifiers.matches_exact(egui::Modifiers::COMMAND) {
+        match key {
+            egui::Key::C => events.push(egui::Event::Copy),
+            egui::Key::X => events.push(egui::Event::Cut),
+            _ => {}
+        }
+    }
+    events.push(egui::Event::Key {
         key,
         physical_key: None,
         pressed: true,
         repeat: false,
         modifiers,
-    }];
+    });
     if !modifiers.command && !modifiers.ctrl && !modifiers.alt {
         let typed = match key {
             egui::Key::Space => Some(" ".to_owned()),
@@ -195,6 +206,16 @@ mod tests {
                         self.chosen.push("Select All");
                     }
                 });
+                menu::top(ui, "&Insert", |ui| {
+                    if menu::item(ui, "&Picture…", "").clicked() {
+                        self.chosen.push("Picture");
+                    }
+                    menu::sub(ui, "Page &Number", |ui| {
+                        if menu::item(ui, "&Plain Number", "").clicked() {
+                            self.chosen.push("Plain Number");
+                        }
+                    });
+                });
             });
         }
 
@@ -223,6 +244,24 @@ mod tests {
         drive.menu(&mut app, 'E', 'A');
         assert_eq!(app.chosen, vec!["New", "Select All"]);
         assert_eq!(app.typed, "");
+    }
+
+    /// Insert, Page Number, P: the P is the submenu's "Plain Number", not
+    /// the parent's "Picture…" one row up, which took it first and opened a
+    /// file chooser — the keyboard belongs to the innermost open menu.
+    #[test]
+    fn a_letter_goes_to_the_open_submenu_and_not_to_its_parent() {
+        let drive = Driver::new();
+        let mut app = Recorder::default();
+        drive.settle(&mut app);
+        drive.menu(&mut app, 'I', 'N');
+        drive.press(&mut app, "P");
+        drive.settle(&mut app);
+        assert_eq!(app.chosen, vec!["Plain Number"]);
+        assert_eq!(app.typed, "");
+        // And with no submenu open the parent's letter is its own.
+        drive.menu(&mut app, 'I', 'P');
+        assert_eq!(app.chosen, vec!["Plain Number", "Picture"]);
     }
 
     #[test]
@@ -255,6 +294,11 @@ mod tests {
         assert!(key_spec("ctrl+Whatever").unwrap_err().contains("Whatever"));
         assert!(key_spec("ctrl+").is_err());
         assert_eq!(key_events(egui::Key::Enter, egui::Modifiers::NONE).len(), 1);
+        assert_eq!(
+            key_events(egui::Key::C, egui::Modifiers::COMMAND)[0],
+            egui::Event::Copy,
+            "Ctrl+C arrives as a copy as well as a key, as it does from the platform"
+        );
         assert_eq!(key_events(egui::Key::T, egui::Modifiers::ALT).len(), 1);
         assert_eq!(key_events(egui::Key::T, egui::Modifiers::NONE).len(), 2);
     }
