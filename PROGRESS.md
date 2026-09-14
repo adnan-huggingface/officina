@@ -5232,3 +5232,17 @@ footers, the page-number field), `watermark`, `tables`, `find_bar` and
 lines. Calx's boxes and the tabs of Format Cells are `dialogs.rs`, its tests
 `tests.rs`; `main.rs` is 5,600. Test names and module paths are as they were,
 so every `cargo test` filter and `PLAN.md` item still finds its test.
+
+## A sheet can be added, renamed, moved and hidden from the keyboard (2026-09-14)
+
+Handoff open item 1, the sheet tabs. Every sheet command lived in the tab's
+right-click menu and nowhere else, so a keyboard user could not add a sheet,
+let alone rename one. Format ▸ Sheet now carries them — Insert, Rename…, Move
+or Copy…, Delete, Hide, Unhide All — on the sheet showing, through the same
+`tab_command` the tab menu uses, and Shift+F11 adds a sheet as it does in
+Excel. The test that drove it found a fault the tab menu had all along:
+hiding the sheet showing called `step_sheet` to move off it, and `step_sheet`
+steps from the showing sheet's place among the shown ones — which a sheet just
+hidden no longer has — so it returned without moving, and the hidden sheet
+stayed on the screen taking what was typed. It now moves to the nearest shown
+sheet, the next one first.

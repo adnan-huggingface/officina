@@ -443,6 +443,10 @@ enum Command {
     PasteSpecial,
     Autosum,
     Zoom(f64),
+    /// A sheet command from Format ▸ Sheet, on the sheet showing: the same
+    /// commands as the tab's right-click menu, which until then was the only
+    /// way to them.
+    Sheet(TabCommand),
 }
 
 /// Whether a text box other than the cell's own editor holds the keyboard.
@@ -1389,6 +1393,10 @@ impl Calx {
         // Alt+= writes the SUM the toolbar button writes.
         if ctx.input_mut(|i| keys::take(i, egui::Modifiers::ALT, egui::Key::Equals)) {
             self.autosum();
+        }
+        // Excel's key for a new sheet, after the one showing.
+        if ctx.input_mut(|i| keys::take(i, egui::Modifiers::SHIFT, egui::Key::F11)) {
+            self.add_sheet();
         }
         // Alt+F1 charts the selection where it stands. Excel's F11 puts the
         // same chart on a sheet of its own, which needs a chart sheet — a
@@ -3230,6 +3238,8 @@ impl Calx {
         let recent: Vec<PathBuf> = self.recent.paths().to_vec();
         let can_save = self.edited || self.path.is_none();
         let zoom = self.grid.zoom;
+        let many_sheets = self.visible_sheets() > 1;
+        let hidden_sheets = self.doc.workbook.sheets.iter().any(|s| s.hidden);
 
         menu::bar(ui, |ui| {
             menu::top(ui, "&File", |ui| {
@@ -3487,6 +3497,37 @@ impl Calx {
                 menu::sep(ui);
                 // The same palette the toolbar's split button opens, but on the
                 // menu bar — which is the path a keyboard can walk to it.
+                // Every sheet command the tab's right-click menu has, for the
+                // keyboard: Excel keeps them under Format ▸ Sheet as well, and
+                // until this submenu a sheet could be renamed, moved, hidden
+                // or added only with the pointer.
+                menu::sub(ui, "&Sheet", |ui| {
+                    if menu::item(ui, "&Insert", "Shift+F11").clicked() {
+                        command = Some(Command::Sheet(TabCommand::Insert));
+                    }
+                    if menu::item(ui, "&Rename…", "").clicked() {
+                        command = Some(Command::Sheet(TabCommand::Rename));
+                    }
+                    if menu::item(ui, "&Move or Copy…", "").clicked() {
+                        command = Some(Command::Sheet(TabCommand::MoveOrCopy));
+                    }
+                    ui.add_enabled_ui(many_sheets, |ui| {
+                        if menu::item(ui, "&Delete", "").clicked() {
+                            command = Some(Command::Sheet(TabCommand::Delete));
+                        }
+                    });
+                    menu::sep(ui);
+                    ui.add_enabled_ui(many_sheets, |ui| {
+                        if menu::item(ui, "&Hide", "").clicked() {
+                            command = Some(Command::Sheet(TabCommand::Hide));
+                        }
+                    });
+                    ui.add_enabled_ui(hidden_sheets, |ui| {
+                        if menu::item(ui, "&Unhide All", "").clicked() {
+                            command = Some(Command::Sheet(TabCommand::UnhideAll));
+                        }
+                    });
+                });
                 menu::sub(ui, "F&ill Colour", |ui| {
                     if let Some(chosen) = palette(ui, "No Fill") {
                         command = Some(Command::Do(Action::Format(Format::Fill(
@@ -3615,6 +3656,7 @@ impl Calx {
             }
             Command::Autosum => self.autosum(),
             Command::Zoom(factor) => self.grid.set_zoom(factor),
+            Command::Sheet(tab) => self.tab_command(self.grid.sheet_index, tab),
         }
     }
 
@@ -4391,10 +4433,19 @@ impl Calx {
             TabCommand::Hide => {
                 if self.visible_sheets() > 1 {
                     self.perform(ss_formula::sheets::set_hidden(index, true));
+                    // The nearest sheet still shown, the next one first. Not
+                    // `step_sheet`: it steps from where the showing sheet
+                    // stands among the shown ones, and a sheet just hidden
+                    // stands nowhere among them — so it did nothing, and the
+                    // hidden sheet stayed on the screen taking what was typed.
                     if self.grid.sheet_index == index {
-                        self.step_sheet(1);
-                        if self.grid.sheet_index == index {
-                            self.step_sheet(-1);
+                        let sheets = &self.doc.workbook.sheets;
+                        let shown = |i: &usize| sheets[*i].kind.has_grid() && !sheets[*i].hidden;
+                        let next = (index + 1..sheets.len())
+                            .find(shown)
+                            .or_else(|| (0..index).rev().find(shown));
+                        if let Some(next) = next {
+                            self.show_sheet(next);
                         }
                     }
                 } else {

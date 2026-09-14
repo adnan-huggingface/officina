@@ -789,3 +789,69 @@ fn a_typed_size_is_taken_only_where_the_file_could_hold_it() {
     assert_eq!(parse_size("255", Axis::Columns), Some(255.0));
     assert_eq!(parse_size("inf", Axis::Rows), None);
 }
+
+/// Format ▸ Sheet by its letters, and Shift+F11: a sheet added, renamed,
+/// hidden and shown again, and never the pointer. The tab's right-click menu
+/// and a double-click were the only ways to any of it.
+#[test]
+fn sheets_are_added_renamed_hidden_and_shown_from_the_keyboard() {
+    let drive = ui_kit::drive::Driver::new();
+    let mut app = Calx::new();
+    drive.settle(&mut app);
+    let names = |app: &Calx| -> Vec<String> {
+        app.doc
+            .workbook
+            .sheets
+            .iter()
+            .map(|s| s.name.clone())
+            .collect()
+    };
+    let before = names(&app).len();
+
+    drive.press(&mut app, "shift+F11");
+    drive.settle(&mut app);
+    assert_eq!(names(&app).len(), before + 1, "Shift+F11 added a sheet");
+    assert_eq!(app.grid.sheet_index, before, "and shows it");
+
+    drive.menu(&mut app, 'O', 'S');
+    drive.press(&mut app, "R");
+    drive.settle(&mut app);
+    assert!(
+        matches!(app.dialog, Some(Dialog::RenameSheet { .. })),
+        "Alt+O, S, R opened Rename"
+    );
+    drive.type_text(&mut app, "Budget");
+    drive.press(&mut app, "Enter");
+    drive.settle(&mut app);
+    assert!(app.dialog.is_none(), "Enter answered it");
+    assert_eq!(
+        names(&app)[before],
+        "Budget",
+        "the name typed replaced the old one"
+    );
+
+    drive.menu(&mut app, 'O', 'S');
+    drive.press(&mut app, "H");
+    drive.settle(&mut app);
+    assert!(app.doc.workbook.sheets[before].hidden, "Alt+O, S, H hid it");
+    assert_ne!(app.grid.sheet_index, before, "and shows another");
+
+    drive.menu(&mut app, 'O', 'S');
+    drive.press(&mut app, "U");
+    drive.settle(&mut app);
+    assert!(
+        app.doc.workbook.sheets.iter().all(|s| !s.hidden),
+        "Alt+O, S, U showed it again"
+    );
+
+    drive.menu(&mut app, 'O', 'S');
+    drive.press(&mut app, "M");
+    drive.settle(&mut app);
+    assert!(
+        matches!(app.dialog, Some(Dialog::MoveSheet { .. })),
+        "Alt+O, S, M opened Move or Copy"
+    );
+    drive.press(&mut app, "Escape");
+    drive.settle(&mut app);
+    assert!(app.dialog.is_none());
+}
