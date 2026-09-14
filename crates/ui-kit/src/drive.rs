@@ -142,6 +142,9 @@ impl Driver {
                 self.key(app, letter(c), egui::Modifiers::NONE);
                 self.settle(app);
             }
+            // A popup measures itself on its first frame and is drawn on the
+            // next; the rows are read from the one that is drawn.
+            self.settle(app);
             // The menu the path opens is as deep as the path is long; if the
             // innermost menu drawn is shallower, the last letter opened
             // nothing, and its parent's rows must not be walked again.
@@ -167,6 +170,42 @@ impl Driver {
         }
         self.settle(app);
     }
+}
+
+/// The menus [`Driver::every_menu`] walked, as a table of the keys that reach
+/// each row — what `MAP.md` prints, so that "which letter opens what" is
+/// looked up rather than found by trying.
+pub fn menus_markdown(menus: &[(String, Vec<crate::menu::Row>)]) -> String {
+    let mut menus: Vec<&(String, Vec<crate::menu::Row>)> = menus.iter().collect();
+    menus.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut out = String::from("| keys | row |\n|---|---|\n");
+    for (path, rows) in menus {
+        let mut letters = path.chars();
+        let Some(title) = letters.next() else {
+            continue;
+        };
+        let mut keys = format!("Alt+{}", title.to_ascii_uppercase());
+        for c in letters {
+            keys.push_str(&format!(", {}", c.to_ascii_uppercase()));
+        }
+        for row in rows {
+            let key = match row.letter {
+                Some(c) => format!("{keys}, {}", c.to_ascii_uppercase()),
+                None => format!("{keys}, —"),
+            };
+            let sub = if row.sub { " ▸" } else { "" };
+            let off = if row.enabled {
+                ""
+            } else {
+                " *(disabled here)*"
+            };
+            out.push_str(&format!(
+                "| `{key}` | {}{sub}{off} |\n",
+                row.label.replace('|', "\\|")
+            ));
+        }
+    }
+    out
 }
 
 /// What a keyboard puts into a frame for one press: the key with its

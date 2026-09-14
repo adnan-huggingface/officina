@@ -508,6 +508,10 @@ fn no_two_rows_of_a_menu_share_a_letter() {
         .filter(|(_, rows)| rows.is_empty())
         .map(|(path, _)| path.as_str())
         .collect();
+    // `cargo xtask map` asks for the walk, for the map's table of menus.
+    if let Some(out) = std::env::var_os("OFFICINA_MENUS_OUT") {
+        std::fs::write(out, ui_kit::drive::menus_markdown(&menus)).expect("the menus written");
+    }
     let clashes = ui_kit::menu::clashes(drive.ctx());
     assert!(clashes.is_empty(), "{}", clashes.join("\n"));
     assert!(unopened.is_empty(), "these did not open: {unopened:?}");

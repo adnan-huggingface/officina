@@ -376,6 +376,11 @@ fn drawn_id() -> egui::Id {
 /// by its letter. Windows cycles between duplicates; a menu here does not, and
 /// so has none.
 fn record(ui: &egui::Ui, marked: &Marked<'_>, label: &str, sub: bool) {
+    // A popup's first frame is a pass that only measures it, drawn disabled
+    // and unseen; what it says about a row is not what the menu shows.
+    if ui.is_sizing_pass() {
+        return;
+    }
     // A submenu is a window of its own, so its rows' stack does not run
     // through the menu it hangs from: the nearest menu is the one to go by.
     let Some(menu) = ui

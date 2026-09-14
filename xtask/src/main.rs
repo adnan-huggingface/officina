@@ -7,6 +7,7 @@
 
 mod dist;
 mod fidelity;
+mod map;
 mod perf;
 
 use std::path::{Path, PathBuf};
@@ -33,6 +34,8 @@ fn main() -> ExitCode {
         "perf" => perf(rest),
         "compare" => compare(rest),
         "author" => author(),
+        "measure" => measure(rest),
+        "map" => map::write().map(|path| println!("{}", path.display())),
         "check" => check(rest),
         "help" | "--help" | "-h" => {
             usage();
@@ -73,6 +76,13 @@ cargo xtask <command>
   author     write corpus/docx/scriva-authored.docx from corpus/scriva-authored.txt
              through Scriva's own commands, and renew Word's reading of it if
              the document changed
+  measure    <script> [compare options]: author a .docx from a script of
+             Scriva's commands (the corpus script's language) into
+             target/measure/, have Word render it, and print where Scriva
+             and Word disagree — one command for \"what does Word do here\"
+  map        rewrite MAP.md: crates, how to run their tests, every file with
+             its module doc's first sentence, and every comment that states
+             what an application was measured to do (check does it too)
   help       this message"
     );
 }
@@ -113,6 +123,11 @@ fn check(args: &[String]) -> Result<(), String> {
     clippy.extend(["--all-targets", "--", "-D", "warnings"]);
     cargo(&clippy)?;
     cargo(&test)?;
+    // The map is rewritten here for the reason the formatting is: a map one
+    // step behind the code is worse than none, and renewing it is not a
+    // thing anybody should have to remember. After the tests, whose build
+    // its menu walk reuses.
+    map::write()?;
     // Where the document lands on the page, against Word's own rendering of the
     // same file — held to `LAYOUT.md`. It belongs here rather than beside it
     // because a layout regression is not a thing anybody notices: the tests all
@@ -321,22 +336,7 @@ fn author() -> Result<(), String> {
         .join("docx")
         .join("scriva-authored.docx");
     let before = std::fs::read(&out).ok();
-    // A configuration directory of its own: a save remembers its path in the
-    // user's recent list, and the corpus is not something the user opened.
-    let config = root.join("target").join("author");
-    std::fs::create_dir_all(&config).map_err(|e| format!("{}: {e}", config.display()))?;
-    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
-    let status = Command::new(&cargo)
-        .args(["run", "-q", "-p", "scriva", "--", "--author"])
-        .arg(&script)
-        .arg(&out)
-        .env("XDG_CONFIG_HOME", &config)
-        .current_dir(&root)
-        .status()
-        .map_err(|e| format!("failed to run scriva --author: {e}"))?;
-    if !status.success() {
-        return Err(format!("`scriva --author` failed with {status}"));
-    }
+    authored(&script, &out)?;
     let after = std::fs::read(&out).map_err(|e| format!("{}: {e}", out.display()))?;
     let name = out
         .strip_prefix(&root)
@@ -354,6 +354,64 @@ fn author() -> Result<(), String> {
          and commit {name}, corpus/rendered/scriva-authored.docx.tsv and LAYOUT.md together."
     );
     Ok(())
+}
+
+/// Runs `scriva --author`: the script at `script`, through the application's
+/// own commands, saved as `out`.
+fn authored(script: &Path, out: &Path) -> Result<(), String> {
+    let root = workspace_root();
+    // A configuration directory of its own: a save remembers its path in the
+    // user's recent list, and an authored document is not something the user
+    // opened.
+    let config = root.join("target").join("author");
+    std::fs::create_dir_all(&config).map_err(|e| format!("{}: {e}", config.display()))?;
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    let status = Command::new(&cargo)
+        .args(["run", "-q", "-p", "scriva", "--", "--author"])
+        .arg(script)
+        .arg(out)
+        .env("XDG_CONFIG_HOME", &config)
+        .current_dir(&root)
+        .status()
+        .map_err(|e| format!("failed to run scriva --author: {e}"))?;
+    if !status.success() {
+        return Err(format!("`scriva --author` failed with {status}"));
+    }
+    Ok(())
+}
+
+/// "What does Word do here", as one command.
+///
+/// Every measurement used to be a probe written by hand: a document built in
+/// PowerShell or Python on the laptop, rendered, read, compared by eye. This
+/// takes the same small script `cargo xtask author` reads — type, key, table,
+/// style, page-break — authors the document through Scriva's own commands,
+/// has Word render it (through `OFFICINA_WORD_SERVICE` on a machine without
+/// Word), and prints the comparison. The document and its reading stay under
+/// `target/measure/` and `target/compare/`: a measurement is a question, and
+/// only a question that should be asked again belongs in the corpus.
+fn measure(args: &[String]) -> Result<(), String> {
+    let (script, rest) = args
+        .split_first()
+        .ok_or("measure wants a script: cargo xtask measure <script> [compare options]")?;
+    let script = PathBuf::from(script);
+    let stem = script
+        .file_stem()
+        .ok_or_else(|| format!("{} names no file", script.display()))?
+        .to_string_lossy()
+        .into_owned();
+    let out = workspace_root()
+        .join("target")
+        .join("measure")
+        .join(format!("{stem}.docx"));
+    authored(
+        &std::path::absolute(&script).unwrap_or(script.clone()),
+        &out,
+    )?;
+    println!("authored {}", out.display());
+    let mut argv = vec![out.display().to_string(), "--refresh".to_owned()];
+    argv.extend(rest.iter().cloned());
+    compare(&argv)
 }
 
 fn cargo(args: &[&str]) -> Result<(), String> {

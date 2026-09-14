@@ -8,8 +8,19 @@ Linux code paths exist but are unverified.
 
 ## Commands
 
+**Start at `MAP.md`.** It is generated from the tree on every `check`: which
+target holds a crate's tests, what each file is for, the rules Word, Excel or
+LibreOffice was measured to keep and where they are written, and the keys that
+reach every menu row. Look there before grepping.
+
 ```bash
 cargo xtask check      # fmt + clippy (warnings denied) + tests + layout — the gate for any change
+cargo xtask check --quick   # the same, clippy and tests only for the crates the working tree changed
+cargo xtask author     # rewrite corpus/docx/scriva-authored.docx from its script, renew Word's reading
+cargo xtask measure <script>  # author a .docx from a script of Scriva's commands, have Word render it,
+                              # print the comparison — "what does Word do here" in one call
+cargo xtask map       # rewrite MAP.md (check does it too): crates and their test targets, every
+                      # file's purpose, every measured fact with its place, every menu's keys
 cargo xtask fidelity   # round-trip harness over corpus/ (untouched save, then save-after-edit)
 cargo xtask perf       # stopwatch over the corpus and larger files
 cargo xtask compare <file>  # where a page differs from the owning application's rendering,
@@ -22,6 +33,16 @@ cargo test -p ss-formula name_of_test          # one test
 ```
 
 Some tests drive real Word/Excel through COM and skip themselves when Office is absent.
+
+**Driving the applications in a test.** `ui_kit::drive::Driver` runs the frame
+the window runs — dialogs, menus, document — with keys, menu letters and text,
+and the application's state is read back from the application. Both apps'
+test constructors enter `ui_kit::headless`: no file chooser reaches the
+desktop and no recent list is written. A keyboard sequence is tested at more
+than one pace (`settle()` between keys), because a real window paints frames
+between keys that the driver does not. `Driver::every_menu` walks every menu
+by keyboard; `ui_kit::menu::clashes` reports two rows of one menu sharing a
+letter.
 
 After meaningful UI work, recreate a real document through the running app —
 menus and keystrokes, New through Save As. adr/0002 records why: one afternoon
