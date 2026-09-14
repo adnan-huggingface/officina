@@ -17,6 +17,15 @@
 //! asks the model where the caret is, rather than a person asking a picture.
 //! The display is still needed for two things — the file choosers, which are
 //! another program's windows, and how a page *looks* — and for nothing else.
+//!
+//! **Pace is part of the input.** [`Driver::press`] is one frame, and the next
+//! call is the next frame, which is faster than any hand types: a real window
+//! paints a frame for the key's release and more for a caret's blink. A
+//! sequence that fails here and not on the window is not therefore a false
+//! alarm — the Tab race in Calx's grid failed at zero and one idle frames and
+//! passed at two, and a quick typist gets the first two. Test a sequence at
+//! every pace that could matter, with [`Driver::settle`] between the keys,
+//! and believe the window only for the slowest.
 
 use eframe::egui;
 

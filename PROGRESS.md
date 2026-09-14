@@ -5277,3 +5277,16 @@ field but its own two holds the keyboard. The test types a row with Tab, a
 row with the right arrow and a column with the down arrow at none, one and
 two idle frames; Scriva, swept the same way across a new table's cells, was
 right at every pace and keeps the sweep as a guard.
+
+## Text typed at a picked chart lets the chart go first (2026-09-14)
+
+Handoff open item 1, charts. Insert ▸ Chart ▸ Line by its letters works and
+leaves the chart picked; a key press then lets it go and starts an edit in
+the cell cursor, as the grid's rules say. Text that arrives without a key of
+its own — a composed or dead-key letter — skipped that rule and began an
+edit of A1, the cell under the chart, while the chart still showed picked
+and the cell cursor was not drawn: the chart's own heading was overwritten
+behind it. Typed text now lets a picked chart or picture go as a key does.
+The inspector's fields are still not reachable from the keyboard — Tab moves
+the cell, as a spreadsheet's Tab must — which wants a pane key of its own,
+Excel's F6; left open.
