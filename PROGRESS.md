@@ -5216,3 +5216,19 @@ Bold and Subscript, Shrink and Highlight, Italic and Picture Size…, and three
 zoom levels on the 1; they have letters of their own now, bar 150%, since six
 levels have five digits between them. A test in each application walks the
 lot on every run.
+
+## The two giant files are split along what they hold (2026-09-13)
+
+The handoff's third wish. `app-scriva/src/app.rs` was 11,700 lines and
+`app-calx/src/main.rs` 8,300: every lookup a grep and a window, every edit a
+string match against a file too large to read, and no two pieces of work able
+to share one. Whole items moved, their comments with them, and nothing else
+changed but indentation and the `pub(super)` a method needs to be called from
+the file it left — checked by comparing the two sides line for line. Scriva's
+test module is `app/tests.rs`, and its second `impl` block — the part drawn
+rather than commanded — is six files beside it: `dialogs`, `bands` (headers,
+footers, the page-number field), `watermark`, `tables`, `find_bar` and
+`surface`. `app.rs` keeps the commands, the model and the keys, at 4,500
+lines. Calx's boxes and the tabs of Format Cells are `dialogs.rs`, its tests
+`tests.rs`; `main.rs` is 5,600. Test names and module paths are as they were,
+so every `cargo test` filter and `PLAN.md` item still finds its test.
