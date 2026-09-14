@@ -36,11 +36,11 @@ const MIN_WIDTH: f32 = 208.0;
 /// colour of the background, in every row that has no mark to make.
 const TICK: &str = "✔";
 
-/// The suite's accent green, which is what a ticked item is marked in.
-const ACCENT: egui::Color32 = egui::Color32::from_rgb(0x1E, 0x6F, 0x5C);
+/// The suite's accent, which is what a ticked item is marked in.
+const ACCENT: egui::Color32 = crate::theme::ACCENT;
 
 /// The line between groups of commands.
-const RULE: egui::Color32 = egui::Color32::from_rgb(0xDF, 0xDF, 0xDF);
+const RULE: egui::Color32 = crate::theme::CHROME_RULE;
 
 /// Which menu is open, and which one the pointer has moved onto.
 ///
@@ -643,11 +643,11 @@ fn bar_style(style: &mut egui::Style) {
     v.widgets.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
     v.widgets.inactive.bg_stroke = egui::Stroke::NONE;
     // A title with a menu down is *held*, and looks held for as long as it is.
-    v.widgets.open.weak_bg_fill = egui::Color32::from_rgb(0xDC, 0xE8, 0xE1);
+    v.widgets.open.weak_bg_fill = crate::theme::TINT_ON;
     v.widgets.open.bg_stroke = egui::Stroke::NONE;
-    v.widgets.hovered.weak_bg_fill = egui::Color32::from_rgb(0xE6, 0xEE, 0xEA);
+    v.widgets.hovered.weak_bg_fill = crate::theme::TINT_HOVER;
     v.widgets.hovered.bg_stroke = egui::Stroke::NONE;
-    v.widgets.active.weak_bg_fill = egui::Color32::from_rgb(0xDC, 0xE8, 0xE1);
+    v.widgets.active.weak_bg_fill = crate::theme::TINT_ON;
     v.widgets.active.bg_stroke = egui::Stroke::NONE;
     for w in [
         &mut v.widgets.inactive,
@@ -655,7 +655,7 @@ fn bar_style(style: &mut egui::Style) {
         &mut v.widgets.active,
         &mut v.widgets.open,
     ] {
-        w.corner_radius = egui::CornerRadius::same(4);
+        w.corner_radius = egui::CornerRadius::same(crate::theme::RADIUS_CONTROL);
     }
 }
 
@@ -668,7 +668,7 @@ fn menu_style(style: &mut egui::Style) {
     style.spacing.interact_size.y = 22.0;
 
     let v = &mut style.visuals;
-    v.menu_corner_radius = egui::CornerRadius::same(7);
+    v.menu_corner_radius = egui::CornerRadius::same(crate::theme::RADIUS_MENU);
     v.window_fill = egui::Color32::from_gray(0xFD);
     v.window_stroke = egui::Stroke::new(1.0, egui::Color32::from_gray(0xC6));
     v.popup_shadow = egui::epaint::Shadow {
@@ -682,11 +682,11 @@ fn menu_style(style: &mut egui::Style) {
     // buttons somebody stacked up.
     v.widgets.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
     v.widgets.inactive.bg_stroke = egui::Stroke::NONE;
-    v.widgets.hovered.weak_bg_fill = egui::Color32::from_rgb(0xE6, 0xEE, 0xEA);
+    v.widgets.hovered.weak_bg_fill = crate::theme::TINT_HOVER;
     v.widgets.hovered.bg_stroke = egui::Stroke::NONE;
-    v.widgets.active.weak_bg_fill = egui::Color32::from_rgb(0xD6, 0xE5, 0xDC);
+    v.widgets.active.weak_bg_fill = crate::theme::TINT_DOWN;
     v.widgets.active.bg_stroke = egui::Stroke::NONE;
-    v.widgets.open.weak_bg_fill = egui::Color32::from_rgb(0xE6, 0xEE, 0xEA);
+    v.widgets.open.weak_bg_fill = crate::theme::TINT_HOVER;
     v.widgets.open.bg_stroke = egui::Stroke::NONE;
     for w in [
         &mut v.widgets.inactive,
@@ -694,7 +694,7 @@ fn menu_style(style: &mut egui::Style) {
         &mut v.widgets.active,
         &mut v.widgets.open,
     ] {
-        w.corner_radius = egui::CornerRadius::same(4);
+        w.corner_radius = egui::CornerRadius::same(crate::theme::RADIUS_CONTROL);
     }
 }
 

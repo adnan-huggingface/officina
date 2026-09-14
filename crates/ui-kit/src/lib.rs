@@ -19,6 +19,7 @@ pub mod menu;
 pub mod paths;
 pub mod recent;
 pub mod shell;
+pub mod theme;
 
 pub use eframe::{self, egui};
 pub use fonts::Family;

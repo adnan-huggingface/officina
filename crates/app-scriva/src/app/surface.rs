@@ -105,6 +105,23 @@ impl Scriva {
                 self.focused = ui
                     .ctx()
                     .memory(|m| m.focused().is_none_or(|id| id == response.id));
+                // The caret blinks — on for a beat, off for a beat — and stands
+                // solid from every key or click, so that it is always showing
+                // where the next letter goes at the moment that matters. Never
+                // while a selection shows: the selection says where the caret
+                // is, and a caret blinking at the end of it is noise. A frame
+                // is asked for at the next change of phase and not before;
+                // the window sleeps between.
+                let caret_shown = if self.focused && self.selection.is_empty() {
+                    let since = ui.input(|i| i.time) - self.blink_from;
+                    let beats = (since / ui_kit::theme::BLINK).max(0.0);
+                    let remaining = ui_kit::theme::BLINK * (1.0 - beats.fract());
+                    ui.ctx()
+                        .request_repaint_after(std::time::Duration::from_secs_f64(remaining));
+                    (beats as u64).is_multiple_of(2)
+                } else {
+                    true
+                };
                 // Decode before painting: the painter borrows the pages, and the
                 // cache cannot be borrowed mutably at the same time.
                 self.pictures.prepare(
@@ -128,7 +145,7 @@ impl Scriva {
                     } else {
                         &[]
                     },
-                    Some(self.caret()),
+                    caret_shown.then_some(self.caret()),
                     self.focused,
                     zoom,
                     origin,
@@ -665,7 +682,10 @@ impl Scriva {
     ) -> Option<view::Spot> {
         // `origin` is already the top-left of the *pages*, slack included.
         let local = (pointer - origin) / zoom;
-        let mut y = 16.0f64;
+        // The same gap the pages were stacked with: this once said sixteen on
+        // its own, and a gap widened in one place would have moved every
+        // click on the second page eight points up the paper.
+        let mut y = view::GAP as f64;
         let width = self.view.extent().0;
         for (index, page) in self.view.pages().iter().enumerate() {
             let left = (width - page.geometry.width) / 2.0;
@@ -677,7 +697,7 @@ impl Scriva {
                     y: local.y as f64 - y,
                 });
             }
-            y = bottom + 16.0;
+            y = bottom + view::GAP as f64;
         }
         None
     }

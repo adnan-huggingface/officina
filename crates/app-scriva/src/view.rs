@@ -9,7 +9,7 @@
 //! make, and text the file says is black then vanishes. That is Calx's lesson
 //! about the cell canvas, and it is the same lesson.
 
-use ui_kit::egui;
+use ui_kit::{egui, theme};
 use wp_layout::block::{Page, Placed, Placement};
 use wp_layout::inline::Content;
 use wp_layout::shape::Shaper;
@@ -19,19 +19,26 @@ use crate::drawings::Picked;
 use crate::edit::{Caret, Selection};
 use crate::shaper::Egui;
 
-/// Space between two pages on the desk, in points.
-const GAP: f32 = 16.0;
-/// The desk the pages sit on.
-const DESK: egui::Color32 = egui::Color32::from_rgb(0x62, 0x62, 0x66);
+/// Space between two pages on the desk, in points — and above the first,
+/// so that the page does not stand hard against the toolbar.
+pub const GAP: f32 = 20.0;
+/// The desk the pages sit on, and the rest of the page's furniture, from the
+/// suite's one palette: the desk is light so the paper is the brightest thing
+/// on the screen, the selection is the accent because Calx's is, and the
+/// shadow is what separates paper from a desk that is no longer dark.
+const DESK: egui::Color32 = theme::DESK;
 const PAPER: egui::Color32 = egui::Color32::WHITE;
-const EDGE: egui::Color32 = egui::Color32::from_rgb(0xB0, 0xB0, 0xB4);
-const SELECTION: egui::Color32 = egui::Color32::from_rgba_premultiplied(0x2A, 0x5C, 0xAA, 0x50);
-/// Every match of the find bar's query, Word's own yellow.
-const MATCH: egui::Color32 = egui::Color32::from_rgba_premultiplied(0x92, 0x84, 0x28, 0x60);
+const EDGE: egui::Color32 = theme::PAGE_EDGE;
+const SELECTION: egui::Color32 = theme::SELECTION;
+/// Every match of the find bar's query.
+const MATCH: egui::Color32 = theme::MATCH;
 /// The outline and grips of a selected drawing.
-const HANDLE: egui::Color32 = egui::Color32::from_rgb(0x2A, 0x5C, 0xAA);
+const HANDLE: egui::Color32 = theme::ACCENT;
 /// The dashed rule and tag marking an open header or footer.
 const BAND: egui::Color32 = egui::Color32::from_rgb(0x7A, 0x7A, 0x82);
+/// The caret: black, and exactly this wide, which is how a test finds it.
+pub const CARET: egui::Color32 = egui::Color32::BLACK;
+pub const CARET_WIDTH: f32 = 1.5;
 
 /// What one point of the page takes on the glass at 100% — Word's hundred
 /// per cent, which is not a point per point.
@@ -1286,6 +1293,9 @@ pub fn paint(
         if !painter.clip_rect().intersects(rect) {
             continue;
         }
+        // The shadow first, then the paper over it: the shadow is under the
+        // page, and a shadow painted after the paper is a smudge on it.
+        painter.add(theme::PAGE_SHADOW.as_shape(rect, 0));
         painter.rect_filled(rect, 0.0, PAPER);
         painter.rect_stroke(
             rect,
@@ -1346,9 +1356,9 @@ pub fn paint(
                 let top_left = origin + egui::vec2(page_x as f32 * zoom, page_y as f32 * zoom);
                 let stroke = egui::Rect::from_min_size(
                     top_left + rect.min.to_vec2() * zoom,
-                    egui::vec2(1.5, rect.height() * zoom),
+                    egui::vec2(CARET_WIDTH, rect.height() * zoom),
                 );
-                painter.rect_filled(stroke, 0.0, egui::Color32::BLACK);
+                painter.rect_filled(stroke, 0.0, CARET);
             }
         }
     }

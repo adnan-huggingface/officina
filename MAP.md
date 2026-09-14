@@ -47,7 +47,7 @@ Every source file, its size, and the first sentence of its module doc.
 - `crates/app-calx/src/icons.rs` (590) Toolbar icons, drawn rather than typed.
 - `crates/app-calx/src/inspector.rs` (803) The chart inspector: a panel beside the grid for as long as a chart is selected.
 - `crates/app-calx/src/lib.rs` (11) Calx — the spreadsheet application.
-- `crates/app-calx/src/main.rs` (5710) Calx — spreadsheet.
+- `crates/app-calx/src/main.rs` (5716) Calx — spreadsheet.
 - `crates/app-calx/src/tests.rs` (1058) 
 
 ### `scriva`
@@ -55,11 +55,11 @@ Every source file, its size, and the first sentence of its module doc.
 - `crates/app-scriva/src/app/bands.rs` (578) Headers and footers — the bands above and below the text of a page: which one the caret is in, making one a section does not have yet, first-page and odd/even kinds, linking to the previous section, the band bar, and …
 - `crates/app-scriva/src/app/dialogs.rs` (871) Scriva's boxes: page margins, Insert Table, colour, paragraph, column width, picture size, fonts, zoom and the comment box.
 - `crates/app-scriva/src/app/find_bar.rs` (206) The find bar: one bar for Find and Replace, which holds the keyboard while it is open and hands it back to the document when it closes.
-- `crates/app-scriva/src/app/surface.rs` (684) The page surface: the scrolling desk the pages sit on, what the pointer does there — carets, selections, a picture picked, dragged and resized — and where on a page a point lands.
+- `crates/app-scriva/src/app/surface.rs` (704) The page surface: the scrolling desk the pages sit on, what the pointer does there — carets, selections, a picture picked, dragged and resized — and where on a page a point lands.
 - `crates/app-scriva/src/app/tables.rs` (308) Editing a table: Tab from cell to cell, the edit every table command goes through, cell margins, column widths, and Insert Table itself.
-- `crates/app-scriva/src/app/tests.rs` (4548) 
+- `crates/app-scriva/src/app/tests.rs` (4661) 
 - `crates/app-scriva/src/app/watermark.rs` (289) The watermark: the box that asks for one, and the shape it becomes in a header, written the way Word writes its own so that Word finds it again.
-- `crates/app-scriva/src/app.rs` (4471) The application: the window, the commands, and the keys.
+- `crates/app-scriva/src/app.rs` (4490) The application: the window, the commands, and the keys.
 - `crates/app-scriva/src/author.rs` (339) A document written by the application itself, from a script of its own commands.
 - `crates/app-scriva/src/clip.rs` (955) The formatted halves of a copy: CF_HTML and Rich Text Format.
 - `crates/app-scriva/src/drawings.rs` (353) A picture as an object: selected, moved, resized, deleted.
@@ -75,7 +75,7 @@ Every source file, its size, and the first sentence of its module doc.
 - `crates/app-scriva/src/revise.rs` (1141) Accepting and rejecting tracked changes, and recording new ones.
 - `crates/app-scriva/src/shaper.rs` (873) Measuring text with the faces the application actually has.
 - `crates/app-scriva/src/text.rs` (781) Editing the text of a paragraph.
-- `crates/app-scriva/src/view.rs` (2846) The document surface: pages on a desk, a caret, and a selection.
+- `crates/app-scriva/src/view.rs` (2856) The document surface: pages on a desk, a caret, and a selection.
 
 ### `brand`
 
@@ -228,15 +228,16 @@ Every source file, its size, and the first sentence of its module doc.
 - `crates/ui-kit/src/chart.rs` (319) Drawing a chart on the screen.
 - `crates/ui-kit/src/chooser.rs` (135) The operating system's file chooser, asked without stopping the window.
 - `crates/ui-kit/src/dialog.rs` (727) The look of every dialog both apps put on the screen.
-- `crates/ui-kit/src/drive.rs` (478) Driving an application by keystroke, without a window.
+- `crates/ui-kit/src/drive.rs` (497) Driving an application by keystroke, without a window.
 - `crates/ui-kit/src/fonts.rs` (1371) Real type faces, loaded from the system at startup.
 - `crates/ui-kit/src/headless.rs` (54) An application running without a person in front of it: under a test.
 - `crates/ui-kit/src/keys.rs` (73) Keyboard shortcuts, matched on every modifier.
-- `crates/ui-kit/src/lib.rs` (44) Shared application shell for Calx and Scriva.
+- `crates/ui-kit/src/lib.rs` (45) Shared application shell for Calx and Scriva.
 - `crates/ui-kit/src/menu.rs` (965) A menu bar, and menus that look like menus.
 - `crates/ui-kit/src/paths.rs` (99) Config and state directory resolution.
 - `crates/ui-kit/src/recent.rs` (205) The files that have been opened, most recent first.
-- `crates/ui-kit/src/shell.rs` (569) The window shell both apps boot into.
+- `crates/ui-kit/src/shell.rs` (650) The window shell both apps boot into.
+- `crates/ui-kit/src/theme.rs` (187) The design language, as named numbers.
 
 ### `wp-compare`
 
@@ -361,8 +362,8 @@ Every comment that says an application was *measured* — the rules this code ke
 - `crates/app-scriva/src/app/tables.rs:282` Measured: a cell that states none is laid to its *content* by Word, whatever the grid says — a 468pt table came back 28pt wide, its second column as wide as "B1", and an empty column under a point.
 - `crates/app-scriva/src/app/watermark.rs:137` measured against a watermark Word wrote itself, which put the shape in the default header and left the other two parts empty.
 - `crates/app-scriva/src/app.rs:321` Word's own Page Setup keeps those last two on the same sheet, under "From edge", and they belong with the margins because they are measured against the same four edges.
-- `crates/app-scriva/src/app.rs:3890` 96 pixels to the inch: what a screen snippet is measured in, and what Word assumes of an image that does not say otherwise.
-- `crates/app-scriva/src/app.rs:4024` What a new document is in Word today, measured on the reference machine (Word 16.0.20326, 2026-09-13): twelve points, eight points after every paragraph, and a line of 278 to 240 — the document defaults Word writes in…
+- `crates/app-scriva/src/app.rs:3894` 96 pixels to the inch: what a screen snippet is measured in, and what Word assumes of an image that does not say otherwise.
+- `crates/app-scriva/src/app.rs:4028` What a new document is in Word today, measured on the reference machine (Word 16.0.20326, 2026-09-13): twelve points, eight points after every paragraph, and a line of 278 to 240 — the document defaults Word writes in…
 - `crates/app-scriva/src/author.rs:5` Nothing measured what it *writes* — and the faults that cost a week of afternoons were all there: a new document that stated no defaults and came back from Word a third taller, an inserted table whose cells stated no …
 - `crates/app-scriva/src/edit.rs:620` Measured on Word, not designed: a page break *inside* a cell is nothing to Word's layout, wherever in the cell it is, and the layout here ignores one too.
 - `crates/app-scriva/src/edit.rs:1907` Measured on Word 16 (`bugs/page-break-in-table-cell.md` in the story):

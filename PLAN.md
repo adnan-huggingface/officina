@@ -1,126 +1,250 @@
-# The save nobody watched a person make
+# The page is the product, and the chrome recedes
 
-What is left of `.odt` support. **This file is immutable while the work runs.**
-Nothing that does the work may edit it — not to reword an item, not to remove
-one, and above all not to mark one done. A definition of done that the worker
-can edit is not a definition of done.
+The redesign of Scriva's user interface. **This file is immutable while the
+work runs.** Nothing that does the work may edit it — not to reword an item,
+not to remove one, and above all not to mark one done. A definition of done
+that the worker can edit is not a definition of done.
 
 **Nothing here is ticked, because nothing here is ticked by hand.** Each item
 carries a `verify:` command, and the item is finished exactly when that command
 exits zero. `python .claude/hooks/gate.py` runs them all and reports the ones
-that do not. There is no ledger to keep and none to forge: the repository
-either answers the question or it does not.
+that do not. A `cargo test` filter that matches no test exits zero, so every
+test item goes through `.claude/hooks/proved.py`, which insists a test ran.
 
 `PROGRESS.md` is where the work is narrated, and `LEARNINGS.md` is where what
-the format taught goes. Neither is read by the gate. They are for people.
+egui or a format taught goes. Neither is read by the gate. They are for people.
 
-## Why there is a second round
+## Why
 
-The writer is written, measured and merged, and the round that built it passed
-every gate honestly. It was still short, and the shortfall was **in this file
-rather than in the work**.
+An afternoon of driving Scriva by keystroke and reading the screenshots back
+found twelve things, worst first: a tracked change is invisible on the page —
+the insertion and the deletion run together as one black sentence; a comment
+leaves no mark; the caret's style, face and size are nowhere on the screen;
+the status bar is Calx's two rows with one row in it; a white blur is painted
+along the bottom of every frame; there are two menu systems; a comment with
+nothing selected is refused in a box where Word comments the word at the
+caret. The design that answers it is written in full in the story's handoff,
+and the invariant stands throughout: **`cargo xtask fidelity` stays at zero
+failures; none of this changes what is written.** UI never touches a format:
+where the window needs the model to do something new, the model gains a
+function with its own test and the window calls it.
 
-The plan that was approved before any of it started carried six verification
-steps. The sixth read: *per `AGENTS.md`, after the UI work, recreate a document
-through the running app, New → Save As `.odt` → reopen, by menu and keystroke.*
-When that plan was converted into gated items, that step did not survive — not
-by decision, but because **every item here has to be a command that exits zero,
-and a person at a keyboard is not one**. The whole application half of the
-format became a single item proven by two unit tests, and nobody noticed,
-because the document that would have said otherwise was the document being
-replaced.
-
-That is a bias in the machinery, not an accident: a gate made of shell commands
-will always be missing whichever requirements are not shell commands, and it
-will be missing them silently. ADR 0002 records what it costs — one afternoon
-of driving the real binaries found a crash and two silent data losses that
-1,350 passing tests never came near, and every one of them lived in the seam
-between a keystroke and the model, which is the one seam no unit test crosses.
-
-So this round finishes the save: the cases the first round's two tests left
-out, and the exercise the first round dropped — this time with an exit code of
-its own, so that it cannot be dropped again in silence.
+Ten phases, in the order a user meets them. Each item below names the test
+that proves it.
 
 ---
 
-## The saves that were never tested
+## Phase 1 — theme, shell, desk
 
-The application half of the last round was item A1, and A1 was two tests: a
-save in place over an existing `.odt`, and a Save As from a document that never
-had a package. Everything below is a save a user will make in the first week
-and no test has ever made.
+### T1 — one theme, and its text reads against every fill
 
-### S1 — Save As writes a new `.odt` and leaves the old one where it was
+`ui_kit::theme` holds every colour and metric the chrome draws with, and the
+contrast of the chrome inks against the chrome, field and tinted fills is at
+least 4.5 to 1, computed rather than eyeballed.
 
-Open a corpus `.odt`, edit it, save it to a *different* path. The new file
-holds the edit, the original is byte-for-byte what it was, and the application
-is now editing the new one.
+    verify: python .claude/hooks/proved.py -p ui-kit chrome_text_reads_against_every_fill_it_is_set_on
 
-    verify: python .claude/hooks/proved.py -p scriva save_as_odt
+### T2 — the status panel is as tall as the application says
 
-### S2 — both cross-format directions
+The shell stops hard-coding Calx's two rows for both applications: a frame at
+1600 × 1000 gives a 26-point status panel to an application that asks for one
+row and 56 to one that asks for two.
 
-`.odt` saved as `.docx` and `.docx` saved as `.odt`. The chokepoint lets go of
-the package the document arrived in and authors the other — `self.container` and
-`self.package` are never both live — and what lands on disk opens in the format
-its name claims. This is read as correct today and has never been run.
+    verify: python .claude/hooks/proved.py -p ui-kit the_status_panel_is_as_tall_as_the_application_says
 
-    verify: python .claude/hooks/proved.py -p scriva cross_format
+### T3 — a page casts a shadow on a light desk, and the fade is gone
 
-### S3 — saving twice in one session
+The desk is the theme's, a page's shapes include a shadow before the paper,
+and nothing paints a gradient over the bottom of the desk — the blur was
+egui's scroll-area fade, and the theme turns it off.
 
-Edit, save, edit again, save again. The second save writes through a container
-the first one already flushed, which is the state no test has ever put it in,
-and the parts nobody edited are still byte-identical after the second one.
+    verify: python .claude/hooks/proved.py -p scriva a_page_sits_on_the_light_desk_with_a_shadow_and_no_fade
 
-    verify: python .claude/hooks/proved.py -p scriva saves_twice
+### T4 — the caret blinks, and stands solid after a key
 
-### S4 — a save that cannot be written says so and loses nothing
+Drawn in the frame after a keystroke, absent a blink's length later, and drawn
+again after a full period; never blinking while a selection shows.
 
-The target is read-only, or the directory is not there. `save_odt` has an error
-arm that composes a message about the file being open elsewhere; no test has
-ever reached it. Afterwards the document is still dirty, still has its path, and
-the file on disk is untouched — a failed save must not be a lost document.
+    verify: python .claude/hooks/proved.py -p scriva the_caret_blinks_and_stands_solid_after_a_key
 
-    verify: python .claude/hooks/proved.py -p scriva save_that_fails
+## Phase 2 — the toolbar
 
-## The path from a keystroke to the model
+### B1 — the caret's style, face and size are read from the document
 
-### U1 — a driver that reaches Save As the way a person does
+    verify: python .claude/hooks/proved.py -p scriva the_carets_style_face_and_size_are_read_from_the_document
 
-`tools/drive/scriva_odt.py`, run as `--out <dir>`: launches the built Scriva,
-makes a document through the menus and the keyboard, saves it as `.odt` through
-the real Save As dialog, reopens it, and reads screenshots back as it goes. It
-types the sentence `SCRIVA ODT DRIVE` so that what lands on disk can be tied to
-the run that made it.
+### B2 — every command on the toolbar is reachable at 800 wide
 
-**ADR 0002's driver rules are binding and each was paid for**: find the window
-by *process name* and never by title substring; check before every single input
-that the foreground window belongs to that process, and abort rather than type
-into another application's window; trust no coordinate that a screenshot has not
-just confirmed. A driver that types a document into a terminal is not a failed
-test, it is an incident.
+The row folds what does not fit into an overflow menu, and a walk of the row
+at 800 points finds every command either on the row or in the overflow.
 
-The exercise is the point, not the script: if a feature cannot be reached
-through the menus, **that inability is the finding** and it goes in
-`PROGRESS.md` rather than being routed around with a test hook.
+    verify: python .claude/hooks/proved.py -p scriva every_toolbar_command_is_reachable_at_eight_hundred_wide
 
-    verify: python .claude/hooks/drove_it.py
+### B3 — every tooltip ends with the key the command table gives
 
-### U2 — what the drive found is fixed, or written down as a wall
+    verify: python .claude/hooks/proved.py -p scriva every_toolbar_tooltip_ends_with_the_key_the_table_gives
 
-Weak check: it looks for a section, not for whether the walls in it were real
-or honestly reported. The recreation is not done while a wall it hit still
-stands — each one is either a fix in this sitting or a named, recorded
-limitation. ADR 0002 §5.
+### B4 — a click on B toggles bold through the one command
 
-    verify: python -c "import sys,pathlib; sys.exit(0 if 'What driving it found' in pathlib.Path('PROGRESS.md').read_text(encoding='utf-8') else 1)"
+    verify: python .claude/hooks/proved.py -p scriva a_click_on_bold_toggles_bold_through_the_command
 
-## The record
+## Phase 3 — changes and comments on the page
 
-### R1 — `LEARNINGS.md` records what the keystroke path taught
+### M1 — a deleted fragment carries its marking and its author
 
-In the voice of the entries already there: what was believed, what was
-measured, what it cost. Weak check, same reason as above.
+    verify: python .claude/hooks/proved.py -p wp-layout a_deleted_fragment_carries_its_marking_and_author
 
-    verify: python -c "import sys,pathlib; t=pathlib.Path('LEARNINGS.md').read_text(encoding='utf-8').lower(); sys.exit(0 if 'the keystroke path' in t else 1)"
+### M2 — a deletion is struck and an insertion underlined on the page
+
+The painted shapes include a strike across the deleted word and an underline
+under the inserted one, and neither under plain text.
+
+    verify: python .claude/hooks/proved.py -p scriva a_deletion_is_struck_and_an_insertion_underlined_on_the_page
+
+### M3 — a comment washes its range and marks the margin
+
+    verify: python .claude/hooks/proved.py -p scriva a_comment_washes_its_range_and_marks_the_margin
+
+## Phase 4 — the Review pane and comments
+
+### V1 — a comment with no selection takes the word at the caret
+
+    verify: python .claude/hooks/proved.py -p scriva a_comment_with_no_selection_takes_the_word_at_the_caret
+
+### V2 — a draft comment is posted with Ctrl+Enter and discarded with Escape
+
+Drafted in the pane, not in a box: Ctrl+Alt+M opens the pane, the typed
+text is posted by Ctrl+Enter, and Escape leaves no comment behind.
+
+    verify: python .claude/hooks/proved.py -p scriva a_draft_comment_is_posted_with_ctrl_enter_and_discarded_with_escape
+
+### V3 — one change is settled from its card without touching the others
+
+    verify: python .claude/hooks/proved.py -p scriva one_change_is_settled_from_its_card_without_touching_the_others
+
+### V4 — the card at the caret is the outlined one
+
+    verify: python .claude/hooks/proved.py -p scriva the_card_at_the_caret_is_the_outlined_one
+
+## Phase 5 — the Navigate pane and F6
+
+### N1 — F6 lands in the Navigate pane when it is open and skips it when closed
+
+    verify: python .claude/hooks/proved.py -p scriva f6_lands_in_the_navigate_pane_when_open_and_skips_it_when_closed
+
+### N2 — Enter on a heading moves the caret and returns the keyboard
+
+    verify: python .claude/hooks/proved.py -p scriva enter_on_a_heading_moves_the_caret_and_returns_the_keyboard_to_the_document
+
+### N3 — Escape closes one thing per press
+
+A band first, the find bar second.
+
+    verify: python .claude/hooks/proved.py -p scriva escape_closes_the_band_first_and_the_find_bar_second
+
+### N4 — the heading containing the caret is the lit row
+
+    verify: python .claude/hooks/proved.py -p scriva the_heading_containing_the_caret_is_the_lit_row
+
+## Phase 6 — table and picture strips, table commands
+
+### A1 — a row inserted below by menu takes Tab into its first cell
+
+    verify: python .claude/hooks/proved.py -p scriva a_row_inserted_below_by_menu_takes_tab_into_its_first_cell
+
+### A2 — deleting the caret's column narrows the grid and nothing else
+
+    verify: python .claude/hooks/proved.py -p scriva deleting_the_caret_column_narrows_the_grid_and_nothing_else
+
+### A3 — deleting a table leaves an empty paragraph, and undo brings it back
+
+    verify: python .claude/hooks/proved.py -p scriva deleting_a_table_leaves_an_empty_paragraph_and_undo_brings_it_back
+
+### A4 — the fidelity harness's edit round-trip inserts a row
+
+Weak check: the harness names the row edit; that it stays at zero is the
+fidelity gate's own business.
+
+    verify: python -c "import sys,pathlib; sys.exit(0 if 'insert_row' in pathlib.Path('xtask/src/fidelity.rs').read_text(encoding='utf-8') else 1)"
+
+## Phase 7 — context menus
+
+### C1 — Shift+F10 opens the context menu and Escape closes it without moving the caret
+
+    verify: python .claude/hooks/proved.py -p scriva shift_f10_opens_the_context_menu_and_escape_closes_it_without_moving_the_caret
+
+### C2 — no two rows of the context menu share a letter
+
+    verify: python .claude/hooks/proved.py -p scriva no_two_rows_of_the_context_menu_share_a_letter
+
+## Phase 8 — dialogs
+
+### D1 — a measure is read in inches, centimetres and points
+
+`"3 cm"` is 1.18 in, `"36 pt"` is 0.5 in, `"1.25"` is 1.25 in, and junk is
+nothing.
+
+    verify: python .claude/hooks/proved.py -p ui-kit a_measure_is_read_in_inches_centimetres_and_points
+
+### D2 — Page Setup with A4 landscape is one undo step
+
+    verify: python .claude/hooks/proved.py -p scriva page_setup_a4_landscape_is_one_undo_step
+
+### D3 — Ctrl+G, 5, Enter puts the caret on page five
+
+    verify: python .claude/hooks/proved.py -p scriva ctrl_g_five_enter_puts_the_caret_on_page_five
+
+### D4 — every box opened by its key takes the keyboard in its first field
+
+The existing coverage, extended to the new boxes.
+
+    verify: python .claude/hooks/proved.py -p scriva a_box_that_opens_puts_the_keyboard_in_its_first_field
+
+## Phase 9 — find bar and menus
+
+### F1 — match case finds the capital and not the lower
+
+    verify: python .claude/hooks/proved.py -p scriva match_case_finds_the_capital_and_not_the_lower
+
+### F2 — whole word finds "the" and not "then"
+
+    verify: python .claude/hooks/proved.py -p scriva whole_word_finds_the_and_not_then
+
+### F3 — the guide's key tables are the command table's
+
+    verify: python .claude/hooks/proved.py -p scriva the_guides_key_tables_are_the_command_tables
+
+### F4 — the Help menu opens by its letter
+
+    verify: python .claude/hooks/proved.py -p scriva the_help_menu_opens_by_its_letter_and_lists_the_shortcuts
+
+## Phase 10 — notices, drop, badge, polish
+
+### P1 — a save says so in the status for four seconds and not after
+
+    verify: python .claude/hooks/proved.py -p scriva a_save_says_so_in_the_status_for_four_seconds_and_not_after
+
+### P2 — a dropped document opens through the unsaved guard
+
+    verify: python .claude/hooks/proved.py -p scriva a_dropped_document_opens_through_the_unsaved_guard
+
+### P3 — a `.doc` opened shows the notice bar and no box
+
+    verify: python .claude/hooks/proved.py -p scriva a_doc_opened_shows_the_notice_bar_and_no_box
+
+## The end
+
+### Z1 — the page did not move
+
+Every corpus document lays as `LAYOUT.md` records; attribution and paint
+moved no word.
+
+    verify: cargo xtask compare --check
+
+### Z2 — the redesign was driven, and what it found is written down
+
+Weak check, for the same reason as the last plan's: the after-tour on the rig
+and Calx's screenshot are a person's eyes, and the section is where they
+report. The section is not written until every wall it hit is fixed or named.
+
+    verify: python -c "import sys,pathlib; sys.exit(0 if 'What driving the redesign found' in pathlib.Path('PROGRESS.md').read_text(encoding='utf-8') else 1)"

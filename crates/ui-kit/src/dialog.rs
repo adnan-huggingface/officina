@@ -18,10 +18,10 @@ use eframe::egui;
 
 use crate::fonts::{face, Family};
 
-/// The suite's accent green, the same accent the rest of this workspace uses.
-const ACCENT: egui::Color32 = egui::Color32::from_rgb(0x1E, 0x6F, 0x5C);
-const ACCENT_HOVER: egui::Color32 = egui::Color32::from_rgb(0x2A, 0x8B, 0x74);
-const ACCENT_DOWN: egui::Color32 = egui::Color32::from_rgb(0x17, 0x56, 0x4A);
+/// The suite's accent, the same accent the rest of this workspace uses.
+const ACCENT: egui::Color32 = crate::theme::ACCENT;
+const ACCENT_HOVER: egui::Color32 = crate::theme::ACCENT_HOVER;
+const ACCENT_DOWN: egui::Color32 = crate::theme::ACCENT_DOWN;
 
 /// A message box's width, and the least a form dialog may be.
 ///

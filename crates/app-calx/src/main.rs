@@ -5466,6 +5466,12 @@ impl DocumentApp for Calx {
         self.status_bar(ui);
     }
 
+    /// Two rows: the sheet tabs, and the state under them. It never varies —
+    /// it is the same controls all day.
+    fn status_height(&self) -> f32 {
+        56.0
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         // While the prompt is up it owns the keyboard: Ctrl+S behind a modal

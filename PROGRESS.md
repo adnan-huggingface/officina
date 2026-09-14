@@ -5352,3 +5352,35 @@ because the file was made read-only puts up the Trouble box, not a status
 line; Enter is its default, Save As…, which asks for a chooser; Escape is OK
 and closes it; the workbook stays unsaved so the next Ctrl+S tries again. It
 all worked, and a test now says so.
+
+## The chrome is one palette, the desk is light, and the caret blinks (2026-09-14)
+
+Phase 1 of the redesign the audit asked for (`PLAN.md`). `ui_kit::theme` is
+the design language as named numbers — one chrome fill, one accent, the
+tints a flat control takes, the desk, the page edge and shadow, the selection,
+the eight author colours, the radii, the type sizes, the row heights — and the
+shell, the menus, the dialogs, the icons and the page draw from it; the accent
+had been written out in four files. The test holds every chrome ink to 4.5 to
+1 against every fill it is set on, computed, and the spec's secondary ink
+failed it: `#6B6B6B` reads 4.3 to 1 on the lit tint, so the secondary ink is
+`#626262`, which reads 4.9. The desk goes from `#626266` to `#CFD1D4` and
+every page casts a shadow, painted before the paper; the selection and a
+picture's handles are the accent, as Calx's are; the page gap is twenty
+points. `DocumentApp::status_height` lets each application say how tall its
+strip is — Calx keeps its two rows, Scriva has one — where the shell had kept
+Calx's fifty-six for both and Scriva showed grey under its one row.
+
+**The white blur along the bottom of the desk was egui's.** egui 0.36 paints
+a gradient from clear to half-grey over the last twenty points of a scroll
+area with more below it, as a hint that there is more; on a desk it read as a
+smudge on every frame. `ScrollStyle::fade` is set to nothing in the theme,
+and the test that pins the desk looks for a gradient mesh over it and finds
+none. The caret blinks — half a second on, half off, solid again from every
+key or click, never while a selection shows — driven by
+`request_repaint_after` so the window sleeps between beats, and pinned by a
+test that sets the frame clock through the driver's new `frame_at`, which
+also hands back what the frame painted: the first test in the project to
+read the screen rather than the model. Widening the gap found that the
+surface's click mapping carried its own copy of the old gap, sixteen, and
+would have put every click on the second page eight points up the paper.
+

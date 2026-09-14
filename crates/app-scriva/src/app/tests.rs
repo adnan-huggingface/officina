@@ -4546,3 +4546,116 @@ fn print_by_menu_letters_says_where_printing_is() {
     drive.settle(&mut app);
     assert!(app.message.is_none());
 }
+
+/// The rectangles a frame painted, with their fill, in the order they were
+/// painted: the evidence for anything about how the page *looks*.
+fn painted_rects(shapes: &[egui::epaint::ClippedShape]) -> Vec<(egui::Rect, egui::Color32, f32)> {
+    shapes
+        .iter()
+        .filter_map(|clipped| match &clipped.shape {
+            egui::Shape::Rect(rect) => Some((rect.rect, rect.fill, rect.blur_width)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_page_sits_on_the_light_desk_with_a_shadow_and_no_fade() {
+    let drive = ui_kit::drive::Driver::new();
+    let mut app = Scriva::new();
+    drive.settle(&mut app);
+    let shapes = drive.frame_at(&mut app, Vec::new(), None);
+
+    assert_eq!(view::desk(), ui_kit::theme::DESK);
+    let rects = painted_rects(&shapes);
+    let desk = rects
+        .iter()
+        .position(|(rect, fill, _)| *fill == ui_kit::theme::DESK && rect.width() > 1000.0)
+        .expect("the desk is painted");
+    let paper = rects
+        .iter()
+        .position(|(rect, fill, _)| *fill == egui::Color32::WHITE && rect.width() > 500.0)
+        .expect("a page is painted");
+    let shadow = rects
+        .iter()
+        .position(|(rect, _, blur)| *blur > 0.0 && rect.width() > 500.0)
+        .expect("a shadow is painted");
+    assert!(
+        desk < shadow && shadow < paper,
+        "desk, then shadow, then paper"
+    );
+    assert!(
+        (rects[paper].0.top() - rects[desk].0.top() - view::GAP * view::SCALE as f32).abs() < 1.0,
+        "the first page stands one gap below the toolbar"
+    );
+
+    // The blur along the bottom of the desk was egui's scroll-area fade: a
+    // four-cornered mesh from clear to half-grey over the last twenty points.
+    // Nothing of that shape is painted on the desk now.
+    let desk_rect = rects[desk].0;
+    let gradients = shapes.iter().filter(|clipped| match &clipped.shape {
+        egui::Shape::Mesh(mesh) => {
+            let bounds = clipped.shape.visual_bounding_rect();
+            desk_rect.contains_rect(bounds)
+                && bounds.width() > 500.0
+                && mesh
+                    .vertices
+                    .iter()
+                    .any(|v| v.color != mesh.vertices[0].color)
+        }
+        _ => false,
+    });
+    assert_eq!(gradients.count(), 0, "no gradient is painted over the desk");
+}
+
+/// The caret's stroke among the shapes a frame painted, if it was painted.
+fn caret_in(shapes: &[egui::epaint::ClippedShape]) -> Option<egui::Rect> {
+    painted_rects(shapes)
+        .into_iter()
+        .find(|(rect, fill, _)| *fill == view::CARET && rect.width() == view::CARET_WIDTH)
+        .map(|(rect, _, _)| rect)
+}
+
+#[test]
+fn the_caret_blinks_and_stands_solid_after_a_key() {
+    let drive = ui_kit::drive::Driver::new();
+    let mut app = Scriva::new();
+    drive.frame_at(&mut app, Vec::new(), Some(10.0));
+    drive.frame_at(&mut app, vec![egui::Event::Text("a".into())], Some(10.0));
+
+    // Solid in the frame after the key, and for the whole first beat.
+    let beat = ui_kit::theme::BLINK;
+    let shapes = drive.frame_at(&mut app, Vec::new(), Some(10.0));
+    assert!(caret_in(&shapes).is_some(), "shown at the key");
+    let shapes = drive.frame_at(&mut app, Vec::new(), Some(10.0 + beat * 0.9));
+    assert!(
+        caret_in(&shapes).is_some(),
+        "still shown before the first beat ends"
+    );
+    // Gone for the second beat, back for the third.
+    let shapes = drive.frame_at(&mut app, Vec::new(), Some(10.0 + beat * 1.5));
+    assert!(caret_in(&shapes).is_none(), "hidden in the second beat");
+    let shapes = drive.frame_at(&mut app, Vec::new(), Some(10.0 + beat * 2.5));
+    assert!(caret_in(&shapes).is_some(), "shown again in the third");
+
+    // A key in the hidden beat brings it straight back.
+    drive.frame_at(
+        &mut app,
+        vec![egui::Event::Text("b".into())],
+        Some(10.0 + beat * 3.5),
+    );
+    let shapes = drive.frame_at(&mut app, Vec::new(), Some(10.0 + beat * 3.6));
+    assert!(caret_in(&shapes).is_some(), "solid again from the key");
+
+    // With a selection showing there is nothing to blink: the selection
+    // says where the caret is.
+    drive.press(&mut app, "shift+Home");
+    assert!(!app.selection.is_empty());
+    for beats in [0.5, 1.5, 2.5] {
+        let shapes = drive.frame_at(&mut app, Vec::new(), Some(20.0 + beat * beats));
+        assert!(
+            caret_in(&shapes).is_some(),
+            "solid with a selection at {beats}"
+        );
+    }
+}

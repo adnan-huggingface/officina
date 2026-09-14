@@ -66,13 +66,32 @@ impl Driver {
 
     /// One whole frame, with `events` as everything the keyboard did in it.
     pub fn frame<A: DocumentApp>(&self, app: &mut A, events: Vec<egui::Event>) {
+        self.frame_at(app, events, None);
+    }
+
+    /// A frame with its clock set, and everything it painted.
+    ///
+    /// The clock is what a caret's blink and a notice's fading read, and a
+    /// frame without one is a sixtieth of a second after the last — which is
+    /// the right pace for typing and no way to ask what the screen shows
+    /// four seconds on. The shapes come back for the same reason a test
+    /// reads the model back: what was painted is the only evidence that a
+    /// caret, a shadow or a strike is on the screen at all.
+    pub fn frame_at<A: DocumentApp>(
+        &self,
+        app: &mut A,
+        events: Vec<egui::Event>,
+        time: Option<f64>,
+    ) -> Vec<egui::epaint::ClippedShape> {
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, WINDOW)),
             events,
+            time,
             ..Default::default()
         };
         let mut out = self.ctx.run_ui(input, |ui| shell::frame(app, ui));
         out.textures_delta.clear();
+        out.shapes
     }
 
     /// A frame in which nothing is pressed — what a window does between keys,

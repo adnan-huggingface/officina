@@ -395,6 +395,9 @@ pub struct Scriva {
     /// True until the percent field is first touched. While set, the whole
     /// number stays selected so the next keystroke replaces it.
     zoom_fresh: bool,
+    /// The frame clock's reading at the last key or click, which is when the
+    /// caret's blink last started over.
+    blink_from: f64,
     /// What was last copied, with its formatting.
     clipboard: Option<Clip>,
     /// The picture or chart last copied as an object.
@@ -525,6 +528,7 @@ impl Scriva {
             viewport: egui::Vec2::ZERO,
             zoom_draft: None,
             zoom_fresh: false,
+            blink_from: 0.0,
             clipboard: None,
         }
     }
@@ -4383,6 +4387,21 @@ impl DocumentApp for Scriva {
         }
         let bar_held = self.finder.is_some() && self.find_bar(ui);
 
+        // Any key, letter or press starts the caret's blink over, solid.
+        let touched = ui.input(|i| {
+            i.events.iter().any(|event| {
+                matches!(
+                    event,
+                    egui::Event::Key { pressed: true, .. }
+                        | egui::Event::Text(_)
+                        | egui::Event::PointerButton { pressed: true, .. }
+                )
+            })
+        });
+        if touched {
+            self.blink_from = ui.input(|i| i.time);
+        }
+
         // Ctrl+scroll and a trackpad pinch zoom the page, like Word.
         let zoom_delta = ui.input(|i| i.zoom_delta());
         if zoom_delta != 1.0 {
@@ -4463,7 +4482,7 @@ fn rule(ui: &mut egui::Ui) {
     let y = rect.center().y.round() + 0.5;
     ui.painter().line_segment(
         [egui::pos2(rect.left(), y), egui::pos2(rect.right(), y)],
-        egui::Stroke::new(1.0, egui::Color32::from_gray(0xDC)),
+        egui::Stroke::new(1.0, ui_kit::theme::CHROME_RULE),
     );
 }
 

@@ -26,6 +26,17 @@ pub trait DocumentApp {
     /// State, below the document. Laid out top-down; may be several rows.
     fn status(&mut self, _ui: &mut egui::Ui) {}
 
+    /// How tall the strip below the document is.
+    ///
+    /// Fixed rather than measured, because a panel that measures itself has a
+    /// first frame where it does not know its own size yet — and asked of the
+    /// application rather than kept by the shell, because the shell once kept
+    /// one number for both, and it was Calx's: two rows, tabs and state, under
+    /// a word processor that had one row to put there and showed grey below it.
+    fn status_height(&self) -> f32 {
+        crate::theme::STATUS
+    }
+
     /// Anything drawn over the whole window: modals, and nothing else.
     ///
     /// Separate from `ui` because a modal opened from inside a panel is
@@ -248,14 +259,7 @@ impl Placement {
     }
 }
 
-/// Height of the strip below the document: one row of tabs and one of state.
-///
-/// Fixed rather than measured. It never varies — it is two rows of the same
-/// controls all day — and a panel that measures itself has a first frame where
-/// it does not know its own size yet.
-const STATUS_HEIGHT: f32 = 56.0;
-
-/// The colours and metrics both apps share.
+/// The colours and metrics both apps share, from [`crate::theme`].
 ///
 /// Light rather than following the system: these are documents, and a document
 /// is paper. A dark chrome around a white page is a defensible design, but a
@@ -270,31 +274,40 @@ pub fn theme(ctx: &egui::Context) {
 }
 
 fn paint_style(style: &mut egui::Style) {
+    use crate::theme;
     style.visuals = egui::Visuals::light();
 
     let v = &mut style.visuals;
-    v.panel_fill = egui::Color32::from_rgb(0xF3, 0xF3, 0xF3);
+    v.panel_fill = theme::CHROME;
     v.window_fill = egui::Color32::from_rgb(0xFB, 0xFB, 0xFB);
-    v.extreme_bg_color = egui::Color32::WHITE;
+    v.extreme_bg_color = theme::FIELD;
     v.faint_bg_color = egui::Color32::from_rgb(0xE9, 0xE9, 0xE9);
-    // The suite's accent green, which is what the selection and the active tab are.
-    let accent = egui::Color32::from_rgb(0x1E, 0x6F, 0x5C);
-    v.selection.bg_fill = accent.gamma_multiply(0.25);
-    v.selection.stroke = egui::Stroke::new(1.0, accent);
+    // The suite's accent, which is what the selection and the active tab are.
+    v.selection.bg_fill = theme::ACCENT.gamma_multiply(0.25);
+    v.selection.stroke = egui::Stroke::new(1.0, theme::ACCENT);
     v.hyperlink_color = egui::Color32::from_rgb(0x05, 0x63, 0xC1);
+    v.override_text_color = Some(theme::INK);
 
     // Flat controls with a visible edge only where one is needed. A toolbar of
     // forty buttons each drawing its own raised frame is a wall of boxes.
     v.widgets.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
     v.widgets.inactive.bg_fill = egui::Color32::TRANSPARENT;
     v.widgets.inactive.bg_stroke = egui::Stroke::NONE;
-    v.widgets.hovered.weak_bg_fill = egui::Color32::from_rgb(0xE1, 0xEC, 0xE6);
-    v.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, egui::Color32::from_gray(0xC0));
-    v.widgets.active.weak_bg_fill = egui::Color32::from_rgb(0xCB, 0xE1, 0xD4);
-    v.widgets.open.weak_bg_fill = egui::Color32::from_rgb(0xE1, 0xEC, 0xE6);
-    v.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, egui::Color32::from_gray(0xCF));
+    v.widgets.hovered.weak_bg_fill = theme::TINT_HOVER;
+    v.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, theme::FIELD_EDGE);
+    v.widgets.active.weak_bg_fill = theme::TINT_DOWN;
+    v.widgets.open.weak_bg_fill = theme::TINT_ON;
+    v.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, theme::CHROME_RULE);
 
-    let r = egui::CornerRadius::same(3);
+    // egui 0.36 paints a translucent gradient over the last twenty points of
+    // every scroll area that has more below — meant to hint at more content,
+    // and on the desk it was a white blur along the bottom of every frame,
+    // which the audit filed as the fifth-worst thing on the screen before
+    // anybody knew what painted it. A page that runs off the bottom of the
+    // window is its own hint.
+    style.spacing.scroll.fade.strength = 0.0;
+
+    let r = egui::CornerRadius::same(theme::RADIUS_CONTROL);
     for w in [
         &mut v.widgets.noninteractive,
         &mut v.widgets.inactive,
@@ -303,6 +316,21 @@ fn paint_style(style: &mut egui::Style) {
         &mut v.widgets.open,
     ] {
         w.corner_radius = r;
+    }
+
+    // The chrome's type: a running size the eye can read at arm's length,
+    // and a secondary size for counts and hints that is still twelve points,
+    // which is the least a person should be asked to read.
+    let sizes = [
+        (egui::TextStyle::Body, theme::TEXT),
+        (egui::TextStyle::Button, theme::TEXT),
+        (egui::TextStyle::Small, theme::TEXT_SMALL),
+        (egui::TextStyle::Heading, theme::HEADING),
+    ];
+    for (text_style, size) in sizes {
+        if let Some(font) = style.text_styles.get_mut(&text_style) {
+            font.size = size;
+        }
     }
 
     style.spacing.button_padding = egui::vec2(6.0, 3.0);
@@ -420,7 +448,7 @@ pub fn frame<A: DocumentApp>(app: &mut A, ui: &mut egui::Ui) {
     }
     app.overlay(&ctx);
 
-    let chrome = ui.visuals().panel_fill;
+    let chrome = crate::theme::CHROME;
     egui::Panel::top("shell-toolbar")
         .resizable(false)
         .frame(
@@ -430,18 +458,29 @@ pub fn frame<A: DocumentApp>(app: &mut A, ui: &mut egui::Ui) {
         )
         .show(ui, |ui| app.toolbar(ui));
 
-    egui::Panel::bottom("shell-status")
+    let status = egui::Panel::bottom("shell-status")
         .resizable(false)
-        .exact_size(STATUS_HEIGHT)
+        .exact_size(app.status_height())
         .frame(
             egui::Frame::new()
                 .fill(chrome)
                 .inner_margin(egui::Margin::symmetric(6, 3)),
         )
         .show(ui, |ui| app.status(ui));
+    // The hairline between the document and the state below it, drawn on the
+    // panel's own top edge so that it is a rule and not a border.
+    let top = status.response.rect.top() + 0.5;
+    ui.painter().hline(
+        status.response.rect.x_range(),
+        top,
+        egui::Stroke::new(1.0, crate::theme::CHROME_RULE),
+    );
 
+    // Filled in the desk colour rather than white: what the document does not
+    // reach — the frame between a resize and the paint that answers it — is
+    // desk, and a white flash beside the page is a page that is not there.
     egui::CentralPanel::no_frame()
-        .frame(egui::Frame::new().fill(egui::Color32::WHITE))
+        .frame(egui::Frame::new().fill(crate::theme::DESK))
         .show(ui, |ui| app.ui(ui));
 }
 
@@ -510,6 +549,48 @@ mod tests {
         let now = Placement::of(&ctx, restore);
         assert_eq!(now.size, restore.size);
         assert_eq!(now.pos, restore.pos);
+    }
+
+    /// The strip below the document is as tall as the application says, and
+    /// the shell no longer keeps one number for both: Calx's two rows under a
+    /// word processor with one row to put there showed grey below it.
+    #[test]
+    fn the_status_panel_is_as_tall_as_the_application_says() {
+        struct Rows(f32, std::cell::Cell<f32>);
+        impl DocumentApp for Rows {
+            fn id(&self) -> AppId {
+                crate::SCRIVA
+            }
+            fn ui(&mut self, ui: &mut egui::Ui) {
+                self.1.set(ui.available_rect_before_wrap().bottom());
+            }
+            fn status_height(&self) -> f32 {
+                self.0
+            }
+        }
+        struct OneRow(std::cell::Cell<f32>);
+        impl DocumentApp for OneRow {
+            fn id(&self) -> AppId {
+                crate::SCRIVA
+            }
+            fn ui(&mut self, ui: &mut egui::Ui) {
+                self.0.set(ui.available_rect_before_wrap().bottom());
+            }
+        }
+        let drive = crate::drive::Driver::new();
+        let height = crate::drive::WINDOW.y;
+
+        let mut two = Rows(56.0, std::cell::Cell::new(0.0));
+        drive.settle(&mut two);
+        assert_eq!(height - two.1.get(), 56.0, "two rows for the one that asks");
+
+        let mut one = OneRow(std::cell::Cell::new(0.0));
+        drive.settle(&mut one);
+        assert_eq!(
+            height - one.0.get(),
+            crate::theme::STATUS,
+            "one row by default"
+        );
     }
 
     /// The bug this whole arrangement exists to prevent: a document surface

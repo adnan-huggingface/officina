@@ -1991,3 +1991,15 @@ mode-12 probes showed for other faces. So a machine without Consolas can lay
 code exactly where Word does with any monospace glyphs, set one cell apart.
 A proportional face cannot be stood in for this way, which is why Aptos and
 Calibri Light still cannot.
+
+**egui fades the edge of a scroll area that has more in it.** From 0.36, a
+`ScrollArea` with content past its bottom paints a gradient — clear to half
+the panel colour, twenty points tall — over the last of what it shows, as a
+hint that there is more. Under a page on a desk that is a white smudge along
+the bottom of every frame, and nothing in the application draws it, which is
+why an afternoon's audit could name it and not its cause. It is
+`Style::spacing.scroll.fade`, and a document that runs off the window is its
+own hint. What painted a thing is answered by reading the frame's shapes back
+in a test — a four-cornered mesh with two colours, at the bottom of the
+desk's clip — in a minute, where a screenshot could only say that it was there.
+

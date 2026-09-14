@@ -50,9 +50,9 @@ pub fn button(ui: &mut egui::Ui, icon: Icon, on: bool, tip: &str) -> bool {
         );
     }
     let ink = if ui.is_enabled() {
-        egui::Color32::from_gray(0x33)
+        ui_kit::theme::INK
     } else {
-        egui::Color32::from_gray(0xAA)
+        ui_kit::theme::INK_FAINT
     };
     draw(ui.painter(), icon, rect.center(), ink);
     response.on_hover_text(tip).clicked()
