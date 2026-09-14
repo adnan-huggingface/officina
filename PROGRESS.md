@@ -5257,3 +5257,23 @@ takes the keyboard with its text selected, as Excel's New Name box does;
 Enter finishes the row, and a second Enter saves the list. The Enter that
 presses New or Edit is spent on the button and does not also finish the row
 it opened.
+
+## Typing a row with Tab no longer depends on how fast it is typed (2026-09-14)
+
+"a", Tab, "b", Tab, "c" in the driver put "ab" in one cell, or put "a" in
+A1 and walked the keyboard onto the toolbar, where the grid never saw another
+key — while the real window, driven at the rig's pace of a key every 0.6s,
+typed a row as it should. The difference was pace, and the pace is the fault:
+with the next key one frame after the last the driver lost the keyboard, with
+none it merged two entries, and with two or more — which a slow typist and
+the caret's blink between them always give — it was right. The cell editor
+is drawn before the grid reads keys, and egui lets a field lock Tab only from
+its second frame with the keyboard; in its first, Tab is egui's "move the
+focus along", and the toolbar is drawn first. `DocumentApp::owns_keyboard`
+is asked before anything is drawn, and when the document holds the keyboard
+the shell cancels egui's traversal for the frame, leaving the Tab for the
+grid. Calx claims it whenever no box, question, chooser or menu is up and no
+field but its own two holds the keyboard. The test types a row with Tab, a
+row with the right arrow and a column with the down arrow at none, one and
+two idle frames; Scriva, swept the same way across a new table's cells, was
+right at every pace and keeps the sweep as a guard.

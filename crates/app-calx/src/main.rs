@@ -5429,6 +5429,18 @@ impl DocumentApp for Calx {
         false
     }
 
+    /// The grid's, whenever nothing else is up: no box, no question, no
+    /// chooser, no open menu, and no field of the window holding the
+    /// keyboard but the cell editor and the formula bar, which are the
+    /// grid's own.
+    fn owns_keyboard(&self, ctx: &egui::Context) -> bool {
+        self.dialog.is_none()
+            && self.pending.is_none()
+            && self.asking.is_none()
+            && !egui::Popup::is_any_open(ctx)
+            && !keys_belong_elsewhere(ctx)
+    }
+
     fn overlay(&mut self, ctx: &egui::Context) {
         if let Some(asking) = self.asking.take() {
             match asking.answered() {

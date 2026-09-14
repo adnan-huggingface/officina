@@ -47,6 +47,21 @@ pub trait DocumentApp {
     fn close_requested(&mut self) -> bool {
         true
     }
+
+    /// Whether the document holds the keyboard this frame, so that Tab and
+    /// the arrows are its keys and never egui's "move the focus along".
+    ///
+    /// Asked before anything is drawn, because that is the only time the
+    /// answer can still act: egui decides where Tab sends the focus from the
+    /// raw input, before the frame begins, and the toolbar is drawn before
+    /// the document. A spreadsheet's Tab moves a cell; handed to egui in the
+    /// frame a cell editor first took the keyboard — before its own Tab lock
+    /// can apply, which egui allows only from a widget's second focused
+    /// frame — it walked the focus onto the toolbar, and the grid stopped
+    /// taking keys: "a", Tab, "b" typed "a" and lost the rest.
+    fn owns_keyboard(&self, _ctx: &egui::Context) -> bool {
+        false
+    }
 }
 
 /// Boots a window for `app` and runs until the user closes it.
@@ -400,6 +415,9 @@ impl<A: DocumentApp> eframe::App for Host<A> {
 /// another order would have been green for every one of them.
 pub fn frame<A: DocumentApp>(app: &mut A, ui: &mut egui::Ui) {
     let ctx = ui.ctx().clone();
+    if app.owns_keyboard(&ctx) {
+        ctx.memory_mut(|m| m.move_focus(egui::FocusDirection::None));
+    }
     app.overlay(&ctx);
 
     let chrome = ui.visuals().panel_fill;

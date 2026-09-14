@@ -909,3 +909,79 @@ fn a_name_is_defined_from_the_keyboard() {
         .collect();
     assert_eq!(names, vec![("Sales".to_owned(), "Sheet1!$A$1".to_owned())]);
 }
+
+/// Insert ▸ Chart ▸ Line by its letters on typed data: the chart is in and
+/// picked. Text typed at it — even text with no key press of its own, as a
+/// composed letter arrives — lets the chart go before it edits a cell, so the
+/// cell it edits is the one whose cursor is drawn; and Delete on a picked
+/// chart removes the chart and not the cells.
+#[test]
+fn a_chart_by_menu_letters_and_what_typing_at_it_does() {
+    let drive = ui_kit::drive::Driver::new();
+    let mut app = Calx::new();
+    for (at, text) in [
+        ("A1", "x"),
+        ("B1", "y"),
+        ("A2", "1"),
+        ("B2", "3"),
+        ("A3", "2"),
+        ("B3", "5"),
+    ] {
+        type_into(&mut app, at, text);
+    }
+    drive.settle(&mut app);
+    let charts = |app: &Calx| app.doc.workbook.sheet(0).map_or(0, |s| s.charts.len());
+    drive.menu(&mut app, 'I', 'H');
+    drive.press(&mut app, "L");
+    drive.settle(&mut app);
+    assert_eq!(charts(&app), 1, "Alt+I, H, L inserted a line chart");
+    assert_eq!(app.grid.selected_chart, Some(0), "and picked it");
+
+    drive.type_text(&mut app, "é");
+    assert_eq!(app.grid.selected_chart, None, "typing let the chart go");
+    drive.press(&mut app, "Escape");
+    drive.settle(&mut app);
+    assert_eq!(texts(&app, &["A1"]), vec!["x"], "Escape dropped the edit");
+
+    app.grid.selected_chart = Some(0);
+    drive.press(&mut app, "Delete");
+    drive.settle(&mut app);
+    assert_eq!(charts(&app), 0, "Delete removed the picked chart");
+    assert_eq!(texts(&app, &["A1", "B2"]), vec!["x", "3"], "and no cell");
+}
+
+/// A row typed with Tab between the entries, and a column with the arrows,
+/// at every pace a keyboard can go: the next key on the very next frame, one
+/// frame later, or two. Driven slowly on the real window it always worked;
+/// at one frame the Tab walked the keyboard onto the toolbar and the grid
+/// took nothing more, and at none it was swallowed and two entries shared a
+/// cell. Which of the three a typist got was a matter of how fast they were.
+#[test]
+fn a_row_typed_with_tab_and_arrows_lands_one_entry_a_cell_at_any_pace() {
+    for idle in 0..=2 {
+        for (between, cells) in [
+            ("Tab", ["A1", "B1", "C1", "D1"]),
+            ("ArrowRight", ["A1", "B1", "C1", "D1"]),
+            ("ArrowDown", ["A1", "A2", "A3", "A4"]),
+        ] {
+            let drive = ui_kit::drive::Driver::new();
+            let mut app = Calx::new();
+            drive.settle(&mut app);
+            for (n, letter) in ["A", "B", "C", "D"].into_iter().enumerate() {
+                drive.press(&mut app, letter);
+                for _ in 0..idle {
+                    drive.settle(&mut app);
+                }
+                drive.press(&mut app, if n == 3 { "Enter" } else { between });
+                for _ in 0..idle {
+                    drive.settle(&mut app);
+                }
+            }
+            assert_eq!(
+                texts(&app, &cells),
+                vec!["a", "b", "c", "d"],
+                "{between} with {idle} idle frames between keys"
+            );
+        }
+    }
+}

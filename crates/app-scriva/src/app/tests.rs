@@ -4346,3 +4346,47 @@ fn a_picture_added_to_an_odt_is_saved_in_it() {
         "and its bytes are in the package"
     );
 }
+
+/// Insert Table by its letters and Enter, then the cells filled with Tab
+/// between them, at every pace: the next key on the very next frame, one
+/// frame later, or two. The surface takes the keyboard back when the box
+/// closes, and egui lets it lock Tab only from its second frame with it.
+#[test]
+fn cells_filled_with_tab_straight_after_insert_table_at_any_pace() {
+    for idle in 0..=2 {
+        let drive = ui_kit::drive::Driver::new();
+        let mut app = app_with(&["before"]);
+        drive.settle(&mut app);
+        drive.menu(&mut app, 'I', 'T');
+        drive.press(&mut app, "Enter");
+        for text in ["one", "two", "three"] {
+            for _ in 0..idle {
+                drive.settle(&mut app);
+            }
+            drive.type_text(&mut app, text);
+            for _ in 0..idle {
+                drive.settle(&mut app);
+            }
+            drive.press(&mut app, "Tab");
+        }
+        let table = app
+            .document
+            .body
+            .iter()
+            .find_map(|block| match block {
+                Block::Table(table) => Some(table),
+                _ => None,
+            })
+            .expect("a table");
+        let cells: Vec<String> = table
+            .rows
+            .iter()
+            .flat_map(|row| row.cells.iter().map(|cell| cell.text()))
+            .collect();
+        assert_eq!(
+            cells,
+            vec!["one", "two", "three", ""],
+            "{idle} idle frames between keys"
+        );
+    }
+}

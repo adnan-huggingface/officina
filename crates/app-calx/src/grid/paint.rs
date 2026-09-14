@@ -2753,10 +2753,17 @@ impl GridView {
                     self.actions.push(Action::Paste(text))
                 }
                 // Typing over a selected cell starts an edit, seeded with what
-                // was typed. Control characters are not typing.
+                // was typed. Control characters are not typing. Typing lets go
+                // of a picked chart or picture, as every key but Delete and
+                // Escape does in `grid_key` — here too, because text can come
+                // without a key of its own (a composed or dead-key letter),
+                // and an edit begun under a chart still picked is an edit of a
+                // cell whose cursor is not drawn.
                 egui::Event::Text(text)
                     if self.editor.is_none() && !text.chars().any(char::is_control) =>
                 {
+                    self.selected_chart = None;
+                    self.selected_picture = None;
                     self.editor = Some(Editor::typing(self.selection.cursor(), text));
                 }
                 egui::Event::Key {
