@@ -44,6 +44,7 @@ impl Driver {
     /// measured in whatever egui ships, which is the same on every machine,
     /// where a machine's own fonts are not.
     pub fn new() -> Driver {
+        crate::headless::enter();
         let ctx = egui::Context::default();
         crate::fonts::register(&ctx, &[]);
         shell::theme(&ctx);
@@ -100,6 +101,61 @@ impl Driver {
         self.key(app, letter(title), egui::Modifiers::ALT);
         self.settle(app);
         self.key(app, letter(item), egui::Modifiers::NONE);
+        self.settle(app);
+    }
+}
+
+impl Driver {
+    /// Opens every menu under `titles` — the bar's letters — and every
+    /// submenu under those, by keyboard, and returns each menu's rows by the
+    /// path of letters that opened it. What the rows claimed is then in
+    /// [`crate::menu::clashes`]. A menu that opens a dialog or runs a
+    /// command is never chosen: only rows that open submenus are pressed,
+    /// and only those that are enabled.
+    pub fn every_menu<A: DocumentApp>(
+        &self,
+        app: &mut A,
+        titles: &str,
+    ) -> Vec<(String, Vec<crate::menu::Row>)> {
+        let mut found = Vec::new();
+        let mut paths: Vec<String> = titles.chars().map(String::from).collect();
+        while let Some(path) = paths.pop() {
+            self.close_menus(app);
+            let mut letters = path.chars();
+            let title = letters.next().expect("a path has its title");
+            let letter = |c: char| {
+                egui::Key::from_name(&c.to_ascii_uppercase().to_string())
+                    .unwrap_or_else(|| panic!("`{c}` is not a letter"))
+            };
+            self.key(app, letter(title), egui::Modifiers::ALT);
+            self.settle(app);
+            for c in letters {
+                self.key(app, letter(c), egui::Modifiers::NONE);
+                self.settle(app);
+            }
+            // The menu the path opens is as deep as the path is long; if the
+            // innermost menu drawn is shallower, the last letter opened
+            // nothing, and its parent's rows must not be walked again.
+            let (rows, open) = crate::menu::innermost_rows(&self.ctx);
+            if open != path.chars().count() {
+                found.push((path, Vec::new()));
+                continue;
+            }
+            for row in &rows {
+                if let (true, true, Some(c)) = (row.sub, row.enabled, row.letter) {
+                    paths.push(format!("{path}{c}"));
+                }
+            }
+            found.push((path, rows));
+        }
+        self.close_menus(app);
+        found
+    }
+
+    fn close_menus<A: DocumentApp>(&self, app: &mut A) {
+        for _ in 0..3 {
+            self.key(app, egui::Key::Escape, egui::Modifiers::NONE);
+        }
         self.settle(app);
     }
 }
@@ -262,6 +318,43 @@ mod tests {
         // And with no submenu open the parent's letter is its own.
         drive.menu(&mut app, 'I', 'P');
         assert_eq!(app.chosen, vec!["Plain Number", "Picture"]);
+    }
+
+    /// Every menu walked by keyboard, submenus included, and the clash
+    /// between two rows of one menu that claim one letter is reported.
+    #[test]
+    fn every_menu_is_walked_and_a_shared_letter_is_reported() {
+        #[derive(Default)]
+        struct Clashing;
+        impl DocumentApp for Clashing {
+            fn id(&self) -> crate::AppId {
+                crate::SCRIVA
+            }
+            fn toolbar(&mut self, ui: &mut egui::Ui) {
+                menu::bar(ui, |ui| {
+                    menu::top(ui, "&Table", |ui| {
+                        menu::item(ui, "Cell &Margins…", "");
+                        menu::item(ui, "&Merge Cells", "");
+                        menu::sub(ui, "&Borders", |ui| {
+                            menu::item(ui, "&All", "");
+                            menu::item(ui, "&None", "");
+                        });
+                    });
+                });
+            }
+            fn ui(&mut self, _ui: &mut egui::Ui) {}
+        }
+        let drive = Driver::new();
+        let mut app = Clashing;
+        drive.settle(&mut app);
+        let menus = drive.every_menu(&mut app, "T");
+        let paths: Vec<&str> = menus.iter().map(|(path, _)| path.as_str()).collect();
+        assert_eq!(paths, vec!["T", "Tb"], "the submenu was opened too");
+        assert_eq!(menus[1].1.len(), 2, "with its two rows");
+        assert_eq!(
+            crate::menu::clashes(drive.ctx()),
+            vec!["`Cell Margins…` and `Merge Cells` both take m".to_owned()]
+        );
     }
 
     #[test]

@@ -333,7 +333,7 @@ pub fn one_of(ui: &mut egui::Ui, choices: &[Choice<'_>]) -> Option<usize> {
 /// here: a white field with an edge, the edge darkening under the pointer and
 /// turning the accent colour while the control is open or held.
 /// The first field of a box that has just opened takes the keyboard, with
-/// its text selected.
+/// its `chars` characters selected.
 ///
 /// A box opened from the keyboard is typed at straight away — Insert Table,
 /// a number, Enter — and a field nobody has clicked has no keyboard: what was
@@ -344,8 +344,9 @@ pub fn one_of(ui: &mut egui::Ui, choices: &[Choice<'_>]) -> Option<usize> {
 /// the box appears. After that the keyboard goes where the user sends it,
 /// Tab and click included. "Appears" is read off the frame counter rather
 /// than kept as a flag in every box: a box drawn this frame that was not
-/// drawn last frame has just opened. `chars` is the length of the field's
-/// text, which is what the selection has to cover.
+/// drawn last frame has just opened. Selected here and now rather than left
+/// to [`selects_on_focus`] a frame later, because the frame later is the
+/// one the typing can already be in.
 pub fn focus_on_open(
     ui: &egui::Ui,
     dialog: impl Into<egui::Id>,
@@ -357,18 +358,57 @@ pub fn focus_on_open(
     let now = ctx.cumulative_frame_nr();
     let last: Option<u64> = ctx.data(|d| d.get_temp(id));
     ctx.data_mut(|d| d.insert_temp(id, now));
-    if matches!(last, Some(last) if last + 1 == now) {
-        return;
+    if !matches!(last, Some(last) if last + 1 == now) {
+        first.request_focus();
+        select_all(ctx, first.id, chars);
     }
-    first.request_focus();
-    let mut state = egui::text_edit::TextEditState::load(ctx, first.id).unwrap_or_default();
+}
+
+/// A single-line field of a box, `width` wide, whose text is selected when
+/// the keyboard brings it the focus.
+///
+/// Tab into a field and what is typed replaces what was offered: `2` and a
+/// typed `4` made `24` in Insert Table's Rows before this, and `8.43` and
+/// `20` made `8.4320` in Column Width. A click puts the caret where it
+/// landed, as it does everywhere.
+pub fn field(ui: &mut egui::Ui, text: &mut String, width: f32) -> egui::Response {
+    let chars = text.chars().count();
+    let response = ui.add(egui::TextEdit::singleline(text).desired_width(width));
+    selects_on_focus(ui, &response, chars);
+    response
+}
+
+/// The first [`field`] of the box `dialog`: the one that takes the keyboard
+/// when the box opens, see [`focus_on_open`].
+pub fn first_field(
+    ui: &mut egui::Ui,
+    dialog: impl Into<egui::Id>,
+    text: &mut String,
+    width: f32,
+) -> egui::Response {
+    let chars = text.chars().count();
+    let response = field(ui, text, width);
+    focus_on_open(ui, dialog, &response, chars);
+    response
+}
+
+/// What [`field`] does for a text edit built elsewhere: on the frame the
+/// keyboard brings it the focus, its `chars` characters are selected.
+pub fn selects_on_focus(ui: &egui::Ui, response: &egui::Response, chars: usize) {
+    if response.gained_focus() && !ui.input(|i| i.pointer.any_pressed()) {
+        select_all(ui.ctx(), response.id, chars);
+    }
+}
+
+fn select_all(ctx: &egui::Context, id: egui::Id, chars: usize) {
+    let mut state = egui::text_edit::TextEditState::load(ctx, id).unwrap_or_default();
     state
         .cursor
         .set_char_range(Some(egui::text::CCursorRange::two(
             egui::text::CCursor::new(0),
             egui::text::CCursor::new(chars),
         )));
-    state.store(ctx, first.id);
+    state.store(ctx, id);
 }
 
 pub fn form<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {

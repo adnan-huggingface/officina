@@ -122,6 +122,14 @@ impl Marked<'_> {
         let (Some(letter), Some(key)) = (self.key, self.key()) else {
             return false;
         };
+        // A box that is up has the keyboard, and the menus behind it have
+        // none of it. egui keeps the pointer from reaching them past a modal
+        // and leaves the keys alone: with Insert Table open, Alt+E and A ran
+        // Select All on the document behind the box, and a menu opened there
+        // took the box's own Enter.
+        if !ui.ctx().memory(|m| m.is_above_modal_layer(ui.layer_id())) {
+            return false;
+        }
         ui.input_mut(|i| {
             if !i.consume_key(modifiers, key) {
                 return false;
@@ -324,11 +332,125 @@ fn entry(ui: &mut egui::Ui, label: &str, shortcut: &str, checked: Option<bool>) 
     // rather than merely read, which is what stops the row above from also
     // answering to it — and what stops the letter reaching the grid, where it
     // would start typing into a cell.
+    record(ui, &marked, label, false);
     let by_key = ui.is_enabled() && !submenu_open(ui) && marked.taken(ui, egui::Modifiers::NONE);
     if response.clicked() || by_key {
         ui.close();
     }
     Item { response, by_key }
+}
+
+/// One row of a menu as it was drawn: its label without the marker, the
+/// letter that chooses it, and whether it opens a submenu.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Row {
+    pub label: String,
+    pub letter: Option<char>,
+    pub sub: bool,
+    pub enabled: bool,
+}
+
+/// Every row drawn in the last frame, menu by menu, and every clash seen
+/// since the context began: two rows of one menu that claim one letter.
+#[derive(Clone, Default)]
+struct Drawn {
+    frame: u64,
+    /// Each row with its menu, and whether that menu had a submenu open —
+    /// the menus drawn in one frame are a chain, and the one with none open
+    /// is the one the keyboard is in.
+    rows: Vec<(egui::Id, bool, Row)>,
+    clashes: Vec<String>,
+}
+
+fn drawn_id() -> egui::Id {
+    egui::Id::new("ui-kit-menu-drawn")
+}
+
+/// Notes a row as drawn, and a clash when its menu already has a row that
+/// claims its letter this frame.
+///
+/// **Two rows with one letter make the second one unreachable by keyboard.**
+/// The first row in a menu takes the key, so the second is a row nobody can
+/// choose without the pointer, and nothing says so: Table ▸ Cell Margins… and
+/// Table ▸ Merge Cells both claimed M, and Merge Cells had never been chosen
+/// by its letter. Windows cycles between duplicates; a menu here does not, and
+/// so has none.
+fn record(ui: &egui::Ui, marked: &Marked<'_>, label: &str, sub: bool) {
+    // A submenu is a window of its own, so its rows' stack does not run
+    // through the menu it hangs from: the nearest menu is the one to go by.
+    let Some(menu) = ui
+        .stack()
+        .iter()
+        .find(|frame| frame.kind() == Some(egui::UiKind::Menu))
+        .map(|frame| frame.id)
+    else {
+        return;
+    };
+    let parent = submenu_open(ui);
+    let now = ui.ctx().cumulative_frame_nr();
+    let letter = marked.key.map(|c| c.to_ascii_lowercase());
+    ui.ctx().data_mut(|d| {
+        let drawn = d.get_temp_mut_or_default::<Drawn>(drawn_id());
+        if drawn.frame != now {
+            drawn.frame = now;
+            drawn.rows.clear();
+        }
+        let plain = label.replace('&', "");
+        if let Some(letter) = letter {
+            if let Some((_, _, other)) = drawn.rows.iter().find(|(id, _, row)| {
+                *id == menu && row.letter == Some(letter) && row.label != plain
+            }) {
+                let clash = format!("`{}` and `{plain}` both take {letter}", other.label);
+                if !drawn.clashes.contains(&clash) {
+                    drawn.clashes.push(clash);
+                }
+            }
+        }
+        drawn.rows.push((
+            menu,
+            parent,
+            Row {
+                label: plain,
+                letter,
+                sub,
+                enabled: ui.is_enabled(),
+            },
+        ));
+    });
+}
+
+/// The rows of the innermost menu drawn in the last frame — the one with no
+/// submenu of its own open — and how many menus were open in all.
+pub fn innermost_rows(ctx: &egui::Context) -> (Vec<Row>, usize) {
+    let drawn: Drawn = ctx.data(|d| d.get_temp(drawn_id())).unwrap_or_default();
+    let mut menus: Vec<egui::Id> = Vec::new();
+    for (id, _, _) in &drawn.rows {
+        if !menus.contains(id) {
+            menus.push(*id);
+        }
+    }
+    // A menu whose rows said a submenu was open is not innermost, even if
+    // one of its rows was drawn before the submenu opened this frame.
+    let parents: Vec<egui::Id> = drawn
+        .rows
+        .iter()
+        .filter(|(_, parent, _)| *parent)
+        .map(|(id, _, _)| *id)
+        .collect();
+    let rows = drawn
+        .rows
+        .into_iter()
+        .filter(|(id, _, _)| !parents.contains(id))
+        .map(|(_, _, row)| row)
+        .collect();
+    (rows, menus.len())
+}
+
+/// Every clash seen in this context: two rows of one menu with one letter.
+pub fn clashes(ctx: &egui::Context) -> Vec<String> {
+    ctx.data(|d| d.get_temp::<Drawn>(drawn_id()))
+        .map(|drawn| drawn.clashes)
+        .unwrap_or_default()
 }
 
 /// Whether a submenu of this menu is open, in which case the keyboard is the
@@ -356,6 +478,7 @@ pub fn sub<R>(ui: &mut egui::Ui, label: &str, add: impl FnOnce(&mut egui::Ui) ->
     let button = egui::Button::new(atoms)
         .gap(0.0)
         .right_text(egui::containers::menu::SubMenuButton::RIGHT_ARROW);
+    record(ui, &marked, label, true);
     let by_key = ui.is_enabled() && !submenu_open(ui) && marked.taken(ui, egui::Modifiers::NONE);
 
     let (response, inner) =

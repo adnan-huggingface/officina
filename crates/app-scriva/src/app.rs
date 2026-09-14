@@ -456,6 +456,10 @@ impl Default for Scriva {
 
 impl Scriva {
     pub fn new() -> Scriva {
+        // A test never reaches the desktop: no chooser on the developer's
+        // screen, no document of the test's in their recent list.
+        #[cfg(test)]
+        ui_kit::headless::enter();
         Scriva {
             document: blank(),
             package: None,
@@ -1361,7 +1365,7 @@ impl Scriva {
         } else if let Some(directory) = self.recent.directory() {
             chooser = chooser.set_directory(directory);
         }
-        self.asking = Some(ui_kit::chooser::Asking::new(
+        self.asking = Some(ui_kit::chooser::Asking::system(
             move || chooser.save_file(),
             Chosen::SaveAs(after),
         ));
@@ -1475,7 +1479,7 @@ impl Scriva {
         } else if let Some(directory) = self.recent.directory() {
             chooser = chooser.set_directory(directory);
         }
-        self.asking = Some(ui_kit::chooser::Asking::new(
+        self.asking = Some(ui_kit::chooser::Asking::system(
             move || chooser.save_file(),
             Chosen::ExportPdf,
         ));
@@ -1636,7 +1640,7 @@ impl Scriva {
                 if let Some(directory) = self.recent.directory() {
                     chooser = chooser.set_directory(directory);
                 }
-                self.asking = Some(ui_kit::chooser::Asking::new(
+                self.asking = Some(ui_kit::chooser::Asking::system(
                     move || chooser.pick_file(),
                     Chosen::Open,
                 ));
@@ -2345,7 +2349,7 @@ impl Scriva {
         if let Some(directory) = self.recent.directory() {
             chooser = chooser.set_directory(directory);
         }
-        self.asking = Some(ui_kit::chooser::Asking::new(
+        self.asking = Some(ui_kit::chooser::Asking::system(
             move || chooser.pick_file(),
             Chosen::Picture,
         ));
@@ -4467,11 +4471,13 @@ impl Scriva {
                         }
                         ui.horizontal(|ui| {
                             ui.add_sized([56.0, 20.0], egui::Label::new(label));
-                            let chars = field.chars().count();
-                            let field =
-                                ui.add(egui::TextEdit::singleline(field).desired_width(64.0));
-                            if index == 0 {
-                                dialog::focus_on_open(ui, "scriva-margins", &field, chars);
+                            match index == 0 {
+                                true => {
+                                    dialog::first_field(ui, "scriva-margins", field, 64.0);
+                                }
+                                false => {
+                                    dialog::field(ui, field, 64.0);
+                                }
                             }
                             ui.label("in");
                         });
@@ -4534,11 +4540,13 @@ impl Scriva {
                     {
                         ui.horizontal(|ui| {
                             ui.add_sized([72.0, 20.0], egui::Label::new(label));
-                            let chars = field.chars().count();
-                            let field =
-                                ui.add(egui::TextEdit::singleline(field).desired_width(64.0));
-                            if index == 0 {
-                                dialog::focus_on_open(ui, "scriva-table", &field, chars);
+                            match index == 0 {
+                                true => {
+                                    dialog::first_field(ui, "scriva-table", field, 64.0);
+                                }
+                                false => {
+                                    dialog::field(ui, field, 64.0);
+                                }
                             }
                         });
                     }
@@ -4589,10 +4597,7 @@ impl Scriva {
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
                         ui.add_sized([72.0, 20.0], egui::Label::new("Hex:"));
-                        let chars = draft.chars().count();
-                        let field =
-                            ui.add(egui::TextEdit::singleline(&mut draft).desired_width(64.0));
-                        dialog::focus_on_open(ui, "scriva-color", &field, chars);
+                        dialog::first_field(ui, "scriva-color", &mut draft, 64.0);
                     });
                     ui.add_space(12.0);
                     if let Some(answer) = dialog::submit(ui, "Apply") {
@@ -4813,11 +4818,13 @@ impl Scriva {
                     {
                         ui.horizontal(|ui| {
                             ui.add_sized([80.0, 20.0], egui::Label::new(label));
-                            let chars = field.chars().count();
-                            let field =
-                                ui.add(egui::TextEdit::singleline(field).desired_width(64.0));
-                            if index == 0 {
-                                dialog::focus_on_open(ui, "scriva-paragraph", &field, chars);
+                            match index == 0 {
+                                true => {
+                                    dialog::first_field(ui, "scriva-paragraph", field, 64.0);
+                                }
+                                false => {
+                                    dialog::field(ui, field, 64.0);
+                                }
                             }
                             ui.label("pt");
                         });
@@ -4832,7 +4839,7 @@ impl Scriva {
                     ] {
                         ui.horizontal(|ui| {
                             ui.add_sized([80.0, 20.0], egui::Label::new(label));
-                            ui.add(egui::TextEdit::singleline(field).desired_width(64.0));
+                            dialog::field(ui, field, 64.0);
                             ui.label("in");
                         });
                     }
@@ -4928,10 +4935,7 @@ impl Scriva {
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
                         ui.add_sized([72.0, 20.0], egui::Label::new("Inches:"));
-                        let chars = draft.chars().count();
-                        let field =
-                            ui.add(egui::TextEdit::singleline(&mut draft).desired_width(64.0));
-                        dialog::focus_on_open(ui, "scriva-column", &field, chars);
+                        dialog::first_field(ui, "scriva-column", &mut draft, 64.0);
                     });
                     ui.add_space(12.0);
                     if let Some(answer) = dialog::submit(ui, "Apply") {
@@ -5565,18 +5569,15 @@ impl Scriva {
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
                         ui.add_sized([56.0, 20.0], egui::Label::new("Text:"));
-                        let chars = draft.text.chars().count();
-                        let field = ui
-                            .add(egui::TextEdit::singleline(&mut draft.text).desired_width(232.0));
-                        dialog::focus_on_open(ui, "scriva-watermark", &field, chars);
+                        dialog::first_field(ui, "scriva-watermark", &mut draft.text, 232.0);
                     });
                     ui.horizontal(|ui| {
                         ui.add_sized([56.0, 20.0], egui::Label::new("Font:"));
-                        ui.add(egui::TextEdit::singleline(&mut draft.font).desired_width(150.0));
+                        dialog::field(ui, &mut draft.font, 150.0);
                     });
                     ui.horizontal(|ui| {
                         ui.add_sized([56.0, 20.0], egui::Label::new("Colour:"));
-                        ui.add(egui::TextEdit::singleline(&mut draft.color).desired_width(64.0));
+                        dialog::field(ui, &mut draft.color, 64.0);
                         ui.label("hex");
                     });
                     ui.add_space(4.0);
@@ -5952,11 +5953,13 @@ impl Scriva {
                     {
                         ui.horizontal(|ui| {
                             ui.add_sized([64.0, 20.0], egui::Label::new(label));
-                            let chars = field.chars().count();
-                            let field =
-                                ui.add(egui::TextEdit::singleline(field).desired_width(64.0));
-                            if index == 0 {
-                                dialog::focus_on_open(ui, "scriva-cell-margins", &field, chars);
+                            match index == 0 {
+                                true => {
+                                    dialog::first_field(ui, "scriva-cell-margins", field, 64.0);
+                                }
+                                false => {
+                                    dialog::field(ui, field, 64.0);
+                                }
                             }
                             ui.label("pt");
                         });
@@ -6133,12 +6136,10 @@ impl Scriva {
                                 true => &mut draft.width,
                                 false => &mut draft.height,
                             };
-                            let chars = field.chars().count();
-                            let field =
-                                ui.add(egui::TextEdit::singleline(field).desired_width(64.0));
-                            if horizontal {
-                                dialog::focus_on_open(ui, "scriva-size", &field, chars);
-                            }
+                            let field = match horizontal {
+                                true => dialog::first_field(ui, "scriva-size", field, 64.0),
+                                false => dialog::field(ui, field, 64.0),
+                            };
                             if field.changed() {
                                 typed = Some(horizontal);
                             }
@@ -7793,6 +7794,7 @@ mod tests {
     #[test]
     fn a_footer_with_a_page_number_by_menu_letters() {
         let drive = ui_kit::drive::Driver::new();
+        let refused_before = ui_kit::headless::choosers_refused();
         let mut app = app_with(&["body text"]);
         drive.settle(&mut app);
         drive.menu(&mut app, 'I', 'F');
@@ -7813,6 +7815,7 @@ mod tests {
             "the words are in the footer"
         );
         assert!(app.asking.is_none(), "and no chooser was opened by the P");
+        assert_eq!(ui_kit::headless::choosers_refused(), refused_before);
         let footer = app
             .document
             .paragraphs_in(app.scope)
@@ -7879,6 +7882,237 @@ mod tests {
             })
             .collect();
         assert_eq!(said, "a note");
+    }
+
+    /// The boxes by their letters with a number typed over the one offered:
+    /// Insert Table 3 by 4, a paragraph's space before, a page's top margin.
+    /// What was typed is what the document gets.
+    #[test]
+    fn numbers_typed_into_boxes_by_menu_letters_reach_the_document() {
+        let drive = ui_kit::drive::Driver::new();
+        let mut app = app_with(&["a paragraph"]);
+        drive.settle(&mut app);
+
+        drive.menu(&mut app, 'I', 'T');
+        drive.type_text(&mut app, "3");
+        drive.press(&mut app, "Tab");
+        drive.type_text(&mut app, "4");
+        drive.press(&mut app, "Enter");
+        drive.settle(&mut app);
+        let table = app
+            .document
+            .body
+            .iter()
+            .find_map(|block| match block {
+                Block::Table(table) => Some(table),
+                _ => None,
+            })
+            .expect("a table");
+        assert_eq!(
+            (table.rows[0].cells.len(), table.rows.len()),
+            (3, 4),
+            "columns then rows, as the box asks"
+        );
+
+        let mut app = app_with(&["a paragraph"]);
+        drive.settle(&mut app);
+        drive.menu(&mut app, 'P', 'P');
+        drive.type_text(&mut app, "12");
+        drive.press(&mut app, "Enter");
+        drive.settle(&mut app);
+        assert!(app.paragraph_draft.is_none());
+        assert_eq!(
+            app.document.paragraphs()[0].props.spacing.before,
+            Some(Twips(240)),
+            "twelve points before"
+        );
+
+        let mut app = app_with(&["a paragraph"]);
+        drive.settle(&mut app);
+        drive.menu(&mut app, 'L', 'M');
+        drive.press(&mut app, "C");
+        drive.settle(&mut app);
+        drive.type_text(&mut app, "2");
+        drive.press(&mut app, "Enter");
+        drive.settle(&mut app);
+        assert!(app.margins_draft.is_none());
+        assert_eq!(
+            app.document.section.margins.top,
+            Twips(2880),
+            "a two-inch top margin"
+        );
+    }
+
+    /// The Table menu by its letters on an inserted table: Borders ▸ None
+    /// and ▸ All, Shading ▸ No Fill, Merge Cells on one cell, Cell Margins…
+    /// answered as it stands.
+    #[test]
+    fn the_table_menu_by_its_letters() {
+        let drive = ui_kit::drive::Driver::new();
+        let mut app = app_with(&["before"]);
+        app.insert_table(2, 2);
+        drive.settle(&mut app);
+        let ruled = |app: &Scriva| {
+            app.document
+                .body
+                .iter()
+                .find_map(|block| match block {
+                    // Borders ▸ None writes a border of style None on the
+                    // table and clears the cells' own, so "ruled" is a top
+                    // border with a style.
+                    Block::Table(table) => Some(
+                        table.props.borders.top.is_some_and(|border| {
+                            border.style != wp_model::prop::BorderStyle::None
+                        }) || table.rows[0].cells[0].props.borders.top.is_some(),
+                    ),
+                    _ => None,
+                })
+                .expect("a table")
+        };
+        assert!(ruled(&app), "inserted ruled");
+        drive.menu(&mut app, 'A', 'B');
+        drive.press(&mut app, "N");
+        drive.settle(&mut app);
+        assert!(!ruled(&app), "Borders ▸ None took the rules off");
+        drive.menu(&mut app, 'A', 'B');
+        drive.press(&mut app, "A");
+        drive.settle(&mut app);
+        assert!(ruled(&app), "Borders ▸ All put them back");
+        drive.menu(&mut app, 'A', 'S');
+        drive.press(&mut app, "N");
+        drive.settle(&mut app);
+        // Merge Cells with the caret in one cell says there is nothing to
+        // merge, and Enter dismisses the saying.
+        drive.menu(&mut app, 'A', 'G');
+        drive.settle(&mut app);
+        assert_eq!(
+            app.message.as_ref().map(|(title, _)| title.as_str()),
+            Some("Nothing to merge")
+        );
+        drive.press(&mut app, "Enter");
+        drive.settle(&mut app);
+        assert!(app.message.is_none(), "Enter dismissed it");
+        drive.menu(&mut app, 'A', 'M');
+        assert!(
+            app.cell_margin_draft.is_some(),
+            "Alt+A, M opened Cell Margins"
+        );
+        drive.press(&mut app, "Enter");
+        drive.settle(&mut app);
+        assert!(app.cell_margin_draft.is_none());
+        assert!(app.message.is_none(), "{:?}", app.message);
+        let text: String = app
+            .document
+            .paragraphs()
+            .iter()
+            .map(|paragraph| paragraph.text())
+            .collect();
+        assert!(text.contains("before"), "{text:?}");
+    }
+
+    /// Save As a plain text file asks first, and Enter writes it.
+    #[test]
+    fn saving_as_plain_text_asks_and_enter_writes_the_file() {
+        let drive = ui_kit::drive::Driver::new();
+        let dir = scratch("text-by-key");
+        let target = dir.join("note.txt");
+        let mut app = app_with(&["One line.", "Another."]);
+        drive.settle(&mut app);
+        assert!(!app.save_to(target.clone()));
+        drive.settle(&mut app);
+        drive.press(&mut app, "Enter");
+        drive.settle(&mut app);
+        assert!(app.pending.is_none());
+        let text = std::fs::read_to_string(&target).expect("the file was written");
+        assert!(
+            text.contains("One line.") && text.contains("Another."),
+            "{text}"
+        );
+    }
+
+    /// Insert ▸ Picture… by its letters in a test: the chooser is refused and
+    /// counted, never put on the developer's screen, and the document is as
+    /// it was. On Linux the chooser is the desktop portal's window, and a
+    /// test that reached one put it on the screen of whoever ran the tests.
+    #[test]
+    fn a_test_that_reaches_a_file_chooser_does_not_open_one() {
+        let drive = ui_kit::drive::Driver::new();
+        let mut app = app_with(&["text"]);
+        drive.settle(&mut app);
+        let before = ui_kit::headless::choosers_refused();
+        drive.menu(&mut app, 'I', 'P');
+        drive.settle(&mut app);
+        drive.settle(&mut app);
+        assert!(
+            ui_kit::headless::choosers_refused() > before,
+            "the chooser was asked for"
+        );
+        assert!(app.asking.is_none(), "and answered cancelled at once");
+        assert_eq!(app.document.paragraphs()[0].text(), "text");
+        let config = ui_kit::paths::config_dir_path(SCRIVA).expect("a directory");
+        assert!(
+            config.starts_with(std::env::temp_dir()),
+            "a test's recent files are not the user's: {}",
+            config.display()
+        );
+    }
+
+    /// With a box up the menu bar is the box's business: Alt and a letter
+    /// open no menu behind it, and the letter after runs no command there.
+    /// Found when Alt+A, G was pressed with Cell Margins already open — the
+    /// Table menu opened behind the box, and the box's Enter went to it.
+    #[test]
+    fn a_menu_does_not_open_behind_an_open_box() {
+        let drive = ui_kit::drive::Driver::new();
+        let mut app = app_with(&["text"]);
+        drive.settle(&mut app);
+        drive.menu(&mut app, 'I', 'T');
+        assert!(app.table_draft.is_some(), "Insert Table is up");
+        drive.menu(&mut app, 'E', 'A');
+        assert!(
+            !app.has_selection(),
+            "Alt+E, A behind the box selected the document"
+        );
+        assert!(
+            !egui::Popup::is_any_open(drive.ctx()),
+            "a menu is open behind the box"
+        );
+        drive.press(&mut app, "Escape");
+        drive.settle(&mut app);
+        assert!(app.table_draft.is_none(), "Escape still closes the box");
+    }
+
+    /// Every menu and submenu, walked by keyboard: no two rows of one menu
+    /// claim one letter, since the second of them could never be chosen by
+    /// it. Walked with a table and a picture-free document, so the Table
+    /// menu's rows are live.
+    #[test]
+    fn no_two_rows_of_a_menu_share_a_letter() {
+        let drive = ui_kit::drive::Driver::new();
+        let mut app = app_with(&["text"]);
+        app.insert_table(2, 2);
+        // A recent list with something on it, so File ▸ Recent has rows.
+        app.recent
+            .remember(SCRIVA, Path::new("/nowhere/walked.docx"));
+        drive.settle(&mut app);
+        let menus = drive.every_menu(&mut app, "FEVOPLRIAS");
+        for (path, rows) in &menus {
+            eprintln!(
+                "MENU {path}: {}",
+                rows.iter()
+                    .map(|r| format!("{}{}", r.label, if r.sub { " >" } else { "" }))
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            );
+        }
+        let unopened: Vec<&str> = menus
+            .iter()
+            .filter(|(_, rows)| rows.is_empty())
+            .map(|(path, _)| path.as_str())
+            .collect();
+        let clashes = ui_kit::menu::clashes(drive.ctx());
+        assert!(clashes.is_empty(), "{}", clashes.join("\n"));
+        assert!(unopened.is_empty(), "these did not open: {unopened:?}");
     }
 
     /// One whole frame of the window's body, with `events` as its input.

@@ -25,6 +25,15 @@ pub fn config_dir(app: AppId) -> std::io::Result<PathBuf> {
 
 /// Computes the config directory without touching the filesystem.
 pub fn config_dir_path(app: AppId) -> std::io::Result<PathBuf> {
+    // A test's saves and opens are not the user's recent files.
+    if crate::headless::active() {
+        return Ok(crate::headless::config_base().join(app.slug));
+    }
+    users_config_dir(app)
+}
+
+/// Where the user's own configuration for `app` lives, by the platform's rule.
+fn users_config_dir(app: AppId) -> std::io::Result<PathBuf> {
     let base = match std::env::var_os("XDG_CONFIG_HOME") {
         Some(v) if !v.is_empty() && PathBuf::from(&v).is_absolute() => PathBuf::from(v),
         _ => home_dir()?.join(".config"),
@@ -71,7 +80,9 @@ mod tests {
         if std::env::var_os("XDG_CONFIG_HOME").is_some_and(|v| !v.is_empty()) {
             return;
         }
-        let p = config_dir_path(crate::CALX).unwrap();
+        // The rule itself, since the driver's tests in this binary make the
+        // process headless and move the directory under the temporary one.
+        let p = users_config_dir(crate::CALX).unwrap();
         assert!(
             p.parent().is_some_and(|parent| parent.ends_with(".config")),
             "expected parent `.config`, got {:?}",

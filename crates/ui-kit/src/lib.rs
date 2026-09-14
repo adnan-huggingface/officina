@@ -13,6 +13,7 @@ pub mod chooser;
 pub mod dialog;
 pub mod drive;
 pub mod fonts;
+pub mod headless;
 pub mod keys;
 pub mod menu;
 pub mod paths;

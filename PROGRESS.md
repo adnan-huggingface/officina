@@ -5135,8 +5135,14 @@ counter, its first field takes the keyboard with its text selected, so that a
 number typed replaces the one offered rather than landing after it — `2` and
 `4` made `24` on the first try. Applied to every Scriva box with a field:
 Margins, Insert Table, Colour, Paragraph, Column Width, Watermark, Cell
-Margins, Picture Size. Word does the same. A test opens each by its command,
-types, and reads the field back.
+Margins, Picture Size — and to Calx's Rename Sheet, Column Width, Row Height
+and Zoom, which focused their field on every frame and selected nothing, so
+`8.43` and a typed `20` set a width of 8.432. Tab into a field selects its
+text as well, through `dialog::field`, which every box's field now goes
+through: `3`, Tab, `4` in Insert Table is three columns by four rows, not by
+twenty-four. Word does the same. A test opens each box by its command, types,
+and reads the field back; another does it by the menus' letters and reads
+the document.
 
 ## Sort and Remove Duplicates guess a heading the way Excel does (2026-09-13)
 
@@ -5179,3 +5185,34 @@ its letter only while no submenu of its own menu is open — with a test in
 there and no chooser opened. The four bugs of this entry and the three before
 it were found in one sitting, each in under a second of test time, by driving
 the applications the way ADR 0002 asks and a display never had to be up.
+
+## A test never reaches the desktop (2026-09-13)
+
+Learned the expensive way. A driver test that meant Insert ▸ Page Number
+reached Insert ▸ Picture… before the submenu fix above, and `cargo test`
+inherits the session's bus: the developer's own desktop portal drew three
+file choosers on their screen, one per run, and kept them after the test had
+long exited. They opened in the corpus's folder because every test that
+opened or saved a document had been writing the developer's real recent
+list — for as long as there have been such tests. `ui_kit::headless` ends
+both: once a process enters it, an operating-system chooser — asked only
+through `Asking::system` now — is counted and answers "cancelled", and the
+configuration directory is the process's own under the temporary directory.
+The driver enters it, and so do `Scriva::new()` and `Calx::new()` in their
+own test builds, so a test written without the driver is held to the same
+rule. The whole gate then ran with both recent files untouched.
+
+## Menu letters stay out from behind a box, and no two rows share one (2026-09-13)
+
+With Insert Table open, Alt+E, A selected the whole document behind the box;
+with Calx's Go To open, Alt+D, A sorted the sheet behind it. egui keeps the
+pointer out from under a modal and not the keyboard, and the menu bar took
+its letters regardless; it now takes none for a menu under the top modal.
+And `ui_kit::menu` records every row it draws, so the driver can walk every
+menu and submenu of an application by keyboard and report two rows of one
+menu that claim one letter — the second of which nobody can choose without
+the pointer. Calx has none. Scriva had six: Cell Margins… and Merge Cells,
+Bold and Subscript, Shrink and Highlight, Italic and Picture Size…, and three
+zoom levels on the 1; they have letters of their own now, bar 150%, since six
+levels have five digits between them. A test in each application walks the
+lot on every run.

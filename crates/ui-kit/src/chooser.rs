@@ -48,6 +48,22 @@ impl<T> Asking<T> {
         Asking { answer, then }
     }
 
+    /// Puts the question to the operating system's own chooser — the only
+    /// constructor the applications use for one. Under a test
+    /// ([`crate::headless`]) the chooser is not asked: it is counted and
+    /// answers "cancelled", because on Linux it is a window on the developer's
+    /// own screen and nothing in a test can answer it.
+    pub fn system(
+        chooser: impl FnOnce() -> Option<PathBuf> + Send + 'static,
+        then: T,
+    ) -> Asking<T> {
+        if crate::headless::active() {
+            crate::headless::refuse_chooser();
+            return Asking::new(|| None, then);
+        }
+        Asking::new(chooser, then)
+    }
+
     /// The answer, once there is one: a path chosen, or `None` for a chooser
     /// cancelled. `Err(self)` while it is still open.
     pub fn answered(self) -> Result<(Option<PathBuf>, T), Asking<T>> {

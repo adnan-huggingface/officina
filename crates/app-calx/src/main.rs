@@ -460,6 +460,10 @@ fn keys_belong_elsewhere(ctx: &egui::Context) -> bool {
 
 impl Calx {
     fn new() -> Self {
+        // A test never reaches the desktop: no chooser on the developer's
+        // screen, no workbook of the test's in their recent list.
+        #[cfg(test)]
+        ui_kit::headless::enter();
         Calx {
             config_dir: paths::config_dir(CALX).map_err(|e| e.to_string()),
             doc: blank(),
@@ -993,7 +997,7 @@ impl Calx {
         if let Some(directory) = self.start_directory() {
             dialog = dialog.set_directory(directory);
         }
-        self.asking = Some(ui_kit::chooser::Asking::new(
+        self.asking = Some(ui_kit::chooser::Asking::system(
             move || dialog.pick_file(),
             Chosen::Picture,
         ));
@@ -1154,7 +1158,7 @@ impl Calx {
         if let Some(name) = self.path.as_ref().and_then(|p| p.file_name()) {
             dialog = dialog.set_file_name(name.to_string_lossy());
         }
-        self.asking = Some(ui_kit::chooser::Asking::new(
+        self.asking = Some(ui_kit::chooser::Asking::system(
             move || dialog.save_file(),
             Chosen::SaveAs(then),
         ));
@@ -1234,7 +1238,7 @@ impl Calx {
         if let Some(current) = self.start_directory() {
             dialog = dialog.set_directory(current);
         }
-        self.asking = Some(ui_kit::chooser::Asking::new(
+        self.asking = Some(ui_kit::chooser::Asking::system(
             move || dialog.pick_file(),
             Chosen::Open,
         ));
@@ -4455,7 +4459,7 @@ impl Calx {
                 let mut accept = false;
                 modal(ctx, "Rename sheet", |ui| {
                     let chars = text.chars().count();
-                    let field = ui.text_edit_singleline(text);
+                    let field = dialog::field(ui, text, ui.available_width());
                     dialog::focus_on_open(
                         ui,
                         egui::Id::new(("calx-modal", "Rename sheet")),
@@ -5016,7 +5020,7 @@ impl Calx {
                 modal(ctx, title, |ui| {
                     ui.horizontal(|ui| {
                         let chars = text.chars().count();
-                        let field = ui.add(egui::TextEdit::singleline(text).desired_width(90.0));
+                        let field = dialog::field(ui, text, 90.0);
                         dialog::focus_on_open(
                             ui,
                             egui::Id::new(("calx-modal", title)),
@@ -7995,6 +7999,56 @@ mod tests {
             .sheet(0)
             .and_then(|s| s.column_widths.get(&0).copied());
         assert_eq!(width, Some(20.0));
+    }
+
+    /// Every menu and submenu, walked by keyboard: no two rows of one menu
+    /// claim one letter, since the second of them could never be chosen by it.
+    #[test]
+    fn no_two_rows_of_a_menu_share_a_letter() {
+        let drive = ui_kit::drive::Driver::new();
+        let mut app = Calx::new();
+        drive.settle(&mut app);
+        let menus = drive.every_menu(&mut app, "FEVIODT");
+        for (path, rows) in &menus {
+            eprintln!(
+                "MENU {path}: {}",
+                rows.iter()
+                    .map(|r| format!("{}{}", r.label, if r.sub { " >" } else { "" }))
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            );
+        }
+        let unopened: Vec<&str> = menus
+            .iter()
+            .filter(|(_, rows)| rows.is_empty())
+            .map(|(path, _)| path.as_str())
+            .collect();
+        let clashes = ui_kit::menu::clashes(drive.ctx());
+        assert!(clashes.is_empty(), "{}", clashes.join("\n"));
+        assert!(unopened.is_empty(), "these did not open: {unopened:?}");
+    }
+
+    /// With Go To up, Alt+D, A sorts nothing behind it: the menus are the
+    /// box's business while it is open.
+    #[test]
+    fn a_menu_letter_does_nothing_behind_an_open_box() {
+        let drive = ui_kit::drive::Driver::new();
+        let mut app = Calx::new();
+        for (at, text) in [("A1", "pear"), ("A2", "apple"), ("A3", "fig")] {
+            type_into(&mut app, at, text);
+        }
+        drive.settle(&mut app);
+        drive.menu(&mut app, 'E', 'G');
+        assert!(matches!(app.dialog, Some(Dialog::GoTo { .. })));
+        drive.menu(&mut app, 'D', 'A');
+        assert_eq!(
+            texts(&app, &["A1", "A2", "A3"]),
+            vec!["pear", "apple", "fig"],
+            "Sort Ascending ran behind the box"
+        );
+        drive.press(&mut app, "Escape");
+        drive.settle(&mut app);
+        assert!(app.dialog.is_none());
     }
 
     /// Tools ▸ Define Names… by its letters opens the list, and Escape

@@ -202,9 +202,19 @@ impl Scriva {
 
             menu::top(ui, "&View", |ui| {
                 menu::sub(ui, "&Zoom", |ui| {
-                    for percent in [50, 75, 100, 125, 150, 200] {
+                    // Six levels and five digits among them, so one goes
+                    // without a letter: two rows that shared the 1 left
+                    // 125% and 150% unreachable from the keyboard.
+                    for (percent, label) in [
+                        (50, "&50%"),
+                        (75, "&75%"),
+                        (100, "&100%"),
+                        (125, "1&25%"),
+                        (150, "150%"),
+                        (200, "20&0%"),
+                    ] {
                         let on = (zoom * 100.0).round() as i32 == percent;
-                        if menu::check(ui, &format!("&{percent}%"), "", on).clicked() {
+                        if menu::check(ui, label, "", on).clicked() {
                             chosen = Some(Command::Zoom(percent as f64 / 100.0));
                         }
                     }
@@ -256,7 +266,7 @@ impl Scriva {
                 if menu::item(ui, "Su&perscript", "Ctrl+Shift+=").clicked() {
                     chosen = Some(Command::Superscript);
                 }
-                if menu::item(ui, "Su&bscript", "Ctrl+=").clicked() {
+                if menu::item(ui, "Subsc&ript", "Ctrl+=").clicked() {
                     chosen = Some(Command::Subscript);
                 }
                 menu::sep(ui);
@@ -307,7 +317,7 @@ impl Scriva {
                         chosen = Some(Command::CustomColor);
                     }
                 });
-                menu::sub(ui, "Highlig&ht", |ui| {
+                menu::sub(ui, "High&light", |ui| {
                     if menu::item(ui, "&None", "").clicked() {
                         chosen = Some(Command::Highlight(wp_model::Highlight::None));
                     }
@@ -324,7 +334,7 @@ impl Scriva {
                 menu::sep(ui);
                 // For the selected picture or chart. Dragging a handle is the
                 // fast way; this is the one with numbers in it.
-                if menu::item(ui, "P&icture Size…", "").clicked() {
+                if menu::item(ui, "Picture Si&ze…", "").clicked() {
                     chosen = Some(Command::PictureSize);
                 }
             });
@@ -549,7 +559,7 @@ impl Scriva {
                 if menu::item(ui, "Cell &Margins…", "").clicked() {
                     chosen = Some(Command::CellMargins);
                 }
-                if menu::item(ui, "&Merge Cells", "").clicked() {
+                if menu::item(ui, "Mer&ge Cells", "").clicked() {
                     chosen = Some(Command::MergeCells);
                 }
             });
