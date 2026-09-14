@@ -4801,3 +4801,149 @@ fn a_click_on_bold_toggles_bold_through_the_command() {
     drive.settle(&mut app);
     assert!(!app.emphasis().0, "and Ctrl+B takes it off again");
 }
+
+/// The horizontal line segments a frame painted in `colour`, as (y, x0, x1).
+fn rules_in(shapes: &[egui::epaint::ClippedShape], colour: egui::Color32) -> Vec<(f32, f32, f32)> {
+    shapes
+        .iter()
+        .filter_map(|clipped| match &clipped.shape {
+            egui::Shape::LineSegment { points, stroke }
+                if stroke.color == colour && (points[0].y - points[1].y).abs() < 0.01 =>
+            {
+                Some((
+                    points[0].y,
+                    points[0].x.min(points[1].x),
+                    points[0].x.max(points[1].x),
+                ))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_deletion_is_struck_and_an_insertion_underlined_on_the_page() {
+    use wp_model::doc::{inserted_by, Inline, Piece, Run};
+    use wp_model::{Mark, Revision};
+    let drive = ui_kit::drive::Driver::new();
+    let mut app = app_with(&["kept "]);
+    app.document.body[0] = Block::Paragraph(Paragraph {
+        content: vec![
+            Inline::Run(Run::of("kept ")),
+            inserted_by("Adnan Khan", 1, vec![Inline::Run(Run::of("added "))]),
+            Inline::Revised {
+                revision: Revision::Deleted(Mark::new(2, "Adnan Khan")),
+                content: vec![Inline::Run(Run {
+                    content: vec![Piece::Deleted("gone".into())],
+                    ..Run::default()
+                })],
+            },
+        ],
+        ..Paragraph::default()
+    });
+    app.changed();
+    drive.settle(&mut app);
+    let shapes = drive.frame_at(&mut app, Vec::new(), None);
+
+    let colour = ui_kit::theme::author(0);
+    let rules = rules_in(&shapes, colour);
+    assert_eq!(
+        rules.len(),
+        2,
+        "one underline and one strike, in the author's colour: {rules:?}"
+    );
+    let (underline, strike) = (rules[0], rules[1]);
+    assert!(
+        strike.0 < underline.0,
+        "the strike crosses the word, the underline hangs under it: {rules:?}"
+    );
+    assert!(
+        strike.1 >= underline.2 - 1.0,
+        "the struck word comes after the inserted one: {rules:?}"
+    );
+    let bars: Vec<egui::Rect> = painted_rects(&shapes)
+        .into_iter()
+        .filter(|(rect, fill, _)| *fill == colour && rect.width() <= 3.0)
+        .map(|(rect, _, _)| rect)
+        .collect();
+    assert_eq!(bars.len(), 1, "one change bar for the one marked line");
+    assert!(
+        bars[0].right() < underline.1,
+        "and it stands in the left margin"
+    );
+
+    // With tracked changes hidden, the page is plain: no colour, no rules,
+    // no bar.
+    app.run(Command::ShowRevisions);
+    drive.settle(&mut app);
+    let shapes = drive.frame_at(&mut app, Vec::new(), None);
+    assert!(rules_in(&shapes, colour).is_empty());
+    assert!(painted_rects(&shapes)
+        .iter()
+        .all(|(_, fill, _)| *fill != colour));
+}
+
+#[test]
+fn a_comment_washes_its_range_and_marks_the_margin() {
+    let drive = ui_kit::drive::Driver::new();
+    let mut app = app_with(&["the quick fox"]);
+    let quick = Selection {
+        anchor: Caret {
+            paragraph: 0,
+            offset: 4,
+        },
+        head: Caret {
+            paragraph: 0,
+            offset: 9,
+        },
+    };
+    crate::revise::add_comment(
+        &mut app.document,
+        &mut app.history,
+        wp_model::Scope::Body,
+        quick,
+        "Reviewer",
+        "R",
+        "is it quick?",
+    );
+    app.changed();
+    drive.settle(&mut app);
+    let shapes = drive.frame_at(&mut app, Vec::new(), None);
+
+    let wash = view::wash_colour(0);
+    let washed: Vec<egui::Rect> = painted_rects(&shapes)
+        .into_iter()
+        .filter(|(_, fill, _)| *fill == wash)
+        .map(|(rect, _, _)| rect)
+        .collect();
+    assert_eq!(washed.len(), 1, "one band under the one commented word");
+    assert!(
+        washed[0].width() > 10.0 && washed[0].width() < 80.0,
+        "the width of a word: {washed:?}"
+    );
+
+    let colour = ui_kit::theme::author(0);
+    let marker = shapes
+        .iter()
+        .find_map(|clipped| match &clipped.shape {
+            egui::Shape::Path(path) if path.fill == colour => Some(path.visual_bounding_rect()),
+            _ => None,
+        })
+        .expect("a marker in the author's colour");
+    assert!(
+        marker.left() > washed[0].right() + 100.0,
+        "in the right margin, past the text: {marker:?}"
+    );
+    assert!(
+        (marker.center().y - washed[0].center().y).abs() < 20.0,
+        "level with the word's line"
+    );
+
+    // View ▸ Comments off: neither.
+    app.run(Command::ShowComments);
+    drive.settle(&mut app);
+    let shapes = drive.frame_at(&mut app, Vec::new(), None);
+    assert!(painted_rects(&shapes)
+        .iter()
+        .all(|(_, fill, _)| *fill != wash));
+}

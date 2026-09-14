@@ -5426,3 +5426,41 @@ chooser's refusal answered from a thread, and a test that looked two frames
 later found the thread had not yet run when the suite was busy; it answers
 on the spot now.
 
+## A tracked change and a comment can be seen on the page (2026-09-14)
+
+Phase 3 of the redesign, and the audit's worst finding: `tracked-changes.docx`
+opened as one plain black sentence, the insertion and the deletion run
+together, and a comment was a card in a pane and nothing else. The layout
+now stamps every fragment inside a `<w:ins>` or `<w:del>` — or a run with an
+`<w:rPrChange>` — with a `Marking`: what kind of change, and the author's
+place in the document's order of authors, which is the order the eight
+colours go in. Attributed in the layout because a deletion is drawn and
+holds no bytes of the paragraph; nothing after the layout could find it by
+offset. The page draws an insertion in its author's colour with a one-point
+underline, a deletion in the colour struck through at the x-height, a
+formatting change with a dotted rule and the text's own colour, and a
+two-point change bar in the author's colour twelve points outside the text
+column beside every line that holds a marked fragment — Word's bar is black;
+the colour is a choice, so that the bar and the text agree. View ▸ Tracked
+Changes off hides all of it along with the deletions, as before.
+
+A comment washes the text it is about in its author's colour at a sixth,
+and a six-point speech bubble stands in the right margin level with the
+range's first line; hovering it says who and what, clicking it selects the
+words. The ranges come from `revise::comment_ranges`, which walks each flow
+carrying the open anchors, since a comment may start in one paragraph and
+end in the next; the washes are painted from the ranges the way the find
+bar's matches are, and View ▸ Comments — a new row — hides them without
+touching the revisions switch, because a comment is not a revision. No
+balloons in the margin: a balloon needs the layout to make room for it,
+and the pane is the balloon here.
+
+**The wash showed that a comment had always been anchored to the whole
+paragraph.** `add_comment` put its start anchor at the head of the first
+paragraph and its end at the foot of the last, whatever was selected; the
+pane never said so, and the page did in its first frame. The anchors now
+go at the selection's own offsets, splitting the run they fall inside, and
+the range test asks for exactly the offsets it gave. `cargo xtask compare
+--check` is unchanged — attribution moves no word — and `cargo xtask
+fidelity` was run on its own here and stays at zero.
+

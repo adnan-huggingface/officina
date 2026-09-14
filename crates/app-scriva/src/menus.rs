@@ -62,6 +62,7 @@ impl Scriva {
         let selected = self.has_selection();
         let marks = self.showing_marks();
         let revisions = self.showing_revisions();
+        let comments = self.showing_comments();
         let zoom = self.zoom();
         let styles = self.quick_styles();
         let navigator = self.showing_navigator();
@@ -202,6 +203,11 @@ impl Scriva {
                 }
                 if menu::check(ui, "Tracked &Changes", "", revisions).clicked() {
                     chosen = Some(Command::ShowRevisions);
+                }
+                if menu::check(ui, "C&omments", shortcut(&Command::ShowComments), comments)
+                    .clicked()
+                {
+                    chosen = Some(Command::ShowComments);
                 }
                 if menu::check(ui, "&Navigation Pane", "", navigator).clicked() {
                     chosen = Some(Command::Navigator);

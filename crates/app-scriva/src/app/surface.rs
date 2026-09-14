@@ -135,7 +135,8 @@ impl Scriva {
                     self.parts.as_ref(),
                     view::chart_rels(&self.view).into_iter(),
                 );
-                view::paint(
+                let washes = self.comment_washes();
+                let markers = view::paint(
                     &painter,
                     &self.view,
                     self.scope,
@@ -145,6 +146,7 @@ impl Scriva {
                     } else {
                         &[]
                     },
+                    &washes,
                     caret_shown.then_some(self.caret()),
                     self.focused,
                     zoom,
@@ -154,9 +156,39 @@ impl Scriva {
                     self.picked,
                 );
 
+                // A comment's marker: hovered, it says who and what; clicked,
+                // it selects the words the comment is about.
+                let over_marker = ui
+                    .ctx()
+                    .pointer_latest_pos()
+                    .and_then(|pointer| markers.iter().find(|m| m.rect.contains(pointer)))
+                    .copied();
+                if let Some(marker) = over_marker {
+                    if let Some(comment) = self.document.comment(marker.comment) {
+                        let first = comment.text().lines().next().unwrap_or("").to_owned();
+                        egui::Tooltip::always_open(
+                            ui.ctx().clone(),
+                            ui.layer_id(),
+                            egui::Id::new("scriva-comment-marker"),
+                            egui::PopupAnchor::Pointer,
+                        )
+                        .show(|ui| {
+                            ui.label(egui::RichText::new(comment.author.to_string()).strong());
+                            ui.label(first);
+                        });
+                    }
+                    if response.clicked() {
+                        if let Some(wash) = washes.iter().find(|w| w.comment == marker.comment) {
+                            self.scope = wash.scope;
+                            self.selection = wash.range;
+                            self.picked = None;
+                        }
+                    }
+                }
+
                 // A press decides what the drag is: a picture under the pointer
                 // is dragged as an object, and anything else sweeps a selection.
-                if response.drag_started() || response.clicked() {
+                if over_marker.is_none() && (response.drag_started() || response.clicked()) {
                     // The grip is chosen by where the press landed, not where
                     // the pointer is now: a drag is only reported once it has
                     // moved a few pixels, and a quick pull would already be
@@ -187,7 +219,7 @@ impl Scriva {
                         None => self.picked = None,
                     }
                 }
-                if self.picked.is_none() {
+                if self.picked.is_none() && over_marker.is_none() {
                     if let Some(pointer) = response.interact_pointer_pos() {
                         if let Some(spot) = self.spot_at(pointer, origin, zoom) {
                             // A click on the part of the page that is *not*
@@ -671,6 +703,37 @@ impl Scriva {
         self.picked = None;
         self.changed();
         true
+    }
+
+    /// The text every comment is about, with its author's place in the
+    /// document's order — nothing while comments are hidden. Worked out once
+    /// per document revision, not per frame: the walk is over every paragraph.
+    fn comment_washes(&mut self) -> Vec<view::Wash> {
+        if !self.view.show_comments {
+            return Vec::new();
+        }
+        if self.washes_for != self.stamp {
+            self.washes_for = self.stamp;
+            self.comment_ranges = crate::revise::comment_ranges(&self.document);
+        }
+        self.comment_ranges
+            .iter()
+            .filter_map(|range| {
+                let comment = self.document.comment(range.id)?;
+                let author = self
+                    .view
+                    .authors
+                    .iter()
+                    .position(|known| *known == comment.author)
+                    .unwrap_or(0);
+                Some(view::Wash {
+                    comment: range.id,
+                    scope: range.scope,
+                    range: range.range,
+                    author,
+                })
+            })
+            .collect()
     }
 
     /// Turns a window point into a point on a page.

@@ -674,19 +674,32 @@ pub fn add_comment(
     comment.content = vec![Block::Paragraph(Paragraph::of(text))];
     document.comments.push(comment);
 
+    // The anchors go at the selection's own offsets, splitting a run where
+    // the selection starts or ends inside one: a comment is about the words
+    // that were selected, and Word anchors it at them. The end goes in
+    // first, so that the start's anchor — which has no width — cannot move
+    // it when both are in one paragraph. This once anchored the whole
+    // paragraph, and the wash the page draws for a comment showed it.
     let mut after = before.clone();
-    if let Some(first) = after.first_mut() {
-        first
-            .content
-            .insert(0, Inline::Anchor(wp_model::Anchor::CommentStart { id }));
-    }
     if let Some(last) = after.last_mut() {
-        last.content
-            .push(Inline::Anchor(wp_model::Anchor::CommentEnd { id }));
-        last.content.push(Inline::Run(Run {
-            content: vec![Piece::CommentRef(id)],
-            ..Run::new()
-        }));
+        insert_inlines(
+            last,
+            end.offset,
+            vec![
+                Inline::Anchor(wp_model::Anchor::CommentEnd { id }),
+                Inline::Run(Run {
+                    content: vec![Piece::CommentRef(id)],
+                    ..Run::new()
+                }),
+            ],
+        );
+    }
+    if let Some(first) = after.first_mut() {
+        insert_inlines(
+            first,
+            start.offset,
+            vec![Inline::Anchor(wp_model::Anchor::CommentStart { id })],
+        );
     }
     crate::edit::replace_range(
         document,
@@ -695,6 +708,75 @@ pub fn add_comment(
         after,
     );
     id
+}
+
+/// Puts `inlines` into a paragraph at a byte offset of its text, splitting
+/// the run the offset falls inside.
+///
+/// Only the paragraph's own runs are split: an offset inside a hyperlink or
+/// a tracked change lands before that inline, which is the nearest place an
+/// anchor can stand without opening it. Past the end of the text, they go at
+/// the end.
+fn insert_inlines(paragraph: &mut Paragraph, offset: usize, inlines: Vec<Inline>) {
+    let mut at = 0usize;
+    for index in 0..paragraph.content.len() {
+        if at == offset {
+            paragraph.content.splice(index..index, inlines);
+            return;
+        }
+        let mut text = String::new();
+        collect_text(&paragraph.content[index], &mut text);
+        let length = text.len();
+        if at + length <= offset {
+            at += length;
+            continue;
+        }
+        // The offset is inside this inline.
+        let within = offset - at;
+        let Inline::Run(run) = &paragraph.content[index] else {
+            paragraph.content.splice(index..index, inlines);
+            return;
+        };
+        let (head, tail) = split_run(run, within);
+        let mut replacement = vec![Inline::Run(head)];
+        replacement.extend(inlines);
+        replacement.push(Inline::Run(tail));
+        paragraph.content.splice(index..index + 1, replacement);
+        return;
+    }
+    paragraph.content.extend(inlines);
+}
+
+/// A run cut at a byte offset of its text, both halves keeping its
+/// properties. The pieces that carry no text stay with the half they
+/// were in.
+fn split_run(run: &Run, offset: usize) -> (Run, Run) {
+    let mut head = Run {
+        props: run.props.clone(),
+        content: Vec::new(),
+        prop_change: run.prop_change.clone(),
+    };
+    let mut tail = head.clone();
+    let mut at = 0usize;
+    for piece in &run.content {
+        let length = piece.text_len();
+        if at + length <= offset {
+            head.content.push(piece.clone());
+        } else if at >= offset {
+            tail.content.push(piece.clone());
+        } else {
+            let cut = offset - at;
+            match piece {
+                Piece::Text(text) => {
+                    head.content.push(Piece::Text(text[..cut].into()));
+                    tail.content.push(Piece::Text(text[cut..].into()));
+                }
+                other => head.content.push(other.clone()),
+            }
+        }
+        at += length;
+    }
+    (head, tail)
 }
 
 /// Removes a comment and the three marks that anchor it.
@@ -747,6 +829,85 @@ pub fn delete_comment(document: &mut Document, history: &mut History, id: u32) -
     true
 }
 
+/// One comment's range: which comment, which flow, and the stretch of text
+/// between its start and end anchors, in the flow's own carets.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CommentRange {
+    pub id: u32,
+    pub scope: Scope,
+    pub range: Selection,
+}
+
+/// Every comment's range, for washing the text a comment is about.
+///
+/// A range may cross paragraphs — the start anchor in one, the end in the
+/// next — so the walk carries the open comments along the flow rather than
+/// looking inside one paragraph at a time. A start with no end runs to the
+/// end of its paragraph, which is where Word puts the range of a comment
+/// whose end anchor an edit has lost.
+pub fn comment_ranges(document: &Document) -> Vec<CommentRange> {
+    let mut out = Vec::new();
+    for scope in document.flows() {
+        let mut open: Vec<(u32, Caret)> = Vec::new();
+        let paragraphs = document.paragraphs_in(scope);
+        for (index, paragraph) in paragraphs.iter().enumerate() {
+            let mut offset = 0usize;
+            for inline in &paragraph.content {
+                match inline {
+                    Inline::Anchor(wp_model::Anchor::CommentStart { id }) => {
+                        open.push((
+                            *id,
+                            Caret {
+                                paragraph: index,
+                                offset,
+                            },
+                        ));
+                    }
+                    Inline::Anchor(wp_model::Anchor::CommentEnd { id }) => {
+                        if let Some(at) = open.iter().position(|(open, _)| open == id) {
+                            let (id, start) = open.remove(at);
+                            out.push(CommentRange {
+                                id,
+                                scope,
+                                range: Selection {
+                                    anchor: start,
+                                    head: Caret {
+                                        paragraph: index,
+                                        offset,
+                                    },
+                                },
+                            });
+                        }
+                    }
+                    other => {
+                        let mut text = String::new();
+                        collect_text(other, &mut text);
+                        offset += text.len();
+                    }
+                }
+            }
+        }
+        for (id, start) in open {
+            let end = paragraphs
+                .get(start.paragraph)
+                .map(|p| p.text().len())
+                .unwrap_or(start.offset);
+            out.push(CommentRange {
+                id,
+                scope,
+                range: Selection {
+                    anchor: start,
+                    head: Caret {
+                        paragraph: start.paragraph,
+                        offset: end,
+                    },
+                },
+            });
+        }
+    }
+    out
+}
+
 /// Where a comment is anchored, for drawing it beside its text — and in which
 /// of the document's flows.
 pub fn comment_at(document: &Document, id: u32) -> Option<(Scope, Caret)> {
@@ -781,6 +942,43 @@ mod tests {
     use super::*;
     use wp_model::doc::inserted_by;
     use wp_model::Toggle;
+
+    #[test]
+    fn a_comments_range_runs_from_its_start_anchor_to_its_end_across_paragraphs() {
+        let mut document = document(vec![
+            Block::Paragraph(Paragraph::of("the quick fox")),
+            Block::Paragraph(Paragraph::of("and the dog")),
+        ]);
+        let mut history = History::new();
+        let across = Selection {
+            anchor: Caret {
+                paragraph: 0,
+                offset: 4,
+            },
+            head: Caret {
+                paragraph: 1,
+                offset: 7,
+            },
+        };
+        let id = add_comment(
+            &mut document,
+            &mut history,
+            Scope::Body,
+            across,
+            "Reviewer",
+            "R",
+            "spans two",
+        );
+        let ranges = comment_ranges(&document);
+        assert_eq!(
+            ranges,
+            vec![CommentRange {
+                id,
+                scope: Scope::Body,
+                range: across,
+            }]
+        );
+    }
 
     fn document(blocks: Vec<Block>) -> Document {
         Document {

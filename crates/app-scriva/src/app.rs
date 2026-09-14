@@ -139,6 +139,9 @@ pub enum Command {
     Zoom(f64),
     ShowMarks,
     ShowRevisions,
+    /// View ▸ Comments: whether a comment's text is washed and its marker
+    /// drawn.
+    ShowComments,
     /// Put the caret at the start of a paragraph, and show it.
     ///
     /// The flow travels with the number: every flow counts its paragraphs from
@@ -411,6 +414,10 @@ pub struct Scriva {
     pub(crate) field_held: bool,
     /// The same for the find bar, which the toolbar draws last.
     find_held: bool,
+    /// Every comment's range, for the washes, and the document revision it
+    /// was worked out for.
+    comment_ranges: Vec<crate::revise::CommentRange>,
+    washes_for: u64,
     /// What was last copied, with its formatting.
     clipboard: Option<Clip>,
     /// The picture or chart last copied as an object.
@@ -547,6 +554,8 @@ impl Scriva {
             size_text: None,
             field_held: false,
             find_held: false,
+            comment_ranges: Vec::new(),
+            washes_for: u64::MAX,
             clipboard: None,
         }
     }
@@ -705,6 +714,10 @@ impl Scriva {
 
     pub(crate) fn showing_revisions(&self) -> bool {
         self.view.show_revisions
+    }
+
+    pub(crate) fn showing_comments(&self) -> bool {
+        self.view.show_comments
     }
 
     pub(crate) fn showing_navigator(&self) -> bool {
@@ -2044,6 +2057,7 @@ impl Scriva {
                 self.view.show_revisions = !self.view.show_revisions;
                 self.view.invalidate();
             }
+            Command::ShowComments => self.view.show_comments = !self.view.show_comments,
             Command::Navigator => self.navigator = !self.navigator,
             Command::Reviewer => self.reviewer = !self.reviewer,
             Command::TrackChanges => {

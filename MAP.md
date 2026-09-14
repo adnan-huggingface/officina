@@ -55,14 +55,14 @@ Every source file, its size, and the first sentence of its module doc.
 - `crates/app-scriva/src/app/bands.rs` (578) Headers and footers — the bands above and below the text of a page: which one the caret is in, making one a section does not have yet, first-page and odd/even kinds, linking to the previous section, the band bar, and …
 - `crates/app-scriva/src/app/dialogs.rs` (871) Scriva's boxes: page margins, Insert Table, colour, paragraph, column width, picture size, fonts, zoom and the comment box.
 - `crates/app-scriva/src/app/find_bar.rs` (214) The find bar: one bar for Find and Replace, which holds the keyboard while it is open and hands it back to the document when it closes.
-- `crates/app-scriva/src/app/surface.rs` (704) The page surface: the scrolling desk the pages sit on, what the pointer does there — carets, selections, a picture picked, dragged and resized — and where on a page a point lands.
+- `crates/app-scriva/src/app/surface.rs` (767) The page surface: the scrolling desk the pages sit on, what the pointer does there — carets, selections, a picture picked, dragged and resized — and where on a page a point lands.
 - `crates/app-scriva/src/app/tables.rs` (308) Editing a table: Tab from cell to cell, the edit every table command goes through, cell margins, column widths, and Insert Table itself.
-- `crates/app-scriva/src/app/tests.rs` (4803) 
+- `crates/app-scriva/src/app/tests.rs` (4949) 
 - `crates/app-scriva/src/app/watermark.rs` (289) The watermark: the box that asks for one, and the shape it becomes in a header, written the way Word writes its own so that Word finds it again.
-- `crates/app-scriva/src/app.rs` (4573) The application: the window, the commands, and the keys.
+- `crates/app-scriva/src/app.rs` (4587) The application: the window, the commands, and the keys.
 - `crates/app-scriva/src/author.rs` (339) A document written by the application itself, from a script of its own commands.
 - `crates/app-scriva/src/clip.rs` (955) The formatted halves of a copy: CF_HTML and Rich Text Format.
-- `crates/app-scriva/src/commands.rs` (325) Every command with a name and a key, in one table.
+- `crates/app-scriva/src/commands.rs` (326) Every command with a name and a key, in one table.
 - `crates/app-scriva/src/drawings.rs` (353) A picture as an object: selected, moved, resized, deleted.
 - `crates/app-scriva/src/edit.rs` (2045) Editing a document, and taking it back.
 - `crates/app-scriva/src/find.rs` (214) Finding text in the document, and putting something else in its place.
@@ -70,14 +70,14 @@ Every source file, its size, and the first sentence of its module doc.
 - `crates/app-scriva/src/lib.rs` (25) Scriva — the word processor.
 - `crates/app-scriva/src/links.rs` (117) Following a hyperlink out of the document, or to somewhere inside it.
 - `crates/app-scriva/src/main.rs` (31) Scriva — word processor.
-- `crates/app-scriva/src/menus.rs` (762) The menu bar and the formatting row.
+- `crates/app-scriva/src/menus.rs` (768) The menu bar and the formatting row.
 - `crates/app-scriva/src/pictures.rs` (364) Decoding the drawings a document carries, and holding them for the painter.
 - `crates/app-scriva/src/publish.rs` (199) What leaves the editor: the fonts and pictures a page renderer needs.
-- `crates/app-scriva/src/revise.rs` (1141) Accepting and rejecting tracked changes, and recording new ones.
+- `crates/app-scriva/src/revise.rs` (1339) Accepting and rejecting tracked changes, and recording new ones.
 - `crates/app-scriva/src/shaper.rs` (873) Measuring text with the faces the application actually has.
 - `crates/app-scriva/src/text.rs` (781) Editing the text of a paragraph.
 - `crates/app-scriva/src/toolbar.rs` (1065) The toolbar: one row, on which the caret's state can be read at a glance.
-- `crates/app-scriva/src/view.rs` (2856) The document surface: pages on a desk, a caret, and a selection.
+- `crates/app-scriva/src/view.rs` (2996) The document surface: pages on a desk, a caret, and a selection.
 
 ### `brand`
 
@@ -292,9 +292,9 @@ Every source file, its size, and the first sentence of its module doc.
 
 ### `wp-layout`
 
-- `crates/wp-layout/src/block.rs` (6434) Blocks, tables and pages: turning a document into a stack of paper.
+- `crates/wp-layout/src/block.rs` (6436) Blocks, tables and pages: turning a document into a stack of paper.
 - `crates/wp-layout/src/field.rs` (332) What a field evaluates to, and the two passes that make a page number right.
-- `crates/wp-layout/src/inline.rs` (3702) Laying a paragraph out into lines.
+- `crates/wp-layout/src/inline.rs` (3869) Laying a paragraph out into lines.
 - `crates/wp-layout/src/lib.rs` (42) Text layout: shaping, line breaking, and pagination.
 - `crates/wp-layout/src/linebreak.rs` (281) Where a line may be broken.
 - `crates/wp-layout/src/memo.rs` (276) The lines of the paragraphs that did not change.
@@ -342,8 +342,8 @@ Every source file, its size, and the first sentence of its module doc.
 ### `wp-print`
 
 - `crates/wp-print/src/lib.rs` (44) Putting laid-out pages on paper: a PDF for a file, GDI for a printer.
-- `crates/wp-print/src/ops.rs` (1014) One page flattened into draw operations no device has opinions about.
-- `crates/wp-print/src/pdf.rs` (1070) Laid-out pages to a PDF, with the document's own fonts inside it.
+- `crates/wp-print/src/ops.rs` (1015) One page flattened into draw operations no device has opinions about.
+- `crates/wp-print/src/pdf.rs` (1071) Laid-out pages to a PDF, with the document's own fonts inside it.
 - `crates/wp-print/src/ttf.rs` (454) The little of TrueType a PDF embedder has to read.
 - `crates/wp-print/src/win.rs` (623) The Windows printer, through the dialog everyone knows.
 
@@ -363,9 +363,9 @@ Every comment that says an application was *measured* — the rules this code ke
 - `crates/app-scriva/src/app/bands.rs:349` **Breaking it copies rather than empties.** Word's own answer, measured over COM: unlink a second section's header and the words are still there, while the first section keeps a copy of its own — so the two can then b…
 - `crates/app-scriva/src/app/tables.rs:282` Measured: a cell that states none is laid to its *content* by Word, whatever the grid says — a 468pt table came back 28pt wide, its second column as wide as "B1", and an empty column under a point.
 - `crates/app-scriva/src/app/watermark.rs:137` measured against a watermark Word wrote itself, which put the shape in the default header and left the other two parts empty.
-- `crates/app-scriva/src/app.rs:323` Word's own Page Setup keeps those last two on the same sheet, under "From edge", and they belong with the margins because they are measured against the same four edges.
-- `crates/app-scriva/src/app.rs:3974` 96 pixels to the inch: what a screen snippet is measured in, and what Word assumes of an image that does not say otherwise.
-- `crates/app-scriva/src/app.rs:4108` What a new document is in Word today, measured on the reference machine (Word 16.0.20326, 2026-09-13): twelve points, eight points after every paragraph, and a line of 278 to 240 — the document defaults Word writes in…
+- `crates/app-scriva/src/app.rs:326` Word's own Page Setup keeps those last two on the same sheet, under "From edge", and they belong with the margins because they are measured against the same four edges.
+- `crates/app-scriva/src/app.rs:3988` 96 pixels to the inch: what a screen snippet is measured in, and what Word assumes of an image that does not say otherwise.
+- `crates/app-scriva/src/app.rs:4122` What a new document is in Word today, measured on the reference machine (Word 16.0.20326, 2026-09-13): twelve points, eight points after every paragraph, and a line of 278 to 240 — the document defaults Word writes in…
 - `crates/app-scriva/src/author.rs:5` Nothing measured what it *writes* — and the faults that cost a week of afternoons were all there: a new document that stated no defaults and came back from Word a third taller, an inserted table whose cells stated no …
 - `crates/app-scriva/src/edit.rs:620` Measured on Word, not designed: a page break *inside* a cell is nothing to Word's layout, wherever in the cell it is, and the layout here ignores one too.
 - `crates/app-scriva/src/edit.rs:1907` Measured on Word 16 (`bugs/page-break-in-table-cell.md` in the story):
@@ -448,33 +448,33 @@ Every comment that says an application was *measured* — the rules this code ke
 - `crates/wp-layout/src/block.rs:2437` The paragraph a cell must end with after a table is punctuation, not a line: the format forbids a cell ending in a table, so Word writes an empty paragraph there and gives it no height whatever — measured, its spacing…
 - `crates/wp-layout/src/block.rs:3059` Measured against Word on the demonstration document: a table whose heading row very nearly fitted at the foot of a page had all of its words placed there and one and nine tenths of a point of padding sent over, where …
 - `crates/wp-layout/src/block.rs:3557` **Where the boundary really lies is not measured.** The evidence brackets it and no more: at −18 points of leftover measure Word sets the text below, and at +290 it sets it beside.
-- `crates/wp-layout/src/block.rs:3782` Measured from Word: a 2pt-bordered table shifts its text down 2pt exactly.
-- `crates/wp-layout/src/block.rs:3972` Measured on a heading style that pairs `<w:pageBreakBefore/>` with 24 points before: Word sets it 24 points down every page it opens, and a layout that dropped them stood the whole page and every page after it that fa…
-- `crates/wp-layout/src/block.rs:4073` Word, measured: a paragraph set twenty-four points before begins at the top margin exactly when the page above it ran out of room, keeps all twenty-four when the writer typed the break himself, and keeps them again at…
-- `crates/wp-layout/src/block.rs:4107` Word, measured on `table_render_test.doc`: a heading row that very nearly fitted at the foot of page five moved whole to page six, where this had placed all of its words and sent one and nine tenths of a point of padd…
-- `crates/wp-layout/src/block.rs:4234` Measured on Word 16: a page break inside a table cell is nothing to the layout, whether mid-paragraph, alone in its paragraph or as `pageBreakBefore` on a cell's paragraph.
-- `crates/wp-layout/src/block.rs:4779` Measured against Word on the demonstration document's letterhead:
-- `crates/wp-layout/src/block.rs:5276` Measured against a two-section document Word itself wrote and this application read back.
-- `crates/wp-layout/src/block.rs:6039` Word's own watermark on the document this was measured against is Courier New filling 609 points of width in a box 152 points tall, and its letters stand half again as tall as that width alone would make them.
-- `crates/wp-layout/src/block.rs:6112` Word, measured: a WordArt shape 400 by 200 points draws "CONFIDENTIAL", "gypsy", "Hg" and "xxxx" with their *outlines* spanning 400 by 200 in every case — so the box that fills the shape is the ink's, and a face's asc…
-- `crates/wp-layout/src/block.rs:6181` Word, measured on `table_render_test.doc`: a Courier New shape 609.10 by 152.25 points draws `CONFIDENTIAL` with an advance of 50.758 points a letter, which is that face's em at 84.583, and with every letter's outline…
-- `crates/wp-layout/src/inline.rs:183` Measured against Word.
-- `crates/wp-layout/src/inline.rs:1150` A page or column break inside a table cell is nothing to Word — measured: no new page, and the text either side of it runs on together, not even a line apart.
-- `crates/wp-layout/src/inline.rs:1425` **Word closes the spaces of a justified line up rather than letting a word it could nearly fit fall to the next line.** Measured against Word over a paragraph of fixed text and a right indent stepped a tenth of a poin…
-- `crates/wp-layout/src/inline.rs:1509` Measured against Word on a list indented to 1600 twips whose label ends at 1400: the text lands on the 1600 and not on the default stop at 1440 that stands between them.
-- `crates/wp-layout/src/inline.rs:1852` Word, measured over sixteen mixtures of Arial, Verdana, Georgia, Calibri, Times New Roman and Courier New at 8, 10, 11 and 16 points:
-- `crates/wp-layout/src/inline.rs:1903` Measured: Word draws an eight-point entry on an eight-point line with a twenty-two point tab in the middle of it.
-- `crates/wp-layout/src/inline.rs:1915` Measured: Word's own figure paragraph is 298.2 points tall for a 293.05 point picture, and the five that are left is one line of the mark's own type.
-- `crates/wp-layout/src/inline.rs:1924` **A list's label raises a line but does not deepen it.** Word, measured: a bulleted Arial 11 line pitches at 13.39, which is Symbol's ascent — the bullet is drawn in Symbol whatever the words are in — plus *Arial's* d…
-- `crates/wp-layout/src/inline.rs:1947` Measured against Word over the eleven inline figures of the demonstration document, every one of them a picture alone on its line: each paragraph came out exactly as tall as its picture, to the six tenths of a point W…
-- `crates/wp-layout/src/inline.rs:2032` Measured on the floating-image document, whose 90pt picture shares a 1.158-spaced line of 12pt type: Word pitches that line at 95.3, not at the 93.0 the type's own descent alone gives, and every line after it was two …
-- `crates/wp-layout/src/inline.rs:2054` Word seats the baseline at the face's ascent plus its line gap and leaves it there: measured over Arial, Verdana and Georgia at line multiples of 1.0, 1.15, 1.5 and 2.0, the first baseline of a spaced paragraph never …
-- `crates/wp-layout/src/inline.rs:2088` What Word does with the two channels of such a line has not been measured; spreading them is the one answer that is certainly wrong.
-- `crates/wp-layout/src/inline.rs:2420` Measured against Word: giving that style a loud colour changes every other run wearing it and changes nothing in the contents, while swapping those same runs to another character style takes effect at once.
-- `crates/wp-layout/src/inline.rs:3111` Word, measured over sixteen mixtures of six faces: an Arial 11 line with one Courier New letter on it pitches at 13.61, which is taller than Arial's own 12.66 *and* taller than Courier's own 12.47 — Arial's ascent ove…
-- `crates/wp-layout/src/inline.rs:3162` Word, measured: a bulleted Arial 11 line pitches at 13.39 — Symbol's ascent, because the bullet is drawn in Symbol whatever the words are in, plus *Arial's* descent.
-- `crates/wp-layout/src/inline.rs:3202` Measured against Word on probes: a paragraph mark carrying `<w:b/><w:u/>` (LibreOffice copies the run's formatting onto the mark) draws the *number* bold but not underlined, and the tab after it stays bare too.
-- `crates/wp-layout/src/inline.rs:3626` Word, measured over the eleven inline figures of the demonstration document: a paragraph holding nothing but a picture comes out exactly as tall as the picture, to the six tenths of a point Word reports a position in.
+- `crates/wp-layout/src/block.rs:3783` Measured from Word: a 2pt-bordered table shifts its text down 2pt exactly.
+- `crates/wp-layout/src/block.rs:3973` Measured on a heading style that pairs `<w:pageBreakBefore/>` with 24 points before: Word sets it 24 points down every page it opens, and a layout that dropped them stood the whole page and every page after it that fa…
+- `crates/wp-layout/src/block.rs:4074` Word, measured: a paragraph set twenty-four points before begins at the top margin exactly when the page above it ran out of room, keeps all twenty-four when the writer typed the break himself, and keeps them again at…
+- `crates/wp-layout/src/block.rs:4108` Word, measured on `table_render_test.doc`: a heading row that very nearly fitted at the foot of page five moved whole to page six, where this had placed all of its words and sent one and nine tenths of a point of padd…
+- `crates/wp-layout/src/block.rs:4235` Measured on Word 16: a page break inside a table cell is nothing to the layout, whether mid-paragraph, alone in its paragraph or as `pageBreakBefore` on a cell's paragraph.
+- `crates/wp-layout/src/block.rs:4780` Measured against Word on the demonstration document's letterhead:
+- `crates/wp-layout/src/block.rs:5277` Measured against a two-section document Word itself wrote and this application read back.
+- `crates/wp-layout/src/block.rs:6041` Word's own watermark on the document this was measured against is Courier New filling 609 points of width in a box 152 points tall, and its letters stand half again as tall as that width alone would make them.
+- `crates/wp-layout/src/block.rs:6114` Word, measured: a WordArt shape 400 by 200 points draws "CONFIDENTIAL", "gypsy", "Hg" and "xxxx" with their *outlines* spanning 400 by 200 in every case — so the box that fills the shape is the ink's, and a face's asc…
+- `crates/wp-layout/src/block.rs:6183` Word, measured on `table_render_test.doc`: a Courier New shape 609.10 by 152.25 points draws `CONFIDENTIAL` with an advance of 50.758 points a letter, which is that face's em at 84.583, and with every letter's outline…
+- `crates/wp-layout/src/inline.rs:209` Measured against Word.
+- `crates/wp-layout/src/inline.rs:1245` A page or column break inside a table cell is nothing to Word — measured: no new page, and the text either side of it runs on together, not even a line apart.
+- `crates/wp-layout/src/inline.rs:1523` **Word closes the spaces of a justified line up rather than letting a word it could nearly fit fall to the next line.** Measured against Word over a paragraph of fixed text and a right indent stepped a tenth of a poin…
+- `crates/wp-layout/src/inline.rs:1607` Measured against Word on a list indented to 1600 twips whose label ends at 1400: the text lands on the 1600 and not on the default stop at 1440 that stands between them.
+- `crates/wp-layout/src/inline.rs:1954` Word, measured over sixteen mixtures of Arial, Verdana, Georgia, Calibri, Times New Roman and Courier New at 8, 10, 11 and 16 points:
+- `crates/wp-layout/src/inline.rs:2005` Measured: Word draws an eight-point entry on an eight-point line with a twenty-two point tab in the middle of it.
+- `crates/wp-layout/src/inline.rs:2017` Measured: Word's own figure paragraph is 298.2 points tall for a 293.05 point picture, and the five that are left is one line of the mark's own type.
+- `crates/wp-layout/src/inline.rs:2026` **A list's label raises a line but does not deepen it.** Word, measured: a bulleted Arial 11 line pitches at 13.39, which is Symbol's ascent — the bullet is drawn in Symbol whatever the words are in — plus *Arial's* d…
+- `crates/wp-layout/src/inline.rs:2049` Measured against Word over the eleven inline figures of the demonstration document, every one of them a picture alone on its line: each paragraph came out exactly as tall as its picture, to the six tenths of a point W…
+- `crates/wp-layout/src/inline.rs:2134` Measured on the floating-image document, whose 90pt picture shares a 1.158-spaced line of 12pt type: Word pitches that line at 95.3, not at the 93.0 the type's own descent alone gives, and every line after it was two …
+- `crates/wp-layout/src/inline.rs:2156` Word seats the baseline at the face's ascent plus its line gap and leaves it there: measured over Arial, Verdana and Georgia at line multiples of 1.0, 1.15, 1.5 and 2.0, the first baseline of a spaced paragraph never …
+- `crates/wp-layout/src/inline.rs:2190` What Word does with the two channels of such a line has not been measured; spreading them is the one answer that is certainly wrong.
+- `crates/wp-layout/src/inline.rs:2587` Measured against Word: giving that style a loud colour changes every other run wearing it and changes nothing in the contents, while swapping those same runs to another character style takes effect at once.
+- `crates/wp-layout/src/inline.rs:3278` Word, measured over sixteen mixtures of six faces: an Arial 11 line with one Courier New letter on it pitches at 13.61, which is taller than Arial's own 12.66 *and* taller than Courier's own 12.47 — Arial's ascent ove…
+- `crates/wp-layout/src/inline.rs:3329` Word, measured: a bulleted Arial 11 line pitches at 13.39 — Symbol's ascent, because the bullet is drawn in Symbol whatever the words are in, plus *Arial's* descent.
+- `crates/wp-layout/src/inline.rs:3369` Measured against Word on probes: a paragraph mark carrying `<w:b/><w:u/>` (LibreOffice copies the run's formatting onto the mark) draws the *number* bold but not underlined, and the tab after it stays bare too.
+- `crates/wp-layout/src/inline.rs:3793` Word, measured over the eleven inline figures of the demonstration document: a paragraph holding nothing but a picture comes out exactly as tall as the picture, to the six tenths of a point Word reports a position in.
 - `crates/wp-layout/src/resolve.rs:47` Measured against Word over `w:sz` 2 to 24 and `w:space` 0 and 4: the line grows by the gap plus the rule's thickness above and below, and the run is pushed the same distance right of where it would have sat.
 
 ### `wp-model`
@@ -707,6 +707,7 @@ Every row of every menu, and the keys that choose it from the document — walke
 | `Alt+V, H` | Header and Footer |
 | `Alt+V, M` | Formatting Marks |
 | `Alt+V, C` | Tracked Changes |
+| `Alt+V, O` | Comments |
 | `Alt+V, N` | Navigation Pane |
 | `Alt+V, Z, 5` | 50% |
 | `Alt+V, Z, 7` | 75% |

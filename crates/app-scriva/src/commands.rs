@@ -241,6 +241,7 @@ pub const TABLE: &[Entry] = &[
         Command::ShowMarks,
     ),
     entry("Tracked Changes", "", None, Command::ShowRevisions),
+    entry("Comments", "", None, Command::ShowComments),
     entry("Header and Footer", "", None, Command::EditHeader),
 ];
 

@@ -101,6 +101,30 @@ pub enum Content {
     Label { text: String, advances: Vec<f64> },
 }
 
+/// A tracked change a fragment is part of, and whose it is.
+///
+/// Attributed here, in the layout, because a deletion is drawn and holds no
+/// bytes of the paragraph: nothing after the layout could find it by offset.
+/// A comment is not one of these — a comment's range is text the document
+/// still has, and the painter washes it from the range itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Marking {
+    pub kind: MarkKind,
+    /// The author's place in the document's order of authors — first
+    /// appearance first — which is what picks the colour.
+    pub author: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MarkKind {
+    /// `<w:ins>` and `<w:moveTo>`: text that arrived.
+    Inserted,
+    /// `<w:del>` and `<w:moveFrom>`: text that is going, drawn struck through.
+    Deleted,
+    /// `<w:rPrChange>`: the text stayed and its formatting changed.
+    Formatted,
+}
+
 /// One drawn piece of a line.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Fragment {
@@ -117,6 +141,8 @@ pub struct Fragment {
     /// page number in it. A field's instruction is never drawn and never
     /// reaches here.
     pub field: Option<FieldMark>,
+    /// The tracked change this is part of, for a painter to colour it.
+    pub mark: Option<Marking>,
 }
 
 /// One laid-out line.
@@ -233,6 +259,10 @@ pub struct Context<'a> {
     pub has_face: fn(&str) -> bool,
     /// Whether tracked deletions are drawn. Word's default is to show them.
     pub show_revisions: bool,
+    /// The document's authors in order of first appearance, which is the
+    /// order their colours are assigned in. Empty for a renderer that does
+    /// not colour changes, and every marking is then the first author's.
+    pub authors: &'a [std::sync::Arc<str>],
     /// Whether `w:vanish` text is drawn — the formatting-marks switch.
     pub show_hidden: bool,
     /// What each field evaluates to, where it is known.
@@ -256,6 +286,7 @@ pub struct Context<'a> {
 impl Default for Context<'_> {
     fn default() -> Self {
         Context {
+            authors: &[],
             theme: Box::leak(Box::new(wp_model::color::Theme::default())),
             notes: Box::leak(Box::new(crate::notes::NoteMarks::default())),
             note_mark: None,
@@ -300,6 +331,9 @@ struct Unit {
     /// quotation mark was left alone at the end of a line, with the words it
     /// opens on the next.
     joined: bool,
+    /// The tracked change the unit's run is inside, stamped on after the run
+    /// is pushed so that every kind of unit a run makes carries it.
+    mark: Option<Marking>,
 }
 
 #[derive(Debug, Clone)]
@@ -516,6 +550,7 @@ fn push_note_mark(
         width,
         trailing: 0.0,
         joined: false,
+        mark: None,
         lead: 0.0,
     });
 }
@@ -720,6 +755,7 @@ fn units(
             width,
             trailing: 0.0,
             joined: false,
+            mark: None,
             lead: 0.0,
         });
         match label.suffix {
@@ -740,6 +776,7 @@ fn units(
                     width: 0.0,
                     trailing: width,
                     joined: false,
+                    mark: None,
                     lead: 0.0,
                 });
             }
@@ -751,6 +788,7 @@ fn units(
     let content = out.len();
     let runs = paragraph.runs();
     let deleted = deleted_runs(paragraph);
+    let markings = run_markings(paragraph, ctx.authors);
     // Field state runs *across* runs: a field's begin, its instruction, its
     // separator and its result are very often four different `<w:r>` elements.
     let mut fields = FieldWalk::new(index, ctx.band);
@@ -761,6 +799,7 @@ fn units(
     for (run_index, run) in runs.iter().enumerate() {
         let length: usize = run.content.iter().map(Piece::text_len).sum();
         if !(deleted.contains(&run_index) && !ctx.show_revisions) {
+            let before = out.len();
             push_run(
                 run,
                 run_index,
@@ -771,6 +810,11 @@ fn units(
                 &mut fields,
                 &mut out,
             );
+            if let Some(mark) = markings.get(run_index).copied().flatten() {
+                for unit in &mut out[before..] {
+                    unit.mark = Some(mark);
+                }
+            }
         }
         base += length;
     }
@@ -910,6 +954,7 @@ fn tab_unit(style: &TextStyle, leader: TabLeader, after_label: bool) -> Unit {
         width: 0.0,
         trailing: 0.0,
         joined: false,
+        mark: None,
         lead: 0.0,
     }
 }
@@ -940,6 +985,55 @@ fn deleted_runs(paragraph: &Paragraph) -> Vec<usize> {
         }
     }
     walk(&paragraph.content, false, &mut index, &mut out);
+    out
+}
+
+/// The tracked change each run of the paragraph is part of, by the index
+/// `paragraph.runs()` gives it: the innermost insertion or deletion around
+/// it, else its own formatting change, else nothing.
+fn run_markings(paragraph: &Paragraph, authors: &[std::sync::Arc<str>]) -> Vec<Option<Marking>> {
+    let mut out = Vec::new();
+    let author = |mark: &wp_model::Mark| {
+        authors
+            .iter()
+            .position(|known| *known == mark.author)
+            .unwrap_or(0) as u16
+    };
+    fn walk(
+        content: &[Inline],
+        inside: Option<Marking>,
+        author: &dyn Fn(&wp_model::Mark) -> u16,
+        out: &mut Vec<Option<Marking>>,
+    ) {
+        for inline in content {
+            match inline {
+                Inline::Run(run) => out.push(inside.or_else(|| {
+                    run.prop_change.as_ref().map(|change| Marking {
+                        kind: MarkKind::Formatted,
+                        author: author(&change.mark),
+                    })
+                })),
+                Inline::Revised { revision, content } => {
+                    let kind = match revision.is_present() {
+                        true => MarkKind::Inserted,
+                        false => MarkKind::Deleted,
+                    };
+                    let mark = Marking {
+                        kind,
+                        author: author(revision.mark()),
+                    };
+                    walk(content, Some(mark), author, out)
+                }
+                Inline::Hyperlink(link) => walk(&link.content, inside, author, out),
+                Inline::Structured(sdt) => walk(&sdt.content, inside, author, out),
+                Inline::Wrapper { content, .. } | Inline::SimpleField { content, .. } => {
+                    walk(content, inside, author, out)
+                }
+                Inline::Anchor(_) | Inline::Math(_) => {}
+            }
+        }
+    }
+    walk(&paragraph.content, None, &author, &mut out);
     out
 }
 
@@ -1086,6 +1180,7 @@ fn push_run(
                                 width: 0.0,
                                 trailing: 0.0,
                                 joined: false,
+                                mark: None,
                                 lead: 0.0,
                             }),
                         }
@@ -1162,6 +1257,7 @@ fn push_run(
                     width: 0.0,
                     trailing: 0.0,
                     joined: false,
+                    mark: None,
                     lead: 0.0,
                 });
             }
@@ -1262,6 +1358,7 @@ fn push_run(
                     width: drawing.extent.0.points(),
                     trailing: 0.0,
                     joined: false,
+                    mark: None,
                     lead: 0.0,
                 });
             }
@@ -1412,6 +1509,7 @@ fn push_text(
             width: content_width + lead + tail,
             trailing: total - content_width,
             joined: false,
+            mark: None,
             lead,
         });
     }
@@ -1565,6 +1663,7 @@ fn fill(
                     },
                     source: unit.source,
                     field: unit.field,
+                    mark: unit.mark,
                 });
                 pen += advance;
                 used = pen;
@@ -1719,6 +1818,7 @@ fn fragment_of(unit: &Unit, x: f64) -> Fragment {
         content,
         source: unit.source,
         field: unit.field,
+        mark: unit.mark,
     }
 }
 
@@ -1767,6 +1867,7 @@ fn split_to_fit(unit: &Unit, limit: f64) -> Option<(Unit, Unit)> {
         width: used,
         trailing: 0.0,
         joined: false,
+        mark: unit.mark,
         lead: 0.0,
     };
     let tail_width: f64 = advances[chars..].iter().sum();
@@ -1788,6 +1889,7 @@ fn split_to_fit(unit: &Unit, limit: f64) -> Option<(Unit, Unit)> {
         width: tail_width - unit.trailing,
         trailing: unit.trailing,
         joined: false,
+        mark: unit.mark,
         lead: 0.0,
     };
     Some((head, tail))
@@ -2241,6 +2343,70 @@ pub fn mark_font(paragraph: &Paragraph, layers: &Layers, ctx: &Context<'_>) -> F
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_deleted_fragment_carries_its_marking_and_author() {
+        use wp_model::doc::{Inline, Piece, Run};
+        use wp_model::{Mark, Revision};
+        let authors: Vec<std::sync::Arc<str>> = vec!["Reviewer".into(), "Adnan Khan".into()];
+        let paragraph = Paragraph {
+            content: vec![
+                Inline::Run(Run::of("kept ")),
+                Inline::Revised {
+                    revision: Revision::Inserted(Mark::new(1, "Adnan Khan")),
+                    content: vec![Inline::Run(Run::of("added "))],
+                },
+                Inline::Revised {
+                    revision: Revision::Deleted(Mark::new(2, "Reviewer")),
+                    content: vec![Inline::Run(Run {
+                        content: vec![Piece::Deleted("gone".into())],
+                        ..Run::default()
+                    })],
+                },
+            ],
+            ..Paragraph::default()
+        };
+        let ctx = Context {
+            authors: &authors,
+            ..Context::default()
+        };
+        let layers = Layers::default();
+        let mut shaper = crate::shape::Fixed;
+        let laid = layout(&paragraph, 0, &layers, None, &ctx, 400.0, None, &mut shaper);
+        let marks: Vec<(String, Option<Marking>)> = laid
+            .lines
+            .iter()
+            .flat_map(|line| line.fragments.iter())
+            .filter_map(|fragment| match &fragment.content {
+                Content::Text { text, .. } if !text.trim().is_empty() => {
+                    Some((text.trim().to_owned(), fragment.mark))
+                }
+                _ => None,
+            })
+            .collect();
+        let of = |word: &str| {
+            marks
+                .iter()
+                .find(|(text, _)| text == word)
+                .unwrap_or_else(|| panic!("{word} was laid: {marks:?}"))
+                .1
+        };
+        assert_eq!(of("kept"), None, "plain text carries no marking");
+        assert_eq!(
+            of("added"),
+            Some(Marking {
+                kind: MarkKind::Inserted,
+                author: 1
+            })
+        );
+        assert_eq!(
+            of("gone"),
+            Some(Marking {
+                kind: MarkKind::Deleted,
+                author: 0
+            })
+        );
+    }
     use wp_model::color::Theme;
     use wp_model::prop::{Indent, ParaProps, Spacing};
     use wp_model::units::{HalfPoint, Line240};
@@ -2264,6 +2430,7 @@ mod tests {
             fallback_font: "test",
             has_face: |_| false,
             show_revisions: true,
+            authors: &[],
             show_hidden: false,
             fields: Box::leak(Box::new(crate::field::FieldValues::default())),
             band: None,

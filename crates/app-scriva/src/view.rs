@@ -58,6 +58,13 @@ pub struct View {
     pub zoom: f64,
     pub show_marks: bool,
     pub show_revisions: bool,
+    /// Whether comments wash their text and mark the margin. Separate from
+    /// the revisions switch: a comment is not a revision.
+    pub show_comments: bool,
+    /// The document's authors in order of first appearance — the order the
+    /// colours go in. Kept with the layout because the layout stamps each
+    /// fragment with an index into it.
+    pub authors: Vec<std::sync::Arc<str>>,
     pages: Vec<wp_layout::block::Page>,
     /// What the fields came out as last time. See `refresh`.
     settled: wp_layout::FieldValues,
@@ -80,6 +87,8 @@ impl Default for View {
             zoom: 1.0,
             show_marks: false,
             show_revisions: true,
+            show_comments: true,
+            authors: Vec::new(),
             pages: Vec::new(),
             settled: wp_layout::FieldValues::default(),
             stamp: u64::MAX,
@@ -109,6 +118,7 @@ impl View {
             return;
         }
         let theme = document.theme.clone();
+        self.authors = document.authors();
         let notes = wp_layout::NoteMarks::of(document);
         let contents = wp_layout::field::Contents::of(document);
         // The application's own strings — file name, author, today's date — are
@@ -145,6 +155,7 @@ impl View {
             // glyphs Word draws — and are translated to Unicode otherwise.
             has_face: |name| ui_kit::fonts::exact_face(name, false, false).is_some(),
             show_revisions: self.show_revisions,
+            authors: &self.authors,
             show_hidden: self.show_marks,
             fields: match self.settled.is_empty() {
                 true => fields,
@@ -1264,7 +1275,35 @@ fn paint_handles(painter: &egui::Painter, at: egui::Pos2, size: egui::Vec2, zoom
     let _ = zoom;
 }
 
-/// Draws the pages, the selection and the caret.
+/// The text a comment is about, and the colour it is washed in.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Wash {
+    pub comment: u32,
+    pub scope: Scope,
+    pub range: Selection,
+    /// The author's place in the document's order, which picks the colour.
+    pub author: usize,
+}
+
+/// A comment's marker in the margin, as painted: where it is on the glass,
+/// and which comment it stands for, so the pointer can find it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Marker {
+    pub rect: egui::Rect,
+    pub comment: u32,
+}
+
+/// The wash a comment's text wears: the author's colour, faint enough for
+/// the words to read through it.
+pub fn wash_colour(author: usize) -> egui::Color32 {
+    theme::author(author).gamma_multiply(0.16)
+}
+
+/// How far outside the text column a change bar stands, in points.
+const CHANGE_BAR_OUT: f64 = 12.0;
+
+/// Draws the pages, the selection and the caret, and says where it put each
+/// comment's marker.
 ///
 /// `to_screen` maps a point on the stack of pages to a point in the window.
 #[allow(clippy::too_many_arguments)]
@@ -1274,6 +1313,7 @@ pub fn paint(
     scope: Scope,
     selection: Selection,
     highlights: &[(Scope, Selection)],
+    washes: &[Wash],
     caret: Option<Caret>,
     focused: bool,
     zoom: f32,
@@ -1281,7 +1321,8 @@ pub fn paint(
     shaper: &mut Egui,
     pictures: &crate::pictures::Pictures,
     picked: Option<Picked>,
-) {
+) -> Vec<Marker> {
+    let mut markers = Vec::new();
     for (index, page) in view.pages.iter().enumerate() {
         let (page_x, page_y) = view.page_origin(index);
         let top_left = origin + egui::vec2(page_x as f32 * zoom, page_y as f32 * zoom);
@@ -1324,6 +1365,8 @@ pub fn paint(
                 // is highlighted where it was found and nowhere else.
                 flow,
                 highlights,
+                washes,
+                view.show_revisions,
                 pictures,
                 &page.geometry,
             );
@@ -1332,6 +1375,43 @@ pub fn paint(
             veil(painter, page, scope, rect, zoom);
         }
         paint_band_rule(painter, page, scope, rect, zoom);
+    }
+
+    // A marker in the right margin, level with the first line of each
+    // comment's text: a small speech bubble in the author's colour. No
+    // balloon — a balloon needs the layout to make room for it, and the
+    // pane is the balloon here.
+    for wash in washes {
+        let (start, _) = wash.range.ordered();
+        let Some((index, line)) = caret_rect(view, wash.scope, start) else {
+            continue;
+        };
+        let Some(page) = view.pages.get(index) else {
+            continue;
+        };
+        let (page_x, page_y) = view.page_origin(index);
+        let top_left = origin + egui::vec2(page_x as f32 * zoom, page_y as f32 * zoom);
+        let x = top_left.x + (page.geometry.width - page.geometry.end + 6.0) as f32 * zoom;
+        let y = top_left.y + line.min.y * zoom + 1.0 * zoom;
+        let colour = theme::author(wash.author);
+        let bubble =
+            egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(8.0, 6.0) * zoom.max(0.6));
+        painter.rect_filled(bubble, 1.5 * zoom, colour);
+        painter.add(egui::Shape::convex_polygon(
+            vec![
+                egui::pos2(bubble.left() + 1.5 * zoom, bubble.bottom()),
+                egui::pos2(bubble.left() + 1.0 * zoom, bubble.bottom() + 2.5 * zoom),
+                egui::pos2(bubble.left() + 4.0 * zoom, bubble.bottom()),
+            ],
+            colour,
+            egui::Stroke::NONE,
+        ));
+        // The target is bigger than the glyph: a six-point bubble is a thing
+        // to see, not a thing to hit.
+        markers.push(Marker {
+            rect: bubble.expand(4.0),
+            comment: wash.comment,
+        });
     }
 
     if let Some(picked) = picked {
@@ -1362,6 +1442,7 @@ pub fn paint(
             }
         }
     }
+    markers
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1374,6 +1455,8 @@ fn paint_placement(
     selection: Selection,
     flow: Scope,
     highlights: &[(Scope, Selection)],
+    washes: &[Wash],
+    revisions: bool,
     pictures: &crate::pictures::Pictures,
     geometry: &wp_model::PageBox,
 ) {
@@ -1415,8 +1498,21 @@ fn paint_placement(
         Placed::Line { line, paragraph } => {
             paint_line(
                 painter, placement, line, *paragraph, page, zoom, shaper, selection, flow,
-                highlights, pictures,
+                highlights, washes, revisions, pictures,
             );
+            // The change bar: in the left margin, outside the text column,
+            // for every line that holds a marked fragment, in the colour of
+            // the first — so the bar and the text agree. Word's is black;
+            // the colour is a choice here.
+            if revisions {
+                if let Some(mark) = line.fragments.iter().find_map(|f| f.mark) {
+                    let bar = egui::Rect::from_min_size(
+                        at(geometry.start - CHANGE_BAR_OUT, placement.y),
+                        egui::vec2(2.0 * zoom.max(0.5), placement.height as f32 * zoom),
+                    );
+                    painter.rect_filled(bar, 0.0, theme::author(mark.author as usize));
+                }
+            }
         }
         Placed::Drawing {
             rel, anchor, words, ..
@@ -1477,6 +1573,8 @@ fn paint_line(
     selection: Selection,
     flow: Scope,
     highlights: &[(Scope, Selection)],
+    washes: &[Wash],
+    revisions: bool,
     pictures: &crate::pictures::Pictures,
 ) {
     let baseline = placement.y + line.baseline;
@@ -1510,6 +1608,14 @@ fn paint_line(
     // at its last letter — the space that follows hangs past it — so painting
     // fragment by fragment left a gap of paper at every space and the selection
     // came out striped, a separate block under each word.
+    // A comment's wash under its words, as one band for the same reason.
+    for wash in washes.iter().filter(|wash| wash.scope == flow) {
+        if let Some(band) =
+            selection_band(wash.range, paragraph, placement, line, page, zoom, shaper)
+        {
+            painter.rect_filled(band, 0.0, wash_colour(wash.author));
+        }
+    }
     if let Some(band) = selection_band(selection, paragraph, placement, line, page, zoom, shaper) {
         painter.rect_filled(band, 0.0, SELECTION);
     }
@@ -1611,11 +1717,19 @@ fn paint_line(
                 egui::StrokeKind::Inside,
             );
         }
-        let color = style
+        let mut color = style
             .color
             .map(|rgb| egui::Color32::from_rgb(rgb[0], rgb[1], rgb[2]))
             // `auto` is the page's own foreground, and the page is paper.
             .unwrap_or(egui::Color32::BLACK);
+        // Inserted and deleted text wear their author's colour; a formatting
+        // change keeps the text's own and gets a dotted rule instead.
+        let mark = fragment.mark.filter(|_| revisions);
+        if let Some(mark) = mark {
+            if mark.kind != wp_layout::inline::MarkKind::Formatted {
+                color = theme::author(mark.author as usize);
+            }
+        }
         // The face the glyphs go in, which for small capitals is not the one
         // the style names. Both the size and the ascent below come from it, or
         // the letters are drawn at one size and anchored by another's.
@@ -1652,6 +1766,32 @@ fn paint_line(
         // The baseline point, which the underline and the strike hang off.
         let base = page + egui::vec2(x as f32 * zoom, (baseline - style.raise) as f32 * zoom);
         let width = fragment.width as f32 * zoom;
+        if let Some(mark) = mark {
+            let ink = egui::Stroke::new(1.0 * zoom.max(0.5), theme::author(mark.author as usize));
+            match mark.kind {
+                wp_layout::inline::MarkKind::Inserted => {
+                    let under = base + egui::vec2(0.0, 2.0 * zoom);
+                    painter.line_segment([under, under + egui::vec2(width, 0.0)], ink);
+                }
+                wp_layout::inline::MarkKind::Deleted => {
+                    // Struck at the x-height's midpoint, where a reader
+                    // expects a line through a word rather than under it.
+                    let middle = base - egui::vec2(0.0, font.size * 0.3);
+                    painter.line_segment([middle, middle + egui::vec2(width, 0.0)], ink);
+                }
+                wp_layout::inline::MarkKind::Formatted => {
+                    let under = base + egui::vec2(0.0, 2.0 * zoom);
+                    let dash = 2.0 * zoom.max(0.5);
+                    let mut x = under.x;
+                    while x < under.x + width {
+                        let end = (x + dash).min(under.x + width);
+                        painter
+                            .line_segment([egui::pos2(x, under.y), egui::pos2(end, under.y)], ink);
+                        x = end + dash;
+                    }
+                }
+            }
+        }
         if style.underline.draws() {
             let under = base + egui::vec2(0.0, 2.0 * zoom);
             painter.line_segment(

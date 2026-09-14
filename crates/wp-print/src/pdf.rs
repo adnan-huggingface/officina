@@ -854,6 +854,7 @@ mod tests {
                             },
                             source: None,
                             field: None,
+                            mark: None,
                         }],
                         y: 0.0,
                         baseline: 11.0,

@@ -96,6 +96,7 @@ fn lay_with(document: &Document, memo: Option<&Memo>) -> Vec<block::Page> {
         fallback_font: "test",
         has_face: |_| false,
         show_revisions: true,
+        authors: &[],
         show_hidden: false,
         fields: &wp_layout::FieldValues::new(),
         band: None,
