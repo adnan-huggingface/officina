@@ -8,4 +8,5 @@
 //! application is drawing it, and returns a [`crate::app::Command`] rather
 //! than doing anything itself.
 
+pub(crate) mod navigate;
 pub(crate) mod review;

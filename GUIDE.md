@@ -162,7 +162,8 @@ reply and resolve all work and are written back.
 
 | | |
 |---|---|
-| `Ctrl+F` | Navigation pane |
+| `F6` / `Shift+F6` | Move the keyboard round the window: the document, the Navigate pane, the Review pane, the find bar, the toolbar — skipping what is not open. In a pane the arrows walk the rows and `Enter` goes there |
+| `Esc` | From a pane, the find bar or the toolbar: back to the document, closing nothing. In the document: close the header or footer first, then the find bar |
 | `Ctrl+Shift+8` | Formatting marks |
 | `F9` | Update the table of contents |
 

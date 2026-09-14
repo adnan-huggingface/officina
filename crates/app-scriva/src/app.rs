@@ -39,6 +39,24 @@ pub(crate) struct Draft {
     pub focus: bool,
 }
 
+/// Which part of the window has the keyboard.
+///
+/// F6 walks it round — document, Navigate pane, Review pane, find bar,
+/// toolbar — skipping what is not open, and Escape from anywhere but the
+/// document brings it back to the document without closing anything. Held
+/// here rather than read from egui's focus because two of the stops, the
+/// panes, keep no egui widget focused: their rows are walked by the arrows
+/// the pane reads for itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum Keyboard {
+    #[default]
+    Document,
+    Navigate,
+    Review,
+    Find,
+    Toolbar,
+}
+
 /// One thing the application can be asked to do.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
@@ -161,6 +179,9 @@ pub enum Command {
     /// zero, so "paragraph 4" alone names four different places in a document
     /// with three headers.
     GoTo(wp_model::Scope, usize),
+    /// Select whole paragraphs of the text, `from` through to before `to` —
+    /// a heading and its content, from the Navigate pane.
+    SelectParagraphs(usize, usize),
     /// Rebuild the table of contents from the headings that are there now.
     UpdateToc,
     /// The pane of headings and bookmarks down the left.
@@ -353,6 +374,18 @@ pub struct Scriva {
     author: crate::revise::Author,
     /// The comment being written in the Review pane, before it is posted.
     pub(crate) draft: Option<Draft>,
+    /// Where the keyboard is: see [`Keyboard`].
+    pub(crate) keyboard: Keyboard,
+    /// The Navigate pane's state for the session: the row the keyboard is
+    /// on, the headings folded shut, the filter typed, whether the bookmarks
+    /// are open, and the row last scrolled to.
+    pub(crate) nav_row: usize,
+    pub(crate) nav_collapsed: std::collections::BTreeSet<usize>,
+    pub(crate) nav_filter: String,
+    pub(crate) nav_bookmarks_open: bool,
+    pub(crate) nav_scrolled: Option<usize>,
+    /// The Review pane's row the keyboard is on.
+    pub(crate) review_row: usize,
     /// Whether a field in a pane held the keyboard this frame.
     pub(crate) pane_held: bool,
     /// Which cards the Review pane shows.
@@ -556,6 +589,13 @@ impl Scriva {
             reviewer: false,
             author: crate::revise::Author::new("Scriva user"),
             draft: None,
+            keyboard: Keyboard::Document,
+            nav_row: 0,
+            nav_collapsed: Default::default(),
+            nav_filter: String::new(),
+            nav_bookmarks_open: false,
+            nav_scrolled: None,
+            review_row: 0,
             pane_held: false,
             review_filter: Default::default(),
             review_scrolled: None,
@@ -2251,6 +2291,26 @@ impl Scriva {
                 // Scrolled to on the next frame, when the layout knows where it
                 // is: a caret has no place on the page until the page exists.
                 self.reveal = Some(caret);
+                // Going somewhere puts the keyboard where the caret is.
+                self.keyboard = Keyboard::Document;
+            }
+            Command::SelectParagraphs(from, to) => {
+                self.close_band();
+                let last = self.paragraph_count().saturating_sub(1);
+                let end = to.saturating_sub(1).min(last);
+                let length = self.paragraph_text(end).len();
+                self.selection = Selection {
+                    anchor: Caret {
+                        paragraph: from.min(last),
+                        offset: 0,
+                    },
+                    head: Caret {
+                        paragraph: end,
+                        offset: length,
+                    },
+                };
+                self.keyboard = Keyboard::Document;
+                self.reveal = Some(self.caret());
             }
             Command::UpdateToc => self.update_toc(),
             Command::InsertPicture => self.insert_picture_from_file(),
@@ -2423,6 +2483,108 @@ impl Scriva {
         }
         self.reviewer = true;
         self.changed();
+    }
+
+    /// Whether a box holds the window: a question, a chooser, a message, or
+    /// one of the dialogs' drafts.
+    fn box_up(&self) -> bool {
+        self.pending.is_some()
+            || self.asking.is_some()
+            || self.message.is_some()
+            || self.margins_draft.is_some()
+            || self.table_draft.is_some()
+            || self.color_draft.is_some()
+            || self.column_draft.is_some()
+            || self.cell_margin_draft.is_some()
+            || self.watermark_draft.is_some()
+            || self.paragraph_draft.is_some()
+            || self.size_draft.is_some()
+            || self.zoom_draft.is_some()
+    }
+
+    /// The stops F6 walks, in order, with only the open ones in.
+    fn keyboard_order(&self) -> Vec<Keyboard> {
+        let mut order = vec![Keyboard::Document];
+        if self.navigator {
+            order.push(Keyboard::Navigate);
+        }
+        if self.reviewer {
+            order.push(Keyboard::Review);
+        }
+        if self.finder.is_some() {
+            order.push(Keyboard::Find);
+        }
+        order.push(Keyboard::Toolbar);
+        order
+    }
+
+    /// F6 and Shift+F6 move the keyboard round the window; Escape in a pane
+    /// or on the toolbar brings it back to the document and closes nothing.
+    /// Read before anything is drawn, so this frame shows the result.
+    fn cycle_keyboard(&mut self, ui: &egui::Ui) {
+        if self.box_up() || egui::Popup::is_any_open(ui.ctx()) {
+            return;
+        }
+        let (forward, back) = ui.input_mut(|i| {
+            (
+                ui_kit::keys::take(i, egui::Modifiers::NONE, egui::Key::F6),
+                ui_kit::keys::take(i, egui::Modifiers::SHIFT, egui::Key::F6),
+            )
+        });
+        if forward || back {
+            let order = self.keyboard_order();
+            let at = order
+                .iter()
+                .position(|stop| *stop == self.keyboard)
+                .unwrap_or(0);
+            let next = match forward {
+                true => (at + 1) % order.len(),
+                false => (at + order.len() - 1) % order.len(),
+            };
+            self.give_keyboard(order[next], ui.ctx());
+            return;
+        }
+        if matches!(
+            self.keyboard,
+            Keyboard::Navigate | Keyboard::Review | Keyboard::Toolbar
+        ) && ui.input_mut(|i| ui_kit::keys::take(i, egui::Modifiers::NONE, egui::Key::Escape))
+        {
+            self.give_keyboard(Keyboard::Document, ui.ctx());
+        }
+    }
+
+    /// Hands the keyboard to one stop: the document's surface, a pane's own
+    /// rows, the find bar's field, or the toolbar's first control.
+    pub(crate) fn give_keyboard(&mut self, to: Keyboard, ctx: &egui::Context) {
+        self.keyboard = to;
+        match to {
+            Keyboard::Document => {
+                if let Some(id) = self.surface_id {
+                    ctx.memory_mut(|m| m.request_focus(id));
+                }
+            }
+            // A pane keeps no widget focused: its rows are its own.
+            Keyboard::Navigate | Keyboard::Review => ctx.memory_mut(|m| {
+                if let Some(focused) = m.focused() {
+                    m.surrender_focus(focused);
+                }
+            }),
+            Keyboard::Find => {
+                if let Some(finder) = &mut self.finder {
+                    finder.focus = true;
+                }
+            }
+            Keyboard::Toolbar => {
+                // The first control that can be pressed: a disabled one —
+                // Undo on a fresh document — cannot hold the focus.
+                if let Some(first) = crate::toolbar::drawn(ctx)
+                    .into_iter()
+                    .find(|control| control.enabled)
+                {
+                    ctx.memory_mut(|m| m.request_focus(first.id));
+                }
+            }
+        }
     }
 
     fn no_comment_here(&mut self) {
@@ -3535,13 +3697,13 @@ impl Scriva {
                 }
             }
             Key::Escape => {
-                // Escape leaves things, nearest first: the find bar, then an
-                // open header or footer, then the selection.
-                if self.finder.is_some() {
+                // Escape leaves things one at a time, the mode first: an open
+                // header or footer, then the find bar, then the selection.
+                if self.scope != wp_model::Scope::Body {
+                    self.close_band();
+                } else if self.finder.is_some() {
                     self.finder = None;
                     self.finder_focused = false;
-                } else if self.scope != wp_model::Scope::Body {
-                    self.close_band();
                 } else {
                     self.selection = Selection::at(caret);
                 }
@@ -4657,10 +4819,14 @@ impl DocumentApp for Scriva {
         if let (false, Some(shaper)) = (self.fonts_settling, &mut self.shaper) {
             self.view.refresh(&self.document, &fields, stamp, shaper);
         }
+        self.pane_held = false;
+        self.cycle_keyboard(ui);
         if self.navigator {
-            if let Some(command) = self.navigation_pane(ui) {
+            if let Some(command) = self.navigate_pane(ui) {
                 self.run(command);
             }
+        } else if self.keyboard == Keyboard::Navigate {
+            self.keyboard = Keyboard::Document;
         }
         if self.reviewer {
             if let Some(command) = self.review_pane(ui) {
@@ -4668,7 +4834,9 @@ impl DocumentApp for Scriva {
             }
         } else {
             self.draft = None;
-            self.pane_held = false;
+            if self.keyboard == Keyboard::Review {
+                self.keyboard = Keyboard::Document;
+            }
         }
         let bar_held = self.find_held || self.field_held;
 
@@ -4699,6 +4867,7 @@ impl DocumentApp for Scriva {
             || self.asking.is_some()
             || self.message.is_some()
             || self.pane_held
+            || self.keyboard != Keyboard::Document
             || self.margins_draft.is_some()
             || self.table_draft.is_some()
             || self.color_draft.is_some()

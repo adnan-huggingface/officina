@@ -311,6 +311,11 @@ pub(crate) struct Drawn {
     pub control: Control,
     pub tip: String,
     pub rect: egui::Rect,
+    /// The widget's id, for the keyboard to be sent to it.
+    pub id: egui::Id,
+    /// Whether it could be pressed: egui keeps no focus on a disabled control,
+    /// so the keyboard is sent past one.
+    pub enabled: bool,
 }
 
 fn drawn_id() -> egui::Id {
@@ -319,19 +324,22 @@ fn drawn_id() -> egui::Id {
 
 /// The controls the last frame drew on the row, in order — what a test walks
 /// instead of a screenshot.
-#[cfg(test)]
 pub(crate) fn drawn(ctx: &egui::Context) -> Vec<Drawn> {
     ctx.data(|d| d.get_temp::<Vec<Drawn>>(drawn_id()))
         .unwrap_or_default()
 }
 
-fn note(ui: &egui::Ui, control: Control, tip: &str, rect: egui::Rect) {
+fn note(ui: &egui::Ui, control: Control, tip: &str, rect: egui::Rect, response: &egui::Response) {
     ui.ctx().data_mut(|d| {
         d.get_temp_mut_or_default::<Vec<Drawn>>(drawn_id())
             .push(Drawn {
                 control,
                 tip: tip.to_owned(),
                 rect,
+                id: response.id,
+                // From the control's own response: the outer scope is enabled
+                // even where the control inside it is not.
+                enabled: response.enabled(),
             })
     });
 }
@@ -422,7 +430,7 @@ impl Scriva {
                         ui.allocate_exact_size(theme::TARGET, egui::Sense::click());
                     icons::paint_state(ui, rect, &response, false);
                     icons::draw(ui.painter(), Icon::Overflow, rect.center(), theme::INK);
-                    note(ui, Control::More, "More", rect);
+                    note(ui, Control::More, "More", rect, &response);
                     let response = response.on_hover_text("More");
                     if let Some(Some(command)) =
                         menu::under(&response, |ui| overflow_menu(ui, &folded, &state))
@@ -440,6 +448,14 @@ impl Scriva {
         });
         self.size_text = size_text;
         self.field_held = field_held;
+        // Whether the keyboard is on the row: a control of it holds the focus.
+        let focused = ui.ctx().memory(|m| m.focused());
+        let on_row = focused.is_some_and(|id| drawn(ui.ctx()).iter().any(|d| d.id == id));
+        if on_row {
+            self.keyboard = crate::app::Keyboard::Toolbar;
+        } else if self.keyboard == crate::app::Keyboard::Toolbar {
+            self.keyboard = crate::app::Keyboard::Document;
+        }
         if let Some(Command::Color(colour)) = &chosen {
             self.last_colour = *colour;
         }
@@ -539,7 +555,7 @@ fn draw(
             let command = control.command().expect("a letter has a command");
             let tip = tooltip(&command);
             let response = icons::emphasis(ui, letter, on, &tip);
-            note(ui, control, &tip, response.rect);
+            note(ui, control, &tip, response.rect, &response);
             response.clicked().then_some(command)
         }
         Control::Style => combo(ui, control, 150.0, state.style_name(), "Style", |ui| {
@@ -654,7 +670,7 @@ fn draw(
             let response = ui
                 .add_enabled_ui(enabled, |ui| icons::button(ui, icon, on, &tip))
                 .inner;
-            note(ui, control, &tip, response.rect);
+            note(ui, control, &tip, response.rect, &response);
             response.clicked().then_some(command)
         }
     };
@@ -714,7 +730,7 @@ fn combo(
         egui::pos2(rect.right() - CHEVRON / 2.0 - 2.0, rect.center().y),
         theme::INK_SOFT,
     );
-    note(ui, control, tip, rect);
+    note(ui, control, tip, rect, &response);
     let response = response.on_hover_text(tip);
     menu::under(&response, rows).flatten()
 }
@@ -756,7 +772,7 @@ fn split(
         arrow_rect.center(),
         theme::INK_SOFT,
     );
-    note(ui, control, tip, rect.union(arrow_rect));
+    note(ui, control, tip, rect.union(arrow_rect), &response);
     let pressed = response.on_hover_text(tip).clicked();
     let picked = menu::under(&arrow.on_hover_text(format!("{tip} — choose")), rows).flatten();
     picked.or(pressed.then_some(apply))
@@ -787,7 +803,7 @@ fn dropdown(
         egui::pos2(rect.right() - CHEVRON / 2.0, rect.center().y),
         theme::INK_SOFT,
     );
-    note(ui, control, tip, rect);
+    note(ui, control, tip, rect, &response);
     menu::under(&response.on_hover_text(tip), rows).flatten()
 }
 
@@ -833,7 +849,13 @@ fn size_field(
         arrow_rect.center(),
         theme::INK_SOFT,
     );
-    note(ui, Control::Size, "Size", field.rect.union(arrow_rect));
+    note(
+        ui,
+        Control::Size,
+        "Size",
+        field.rect.union(arrow_rect),
+        &field,
+    );
     let picked = menu::under(&arrow.on_hover_text("Size"), |ui| size_rows(ui, state)).flatten();
     (picked.or(chosen), held)
 }

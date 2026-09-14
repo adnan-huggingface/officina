@@ -3,6 +3,8 @@
 
 use super::*;
 
+use crate::app::Keyboard;
+
 impl Scriva {
     /// The find bar across the top of the document.
     /// The find bar, and whether it held the keyboard at any point this frame.
@@ -37,6 +39,7 @@ impl Scriva {
         let in_replacement = with_replace && focused == Some(replacement_id);
 
         let mut close = false;
+        let mut leave = false;
         let mut forward = false;
         let mut back = false;
         let mut replace_one = false;
@@ -56,7 +59,7 @@ impl Scriva {
                     )
                 });
                 if escape {
-                    close = true;
+                    leave = true;
                 }
                 if (enter && (in_query || in_replacement)) || f3 {
                     if shift {
@@ -188,7 +191,19 @@ impl Scriva {
             .and_then(|id| ui.ctx().read_response(id))
             .is_some_and(|widget| bar.contains_rect(widget.rect));
         self.finder_focused = focused_now;
+        if focused_now {
+            self.keyboard = Keyboard::Find;
+        } else if self.keyboard == Keyboard::Find {
+            self.keyboard = Keyboard::Document;
+        }
         let held = bar_focused || focused_now || tab;
+        // Escape leaves the bar open and gives the keyboard back to the
+        // document: from anywhere but the document, Escape returns to it and
+        // closes nothing; the document's own Escape then closes the bar.
+        if leave {
+            self.give_keyboard(Keyboard::Document, ui.ctx());
+            return held;
+        }
         if close {
             self.finder = None;
             self.finder_focused = false;

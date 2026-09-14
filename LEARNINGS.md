@@ -2022,3 +2022,21 @@ spent. The page surface had learned this; the comment draft learned it
 again. Any field whose Escape means something other than "leave" sets the
 filter every frame it holds the keyboard.
 
+**egui keeps no focus on a disabled widget, and says nothing.** Focus
+requested for a control drawn inside `add_enabled_ui(false, …)` is dropped
+the next frame the control is drawn, with no event to say so: what asked
+for it sees the focus simply gone. A keyboard sent to a toolbar has to be
+sent to the first control that can be pressed, and the enablement has to be
+read from the control's own response — the scope around it is enabled even
+where the control is not.
+
+**A column Word inserts takes the width of the column to its right, and
+narrows nothing.** Measured on Word 16 through COM: in a 2in, 4in, 1in table
+a column inserted right of the 4in one is 1in wide, one inserted left of the
+2in one is 2in, and one inserted right of the last column copies the last;
+every other column keeps its width and the table grows by the new one, its
+preferred width going from auto to a stated total. A row inserted below
+copies the row above's height and its rule, its shading, its cell widths and
+its run formatting, with empty cells. (`bugs/evidence/word/table-insert*.ps1`
+in the story directory, results beside them.)
+

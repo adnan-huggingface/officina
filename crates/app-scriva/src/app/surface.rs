@@ -186,6 +186,11 @@ impl Scriva {
                     }
                 }
 
+                // A click on the page is the keyboard coming home, whichever
+                // pane or field had it.
+                if response.clicked() || response.drag_started() {
+                    self.keyboard = crate::app::Keyboard::Document;
+                }
                 // A press decides what the drag is: a picture under the pointer
                 // is dragged as an object, and anything else sweeps a selection.
                 if over_marker.is_none() && (response.drag_started() || response.clicked()) {

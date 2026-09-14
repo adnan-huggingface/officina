@@ -13,7 +13,7 @@
 use ui_kit::{dialog, egui, theme};
 use wp_model::{Mark, Scope};
 
-use crate::app::{Command, Draft, Scriva};
+use crate::app::{Command, Draft, Keyboard, Scriva};
 
 /// Which cards the pane shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -41,6 +41,8 @@ pub(crate) struct CardDrawn {
     pub rect: egui::Rect,
     pub at_caret: bool,
     pub actions: Vec<(&'static str, egui::Rect)>,
+    /// The first action's widget id, for Tab to land on from the keyboard.
+    pub first_action: Option<egui::Id>,
 }
 
 fn drawn_id() -> egui::Id {
@@ -221,6 +223,33 @@ impl Scriva {
         let scrolled = self.review_scrolled.clone();
         let mut scroll_to: Option<CardKey> = scrolled.clone();
 
+        // The keyboard in the pane: Up and Down walk the cards, Enter goes to
+        // the lit card's place, Tab lands on its first button — from where
+        // egui's own Tab walks the rest and Enter presses.
+        let keyboard_here = self.keyboard == Keyboard::Review;
+        let mut row_at = self.review_row.min(cards.len().saturating_sub(1));
+        let mut go = false;
+        let mut tab = false;
+        if keyboard_here && !cards.is_empty() && draft.is_none() {
+            let (up, down, enter, tabbed) = ui.input_mut(|i| {
+                (
+                    i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp),
+                    i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown),
+                    i.consume_key(egui::Modifiers::NONE, egui::Key::Enter),
+                    i.consume_key(egui::Modifiers::NONE, egui::Key::Tab),
+                )
+            });
+            if up {
+                row_at = row_at.saturating_sub(1);
+            }
+            if down {
+                row_at = (row_at + 1).min(cards.len() - 1);
+            }
+            go = enter;
+            tab = tabbed;
+        }
+        let lit = keyboard_here.then_some(row_at);
+
         egui::Panel::right("scriva-reviewer")
             .default_size(300.0)
             .resizable(true)
@@ -319,7 +348,8 @@ impl Scriva {
                                 );
                             });
                         }
-                        for card in &cards {
+                        for (at, card) in cards.iter().enumerate() {
+                            let is_lit = lit == Some(at);
                             // The draft goes where its comment will: before the
                             // first card that comes after it.
                             if let (Some(place), Some(d), false) =
@@ -334,12 +364,13 @@ impl Scriva {
                             }
                             match card {
                                 Card::Change(card) if filter != Filter::Comments => {
-                                    chosen = chosen.take().or(change_card(ui, card));
+                                    chosen = chosen.take().or(change_card(ui, card, is_lit));
                                 }
                                 Card::Comment(card) if filter != Filter::Changes => {
                                     let reply_draft =
                                         draft.as_mut().filter(|d| d.reply_to == Some(card.id));
-                                    let (command, holds) = comment_card(ui, card, reply_draft);
+                                    let (command, holds) =
+                                        comment_card(ui, card, reply_draft, is_lit);
                                     chosen = chosen.take().or(command);
                                     held |= holds;
                                     if draft.as_ref().is_some_and(|d| d.reply_to == Some(card.id)) {
@@ -359,11 +390,29 @@ impl Scriva {
                         // The card at the caret, kept in view as the caret moves —
                         // once per arrival, not on every frame, or the list could
                         // not be scrolled away from it.
-                        let at_caret = drawn_now(ui.ctx()).into_iter().find(|card| card.at_caret);
-                        if let Some(card) = at_caret {
+                        // With the keyboard here, the lit card instead.
+                        let drawn = drawn_now(ui.ctx());
+                        let follow = match lit {
+                            Some(at) => drawn.get(at).cloned(),
+                            None => drawn.iter().find(|card| card.at_caret).cloned(),
+                        };
+                        if let Some(card) = follow {
                             if scroll_to.as_ref() != Some(&card.key) {
                                 ui.scroll_to_rect(card.rect, Some(egui::Align::Center));
-                                scroll_to = Some(card.key);
+                                scroll_to = Some(card.key.clone());
+                            }
+                            if go {
+                                chosen = Some(match &card.key {
+                                    CardKey::Change(mark) => Command::GoToChange(mark.clone()),
+                                    CardKey::Comment(id) => Command::GoToComment(*id),
+                                    CardKey::Draft => Command::PostComment,
+                                });
+                            }
+                            if tab {
+                                if let Some(first) = card.first_action {
+                                    ui.ctx().memory_mut(|m| m.request_focus(first));
+                                    held = true;
+                                }
                             }
                         }
                     });
@@ -371,6 +420,7 @@ impl Scriva {
 
         self.review_filter = filter;
         self.review_scrolled = scroll_to;
+        self.review_row = row_at;
         self.pane_held = held;
         if let Some(draft) = draft {
             self.draft = Some(draft);
@@ -397,17 +447,18 @@ fn plural(count: usize, what: &str) -> String {
 fn card_frame(
     ui: &mut egui::Ui,
     at_caret: bool,
+    lit: bool,
     bar: egui::Color32,
     add: impl FnOnce(&mut egui::Ui),
 ) -> egui::Response {
     let inner = ui.scope_builder(egui::UiBuilder::new().sense(egui::Sense::click()), |ui| {
-        let edge = if at_caret {
+        let edge = if at_caret || lit {
             egui::Stroke::new(1.5, theme::ACCENT)
         } else {
             egui::Stroke::new(1.0, theme::CHROME_RULE)
         };
         let frame = egui::Frame::new()
-            .fill(theme::FIELD)
+            .fill(if lit { theme::TINT_HOVER } else { theme::FIELD })
             .stroke(edge)
             .corner_radius(theme::RADIUS_MENU as f32)
             .inner_margin(egui::Margin {
@@ -440,11 +491,12 @@ fn action(ui: &mut egui::Ui, label: &str) -> egui::Response {
     ))
 }
 
-fn change_card(ui: &mut egui::Ui, card: &ChangeCard) -> Option<Command> {
+fn change_card(ui: &mut egui::Ui, card: &ChangeCard, lit: bool) -> Option<Command> {
     let mut chosen = None;
     let mut actions = Vec::new();
+    let mut first_action = None;
     let colour = theme::author(0);
-    let response = card_frame(ui, card.at_caret, colour, |ui| {
+    let response = card_frame(ui, card.at_caret, lit, colour, |ui| {
         ui.horizontal_wrapped(|ui| {
             ui.label(egui::RichText::new(card.mark.author.to_string()).strong());
             let mut what = card.what.to_owned();
@@ -465,6 +517,7 @@ fn change_card(ui: &mut egui::Ui, card: &ChangeCard) -> Option<Command> {
         }
         ui.horizontal(|ui| {
             let accept = action(ui, "Accept");
+            first_action = Some(accept.id);
             actions.push(("Accept", accept.rect));
             if accept.clicked() {
                 chosen = Some(Command::AcceptChange(card.mark.clone()));
@@ -483,6 +536,7 @@ fn change_card(ui: &mut egui::Ui, card: &ChangeCard) -> Option<Command> {
             rect: response.rect,
             at_caret: card.at_caret,
             actions,
+            first_action,
         },
     );
     if response.clicked() && chosen.is_none() {
@@ -497,12 +551,14 @@ fn comment_card(
     ui: &mut egui::Ui,
     card: &CommentCard,
     reply_draft: Option<&mut Draft>,
+    lit: bool,
 ) -> (Option<Command>, bool) {
     let mut chosen = None;
     let mut held = false;
     let mut actions = Vec::new();
+    let mut first_action = None;
     let colour = theme::author(card.author_index);
-    let response = card_frame(ui, card.at_caret, colour, |ui| {
+    let response = card_frame(ui, card.at_caret, lit, colour, |ui| {
         comment_body(ui, card, 0.0);
         for reply in &card.replies {
             ui.add_space(4.0);
@@ -516,6 +572,7 @@ fn comment_card(
         }
         ui.horizontal(|ui| {
             let reply = action(ui, "Reply");
+            first_action = Some(reply.id);
             actions.push(("Reply", reply.rect));
             if reply.clicked() {
                 chosen = Some(Command::ReplyComment(card.id));
@@ -540,6 +597,7 @@ fn comment_card(
             rect: response.rect,
             at_caret: card.at_caret,
             actions,
+            first_action,
         },
     );
     if response.clicked() && chosen.is_none() {
@@ -587,7 +645,7 @@ fn comment_body(ui: &mut egui::Ui, card: &CommentCard, indent: f32) {
 /// A new comment's card: the field, with the keys that post and discard it.
 fn draft_card(ui: &mut egui::Ui, draft: &mut Draft) -> (Option<Command>, bool) {
     let mut out = (None, false);
-    let response = card_frame(ui, true, theme::ACCENT, |ui| {
+    let response = card_frame(ui, true, false, theme::ACCENT, |ui| {
         ui.label(egui::RichText::new("New comment").strong());
         out = draft_field(ui, draft);
     });
@@ -598,6 +656,7 @@ fn draft_card(ui: &mut egui::Ui, draft: &mut Draft) -> (Option<Command>, bool) {
             rect: response.rect,
             at_caret: false,
             actions: Vec::new(),
+            first_action: None,
         },
     );
     out

@@ -510,3 +510,79 @@ mod tests {
         assert_eq!(body_index_of(&document, 9), None);
     }
 }
+
+/// The heading `paragraph` falls under: the index into `headings` of the last
+/// heading at or before it, or nothing above the first heading.
+pub fn heading_containing(headings: &[Heading], paragraph: usize) -> Option<usize> {
+    headings
+        .iter()
+        .rposition(|heading| heading.paragraph <= paragraph)
+}
+
+/// The paragraphs a heading and its content span: from the heading through
+/// to the paragraph before the next heading of the same or a higher level, or
+/// to the end of a document with `paragraphs` paragraphs. What "select the
+/// heading and its content" selects.
+pub fn heading_extent(
+    headings: &[Heading],
+    index: usize,
+    paragraphs: usize,
+) -> std::ops::Range<usize> {
+    let Some(heading) = headings.get(index) else {
+        return 0..0;
+    };
+    let end = headings[index + 1..]
+        .iter()
+        .find(|next| next.level <= heading.level)
+        .map(|next| next.paragraph)
+        .unwrap_or(paragraphs);
+    heading.paragraph..end.max(heading.paragraph)
+}
+
+#[cfg(test)]
+mod extent_tests {
+    use super::*;
+
+    fn heading(paragraph: usize, level: u8) -> Heading {
+        Heading {
+            paragraph,
+            level,
+            text: format!("H{paragraph}"),
+        }
+    }
+
+    #[test]
+    fn a_paragraph_falls_under_the_heading_before_it() {
+        let headings = [heading(0, 1), heading(3, 2), heading(6, 1), heading(8, 2)];
+        assert_eq!(heading_containing(&headings, 0), Some(0));
+        assert_eq!(heading_containing(&headings, 4), Some(1));
+        assert_eq!(heading_containing(&headings, 9), Some(3));
+        assert_eq!(
+            heading_containing(&headings[1..], 1),
+            None,
+            "above the first"
+        );
+    }
+
+    #[test]
+    fn a_heading_and_its_content_run_to_the_next_heading_of_its_level_or_higher() {
+        let headings = [heading(0, 1), heading(3, 2), heading(6, 1), heading(8, 2)];
+        assert_eq!(
+            heading_extent(&headings, 0, 10),
+            0..6,
+            "a level 1 takes its level 2"
+        );
+        assert_eq!(
+            heading_extent(&headings, 1, 10),
+            3..6,
+            "a level 2 stops at the next level 1"
+        );
+        assert_eq!(
+            heading_extent(&headings, 2, 10),
+            6..10,
+            "the last level 1 runs to the end"
+        );
+        assert_eq!(heading_extent(&headings, 3, 10), 8..10);
+        assert_eq!(heading_extent(&headings, 9, 10), 0..0, "no such heading");
+    }
+}

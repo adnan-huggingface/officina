@@ -5097,3 +5097,153 @@ fn the_card_at_the_caret_is_the_outlined_one() {
         "the insertion, once the caret moved up"
     );
 }
+
+/// Four paragraphs, two of them headings, for the Navigate pane.
+fn with_headings() -> Scriva {
+    let mut app = app_with(&["Intro", "words under intro", "Method", "words under method"]);
+    let heading = app
+        .quick_styles()
+        .into_iter()
+        .find(|(_, name)| name.to_ascii_lowercase().starts_with("heading"))
+        .map(|(id, _)| id)
+        .expect("a heading style");
+    for index in [0, 2] {
+        if let Block::Paragraph(paragraph) = &mut app.document.body[index] {
+            paragraph.props.style = Some(heading);
+        }
+    }
+    app.changed();
+    app
+}
+
+#[test]
+fn f6_lands_in_the_navigate_pane_when_open_and_skips_it_when_closed() {
+    use crate::app::Keyboard;
+    let drive = ui_kit::drive::Driver::new();
+    let mut app = with_headings();
+    drive.settle(&mut app);
+    assert_eq!(app.keyboard, Keyboard::Document);
+    drive.press(&mut app, "F6");
+    drive.settle(&mut app);
+    assert_eq!(
+        app.keyboard,
+        Keyboard::Toolbar,
+        "no pane open: the toolbar is next"
+    );
+    drive.press(&mut app, "Escape");
+    drive.settle(&mut app);
+    assert_eq!(app.keyboard, Keyboard::Document, "Escape brings it home");
+
+    app.run(Command::Navigator);
+    drive.settle(&mut app);
+    drive.press(&mut app, "F6");
+    drive.settle(&mut app);
+    assert_eq!(app.keyboard, Keyboard::Navigate);
+    drive.press(&mut app, "F6");
+    drive.settle(&mut app);
+    assert_eq!(app.keyboard, Keyboard::Toolbar);
+    drive.press(&mut app, "shift+F6");
+    drive.settle(&mut app);
+    assert_eq!(app.keyboard, Keyboard::Navigate, "and back the other way");
+    drive.press(&mut app, "shift+F6");
+    drive.settle(&mut app);
+    assert_eq!(app.keyboard, Keyboard::Document);
+}
+
+#[test]
+fn enter_on_a_heading_moves_the_caret_and_returns_the_keyboard_to_the_document() {
+    use crate::app::Keyboard;
+    let drive = ui_kit::drive::Driver::new();
+    let mut app = with_headings();
+    app.run(Command::Navigator);
+    drive.settle(&mut app);
+    drive.press(&mut app, "F6");
+    drive.settle(&mut app);
+    assert_eq!(app.keyboard, Keyboard::Navigate);
+    drive.press(&mut app, "ArrowDown");
+    drive.settle(&mut app);
+    let lit: Vec<Option<usize>> = crate::panes::navigate::drawn(drive.ctx())
+        .into_iter()
+        .filter(|row| row.lit)
+        .map(|row| row.paragraph)
+        .collect();
+    assert_eq!(lit, vec![Some(2)], "Down lit the second heading");
+    drive.press(&mut app, "Enter");
+    drive.settle(&mut app);
+    assert_eq!(app.caret().paragraph, 2, "Enter went to it");
+    assert_eq!(
+        app.keyboard,
+        Keyboard::Document,
+        "and left the keyboard in the document"
+    );
+    drive.type_text(&mut app, "X");
+    assert_eq!(
+        app.document.paragraphs()[2].text(),
+        "XMethod",
+        "which takes the typing"
+    );
+}
+
+#[test]
+fn escape_closes_the_band_first_and_the_find_bar_second() {
+    use crate::app::Keyboard;
+    let drive = ui_kit::drive::Driver::new();
+    let mut app = app_with(&["some text"]);
+    drive.settle(&mut app);
+    drive.press(&mut app, "ctrl+F");
+    drive.settle(&mut app);
+    assert!(app.finder.is_some());
+    assert_eq!(
+        app.keyboard,
+        Keyboard::Find,
+        "Ctrl+F put the keyboard in the bar"
+    );
+    drive.press(&mut app, "Escape");
+    drive.settle(&mut app);
+    assert!(app.finder.is_some(), "Escape in the bar leaves it open");
+    assert_eq!(
+        app.keyboard,
+        Keyboard::Document,
+        "and gives the keyboard back"
+    );
+
+    app.run(Command::EditHeader);
+    drive.settle(&mut app);
+    assert!(app.editing_band());
+    drive.press(&mut app, "Escape");
+    drive.settle(&mut app);
+    assert!(!app.editing_band(), "the first Escape closed the header");
+    assert!(app.finder.is_some(), "and not the find bar");
+    drive.press(&mut app, "Escape");
+    drive.settle(&mut app);
+    assert!(app.finder.is_none(), "the second closed the find bar");
+}
+
+#[test]
+fn the_heading_containing_the_caret_is_the_lit_row() {
+    let drive = ui_kit::drive::Driver::new();
+    let mut app = with_headings();
+    app.run(Command::Navigator);
+    drive.settle(&mut app);
+    drive.settle(&mut app);
+    let lit = |ctx: &egui::Context| -> Vec<Option<usize>> {
+        crate::panes::navigate::drawn(ctx)
+            .into_iter()
+            .filter(|row| row.lit)
+            .map(|row| row.paragraph)
+            .collect()
+    };
+    assert_eq!(
+        lit(drive.ctx()),
+        vec![Some(0)],
+        "the caret starts under Intro"
+    );
+    drive.press(&mut app, "ctrl+End");
+    drive.settle(&mut app);
+    drive.settle(&mut app);
+    assert_eq!(
+        lit(drive.ctx()),
+        vec![Some(2)],
+        "Ctrl+End puts it under Method"
+    );
+}

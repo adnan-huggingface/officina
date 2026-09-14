@@ -5507,3 +5507,37 @@ paragraph, which a comment born here is given before either part is
 written. The reader takes the parent from the same part. Fidelity stays at
 zero for both checks; `comments.docx` saves untouched.
 
+## The keyboard walks the window, and the Navigate pane is a tree (2026-09-14)
+
+Phase 5 of the redesign, and the handoff's old second item: Excel's F6.
+`Keyboard` names where the keyboard is — the document, the Navigate pane,
+the Review pane, the find bar, the toolbar — and F6 and Shift+F6 walk it
+round, skipping what is not open. It is held by the application rather than
+read from egui's focus because the two panes keep no widget focused: their
+rows are walked by the arrows the pane reads for itself, Enter goes to the
+row's place and hands the keyboard back to the document, Right and Left
+open and fold a heading, and in the Review pane Tab lands on the lit
+card's first button, from where egui's own Tab walks the rest and Enter
+presses. Escape from anywhere but the document returns to the document and
+closes nothing — the find bar stays open with its query, where before it
+closed — and Escape in the document closes one thing per press, the mode
+first: an open header or footer, then the find bar, then the selection.
+The toolbar is reached the same way, on its first control that can be
+pressed: egui keeps no focus on a disabled control, and Undo on a fresh
+document is one, so F6 sent there arrived nowhere and the document took
+the keyboard back before anyone saw.
+
+`panes/navigate.rs` replaces the flat list of frameless buttons: a tree with
+a chevron for every heading that has children, folded state kept for the
+session, rows indented by level, the heading containing the caret lit with
+the accent bar and kept in view, a filter above that flattens the tree to
+what matches, the bookmarks folded away at the end, a close button, and a
+right-click menu with Go to and Select heading and content — the latter a
+model query in `wp_model::outline`, tested, that runs from the heading to
+the paragraph before the next of its level or higher. The empty pane says
+what to do. `menu::context` in `ui_kit` draws that menu on the same card as
+every other; phase 7 gives the page the same. Both panes' widths are
+resizable; the Navigate pane's is held between 200 and 420. Calx's chart
+inspector should take the same cycle once it is moved onto the shell's
+notion of the keyboard; noted, not done.
+

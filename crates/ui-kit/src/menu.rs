@@ -296,6 +296,27 @@ pub fn under<R>(response: &egui::Response, add: impl FnOnce(&mut egui::Ui) -> R)
         .map(|inner| inner.inner)
 }
 
+/// The menu a right-click opens, at the pointer: the same card, rows and
+/// rule as every other menu. egui's raw `context_menu` draws plain buttons
+/// on a different card, and a window with two menu systems is a window that
+/// reads as unfinished.
+pub fn context<R>(response: &egui::Response, add: impl FnOnce(&mut egui::Ui) -> R) -> Option<R> {
+    let config = egui::containers::menu::MenuConfig::new()
+        .style(menu_style as fn(&mut egui::Style))
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
+    egui::Popup::context_menu(response)
+        .style(menu_style as fn(&mut egui::Style))
+        .info(
+            egui::UiStackInfo::new(egui::UiKind::Menu)
+                .with_tag_value(egui::containers::menu::MenuConfig::MENU_CONFIG_TAG, config),
+        )
+        .show(|ui| {
+            ui.set_min_width(MIN_WIDTH);
+            add(ui)
+        })
+        .map(|inner| inner.inner)
+}
+
 /// A command: a label, and the keystroke that does the same thing.
 ///
 /// Mark the mnemonic with `&`: inside an open menu, `"&New"` runs on N. Pass an
