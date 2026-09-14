@@ -5036,3 +5036,20 @@ states the grid's width, as Word's own new table does, and the same
 document measures within a point of Word with all seven rules matched. The
 matcher was right all along, and the previous session's odd sub-point
 column was an empty cell autofit to nothing.
+
+## Every text file is LF, and the repository knows whose commits these are (2026-09-13)
+
+Two traps that every Linux session paid for, closed. A third of the tracked
+files were CRLF — `PROGRESS.md`, `inline.rs`, most of the spreadsheet stack —
+because the repository was written on Windows before any Linux session touched
+it, and a scripted edit that read one in text mode and wrote it back turned
+every line into a change: a seven-thousand-line diff for a one-line fix,
+caught twice by looking and once nearly not. `.gitattributes` now states LF
+for every text file on every platform, the corpus documents and pictures named
+as binary so that nothing can touch the bytes a reading is stamped with, and
+the tree is renormalised in one commit that, read without its carriage
+returns, changes nothing. A Windows checkout will show these files modified
+once, until `git add --renormalize .` or a fresh checkout; rustfmt and
+PowerShell both read LF. And the repository carries its author's identity in
+its own local config, where a command finds it, rather than in an environment
+every session had to set by hand.

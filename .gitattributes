@@ -1,0 +1,27 @@
+# Every text file is LF in the repository and in the working tree, on every
+# platform. The repository was developed on Windows and a third of its files
+# were CRLF; a scripted edit on Linux that rewrote one silently turned every
+# line into a change, and a diff of seven thousand lines is one nobody can
+# review. What is binary — the corpus documents, pictures, fonts — git tells
+# apart on its own and leaves alone.
+* text=auto eol=lf
+
+# The corpus documents and their pictures are bytes, not text, and a reading
+# is stamped with the document's digest: a line ending changed here would make
+# every reading stale.
+*.docx binary
+*.docm binary
+*.dotx binary
+*.doc  binary
+*.odt  binary
+*.xlsx binary
+*.xlsm binary
+*.xltx binary
+*.xls  binary
+*.png  binary
+*.jpg  binary
+*.gif  binary
+*.ttf  binary
+*.otf  binary
+*.ico  binary
+*.pdf  binary
