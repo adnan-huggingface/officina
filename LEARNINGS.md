@@ -1955,3 +1955,13 @@ converter is stated as mode 11.
 marks — U+0003 stands for the rule above the footnotes — and a reader that
 kept one as text wrote it into a `<w:t>`, escaped or not, and Word called the
 file corrupt. Tab, line feed and carriage return are the three XML allows.
+
+**A table cell that states no width is laid to its content by Word, whatever
+the grid says.** `<w:tblGrid>` is a record of column positions, not an
+instruction: Word's layout takes its widths from each cell's `<w:tcW>` and
+autofits a cell that has none to what is in it. A table Scriva authored with a
+grid of two 3.25-inch columns and no cell widths came back from Word 28 points
+wide, the second column as wide as the word "B1" and an empty column under a
+point. Word's own new table writes `<w:tblW w:w="0" w:type="auto"/>` and a
+`<w:tcW>` in every cell; with the cells stating the grid's widths the same
+document measures within a point of Word, every rule matched.

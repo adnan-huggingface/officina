@@ -5021,3 +5021,18 @@ its key half alone where the action row is the dialog's own; the multi-line
 Note keeps Enter as a new line; and the grid's gate remembers whether a modal
 was up when the frame began. Nothing about focus was wrong: typing reached
 the grid after every box.
+
+## An inserted table states its cells' widths, so Word lays it to its grid (2026-09-13)
+
+The handoff's second item said an authored table measured no words out but
+twelve marks unmatched, and blamed the mark matcher. Measured again, with
+Word reachable: the marks were unmatched because the table was not where
+Scriva drew it — Word laid the 468pt table 28pt wide, its second column as
+wide as the word in it, and every word of that column 219pt out. Insert
+Table gave the grid its widths and the cells none, and a cell that states
+no `<w:tcW>` is autofit to its content by Word, whatever the grid says; the
+column-width dialog already knew to restate both. Every inserted cell now
+states the grid's width, as Word's own new table does, and the same
+document measures within a point of Word with all seven rules matched. The
+matcher was right all along, and the previous session's odd sub-point
+column was an empty cell autofit to nothing.

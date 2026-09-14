@@ -6042,7 +6042,19 @@ impl Scriva {
             rows: (0..rows)
                 .map(|_| Row {
                     props: Default::default(),
-                    cells: (0..columns).map(|_| Cell::new()).collect(),
+                    // Each cell states its width as well as the grid, as
+                    // Word's own new table does. Measured: a cell that
+                    // states none is laid to its *content* by Word, whatever
+                    // the grid says — a 468pt table came back 28pt wide,
+                    // its second column as wide as "B1", and an empty
+                    // column under a point.
+                    cells: (0..columns)
+                        .map(|_| {
+                            let mut cell = Cell::new();
+                            cell.props.width = wp_model::table::Width::Fixed(each);
+                            cell
+                        })
+                        .collect(),
                 })
                 .collect(),
         };
@@ -9173,6 +9185,32 @@ mod tests {
             .filter(|block| matches!(block, Block::Table(_)))
             .count();
         assert_eq!(tables, 1, "the typing, then the split, undo away");
+    }
+
+    /// Measured against Word: an inserted table whose cells stated no width
+    /// was laid to its content — 28pt wide for a 468pt grid, the words of
+    /// the second column 219pt from where Scriva had them.
+    #[test]
+    fn an_inserted_table_states_every_cells_width_so_word_lays_it_to_the_grid() {
+        let mut app = app_with(&["after"]);
+        app.insert_table(2, 3);
+        let Some(Block::Table(table)) = app
+            .document
+            .body
+            .iter()
+            .find(|block| matches!(block, Block::Table(_)))
+        else {
+            panic!("the table is there");
+        };
+        let each = table.grid[0];
+        assert!(each.0 > 0);
+        for cell in table.rows.iter().flat_map(|row| row.cells.iter()) {
+            assert_eq!(
+                cell.props.width,
+                wp_model::table::Width::Fixed(each),
+                "every cell states the grid's width"
+            );
+        }
     }
 
     #[test]
