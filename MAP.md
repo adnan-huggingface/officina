@@ -57,7 +57,7 @@ Every source file, its size, and the first sentence of its module doc.
 - `crates/app-scriva/src/app/find_bar.rs` (206) The find bar: one bar for Find and Replace, which holds the keyboard while it is open and hands it back to the document when it closes.
 - `crates/app-scriva/src/app/surface.rs` (684) The page surface: the scrolling desk the pages sit on, what the pointer does there — carets, selections, a picture picked, dragged and resized — and where on a page a point lands.
 - `crates/app-scriva/src/app/tables.rs` (308) Editing a table: Tab from cell to cell, the edit every table command goes through, cell margins, column widths, and Insert Table itself.
-- `crates/app-scriva/src/app/tests.rs` (4396) 
+- `crates/app-scriva/src/app/tests.rs` (4548) 
 - `crates/app-scriva/src/app/watermark.rs` (289) The watermark: the box that asks for one, and the shape it becomes in a header, written the way Word writes its own so that Word finds it again.
 - `crates/app-scriva/src/app.rs` (4471) The application: the window, the commands, and the keys.
 - `crates/app-scriva/src/author.rs` (339) A document written by the application itself, from a script of its own commands.
@@ -228,12 +228,12 @@ Every source file, its size, and the first sentence of its module doc.
 - `crates/ui-kit/src/chart.rs` (319) Drawing a chart on the screen.
 - `crates/ui-kit/src/chooser.rs` (135) The operating system's file chooser, asked without stopping the window.
 - `crates/ui-kit/src/dialog.rs` (727) The look of every dialog both apps put on the screen.
-- `crates/ui-kit/src/drive.rs` (446) Driving an application by keystroke, without a window.
+- `crates/ui-kit/src/drive.rs` (478) Driving an application by keystroke, without a window.
 - `crates/ui-kit/src/fonts.rs` (1315) Real type faces, loaded from the system at startup.
 - `crates/ui-kit/src/headless.rs` (54) An application running without a person in front of it: under a test.
 - `crates/ui-kit/src/keys.rs` (73) Keyboard shortcuts, matched on every modifier.
 - `crates/ui-kit/src/lib.rs` (44) Shared application shell for Calx and Scriva.
-- `crates/ui-kit/src/menu.rs` (866) A menu bar, and menus that look like menus.
+- `crates/ui-kit/src/menu.rs` (965) A menu bar, and menus that look like menus.
 - `crates/ui-kit/src/paths.rs` (99) Config and state directory resolution.
 - `crates/ui-kit/src/recent.rs` (205) The files that have been opened, most recent first.
 - `crates/ui-kit/src/shell.rs` (569) The window shell both apps boot into.

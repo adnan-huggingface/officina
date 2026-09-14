@@ -405,6 +405,38 @@ mod tests {
         );
     }
 
+    /// The arrows walk a menu: Down lights the next row and wraps, Right
+    /// opens a lit submenu, Enter chooses — so a row with no letter is still
+    /// a row the keyboard can reach.
+    #[test]
+    fn the_arrows_light_a_row_and_enter_chooses_it() {
+        let drive = Driver::new();
+        let mut app = Recorder::default();
+        drive.settle(&mut app);
+        drive.key(&mut app, egui::Key::I, egui::Modifiers::ALT);
+        drive.settle(&mut app);
+        drive.settle(&mut app);
+        drive.press(&mut app, "ArrowDown"); // Picture…
+        drive.press(&mut app, "ArrowDown"); // Page Number ▸
+        drive.press(&mut app, "ArrowRight");
+        drive.settle(&mut app);
+        drive.settle(&mut app);
+        drive.press(&mut app, "ArrowDown"); // Plain Number
+        drive.press(&mut app, "Enter");
+        drive.settle(&mut app);
+        assert_eq!(app.chosen, vec!["Plain Number"]);
+
+        drive.key(&mut app, egui::Key::I, egui::Modifiers::ALT);
+        drive.settle(&mut app);
+        drive.settle(&mut app);
+        drive.press(&mut app, "ArrowUp"); // wraps to the last row, Page Number
+        drive.press(&mut app, "ArrowUp"); // Picture…
+        drive.press(&mut app, "Enter");
+        drive.settle(&mut app);
+        assert_eq!(app.chosen, vec!["Plain Number", "Picture"]);
+        assert_eq!(app.typed, "", "no key reached the document");
+    }
+
     #[test]
     fn typing_reaches_the_document_and_a_plain_key_types_its_letter() {
         let drive = Driver::new();

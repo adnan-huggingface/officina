@@ -5308,3 +5308,20 @@ moved: the 94 comments that say an application was measured and name which,
 one line each with the place to read the rest. The rules stay where the code
 that keeps them is; the map is only where to find them. AGENTS.md sends a
 reader there first.
+
+## The arrows walk a menu (2026-09-14)
+
+The menu table in `MAP.md` counted 111 rows with no letter — Scriva's whole
+Styles menu, every font, every size, every colour — and in a menu neither
+arrow moved and Enter chose nothing, so none of them could be reached from
+the keyboard. `ui_kit::menu` now does what a menu does: Down and Up light a
+row and wrap, Enter chooses it or opens it, the right arrow opens a lit
+submenu, a menu opened afresh has nothing lit, and nothing is read behind a
+box. Both applications have it without a line of their own changing.
+
+The rest of the handoff's fifth item was driven by keyboard and pinned by
+tests: Export as PDF (the chooser answered in the test, a PDF written),
+Recent, Zoom, Insert ▸ Picture (in, and out again with Backspace), and Print
+on Linux, which says it is not wired up and points at Export as PDF. Word
+leaves a picture it has just inserted picked and Scriva does not; unmeasured,
+and noted rather than changed.

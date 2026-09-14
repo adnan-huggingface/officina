@@ -4394,3 +4394,155 @@ fn cells_filled_with_tab_straight_after_insert_table_at_any_pace() {
         );
     }
 }
+
+/// Hands the application the answer a file chooser would have given, the way
+/// the chooser's own thread does, and runs frames until it is taken.
+fn chooser_answers(drive: &ui_kit::drive::Driver, app: &mut Scriva, path: PathBuf, what: Chosen) {
+    app.asking = Some(ui_kit::chooser::Asking::new(move || Some(path), what));
+    for _ in 0..200 {
+        if app.asking.is_none() {
+            break;
+        }
+        drive.settle(app);
+    }
+    assert!(app.asking.is_none(), "the answer was taken");
+}
+
+/// File ▸ Export as PDF… by its letters: the chooser is asked for (and, in a
+/// test, refused), and given a path the export writes a PDF that holds the
+/// document's words.
+#[test]
+fn export_as_pdf_by_menu_letters_writes_the_document() {
+    let drive = ui_kit::drive::Driver::new();
+    let dir = scratch("pdf-by-key");
+    let target = dir.join("out.pdf");
+    let mut app = app_with(&["Exported words."]);
+    drive.settle(&mut app);
+    let before = ui_kit::headless::choosers_refused();
+    drive.menu(&mut app, 'F', 'D');
+    drive.settle(&mut app);
+    assert_eq!(
+        ui_kit::headless::choosers_refused(),
+        before + 1,
+        "Alt+F, D asked for a chooser"
+    );
+    chooser_answers(&drive, &mut app, target.clone(), Chosen::ExportPdf);
+    let pdf = std::fs::read(&target).expect("a PDF was written");
+    assert!(pdf.starts_with(b"%PDF-"), "and it is a PDF");
+    assert!(app.message.is_none(), "{:?}", app.message);
+}
+
+/// File ▸ Recent by its letters reopens what was saved, and View ▸ Zoom by
+/// its letters sets the zoom.
+#[test]
+fn recent_and_zoom_by_menu_letters() {
+    let drive = ui_kit::drive::Driver::new();
+    let dir = scratch("recent-by-key");
+    let saved = dir.join("kept.docx");
+    let mut app = app_with(&["Kept for later."]);
+    assert!(app.save_to(saved.clone()));
+    let mut other = Scriva::new();
+    other.recent.remember(SCRIVA, &saved);
+    drive.settle(&mut other);
+    drive.menu(&mut other, 'F', 'R');
+    drive.press(&mut other, "1");
+    drive.settle(&mut other);
+    assert_eq!(
+        other.path.as_deref(),
+        Some(saved.as_path()),
+        "Alt+F, R, 1 reopened it"
+    );
+    assert_eq!(other.document.paragraphs()[0].text(), "Kept for later.");
+
+    drive.menu(&mut other, 'V', 'Z');
+    drive.press(&mut other, "2");
+    drive.settle(&mut other);
+    assert!(
+        (other.view.zoom - 1.25).abs() < 1e-9,
+        "Alt+V, Z, 2 is 125%: {}",
+        other.view.zoom
+    );
+    drive.menu(&mut other, 'V', 'Z');
+    drive.press(&mut other, "0");
+    drive.settle(&mut other);
+    assert!(
+        (other.view.zoom - 2.0).abs() < 1e-9,
+        "Alt+V, Z, 0 is 200%: {}",
+        other.view.zoom
+    );
+}
+
+/// Insert ▸ Picture… by its letters, the chooser answered with a picture:
+/// the picture is in the document, and Backspace takes it out again.
+#[test]
+fn a_picture_by_menu_letters_goes_in_and_backspace_takes_it_out() {
+    let drive = ui_kit::drive::Driver::new();
+    let picture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus/sample-image.png");
+    let mut app = app_with(&["before"]);
+    drive.settle(&mut app);
+    drive.menu(&mut app, 'I', 'P');
+    chooser_answers(&drive, &mut app, picture, Chosen::Picture);
+    let drawings = |app: &Scriva| {
+        app.document
+            .paragraphs()
+            .iter()
+            .flat_map(|p| p.runs())
+            .flat_map(|run| run.content.iter())
+            .filter(|piece| matches!(piece, wp_model::doc::Piece::Drawing(_)))
+            .count()
+    };
+    assert_eq!(drawings(&app), 1, "the picture is in");
+    assert!(app.message.is_none(), "{:?}", app.message);
+    // The caret is after the picture, and Backspace takes it out as it would
+    // a character. (Word leaves a picture it has just inserted picked;
+    // unmeasured here, and nothing is lost either way.)
+    assert!(app.picked.is_none());
+    drive.press(&mut app, "Backspace");
+    drive.settle(&mut app);
+    assert_eq!(drawings(&app), 0, "Backspace took the picture out");
+}
+
+/// Styles by the arrows: the Styles menu's rows have no letters, and until
+/// the arrows walked a menu they could be chosen only with the pointer.
+#[test]
+fn a_style_is_chosen_from_the_styles_menu_by_the_arrows() {
+    let drive = ui_kit::drive::Driver::new();
+    let mut app = app_with(&["a paragraph"]);
+    drive.settle(&mut app);
+    let styles = app.quick_styles();
+    let heading = styles
+        .iter()
+        .position(|(_, name)| name == "heading 1")
+        .expect("heading 1 is a quick style");
+    drive.key(&mut app, egui::Key::S, egui::Modifiers::ALT);
+    drive.settle(&mut app);
+    drive.settle(&mut app);
+    for _ in 0..=heading {
+        drive.press(&mut app, "ArrowDown");
+    }
+    drive.press(&mut app, "Enter");
+    drive.settle(&mut app);
+    assert_eq!(
+        app.document.paragraphs()[0].props.style,
+        Some(styles[heading].0),
+        "the lit row's style was applied"
+    );
+    assert_eq!(app.document.paragraphs()[0].text(), "a paragraph");
+}
+
+/// File ▸ Print… by its letters, on a platform without a print path: it says
+/// so and points at Export as PDF, and Enter puts the saying away.
+#[cfg(not(windows))]
+#[test]
+fn print_by_menu_letters_says_where_printing_is() {
+    let drive = ui_kit::drive::Driver::new();
+    let mut app = app_with(&["text"]);
+    drive.settle(&mut app);
+    drive.menu(&mut app, 'F', 'P');
+    let said = app.message.clone().expect("a message");
+    assert_eq!(said.0, "Cannot print");
+    assert!(said.1.contains("PDF"), "{}", said.1);
+    drive.press(&mut app, "Enter");
+    drive.settle(&mut app);
+    assert!(app.message.is_none());
+}

@@ -322,7 +322,8 @@ fn entry(ui: &mut egui::Ui, label: &str, shortcut: &str, checked: Option<bool>) 
     let mut atoms = egui::Atoms::new(tick);
     atoms.push_right("".atom_size(egui::vec2(GUTTER, 0.0)));
     marked.atoms(showing_marks(ui.ctx()), &mut atoms);
-    let mut button = egui::Button::new(atoms).gap(0.0);
+    let hot = hot_row(ui);
+    let mut button = egui::Button::new(atoms).gap(0.0).selected(hot.is_hot);
     if !shortcut.is_empty() {
         button = button.shortcut_text(shortcut);
     }
@@ -333,11 +334,105 @@ fn entry(ui: &mut egui::Ui, label: &str, shortcut: &str, checked: Option<bool>) 
     // answering to it — and what stops the letter reaching the grid, where it
     // would start typing into a cell.
     record(ui, &marked, label, false);
-    let by_key = ui.is_enabled() && !submenu_open(ui) && marked.taken(ui, egui::Modifiers::NONE);
+    let by_key = ui.is_enabled()
+        && !submenu_open(ui)
+        && (hot.chosen || marked.taken(ui, egui::Modifiers::NONE));
     if response.clicked() || by_key {
         ui.close();
     }
     Item { response, by_key }
+}
+
+/// What the arrow keys make of one row: whether it is the row they have lit,
+/// whether Enter chose it, and whether Enter or the right arrow opened it —
+/// the last for a submenu row, the second for a command.
+struct Hot {
+    is_hot: bool,
+    chosen: bool,
+    opened: bool,
+}
+
+/// Where the arrows are in one menu, kept from frame to frame.
+#[derive(Clone, Copy, Default)]
+struct Arrows {
+    frame: u64,
+    /// Rows counted so far this frame, which is the next row's index.
+    seen: usize,
+    lit: Option<usize>,
+    enter: bool,
+    right: bool,
+}
+
+/// **A row without a letter is reached by the arrows, as in any menu.** The
+/// letters alone left every such row to the pointer: the whole of Scriva's
+/// Styles menu, every font, every size, every colour — a hundred and eleven
+/// rows between the two applications. Down and Up light a row, wrapping at
+/// the ends; Enter chooses the lit row, or opens it if it is a submenu, and
+/// the right arrow opens a lit submenu. Only the innermost open menu reads
+/// the arrows, and only when no box is up, for the reasons its letters are
+/// read only then. Rows are counted in the order they are drawn, which is the
+/// order they are shown, and last frame's count is how far Down can go.
+fn hot_row(ui: &egui::Ui) -> Hot {
+    let none = Hot {
+        is_hot: false,
+        chosen: false,
+        opened: false,
+    };
+    if ui.is_sizing_pass() {
+        return none;
+    }
+    let Some(menu) = ui
+        .stack()
+        .iter()
+        .find(|frame| frame.kind() == Some(egui::UiKind::Menu))
+        .map(|frame| frame.id)
+    else {
+        return none;
+    };
+    let id = menu.with("ui-kit-menu-arrows");
+    let ctx = ui.ctx().clone();
+    let now = ctx.cumulative_frame_nr();
+    let mut arrows: Arrows = ctx.data(|d| d.get_temp(id)).unwrap_or_default();
+    if arrows.frame != now {
+        // The first row of this menu this frame, and the place the keys are
+        // read: the count so far is last frame's, which is the menu's length.
+        let rows = arrows.seen;
+        // A menu opened afresh opens with nothing lit, as a menu does; the
+        // row lit the last time it was open means nothing now.
+        if arrows.frame + 1 != now {
+            arrows.lit = None;
+        }
+        arrows.seen = 0;
+        arrows.frame = now;
+        arrows.enter = false;
+        arrows.right = false;
+        let listening =
+            rows > 0 && !submenu_open(ui) && ctx.memory(|m| m.is_above_modal_layer(ui.layer_id()));
+        if listening {
+            ui.input_mut(|i| {
+                if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown) {
+                    arrows.lit = Some(arrows.lit.map_or(0, |at| (at + 1) % rows));
+                }
+                if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp) {
+                    arrows.lit = Some(arrows.lit.map_or(rows - 1, |at| (at + rows - 1) % rows));
+                }
+                if arrows.lit.is_some() {
+                    arrows.enter = i.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
+                    arrows.right = i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowRight);
+                }
+            });
+        }
+    }
+    let index = arrows.seen;
+    arrows.seen += 1;
+    let is_hot = arrows.lit == Some(index);
+    let hot = Hot {
+        is_hot,
+        chosen: is_hot && arrows.enter,
+        opened: is_hot && (arrows.enter || arrows.right),
+    };
+    ctx.data_mut(|d| d.insert_temp(id, arrows));
+    hot
 }
 
 /// One row of a menu as it was drawn: its label without the marker, the
@@ -480,11 +575,15 @@ pub fn sub<R>(ui: &mut egui::Ui, label: &str, add: impl FnOnce(&mut egui::Ui) ->
     let mut atoms = egui::Atoms::new(tick);
     atoms.push_right("".atom_size(egui::vec2(GUTTER, 0.0)));
     marked.atoms(showing_marks(ui.ctx()), &mut atoms);
+    let hot = hot_row(ui);
     let button = egui::Button::new(atoms)
         .gap(0.0)
+        .selected(hot.is_hot)
         .right_text(egui::containers::menu::SubMenuButton::RIGHT_ARROW);
     record(ui, &marked, label, true);
-    let by_key = ui.is_enabled() && !submenu_open(ui) && marked.taken(ui, egui::Modifiers::NONE);
+    let by_key = ui.is_enabled()
+        && !submenu_open(ui)
+        && (hot.opened || marked.taken(ui, egui::Modifiers::NONE));
 
     let (response, inner) =
         egui::containers::menu::SubMenuButton::from_button(button).ui(ui, |ui| {
