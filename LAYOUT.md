@@ -16,14 +16,14 @@ These are not targets. They are what is true today, so that what is true tomorro
 
 | | documents | out | >5pt | unplaced | marks | lost | worst |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| totals | 26 | 1183 | 167 | 73 | 89 | 60 | 187.96 |
+| totals | 26 | 1183 | 167 | 72 | 89 | 60 | 187.96 |
 
 ## Every document
 
 | file | pages | out | >5pt | unplaced | marks | lost | worst |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | `character-formatting.doc` | 1 | 0 | 0 | 0 | 0 | 0 | 0.48 |
-| `header-footer-footnote.doc` | 1 | 0 | 0 | 3 | 0 | 0 | 0.48 |
+| `header-footer-footnote.doc` | 1 | 0 | 0 | 2 | 0 | 0 | 0.48 |
 | `headings-and-list.doc` | 1 | 0 | 0 | 0 | 0 | 0 | 0.31 |
 | `plain-paragraphs.doc` | 1 | 12 | 0 | 0 | 0 | 0 | 1.94 |
 | `simple-table.doc` | 1 | 0 | 0 | 0 | 0 | 0 | 0.48 |
