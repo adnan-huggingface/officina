@@ -380,8 +380,55 @@ pub enum Shown {
     Embedded,
     /// The face Word itself stands in for this one.
     StandIn,
+    /// A face Word was measured to lay, drawn in the generic face of its shape
+    /// but laid at the missing face's own pitch — see [`measured_pitch`] — so
+    /// lines break where Word breaks them, in letters that are not quite it.
+    Pitched,
     /// The generic face of its shape; lines may well break elsewhere.
     Generic,
+}
+
+/// What Word was measured to lay a face in, for a machine without the face.
+///
+/// A missing face is drawn in a stand-in, and a stand-in with other widths
+/// breaks every line somewhere else: Consolas's cells are 0.55 of an em and a
+/// generic monospace face's 0.60, so a line of code ran nine per cent long and
+/// wrapped where Word's did not. Where the face is monospaced the stand-in can
+/// still be *laid* at the missing face's pitch — every character one cell —
+/// and drawn with its glyphs spread to match; the lines then break where
+/// Word's do. These are a handful of measured numbers, not a font: nothing of
+/// the face's design is here, which is the line the decision against width
+/// tables for faces without a twin drew.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MeasuredFace {
+    /// One character's advance, in ems — for a monospaced face only.
+    pub advance: Option<f64>,
+    /// Word's line pitch, single-spaced, in ems: the average, which is what
+    /// the layout's accumulator lays to.
+    pub line: f64,
+    /// First baseline below the top of the line, in ems.
+    pub ascent: f64,
+}
+
+/// The measured table, by lowercase name.
+///
+/// **Consolas**: forty-three characters a line, twenty lines at each of 9, 10,
+/// 10.5, 11 and 12 points, compatibility mode 15, rendered by Word 16.0.20326
+/// and read off its PDF (2026-09-14). The advance is 0.5498 em at every size
+/// to within the PDF's 1/600-inch grid, 9 points a hair narrower (0.5492);
+/// the line is 1.1709 em at every size, laid at its ideal with no half-point
+/// correction; the first baseline sits 0.920 em below the margin. With the
+/// face hidden, a probe of 712 Consolas words went from 613 more than a point
+/// out of place to none.
+pub fn measured_pitch(name: &str) -> Option<MeasuredFace> {
+    match first_name(name).to_ascii_lowercase().as_str() {
+        "consolas" => Some(MeasuredFace {
+            advance: Some(0.5498),
+            line: 1.1709,
+            ascent: 0.920,
+        }),
+        _ => None,
+    }
 }
 
 /// What a document's face is shown in, and why — or `None` for a face the
@@ -407,6 +454,8 @@ fn explain(
         (twin.to_owned(), Shown::Twin)
     } else if let Some(sub) = substitute(&name.to_ascii_lowercase()).filter(|sub| present(sub)) {
         (sub.to_owned(), Shown::StandIn)
+    } else if measured_pitch(name).is_some() {
+        (generic.to_owned(), Shown::Pitched)
     } else {
         (generic.to_owned(), Shown::Generic)
     };
@@ -1294,6 +1343,13 @@ mod tests {
             (none.shown.as_str(), none.how),
             ("Liberation Sans", Shown::Generic),
             "a stand-in the machine lacks is no stand-in"
+        );
+        let consolas =
+            explain("Consolas", has(&[]), None, false, "DejaVu Sans Mono").expect("explained");
+        assert_eq!(
+            consolas.how,
+            Shown::Pitched,
+            "laid at its own pitch, not a guess"
         );
         let aptos = explain("Aptos", has(&[]), None, false, "Liberation Sans").expect("explained");
         assert_eq!(aptos.how, Shown::Generic);

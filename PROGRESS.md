@@ -5325,3 +5325,22 @@ Recent, Zoom, Insert ▸ Picture (in, and out again with Backspace), and Print
 on Linux, which says it is not wired up and points at Export as PDF. Word
 leaves a picture it has just inserted picked and Scriva does not; unmeasured,
 and noted rather than changed.
+
+## A missing Consolas is laid at the pitch Word lays it at (2026-09-14)
+
+The handoff's fourth open item. Consolas has no metric twin, and on a machine
+without it code was drawn in a generic monospace face whose cells are 0.60 of
+an em against Consolas's 0.55: every line of code ran nine per cent long,
+wrapped where Word's does not, and stood on the stand-in's line pitch. Word
+was asked — twenty lines at each of five sizes and two long wrapping
+paragraphs, in the mode Word's own documents are in — and lays Consolas at
+0.5498 em a character and 1.1709 em a line at every size, at its ideal with
+no correction to fit. `ui_kit::fonts::measured_pitch` keeps those three
+numbers; the shaper lays a missing Consolas by them, and the screen draws the
+stand-in's letters spread to where the layout put them. That drawing path
+also draws a run's own character spacing, which the screen had laid and
+never painted. With Consolas hidden, a probe of 712 words went from 613 more
+than a point out of place, the worst 338 points, to none, the worst 0.75 —
+what the real face measures. The notice now says so of such a face: "laid at
+its own measured widths". Numbers, not a font, which is the line drawn
+against width tables for faces without a twin.

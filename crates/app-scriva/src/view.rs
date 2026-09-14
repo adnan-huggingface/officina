@@ -1619,7 +1619,25 @@ fn paint_line(
         let ascent = shaper.metrics(&drawn).ascent;
         let top = baseline - style.raise - ascent;
         let pos = page + egui::vec2(x as f32 * zoom, top as f32 * zoom);
-        painter.text(pos, egui::Align2::LEFT_TOP, text, font.clone(), color);
+        // The spacing the layout laid each character with, drawn: a run's own
+        // `w:spacing`, and the difference between a missing face's pitch and
+        // its stand-in's. Drawn as one galley without it, condensed type ran
+        // over what followed and Consolas's stand-in overran its own line.
+        let spread = style.letter_spacing + shaper.spacing_correction(&drawn);
+        if spread == 0.0 {
+            painter.text(pos, egui::Align2::LEFT_TOP, text, font.clone(), color);
+        } else {
+            let job = egui::text::LayoutJob::single_section(
+                text.clone(),
+                egui::TextFormat {
+                    font_id: font.clone(),
+                    color,
+                    extra_letter_spacing: (spread * zoom as f64) as f32,
+                    ..Default::default()
+                },
+            );
+            painter.galley(pos, painter.layout_job(job), color);
+        }
 
         // The baseline point, which the underline and the strike hang off.
         let base = page + egui::vec2(x as f32 * zoom, (baseline - style.raise) as f32 * zoom);

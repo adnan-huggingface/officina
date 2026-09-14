@@ -663,6 +663,9 @@ impl Scriva {
                                     Shown::Twin => "same widths: lines and pages break as in Word",
                                     Shown::Embedded => "the copy carried in the document",
                                     Shown::StandIn => "the face Word itself stands in",
+                                    Shown::Pitched => {
+                                        "laid at its own measured widths: lines break as in Word"
+                                    }
                                     Shown::Generic => "different widths: lines may break elsewhere",
                                 });
                                 ui.end_row();

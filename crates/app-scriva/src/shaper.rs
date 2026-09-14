@@ -13,6 +13,7 @@
 use std::collections::HashMap;
 
 use ui_kit::egui;
+use ui_kit::fonts::MeasuredFace as Known;
 use wp_layout::shape::{Advance, FontRequest, Ink, Metrics, Pitch, Shaper};
 
 /// How many measured strings to keep before starting again.
@@ -196,6 +197,25 @@ impl Egui {
         egui::FontId::new(key.size as f32 / 20.0, family)
     }
 
+    /// How much wider each character is laid than the face drawing it sets
+    /// it, for a painter that has to put the glyphs where the layout did.
+    ///
+    /// Non-zero only for a missing face laid at a pitch of its own — Consolas
+    /// drawn in whatever monospace face the machine has — where it is the
+    /// same for every character, because both faces are monospaced.
+    pub fn spacing_correction(&mut self, font: &FontRequest) -> f64 {
+        let Some(Known {
+            advance: Some(advance),
+            ..
+        }) = standing_in(font)
+        else {
+            return 0.0;
+        };
+        let key = self.key(font);
+        let drawn = self.on_its_own(key, '0');
+        advance * font.size - drawn
+    }
+
     /// The epaint font a request resolves to, for a painter.
     pub fn font_id(&mut self, font: &FontRequest) -> egui::FontId {
         let key = self.key(font);
@@ -328,6 +348,14 @@ fn is_combining(c: char) -> bool {
 
 impl Shaper for Egui {
     fn metrics(&mut self, font: &FontRequest) -> Metrics {
+        if let Some(known) = standing_in(font) {
+            let ascent = known.ascent * font.size;
+            return Metrics {
+                ascent,
+                descent: (known.line - known.ascent) * font.size,
+                line_gap: 0.0,
+            };
+        }
         let key = self.key(font);
         // epaint hands back a row height with the face's line gap already
         // folded into it. The gap is taken back out here, because Word puts it
@@ -399,7 +427,21 @@ impl Shaper for Egui {
 
     fn advances(&mut self, text: &str, font: &FontRequest, into: &mut Vec<Advance>) {
         let key = self.key(font);
-        let widths = self.measure(key, text).to_vec();
+        let mut widths = self.measure(key, text).to_vec();
+        // The stand-in's glyphs at the missing face's own pitch: a character
+        // the stand-in draws at all is one cell of the face the document
+        // asked for. What draws nothing — a combining mark — stays nothing.
+        if let Some(Known {
+            advance: Some(advance),
+            ..
+        }) = standing_in(font)
+        {
+            for width in &mut widths {
+                if *width > 0.0 {
+                    *width = advance * font.size;
+                }
+            }
+        }
         for (index, (offset, _)) in text.char_indices().enumerate() {
             into.push(Advance {
                 offset,
@@ -409,6 +451,16 @@ impl Shaper for Egui {
     }
 
     fn pitch(&mut self, font: &FontRequest) -> Pitch {
+        // A face this machine does not have, whose line Word was measured to
+        // lay: its ideal, and the base every face without a measured base
+        // gets — the ideal to a twenty-fourth of a point.
+        if let Some(known) = standing_in(font) {
+            let ideal = known.line * font.size;
+            return Pitch {
+                base: (ideal * 24.0).round() / 24.0,
+                ideal,
+            };
+        }
         // The measured bases are recorded under the face that actually draws:
         // a missing face's pitch is its substitute's pitch, exactly as its
         // glyphs are the substitute's glyphs. A `Liberation Sans;Arial` chain
@@ -465,6 +517,16 @@ impl Shaper for Egui {
             }
         }
     }
+}
+
+/// `ui_kit::fonts::measured_pitch` for a face this request names and the
+/// machine does not have — not installed, not embedded, not twinned.
+fn standing_in(font: &FontRequest) -> Option<Known> {
+    let entry = ui_kit::fonts::measured_pitch(&font.family)?;
+    if ui_kit::fonts::exact_face(&font.family, font.bold, font.italic).is_some() {
+        return None;
+    }
+    Some(entry)
 }
 
 /// The ink of a string in one face, in ems.
@@ -560,6 +622,47 @@ mod tests {
         // there is no GPU here to apply them to.
         out.textures_delta.clear();
         ctx
+    }
+
+    /// Consolas on a machine without it — which a test always is — is laid
+    /// at the pitch Word lays it at, not at its stand-in's: 0.5498 em a
+    /// character, a line of 1.1709 em, the baseline 0.92 em down. A face
+    /// with no entry in the table is laid by its stand-in as before.
+    #[test]
+    fn a_missing_consolas_is_laid_at_the_pitch_word_lays_it_at() {
+        use wp_layout::Shaper as _;
+        let ctx = context();
+        let mut shaper = Egui::new(&ctx);
+        let consolas = FontRequest::new("Consolas", 10.0);
+        let mut advances = Vec::new();
+        shaper.advances("let x = 1;", &consolas, &mut advances);
+        assert_eq!(advances.len(), 10);
+        for advance in &advances {
+            assert!((advance.width - 5.498).abs() < 1e-9, "{advance:?}");
+        }
+        let pitch = shaper.pitch(&consolas);
+        assert!((pitch.ideal - 11.709).abs() < 1e-9, "{pitch:?}");
+        assert!(
+            (pitch.base - 11.708_333).abs() < 1e-5,
+            "a twenty-fourth: {pitch:?}"
+        );
+        let metrics = shaper.metrics(&consolas);
+        assert!((metrics.ascent - 9.2).abs() < 1e-9, "{metrics:?}");
+        assert!((metrics.line_height() - 11.709).abs() < 1e-9, "{metrics:?}");
+
+        // The painter spreads the stand-in's glyphs by the difference.
+        let key = shaper.key(&consolas);
+        let drawn = shaper.on_its_own(key, '0');
+        let correction = shaper.spacing_correction(&consolas);
+        assert!((drawn + correction - 5.498).abs() < 1e-9);
+        assert!(
+            correction < 0.0,
+            "a generic monospace cell is wider than Consolas's"
+        );
+
+        // Courier New has a twin and no entry here; it is its stand-in's.
+        let courier = FontRequest::new("Courier New", 10.0);
+        assert_eq!(shaper.spacing_correction(&courier), 0.0);
     }
 
     #[test]

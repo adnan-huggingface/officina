@@ -53,7 +53,7 @@ Every source file, its size, and the first sentence of its module doc.
 ### `scriva`
 
 - `crates/app-scriva/src/app/bands.rs` (578) Headers and footers — the bands above and below the text of a page: which one the caret is in, making one a section does not have yet, first-page and odd/even kinds, linking to the previous section, the band bar, and …
-- `crates/app-scriva/src/app/dialogs.rs` (868) Scriva's boxes: page margins, Insert Table, colour, paragraph, column width, picture size, fonts, zoom and the comment box.
+- `crates/app-scriva/src/app/dialogs.rs` (871) Scriva's boxes: page margins, Insert Table, colour, paragraph, column width, picture size, fonts, zoom and the comment box.
 - `crates/app-scriva/src/app/find_bar.rs` (206) The find bar: one bar for Find and Replace, which holds the keyboard while it is open and hands it back to the document when it closes.
 - `crates/app-scriva/src/app/surface.rs` (684) The page surface: the scrolling desk the pages sit on, what the pointer does there — carets, selections, a picture picked, dragged and resized — and where on a page a point lands.
 - `crates/app-scriva/src/app/tables.rs` (308) Editing a table: Tab from cell to cell, the edit every table command goes through, cell margins, column widths, and Insert Table itself.
@@ -73,9 +73,9 @@ Every source file, its size, and the first sentence of its module doc.
 - `crates/app-scriva/src/pictures.rs` (364) Decoding the drawings a document carries, and holding them for the painter.
 - `crates/app-scriva/src/publish.rs` (199) What leaves the editor: the fonts and pictures a page renderer needs.
 - `crates/app-scriva/src/revise.rs` (1141) Accepting and rejecting tracked changes, and recording new ones.
-- `crates/app-scriva/src/shaper.rs` (770) Measuring text with the faces the application actually has.
+- `crates/app-scriva/src/shaper.rs` (873) Measuring text with the faces the application actually has.
 - `crates/app-scriva/src/text.rs` (781) Editing the text of a paragraph.
-- `crates/app-scriva/src/view.rs` (2828) The document surface: pages on a desk, a caret, and a selection.
+- `crates/app-scriva/src/view.rs` (2846) The document surface: pages on a desk, a caret, and a selection.
 
 ### `brand`
 
@@ -229,7 +229,7 @@ Every source file, its size, and the first sentence of its module doc.
 - `crates/ui-kit/src/chooser.rs` (135) The operating system's file chooser, asked without stopping the window.
 - `crates/ui-kit/src/dialog.rs` (727) The look of every dialog both apps put on the screen.
 - `crates/ui-kit/src/drive.rs` (478) Driving an application by keystroke, without a window.
-- `crates/ui-kit/src/fonts.rs` (1315) Real type faces, loaded from the system at startup.
+- `crates/ui-kit/src/fonts.rs` (1371) Real type faces, loaded from the system at startup.
 - `crates/ui-kit/src/headless.rs` (54) An application running without a person in front of it: under a test.
 - `crates/ui-kit/src/keys.rs` (73) Keyboard shortcuts, matched on every modifier.
 - `crates/ui-kit/src/lib.rs` (44) Shared application shell for Calx and Scriva.
@@ -366,8 +366,9 @@ Every comment that says an application was *measured* — the rules this code ke
 - `crates/app-scriva/src/author.rs:5` Nothing measured what it *writes* — and the faults that cost a week of afternoons were all there: a new document that stated no defaults and came back from Word a third taller, an inserted table whose cells stated no …
 - `crates/app-scriva/src/edit.rs:620` Measured on Word, not designed: a page break *inside* a cell is nothing to Word's layout, wherever in the cell it is, and the layout here ignores one too.
 - `crates/app-scriva/src/edit.rs:1907` Measured on Word 16 (`bugs/page-break-in-table-cell.md` in the story):
-- `crates/app-scriva/src/shaper.rs:503` Word's laid line pitch, measured rather than derived.
-- `crates/app-scriva/src/shaper.rs:514` **Aptos is measured and deliberately absent.** Word's default face since 2024 fits the same law with a base of exactly 1.2 times the size and a correction of *six* tenths of a point — `tools/probe` writes the probes a…
+- `crates/app-scriva/src/shaper.rs:454` A face this machine does not have, whose line Word was measured to lay: its ideal, and the base every face without a measured base gets — the ideal to a twenty-fourth of a point.
+- `crates/app-scriva/src/shaper.rs:565` Word's laid line pitch, measured rather than derived.
+- `crates/app-scriva/src/shaper.rs:576` **Aptos is measured and deliberately absent.** Word's default face since 2024 fits the same law with a base of exactly 1.2 times the size and a correction of *six* tenths of a point — `tools/probe` writes the probes a…
 
 ### `chart`
 
@@ -401,7 +402,9 @@ Every comment that says an application was *measured* — the rules this code ke
 ### `ui-kit`
 
 - `crates/ui-kit/src/fonts.rs:280` Not guessed: measured against Word 16 laying out the LibreOffice sample documents on this machine (2026-08-15).
-- `crates/ui-kit/src/fonts.rs:610` A machine can therefore *have* the face Word laid a document in while every lookup by file name says it does not, and the document is then measured in a stand-in whose every line breaks somewhere else.
+- `crates/ui-kit/src/fonts.rs:383` A face Word was measured to lay, drawn in the generic face of its shape but laid at the missing face's own pitch — see [`measured_pitch`] — so lines break where Word breaks them, in letters that are not quite it.
+- `crates/ui-kit/src/fonts.rs:391` What Word was measured to lay a face in, for a machine without the face.
+- `crates/ui-kit/src/fonts.rs:659` A machine can therefore *have* the face Word laid a document in while every lookup by file name says it does not, and the document is then measured in a stand-in whose every line breaks somewhere else.
 
 ### `wp-compare`
 

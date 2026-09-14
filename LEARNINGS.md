@@ -1981,3 +1981,13 @@ seventeen, and every line after the first breaks elsewhere, while the
 baselines agree to the hundredth of a point. Carlito is Calibri's twin, again,
 and is nobody's stand-in for Calibri Light; a document naming the Light face
 on a machine without it has no face that keeps its lines.
+
+**Word lays Consolas at its ideal line pitch, and a monospace face can be
+stood in for by its pitch.** Measured in compatibility mode 15 at 9 to 12
+points: 0.5498 em a character at every size (a hair less at 9), and 1.1709
+em a line — the face's ideal — with baselines landing on the PDF export's
+1/600-inch grid on either side of it rather than on the half-point steps the
+mode-12 probes showed for other faces. So a machine without Consolas can lay
+code exactly where Word does with any monospace glyphs, set one cell apart.
+A proportional face cannot be stood in for this way, which is why Aptos and
+Calibri Light still cannot.
