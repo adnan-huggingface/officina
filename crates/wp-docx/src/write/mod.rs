@@ -19,6 +19,7 @@
 //! paragraphs away.
 
 pub mod blank;
+mod comments_out;
 mod drawing;
 mod emit;
 mod headers_out;
@@ -62,6 +63,7 @@ pub fn flush(document: &mut Document, package: &mut Package) -> Result<()> {
     numbering_out::flush(document, package, &located)?;
     headers_out::flush(document, package, &located)?;
     notes_out::flush(document, package, &located)?;
+    comments_out::flush(document, package, &located)?;
     let part = package
         .part(&located.document)
         .ok_or_else(|| Error::MissingPart {

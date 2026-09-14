@@ -26,7 +26,18 @@ pub fn take(input: &mut egui::InputState, modifiers: egui::Modifiers, key: egui:
             } if *pressed == key && held.matches_exact(modifiers)
         )
     });
-    input.events.len() != before
+    let taken = input.events.len() != before;
+    // A letter pressed with Alt and Shift still sends its text on X11, and a
+    // key taken as a shortcut must not also be typed: Alt+Shift+C opened the
+    // Review pane and put a "C" in the document beside it. The text that
+    // rides with the key goes with it.
+    if taken && modifiers.alt {
+        let name = key.name();
+        input.events.retain(
+            |event| !matches!(event, egui::Event::Text(text) if text.eq_ignore_ascii_case(name)),
+        );
+    }
+    taken
 }
 
 #[cfg(test)]
@@ -61,6 +72,27 @@ mod tests {
             !take(&mut input, ctrl_shift, egui::Key::S),
             "and taking it takes it once"
         );
+    }
+
+    #[test]
+    fn a_key_taken_with_alt_takes_the_letter_it_typed_with_it() {
+        let alt_shift = egui::Modifiers::ALT | egui::Modifiers::SHIFT;
+        let mut input = pressing(egui::Key::C, alt_shift);
+        input.events.push(egui::Event::Text("C".to_owned()));
+        assert!(take(&mut input, alt_shift, egui::Key::C));
+        assert!(
+            !input
+                .events
+                .iter()
+                .any(|e| matches!(e, egui::Event::Text(_))),
+            "the C is not left to be typed"
+        );
+        // A plain letter's text stays: taking Ctrl+B leaves a typed "b" alone,
+        // and there is none on any platform anyway.
+        let mut input = pressing(egui::Key::B, egui::Modifiers::COMMAND);
+        input.events.push(egui::Event::Text("x".to_owned()));
+        assert!(take(&mut input, egui::Modifiers::COMMAND, egui::Key::B));
+        assert_eq!(input.events.len(), 1);
     }
 
     #[test]

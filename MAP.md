@@ -53,27 +53,29 @@ Every source file, its size, and the first sentence of its module doc.
 ### `scriva`
 
 - `crates/app-scriva/src/app/bands.rs` (578) Headers and footers — the bands above and below the text of a page: which one the caret is in, making one a section does not have yet, first-page and odd/even kinds, linking to the previous section, the band bar, and …
-- `crates/app-scriva/src/app/dialogs.rs` (871) Scriva's boxes: page margins, Insert Table, colour, paragraph, column width, picture size, fonts, zoom and the comment box.
+- `crates/app-scriva/src/app/dialogs.rs` (803) Scriva's boxes: page margins, Insert Table, colour, paragraph, column width, picture size, fonts, zoom and the comment box.
 - `crates/app-scriva/src/app/find_bar.rs` (214) The find bar: one bar for Find and Replace, which holds the keyboard while it is open and hands it back to the document when it closes.
-- `crates/app-scriva/src/app/surface.rs` (767) The page surface: the scrolling desk the pages sit on, what the pointer does there — carets, selections, a picture picked, dragged and resized — and where on a page a point lands.
+- `crates/app-scriva/src/app/surface.rs` (785) The page surface: the scrolling desk the pages sit on, what the pointer does there — carets, selections, a picture picked, dragged and resized — and where on a page a point lands.
 - `crates/app-scriva/src/app/tables.rs` (308) Editing a table: Tab from cell to cell, the edit every table command goes through, cell margins, column widths, and Insert Table itself.
-- `crates/app-scriva/src/app/tests.rs` (4949) 
+- `crates/app-scriva/src/app/tests.rs` (5099) 
 - `crates/app-scriva/src/app/watermark.rs` (289) The watermark: the box that asks for one, and the shape it becomes in a header, written the way Word writes its own so that Word finds it again.
-- `crates/app-scriva/src/app.rs` (4587) The application: the window, the commands, and the keys.
+- `crates/app-scriva/src/app.rs` (4775) The application: the window, the commands, and the keys.
 - `crates/app-scriva/src/author.rs` (339) A document written by the application itself, from a script of its own commands.
 - `crates/app-scriva/src/clip.rs` (955) The formatted halves of a copy: CF_HTML and Rich Text Format.
-- `crates/app-scriva/src/commands.rs` (326) Every command with a name and a key, in one table.
+- `crates/app-scriva/src/commands.rs` (339) Every command with a name and a key, in one table.
 - `crates/app-scriva/src/drawings.rs` (353) A picture as an object: selected, moved, resized, deleted.
-- `crates/app-scriva/src/edit.rs` (2045) Editing a document, and taking it back.
+- `crates/app-scriva/src/edit.rs` (2071) Editing a document, and taking it back.
 - `crates/app-scriva/src/find.rs` (214) Finding text in the document, and putting something else in its place.
 - `crates/app-scriva/src/icons.rs` (445) Toolbar icons, drawn from lines rather than typed.
-- `crates/app-scriva/src/lib.rs` (25) Scriva — the word processor.
+- `crates/app-scriva/src/lib.rs` (26) Scriva — the word processor.
 - `crates/app-scriva/src/links.rs` (117) Following a hyperlink out of the document, or to somewhere inside it.
 - `crates/app-scriva/src/main.rs` (31) Scriva — word processor.
-- `crates/app-scriva/src/menus.rs` (768) The menu bar and the formatting row.
+- `crates/app-scriva/src/menus.rs` (677) The menu bar and the formatting row.
+- `crates/app-scriva/src/panes/mod.rs` (11) The panes beside the page: Review on the right, and — from phase 5 of the redesign — Navigate on the left.
+- `crates/app-scriva/src/panes/review.rs` (720) The Review pane: every tracked change and comment as a card, in document order, with what can be done about each on the card itself.
 - `crates/app-scriva/src/pictures.rs` (364) Decoding the drawings a document carries, and holding them for the painter.
 - `crates/app-scriva/src/publish.rs` (199) What leaves the editor: the fonts and pictures a page renderer needs.
-- `crates/app-scriva/src/revise.rs` (1339) Accepting and rejecting tracked changes, and recording new ones.
+- `crates/app-scriva/src/revise.rs` (1503) Accepting and rejecting tracked changes, and recording new ones.
 - `crates/app-scriva/src/shaper.rs` (873) Measuring text with the faces the application actually has.
 - `crates/app-scriva/src/text.rs` (781) Editing the text of a paragraph.
 - `crates/app-scriva/src/toolbar.rs` (1065) The toolbar: one row, on which the caret's state can be read at a glance.
@@ -233,7 +235,7 @@ Every source file, its size, and the first sentence of its module doc.
 - `crates/ui-kit/src/drive.rs` (524) Driving an application by keystroke, without a window.
 - `crates/ui-kit/src/fonts.rs` (1371) Real type faces, loaded from the system at startup.
 - `crates/ui-kit/src/headless.rs` (54) An application running without a person in front of it: under a test.
-- `crates/ui-kit/src/keys.rs` (73) Keyboard shortcuts, matched on every modifier.
+- `crates/ui-kit/src/keys.rs` (105) Keyboard shortcuts, matched on every modifier.
 - `crates/ui-kit/src/lib.rs` (45) Shared application shell for Calx and Scriva.
 - `crates/ui-kit/src/menu.rs` (1042) A menu bar, and menus that look like menus.
 - `crates/ui-kit/src/paths.rs` (99) Config and state directory resolution.
@@ -274,17 +276,18 @@ Every source file, its size, and the first sentence of its module doc.
 - `crates/wp-docx/src/lib.rs` (256) `.docx` reader and writer, over `ooxml` and `wp-model`.
 - `crates/wp-docx/src/link.rs` (66) Relating a hyperlink to where it goes, which in a `.docx` is not where the link is.
 - `crates/wp-docx/src/media.rs` (207) Putting an image *into* a package, which is three things and not one.
-- `crates/wp-docx/src/notes.rs` (182) `footnotes.xml`, `endnotes.xml`, `comments.xml` and `commentsExtended.xml`.
+- `crates/wp-docx/src/notes.rs` (198) `footnotes.xml`, `endnotes.xml`, `comments.xml` and `commentsExtended.xml`.
 - `crates/wp-docx/src/numbering.rs` (467) `numbering.xml` — abstract list definitions and the instances of them.
 - `crates/wp-docx/src/parts.rs` (271) Locating a document's parts through the relationship graph.
 - `crates/wp-docx/src/pict.rs` (469) `<w:pict>`: the VML a watermark is still written as.
 - `crates/wp-docx/src/props.rs` (956) Reading `<w:rPr>`, `<w:pPr>` and `<w:sectPr>`.
 - `crates/wp-docx/src/styles.rs` (350) `styles.xml` — document defaults and every named style.
 - `crates/wp-docx/src/write/blank.rs` (398) Authoring a package for a document that has never been in a file.
+- `crates/wp-docx/src/write/comments_out.rs` (371) `comments.xml` and `commentsExtended.xml`: rewritten when the comments changed, authored when the package has none.
 - `crates/wp-docx/src/write/drawing.rs` (567) Putting a drawing back, with the two things a user can change to it applied.
 - `crates/wp-docx/src/write/emit.rs` (1448) Serializing the model back to WordprocessingML.
 - `crates/wp-docx/src/write/headers_out.rs` (315) Header and footer parts: rewritten when edited, authored when new.
-- `crates/wp-docx/src/write/mod.rs` (833) Writing a document back to its package.
+- `crates/wp-docx/src/write/mod.rs` (835) Writing a document back to its package.
 - `crates/wp-docx/src/write/notes_out.rs` (294) Footnote and endnote parts, authored for a package that has none.
 - `crates/wp-docx/src/write/numbering_out.rs` (413) The numbering part: new definitions appended, existing bytes untouched.
 - `crates/wp-docx/src/write/splice.rs` (222) Reading a part while keeping the bytes it was read from.
@@ -312,7 +315,7 @@ Every source file, its size, and the first sentence of its module doc.
 - `crates/wp-model/src/numbering.rs` (994) Numbering: bullets, numbered lists, and the nine levels of both.
 - `crates/wp-model/src/outline.rs` (512) The document's skeleton: headings, bookmarks, and the table of contents built from them.
 - `crates/wp-model/src/prop.rs` (1318) Run and paragraph properties — `<w:rPr>` and `<w:pPr>`.
-- `crates/wp-model/src/revision.rs` (318) Tracked changes, comments, and bookmarks.
+- `crates/wp-model/src/revision.rs` (323) Tracked changes, comments, and bookmarks.
 - `crates/wp-model/src/section.rs` (753) Sections: page size, margins, columns, and the headers and footers that belong to them.
 - `crates/wp-model/src/style.rs` (989) Styles, and the layers a paragraph's appearance is assembled from.
 - `crates/wp-model/src/table.rs` (666) Tables: a grid of columns, a list of rows, and two different ways a cell can cover more than one square of it.
@@ -363,12 +366,12 @@ Every comment that says an application was *measured* — the rules this code ke
 - `crates/app-scriva/src/app/bands.rs:349` **Breaking it copies rather than empties.** Word's own answer, measured over COM: unlink a second section's header and the words are still there, while the first section keeps a copy of its own — so the two can then b…
 - `crates/app-scriva/src/app/tables.rs:282` Measured: a cell that states none is laid to its *content* by Word, whatever the grid says — a 468pt table came back 28pt wide, its second column as wide as "B1", and an empty column under a point.
 - `crates/app-scriva/src/app/watermark.rs:137` measured against a watermark Word wrote itself, which put the shape in the default header and left the other two parts empty.
-- `crates/app-scriva/src/app.rs:326` Word's own Page Setup keeps those last two on the same sheet, under "From edge", and they belong with the margins because they are measured against the same four edges.
-- `crates/app-scriva/src/app.rs:3988` 96 pixels to the inch: what a screen snippet is measured in, and what Word assumes of an image that does not say otherwise.
-- `crates/app-scriva/src/app.rs:4122` What a new document is in Word today, measured on the reference machine (Word 16.0.20326, 2026-09-13): twelve points, eight points after every paragraph, and a line of 278 to 240 — the document defaults Word writes in…
+- `crates/app-scriva/src/app.rs:367` Word's own Page Setup keeps those last two on the same sheet, under "From edge", and they belong with the margins because they are measured against the same four edges.
+- `crates/app-scriva/src/app.rs:4177` 96 pixels to the inch: what a screen snippet is measured in, and what Word assumes of an image that does not say otherwise.
+- `crates/app-scriva/src/app.rs:4311` What a new document is in Word today, measured on the reference machine (Word 16.0.20326, 2026-09-13): twelve points, eight points after every paragraph, and a line of 278 to 240 — the document defaults Word writes in…
 - `crates/app-scriva/src/author.rs:5` Nothing measured what it *writes* — and the faults that cost a week of afternoons were all there: a new document that stated no defaults and came back from Word a third taller, an inserted table whose cells stated no …
-- `crates/app-scriva/src/edit.rs:620` Measured on Word, not designed: a page break *inside* a cell is nothing to Word's layout, wherever in the cell it is, and the layout here ignores one too.
-- `crates/app-scriva/src/edit.rs:1907` Measured on Word 16 (`bugs/page-break-in-table-cell.md` in the story):
+- `crates/app-scriva/src/edit.rs:646` Measured on Word, not designed: a page break *inside* a cell is nothing to Word's layout, wherever in the cell it is, and the layout here ignores one too.
+- `crates/app-scriva/src/edit.rs:1933` Measured on Word 16 (`bugs/page-break-in-table-cell.md` in the story):
 - `crates/app-scriva/src/shaper.rs:454` A face this machine does not have, whose line Word was measured to lay: its ideal, and the base every face without a measured base gets — the ideal to a twenty-fourth of a point.
 - `crates/app-scriva/src/shaper.rs:565` Word's laid line pitch, measured rather than derived.
 - `crates/app-scriva/src/shaper.rs:576` **Aptos is measured and deliberately absent.** Word's default face since 2024 fits the same law with a base of exactly 1.2 times the size and a correction of *six* tenths of a point — `tools/probe` writes the probes a…
@@ -690,12 +693,15 @@ Every row of every menu, and the keys that choose it from the document — walke
 | `Alt+P, S, 1` | 1.5 Lines |
 | `Alt+P, S, D` | Double |
 | `Alt+R, T` | Track Changes |
-| `Alt+R, N` | Next Change |
 | `Alt+R, A` | Accept |
 | `Alt+R, R` | Reject |
 | `Alt+R, L` | Accept All |
 | `Alt+R, J` | Reject All |
+| `Alt+R, N` | Next Change |
+| `Alt+R, P` | Previous Change |
 | `Alt+R, C` | New Comment |
+| `Alt+R, Y` | Reply to Comment |
+| `Alt+R, S` | Resolve Comment |
 | `Alt+R, D` | Delete Comment |
 | `Alt+R, V` | Reviewing Pane |
 | `Alt+S, —` | Normal |

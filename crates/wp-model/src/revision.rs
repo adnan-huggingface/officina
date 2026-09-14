@@ -127,7 +127,7 @@ pub enum PreviousProps {
 ///
 /// The document holds only the anchors. That separation is why a comment can
 /// span a range: the range is marked in the text and the prose is elsewhere.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Comment {
     pub id: u32,
     pub author: Arc<str>,
@@ -138,6 +138,10 @@ pub struct Comment {
     /// in `commentsExtended.xml`. Read here so a resolved comment is not drawn
     /// as an open one.
     pub done: bool,
+    /// The comment this one answers, from `w15:paraIdParent` in the same
+    /// part: a reply is a comment of its own, anchored to the same words,
+    /// that names its parent.
+    pub parent: Option<u32>,
     /// The comment's own body: paragraphs, and occasionally a table.
     pub content: Vec<crate::doc::Block>,
 }
@@ -150,6 +154,7 @@ impl Comment {
             initials: None,
             date: None,
             done: false,
+            parent: None,
             content: Vec::new(),
         }
     }

@@ -90,6 +90,15 @@ pub enum Change {
         /// happened to follow.
         now: usize,
     },
+    /// The document's comments, whole — what a comment posted, answered,
+    /// resolved or deleted changes, beside the anchors in the text. A list
+    /// rather than one comment, because a reply is a comment of its own and
+    /// deleting one takes its replies too.
+    Comments { before: Vec<wp_model::Comment> },
+    /// Several changes that are one thing to undo: a comment's anchors in the
+    /// text and the comment itself are two changes to the model and one to
+    /// the person who made them.
+    Many(Vec<Change>),
     /// The section's page setup — margins, size, orientation.
     ///
     /// Carries the caret because a page-setup change has no text position of
@@ -317,6 +326,23 @@ fn apply(document: &mut Document, scope: Scope, change: Change) -> (Change, Care
                 },
                 caret,
             )
+        }
+        Change::Comments { before } => {
+            let was = std::mem::replace(&mut document.comments, before);
+            (Change::Comments { before: was }, Caret::default())
+        }
+        Change::Many(changes) => {
+            // Applied in order; undone in the reverse order, which is what
+            // makes the inverse of a sequence a sequence.
+            let mut inverses = Vec::with_capacity(changes.len());
+            let mut caret = Caret::default();
+            for change in changes {
+                let (inverse, at) = apply(document, scope, change);
+                inverses.push(inverse);
+                caret = at;
+            }
+            inverses.reverse();
+            (Change::Many(inverses), caret)
         }
         Change::Blocks { index, before, now } => {
             let Some(blocks) = document.blocks_mut(scope) else {

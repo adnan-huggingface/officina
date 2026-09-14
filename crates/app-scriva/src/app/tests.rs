@@ -515,16 +515,17 @@ fn a_comment_by_menu_letters_and_keys() {
     drive.press(&mut app, "ctrl+A");
     assert!(app.has_selection(), "Ctrl+A selected the text");
     drive.menu(&mut app, 'R', 'C');
-    assert!(app.drafting.is_some(), "Alt+R, C opened the comment box");
+    drive.settle(&mut app);
+    assert!(app.draft.is_some(), "Alt+R, C opened a draft in the pane");
     drive.type_text(&mut app, "a note");
     assert_eq!(
-        app.drafting.as_deref(),
+        app.draft.as_ref().map(|d| d.text.as_str()),
         Some("a note"),
-        "typed into the box"
+        "typed into the draft"
     );
     drive.press(&mut app, "Enter");
     assert_eq!(
-        app.drafting.as_deref(),
+        app.draft.as_ref().map(|d| d.text.as_str()),
         Some("a note\n"),
         "Enter is a new line in the note"
     );
@@ -532,8 +533,8 @@ fn a_comment_by_menu_letters_and_keys() {
     drive.press(&mut app, "ctrl+Enter");
     drive.settle(&mut app);
     assert!(
-        app.drafting.is_none(),
-        "Ctrl+Enter added it and closed the box"
+        app.draft.is_none(),
+        "Ctrl+Enter posted it and closed the draft"
     );
     assert_eq!(
         app.document.comments.len(),
@@ -2007,7 +2008,7 @@ fn a_comment_asked_for_in_a_header_is_refused_rather_than_put_somewhere_else() {
     };
     app.run(Command::AddComment);
 
-    assert!(app.drafting.is_none(), "no box opened");
+    assert!(app.draft.is_none(), "no draft opened");
     assert!(app.message.is_some(), "and it said why");
     assert!(app.document.comments.is_empty());
     assert!(app.editing_band(), "the band is left as it was");
@@ -3380,28 +3381,6 @@ fn accept_all_with_nothing_tracked_says_so_rather_than_doing_nothing() {
     app.run(Command::AcceptAll);
     assert!(app.message.is_some());
     assert!(!app.dirty);
-}
-
-#[test]
-fn a_comment_needs_a_selection_to_be_about() {
-    let mut app = app_with(["text"].as_slice());
-    app.run(Command::AddComment);
-    assert!(app.message.is_some(), "and says why");
-    assert!(app.drafting.is_none());
-
-    app.message = None;
-    app.selection = Selection {
-        anchor: Caret {
-            paragraph: 0,
-            offset: 0,
-        },
-        head: Caret {
-            paragraph: 0,
-            offset: 4,
-        },
-    };
-    app.run(Command::AddComment);
-    assert!(app.drafting.is_some());
 }
 
 #[test]
@@ -4946,4 +4925,175 @@ fn a_comment_washes_its_range_and_marks_the_margin() {
     assert!(painted_rects(&shapes)
         .iter()
         .all(|(_, fill, _)| *fill != wash));
+}
+
+#[test]
+fn a_comment_with_no_selection_takes_the_word_at_the_caret() {
+    let drive = ui_kit::drive::Driver::new();
+    let mut app = app_with(&["first word here"]);
+    app.selection = Selection::at(Caret {
+        paragraph: 0,
+        offset: 7,
+    });
+    drive.settle(&mut app);
+    drive.press(&mut app, "ctrl+alt+M");
+    drive.settle(&mut app);
+    assert!(app.message.is_none(), "no refusal");
+    assert!(app.reviewer, "the pane opened");
+    let draft = app.draft.clone().expect("a draft in the pane");
+    assert_eq!(
+        draft.range.ordered(),
+        (
+            Caret {
+                paragraph: 0,
+                offset: 6
+            },
+            Caret {
+                paragraph: 0,
+                offset: 10
+            }
+        ),
+        "the word at the caret"
+    );
+    drive.type_text(&mut app, "why this word?");
+    drive.press(&mut app, "ctrl+Enter");
+    drive.settle(&mut app);
+    assert!(app.draft.is_none());
+    assert_eq!(app.document.comments.len(), 1);
+    assert_eq!(app.document.comments[0].text(), "why this word?");
+    let ranges = crate::revise::comment_ranges(&app.document);
+    assert_eq!(ranges[0].range.ordered().0.offset, 6);
+    assert_eq!(ranges[0].range.ordered().1.offset, 10);
+    assert_eq!(
+        app.document.text(),
+        "first word here",
+        "nothing typed into the text"
+    );
+}
+
+#[test]
+fn a_draft_comment_is_posted_with_ctrl_enter_and_discarded_with_escape() {
+    let drive = ui_kit::drive::Driver::new();
+    let mut app = app_with(&["a word to comment on"]);
+    drive.settle(&mut app);
+    drive.press(&mut app, "ctrl+A");
+    drive.press(&mut app, "ctrl+alt+M");
+    drive.settle(&mut app);
+    drive.type_text(&mut app, "thrown away");
+    drive.press(&mut app, "Escape");
+    drive.settle(&mut app);
+    assert!(app.draft.is_none(), "Escape discarded the draft");
+    assert!(
+        app.document.comments.is_empty(),
+        "and no comment was posted"
+    );
+    assert!(app.reviewer, "the pane stays open");
+
+    drive.press(&mut app, "ctrl+alt+M");
+    drive.settle(&mut app);
+    drive.type_text(&mut app, "kept");
+    drive.press(&mut app, "ctrl+Enter");
+    drive.settle(&mut app);
+    assert!(app.draft.is_none());
+    assert_eq!(app.document.comments.len(), 1);
+    assert_eq!(app.document.comments[0].text(), "kept");
+    assert_eq!(app.document.text(), "a word to comment on");
+}
+
+/// A document with an insertion in one paragraph and a deletion in the
+/// next, both by the same author.
+fn with_two_changes() -> Scriva {
+    use wp_model::doc::{inserted_by, Inline, Piece, Run};
+    use wp_model::{Mark, Revision};
+    let mut app = app_with(&["one", "two"]);
+    app.document.body[0] = Block::Paragraph(Paragraph {
+        content: vec![
+            Inline::Run(Run::of("kept ")),
+            inserted_by("Adnan Khan", 1, vec![Inline::Run(Run::of("added"))]),
+        ],
+        ..Paragraph::default()
+    });
+    app.document.body[1] = Block::Paragraph(Paragraph {
+        content: vec![
+            Inline::Run(Run::of("stays ")),
+            Inline::Revised {
+                revision: Revision::Deleted(Mark::new(2, "Adnan Khan")),
+                content: vec![Inline::Run(Run {
+                    content: vec![Piece::Deleted("gone".into())],
+                    ..Run::default()
+                })],
+            },
+        ],
+        ..Paragraph::default()
+    });
+    app.changed();
+    app
+}
+
+#[test]
+fn one_change_is_settled_from_its_card_without_touching_the_others() {
+    use crate::panes::review::{drawn, CardKey};
+    let drive = ui_kit::drive::Driver::new();
+    let mut app = with_two_changes();
+    app.run(Command::Reviewer);
+    drive.settle(&mut app);
+    drive.settle(&mut app);
+    let cards = drawn(drive.ctx());
+    assert_eq!(cards.len(), 2, "one card per change: {cards:?}");
+    let insertion = cards
+        .iter()
+        .find(|card| matches!(&card.key, CardKey::Change(mark) if mark.id == 1))
+        .expect("the insertion's card");
+    let reject = insertion
+        .actions
+        .iter()
+        .find(|(name, _)| *name == "Reject")
+        .expect("with a Reject button")
+        .1;
+    drive.click(&mut app, reject.center());
+    let left = crate::revise::tracked(&app.document);
+    assert_eq!(left.len(), 1, "one change settled, one left: {left:?}");
+    assert_eq!(left[0].what, "deleted");
+    assert_eq!(
+        app.document.paragraphs()[0].text(),
+        "kept ",
+        "the insertion went"
+    );
+    assert_eq!(drawn(drive.ctx()).len(), 1, "and its card with it");
+}
+
+#[test]
+fn the_card_at_the_caret_is_the_outlined_one() {
+    use crate::panes::review::{drawn, CardKey};
+    let drive = ui_kit::drive::Driver::new();
+    let mut app = with_two_changes();
+    app.run(Command::Reviewer);
+    app.selection = Selection::at(Caret {
+        paragraph: 1,
+        offset: 0,
+    });
+    drive.settle(&mut app);
+    drive.settle(&mut app);
+    let outlined = |cards: &[crate::panes::review::CardDrawn]| -> Vec<u32> {
+        cards
+            .iter()
+            .filter(|card| card.at_caret)
+            .filter_map(|card| match &card.key {
+                CardKey::Change(mark) => Some(mark.id),
+                _ => None,
+            })
+            .collect()
+    };
+    assert_eq!(
+        outlined(&drawn(drive.ctx())),
+        vec![2],
+        "the deletion, in the caret's paragraph"
+    );
+    drive.press(&mut app, "ctrl+Home");
+    drive.settle(&mut app);
+    assert_eq!(
+        outlined(&drawn(drive.ctx())),
+        vec![1],
+        "the insertion, once the caret moved up"
+    );
 }

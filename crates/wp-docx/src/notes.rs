@@ -69,29 +69,31 @@ pub(crate) fn read_comments(xml: &[u8], ctx: &mut Ctx<'_>) -> Vec<Comment> {
 }
 
 /// Applies `commentsExtended.xml`, which is where a comment's *resolved* flag
-/// lives.
+/// lives, and which comment it replies to.
 ///
 /// It is not keyed by comment id. It is keyed by the `w14:paraId` of the
 /// comment's **last paragraph**, which means the two parts can only be joined by
 /// walking into the comment bodies. Nothing in either file says so, and a reader
 /// that matches on the id joins the wrong rows — usually off by one, so most
-/// comments look right and one is wrongly shown as resolved.
+/// comments look right and one is wrongly shown as resolved. A reply's parent
+/// is named the same way, by the parent's last paragraph.
 pub(crate) fn apply_resolved(xml: &[u8], comments: &mut [Comment]) {
-    let mut done: BTreeMap<u32, bool> = BTreeMap::new();
+    let mut done: BTreeMap<u32, (bool, Option<u32>)> = BTreeMap::new();
     let mut reader = Reader::from_reader(xml);
     loop {
         match reader.read_event() {
             Ok(Event::Start(e)) | Ok(Event::Empty(e)) if local_name(&e) == b"commentEx" => {
-                let Some(para_id) =
-                    attr(&e, b"paraId").and_then(|hex| u32::from_str_radix(hex.trim(), 16).ok())
-                else {
+                let hex = |name: &[u8]| {
+                    attr(&e, name).and_then(|hex| u32::from_str_radix(hex.trim(), 16).ok())
+                };
+                let Some(para_id) = hex(b"paraId") else {
                     continue;
                 };
                 let resolved = attr(&e, b"done")
                     .as_deref()
                     .map(|v| wp_model::prop::on_off(Some(v)))
                     .unwrap_or(false);
-                done.insert(para_id, resolved);
+                done.insert(para_id, (resolved, hex(b"paraIdParent")));
             }
             Ok(Event::Eof) | Err(_) => break,
             _ => {}
@@ -100,14 +102,28 @@ pub(crate) fn apply_resolved(xml: &[u8], comments: &mut [Comment]) {
     if done.is_empty() {
         return;
     }
+    let by_last: Vec<(u32, u32)> = comments
+        .iter()
+        .filter_map(|comment| Some((last_para_id(&comment.content)?, comment.id)))
+        .collect();
     for comment in comments {
-        if let Some(resolved) = last_para_id(&comment.content).and_then(|id| done.get(&id)) {
+        if let Some((resolved, parent)) =
+            last_para_id(&comment.content).and_then(|id| done.get(&id))
+        {
             comment.done = *resolved;
+            comment.parent = parent.and_then(|para| {
+                by_last
+                    .iter()
+                    .find(|(last, _)| *last == para)
+                    .map(|(_, id)| *id)
+            });
         }
     }
 }
 
-fn last_para_id(blocks: &[Block]) -> Option<u32> {
+/// The `w14:paraId` of a comment's last paragraph, which is the name the
+/// extended part knows it by.
+pub(crate) fn last_para_id(blocks: &[Block]) -> Option<u32> {
     blocks.iter().rev().find_map(|block| match block {
         Block::Paragraph(paragraph) => paragraph.id,
         _ => None,

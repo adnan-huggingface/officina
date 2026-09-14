@@ -26,6 +26,19 @@ mod surface;
 mod tables;
 mod watermark;
 
+/// A comment being written in the Review pane, before it is posted: the
+/// words it is about, the comment it answers if it is a reply, and the text
+/// so far.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Draft {
+    pub scope: wp_model::Scope,
+    pub range: Selection,
+    pub reply_to: Option<u32>,
+    pub text: String,
+    /// Take the keyboard on the next frame — set when the draft opens.
+    pub focus: bool,
+}
+
 /// One thing the application can be asked to do.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
@@ -161,8 +174,29 @@ pub enum Command {
     RejectOne,
     /// Move the caret to the next tracked change or comment.
     NextChange,
+    PreviousChange,
+    /// Settle one change, named by its mark — a card's own button.
+    AcceptChange(wp_model::Mark),
+    RejectChange(wp_model::Mark),
+    /// Put the caret at a change or a comment, from its card.
+    GoToChange(wp_model::Mark),
+    GoToComment(u32),
+    /// A comment on the selection, or on the word at the caret: a draft in
+    /// the Review pane.
     AddComment,
+    /// A reply to a comment, drafted under its card.
+    ReplyComment(u32),
+    /// Reply to the comment the caret stands in.
+    ReplyHere,
+    ResolveComment(u32, bool),
+    /// Resolve, or reopen, the comment the caret stands in.
+    ResolveHere,
+    /// The draft in the pane, posted or thrown away.
+    PostComment,
+    DiscardComment,
+    /// Delete the comment the caret stands in.
     DeleteComment,
+    DeleteCommentOf(u32),
     /// The pane of tracked changes and comments down the right.
     Reviewer,
 }
@@ -281,8 +315,8 @@ pub struct Scriva {
     /// Bumped on every change, so the view knows when to lay out again.
     stamp: u64,
     view: View,
-    history: History,
-    selection: Selection,
+    pub(crate) history: History,
+    pub(crate) selection: Selection,
     /// Which of the document's flows the caret is in: the text, or one header
     /// or footer being edited in place.
     ///
@@ -291,7 +325,7 @@ pub struct Scriva {
     /// its text and gave text back would hand that document a paragraph where
     /// its table used to be. So the editor moves into the band instead — the
     /// same caret, the same keys, the same undo — and this says where it is.
-    scope: wp_model::Scope,
+    pub(crate) scope: wp_model::Scope,
     /// Where the caret stood in the text before a band was opened, so closing
     /// one puts it back rather than at the top of the page. Word does the
     /// same, and a caret that jumps on the way out loses the user's place.
@@ -317,8 +351,15 @@ pub struct Scriva {
     /// document full of changes by "Unknown" is worse than one by a name the
     /// user can correct.
     author: crate::revise::Author,
-    /// The comment being written, before it is added.
-    drafting: Option<String>,
+    /// The comment being written in the Review pane, before it is posted.
+    pub(crate) draft: Option<Draft>,
+    /// Whether a field in a pane held the keyboard this frame.
+    pub(crate) pane_held: bool,
+    /// Which cards the Review pane shows.
+    pub(crate) review_filter: crate::panes::review::Filter,
+    /// The card the pane last scrolled into view for the caret, so it is
+    /// scrolled to once per arrival and not on every frame.
+    pub(crate) review_scrolled: Option<crate::panes::review::CardKey>,
     /// The custom-margins dialog, in inches: top, bottom, left, right, and
     /// then how far the header sits from the top of the paper and the footer
     /// from the bottom. Word's own Page Setup keeps those last two on the same
@@ -514,7 +555,10 @@ impl Scriva {
             navigator: false,
             reviewer: false,
             author: crate::revise::Author::new("Scriva user"),
-            drafting: None,
+            draft: None,
+            pane_held: false,
+            review_filter: Default::default(),
+            review_scrolled: None,
             margins_draft: None,
             table_draft: None,
             color_draft: None,
@@ -581,13 +625,13 @@ impl Scriva {
         self.fields.title = self.fields.file_name.clone();
     }
 
-    fn changed(&mut self) {
+    pub(crate) fn changed(&mut self) {
         self.dirty = true;
         self.stamp = self.stamp.wrapping_add(1);
         self.view.invalidate();
     }
 
-    fn caret(&self) -> Caret {
+    pub(crate) fn caret(&self) -> Caret {
         self.selection.head
     }
 
@@ -2068,7 +2112,74 @@ impl Scriva {
             Command::RejectAll => self.settle_all(crate::revise::Resolve::Reject),
             Command::AcceptOne => self.settle_one(crate::revise::Resolve::Accept),
             Command::RejectOne => self.settle_one(crate::revise::Resolve::Reject),
-            Command::NextChange => self.next_change(),
+            Command::AcceptChange(mark) => self.settle(&mark, crate::revise::Resolve::Accept),
+            Command::RejectChange(mark) => self.settle(&mark, crate::revise::Resolve::Reject),
+            Command::NextChange => self.step_change(true),
+            Command::PreviousChange => self.step_change(false),
+            Command::GoToChange(mark) => {
+                if let Some(change) = crate::revise::tracked(&self.document)
+                    .into_iter()
+                    .find(|change| change.mark == mark)
+                {
+                    self.run(Command::GoTo(change.scope, change.paragraph));
+                }
+            }
+            Command::GoToComment(id) => {
+                if let Some(range) = self
+                    .comment_ranges_now()
+                    .iter()
+                    .find(|range| range.id == id)
+                    .cloned()
+                {
+                    self.go_to(range.scope, range.range.ordered().0);
+                    self.selection = range.range;
+                    self.reveal = Some(self.caret());
+                }
+            }
+            Command::ReplyComment(id) => {
+                if let Some(range) = self
+                    .comment_ranges_now()
+                    .iter()
+                    .find(|range| range.id == id)
+                    .cloned()
+                {
+                    self.reviewer = true;
+                    self.draft = Some(Draft {
+                        scope: range.scope,
+                        range: range.range,
+                        reply_to: Some(id),
+                        text: String::new(),
+                        focus: true,
+                    });
+                }
+            }
+            Command::ReplyHere => match self.comment_at_caret() {
+                Some(id) => self.run(Command::ReplyComment(id)),
+                None => self.no_comment_here(),
+            },
+            Command::ResolveComment(id, done) => {
+                if crate::revise::resolve_comment(&mut self.document, &mut self.history, id, done) {
+                    self.changed();
+                }
+            }
+            Command::ResolveHere => match self.comment_at_caret() {
+                Some(id) => {
+                    let done = self
+                        .document
+                        .comment(id)
+                        .is_some_and(|comment| comment.done);
+                    self.run(Command::ResolveComment(id, !done));
+                }
+                None => self.no_comment_here(),
+            },
+            Command::PostComment => self.post_draft(),
+            Command::DiscardComment => self.draft = None,
+            Command::DeleteCommentOf(id) => {
+                if crate::revise::delete_comment(&mut self.document, &mut self.history, id) {
+                    self.selection = Selection::at(clamp(&self.document, self.scope, self.caret()));
+                    self.changed();
+                }
+            }
             Command::AddComment => {
                 // **Word refuses this outside the main story**, in those
                 // words: "Comments, endnotes and footnotes can only be added
@@ -2084,15 +2195,39 @@ impl Scriva {
                          and select the words in the document."
                             .to_owned(),
                     ));
-                } else if self.selection.is_empty() {
-                    self.message = Some((
-                        "Nothing selected".to_owned(),
-                        "A comment is about a piece of text. Select what it is \
-                         about and try again."
-                            .to_owned(),
-                    ));
                 } else {
-                    self.drafting = Some(String::new());
+                    // Nothing selected: the word at the caret, as Word does.
+                    // A refusal here asked the user to select something
+                    // before saying what they had to say.
+                    let range = if self.selection.is_empty() {
+                        let caret = self.caret();
+                        let content = self.paragraph_text(caret.paragraph);
+                        let word = text::word_at(&content, caret.offset);
+                        // The word without the space after it: the space
+                        // belongs to the word for deleting, not for talking
+                        // about.
+                        let end = word.start + content[word.clone()].trim_end().len();
+                        Selection {
+                            anchor: Caret {
+                                paragraph: caret.paragraph,
+                                offset: word.start,
+                            },
+                            head: Caret {
+                                paragraph: caret.paragraph,
+                                offset: end,
+                            },
+                        }
+                    } else {
+                        self.selection
+                    };
+                    self.reviewer = true;
+                    self.draft = Some(Draft {
+                        scope: self.scope,
+                        range,
+                        reply_to: None,
+                        text: String::new(),
+                        focus: true,
+                    });
                 }
             }
             Command::DeleteComment => self.delete_comment_here(),
@@ -2222,40 +2357,94 @@ impl Scriva {
         }
     }
 
-    fn next_change(&mut self) {
+    /// The next change after the caret, or the one before it, wrapping round
+    /// the document either way.
+    fn step_change(&mut self, forward: bool) {
         let changes = crate::revise::tracked(&self.document);
-        let here = self.caret().paragraph;
-        let next = changes
-            .iter()
-            .find(|change| (change.scope, change.paragraph) > (self.scope, here))
-            .or_else(|| changes.first());
-        if let Some(change) = next {
+        let here = (self.scope, self.caret().paragraph);
+        let found = if forward {
+            changes
+                .iter()
+                .find(|change| (change.scope, change.paragraph) > here)
+                .or_else(|| changes.first())
+        } else {
+            changes
+                .iter()
+                .rev()
+                .find(|change| (change.scope, change.paragraph) < here)
+                .or_else(|| changes.last())
+        };
+        if let Some(change) = found {
             self.run(Command::GoTo(change.scope, change.paragraph));
         }
     }
 
-    fn delete_comment_here(&mut self) {
-        let here = self.caret().paragraph;
-        let target = self
-            .document
-            .comments
-            .iter()
-            .map(|comment| comment.id)
-            .find(|id| {
-                crate::revise::comment_at(&self.document, *id)
-                    .is_some_and(|(scope, at)| scope == self.scope && at.paragraph == here)
-            });
-        match target {
-            Some(id) => {
-                crate::revise::delete_comment(&mut self.document, &mut self.history, id);
-                self.changed();
-            }
+    /// Settles one named change — a card's own Accept or Reject.
+    fn settle(&mut self, mark: &wp_model::Mark, how: crate::revise::Resolve) {
+        if crate::revise::resolve_one(&mut self.document, &mut self.history, mark, how) {
+            self.selection = Selection::at(clamp(&self.document, self.scope, self.caret()));
+            self.changed();
+        }
+    }
+
+    /// Posts the comment being written in the pane, if there is one and it
+    /// says anything.
+    fn post_draft(&mut self) {
+        let Some(draft) = self.draft.take() else {
+            return;
+        };
+        let text = draft.text.trim().to_owned();
+        if text.is_empty() {
+            return;
+        }
+        let author = self.author.clone();
+        match draft.reply_to {
             None => {
-                self.message = Some((
-                    "No comment here".to_owned(),
-                    "Put the caret in the text a comment is about.".to_owned(),
-                ));
+                crate::revise::add_comment(
+                    &mut self.document,
+                    &mut self.history,
+                    draft.scope,
+                    draft.range,
+                    &author.name,
+                    &author.initials,
+                    &text,
+                );
             }
+            Some(parent) => {
+                crate::revise::reply_to_comment(
+                    &mut self.document,
+                    &mut self.history,
+                    parent,
+                    &author.name,
+                    &author.initials,
+                    &text,
+                );
+            }
+        }
+        self.reviewer = true;
+        self.changed();
+    }
+
+    fn no_comment_here(&mut self) {
+        self.message = Some((
+            "No comment here".to_owned(),
+            "Put the caret in the text a comment is about.".to_owned(),
+        ));
+    }
+
+    /// Every comment's range, worked out once per document revision.
+    pub(crate) fn comment_ranges_now(&mut self) -> &[crate::revise::CommentRange] {
+        if self.washes_for != self.stamp {
+            self.washes_for = self.stamp;
+            self.comment_ranges = crate::revise::comment_ranges(&self.document);
+        }
+        &self.comment_ranges
+    }
+
+    fn delete_comment_here(&mut self) {
+        match self.comment_at_caret() {
+            Some(id) => self.run(Command::DeleteCommentOf(id)),
+            None => self.no_comment_here(),
         }
     }
 
@@ -4324,10 +4513,6 @@ impl DocumentApp for Scriva {
             }
             return;
         }
-        if self.drafting.is_some() {
-            self.comment_dialog(ctx);
-            return;
-        }
         if self.margins_draft.is_some() {
             self.margins_dialog(ctx);
             return;
@@ -4478,9 +4663,12 @@ impl DocumentApp for Scriva {
             }
         }
         if self.reviewer {
-            if let Some(command) = self.reviewing_pane(ui) {
+            if let Some(command) = self.review_pane(ui) {
                 self.run(command);
             }
+        } else {
+            self.draft = None;
+            self.pane_held = false;
         }
         let bar_held = self.find_held || self.field_held;
 
@@ -4510,7 +4698,7 @@ impl DocumentApp for Scriva {
         let blocked = self.pending.is_some()
             || self.asking.is_some()
             || self.message.is_some()
-            || self.drafting.is_some()
+            || self.pane_held
             || self.margins_draft.is_some()
             || self.table_draft.is_some()
             || self.color_draft.is_some()

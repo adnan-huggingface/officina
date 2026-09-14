@@ -44,6 +44,9 @@ pub struct Tracked {
     /// the scope travels with the change all the way to the pane's *Go to*.
     pub scope: Scope,
     pub paragraph: usize,
+    /// Where in the paragraph's text the change begins — a deletion holds no
+    /// bytes of the text, so it is a point.
+    pub offset: usize,
     pub mark: Mark,
     /// What the change is, in words a person can read.
     pub what: &'static str,
@@ -66,13 +69,15 @@ pub fn tracked(document: &Document) -> Vec<Tracked> {
 /// The tracked changes of one flow, appended.
 fn tracked_in(document: &Document, scope: Scope, out: &mut Vec<Tracked>) {
     for (index, paragraph) in document.paragraphs_in(scope).iter().enumerate() {
-        walk(&paragraph.content, scope, index, out);
+        let mut offset = 0usize;
+        walk(&paragraph.content, scope, index, &mut offset, out);
         // A paragraph *mark* can be inserted or deleted too — that is what a
         // tracked paragraph split or merge is, and it has no text of its own.
         if let Some(revision) = &paragraph.mark_revision {
             out.push(Tracked {
                 scope,
                 paragraph: index,
+                offset,
                 mark: revision.mark().clone(),
                 what: match revision {
                     Revision::Inserted(_) => "paragraph break inserted",
@@ -84,7 +89,13 @@ fn tracked_in(document: &Document, scope: Scope, out: &mut Vec<Tracked>) {
     }
 }
 
-fn walk(content: &[Inline], scope: Scope, paragraph: usize, out: &mut Vec<Tracked>) {
+fn walk(
+    content: &[Inline],
+    scope: Scope,
+    paragraph: usize,
+    offset: &mut usize,
+    out: &mut Vec<Tracked>,
+) {
     for inline in content {
         match inline {
             Inline::Revised { revision, content } => {
@@ -95,6 +106,7 @@ fn walk(content: &[Inline], scope: Scope, paragraph: usize, out: &mut Vec<Tracke
                 out.push(Tracked {
                     scope,
                     paragraph,
+                    offset: *offset,
                     mark: revision.mark().clone(),
                     what: match revision {
                         Revision::Inserted(_) => "inserted",
@@ -104,23 +116,27 @@ fn walk(content: &[Inline], scope: Scope, paragraph: usize, out: &mut Vec<Tracke
                     },
                     text: text.trim().chars().take(60).collect(),
                 });
-                walk(content, scope, paragraph, out);
+                walk(content, scope, paragraph, offset, out);
             }
-            Inline::Hyperlink(link) => walk(&link.content, scope, paragraph, out),
-            Inline::Structured(sdt) => walk(&sdt.content, scope, paragraph, out),
+            Inline::Hyperlink(link) => walk(&link.content, scope, paragraph, offset, out),
+            Inline::Structured(sdt) => walk(&sdt.content, scope, paragraph, offset, out),
             Inline::Wrapper { content, .. } | Inline::SimpleField { content, .. } => {
-                walk(content, scope, paragraph, out)
+                walk(content, scope, paragraph, offset, out)
             }
             Inline::Run(run) => {
                 if let Some(change) = &run.prop_change {
                     out.push(Tracked {
                         scope,
                         paragraph,
+                        offset: *offset,
                         mark: change.mark.clone(),
                         what: "formatting changed",
                         text: run.text().trim().chars().take(60).collect(),
                     });
                 }
+                // Counted the way a caret's offset is: a deletion's text is
+                // drawn and holds no bytes.
+                *offset += run.content.iter().map(Piece::text_len).sum::<usize>();
             }
             Inline::Anchor(_) | Inline::Math(_) => {}
         }
@@ -651,6 +667,86 @@ pub fn add_comment(
         .map(|comment| comment.id + 1)
         .max()
         .unwrap_or(1);
+    comment_with(
+        document, history, scope, selection, author, initials, text, None, id,
+    );
+    id
+}
+
+/// A reply: a comment of its own, anchored to the same words as the one it
+/// answers, that names its parent. Word draws it under the parent, and so
+/// does the pane. Nothing when there is no such comment.
+pub fn reply_to_comment(
+    document: &mut Document,
+    history: &mut History,
+    parent: u32,
+    author: &str,
+    initials: &str,
+    text: &str,
+) -> Option<u32> {
+    let range = comment_ranges(document)
+        .into_iter()
+        .find(|range| range.id == parent)?;
+    let id = document
+        .comments
+        .iter()
+        .map(|comment| comment.id + 1)
+        .max()
+        .unwrap_or(1);
+    comment_with(
+        document,
+        history,
+        range.scope,
+        range.range,
+        author,
+        initials,
+        text,
+        Some(parent),
+        id,
+    );
+    Some(id)
+}
+
+/// Marks a comment resolved, or open again. Undoable; nothing when there is
+/// no such comment or it already says so.
+pub fn resolve_comment(
+    document: &mut Document,
+    history: &mut History,
+    id: u32,
+    done: bool,
+) -> bool {
+    let Some(at) = document
+        .comments
+        .iter()
+        .position(|comment| comment.id == id)
+    else {
+        return false;
+    };
+    if document.comments[at].done == done {
+        return false;
+    }
+    history.push(
+        Scope::Body,
+        Change::Comments {
+            before: document.comments.clone(),
+        },
+    );
+    document.comments[at].done = done;
+    true
+}
+
+#[allow(clippy::too_many_arguments)]
+fn comment_with(
+    document: &mut Document,
+    history: &mut History,
+    scope: Scope,
+    selection: Selection,
+    author: &str,
+    initials: &str,
+    text: &str,
+    parent: Option<u32>,
+    id: u32,
+) {
     let (start, end) = selection.ordered();
 
     let before: Vec<Paragraph> = document
@@ -660,17 +756,24 @@ pub fn add_comment(
         .take(end.paragraph - start.paragraph + 1)
         .map(|p| (*p).clone())
         .collect();
+    // The anchors and the comment are one thing to undo.
     history.push(
         scope,
-        Change::Range {
-            first: start.paragraph,
-            before: before.clone(),
-            now: before.len(),
-        },
+        Change::Many(vec![
+            Change::Range {
+                first: start.paragraph,
+                before: before.clone(),
+                now: before.len(),
+            },
+            Change::Comments {
+                before: document.comments.clone(),
+            },
+        ]),
     );
 
     let mut comment = wp_model::Comment::new(id, author);
     comment.initials = Some(initials.into());
+    comment.parent = parent;
     comment.content = vec![Block::Paragraph(Paragraph::of(text))];
     document.comments.push(comment);
 
@@ -707,7 +810,6 @@ pub fn add_comment(
         start.paragraph..start.paragraph + before.len(),
         after,
     );
-    id
 }
 
 /// Puts `inlines` into a paragraph at a byte offset of its text, splitting
@@ -779,7 +881,8 @@ fn split_run(run: &Run, offset: usize) -> (Run, Run) {
     (head, tail)
 }
 
-/// Removes a comment and the three marks that anchor it.
+/// Removes a comment and the three marks that anchor it — and its replies,
+/// which answer nothing once it is gone.
 ///
 /// The anchors of one comment are all in one flow, so the flow holding its
 /// start is the flow the marks are pulled out of.
@@ -787,6 +890,12 @@ pub fn delete_comment(document: &mut Document, history: &mut History, id: u32) -
     if !document.comments.iter().any(|comment| comment.id == id) {
         return false;
     }
+    let replies: Vec<u32> = document
+        .comments
+        .iter()
+        .filter(|comment| comment.parent == Some(id))
+        .map(|comment| comment.id)
+        .collect();
     let scope = comment_at(document, id).map_or(Scope::Body, |(scope, _)| scope);
     let before: Vec<Paragraph> = document
         .paragraphs_in(scope)
@@ -795,13 +904,19 @@ pub fn delete_comment(document: &mut Document, history: &mut History, id: u32) -
         .collect();
     history.push(
         scope,
-        Change::Range {
-            first: 0,
-            before: before.clone(),
-            now: before.len(),
-        },
+        Change::Many(vec![
+            Change::Range {
+                first: 0,
+                before: before.clone(),
+                now: before.len(),
+            },
+            Change::Comments {
+                before: document.comments.clone(),
+            },
+        ]),
     );
-    document.comments.retain(|comment| comment.id != id);
+    let gone = |at: u32| at == id || replies.contains(&at);
+    document.comments.retain(|comment| !gone(comment.id));
 
     let after: Vec<Paragraph> = before
         .iter()
@@ -812,13 +927,13 @@ pub fn delete_comment(document: &mut Document, history: &mut History, id: u32) -
                     inline,
                     Inline::Anchor(wp_model::Anchor::CommentStart { id: at })
                         | Inline::Anchor(wp_model::Anchor::CommentEnd { id: at })
-                    if *at == id
+                    if gone(*at)
                 )
             });
             for inline in &mut paragraph.content {
                 if let Inline::Run(run) = inline {
                     run.content
-                        .retain(|piece| !matches!(piece, Piece::CommentRef(at) if *at == id));
+                        .retain(|piece| !matches!(piece, Piece::CommentRef(at) if gone(*at)));
                 }
             }
             crate::text::prune(&mut paragraph);
@@ -942,6 +1057,55 @@ mod tests {
     use super::*;
     use wp_model::doc::inserted_by;
     use wp_model::Toggle;
+
+    #[test]
+    fn a_reply_shares_its_parents_words_and_undoes_with_it_in_one_step() {
+        let mut document = document(vec![Block::Paragraph(Paragraph::of("the quick fox"))]);
+        let mut history = History::new();
+        let quick = Selection {
+            anchor: Caret {
+                paragraph: 0,
+                offset: 4,
+            },
+            head: Caret {
+                paragraph: 0,
+                offset: 9,
+            },
+        };
+        let parent = add_comment(
+            &mut document,
+            &mut history,
+            Scope::Body,
+            quick,
+            "A",
+            "A",
+            "why?",
+        );
+        let reply = reply_to_comment(&mut document, &mut history, parent, "B", "B", "because")
+            .expect("the parent is there");
+        assert_eq!(document.comments[1].parent, Some(parent));
+        let ranges = comment_ranges(&document);
+        assert_eq!(ranges.len(), 2);
+        assert_eq!(ranges[0].range, quick);
+        assert_eq!(ranges[1].range, quick, "the reply is about the same words");
+        assert_eq!(
+            document.text(),
+            "the quick fox",
+            "and the text is untouched"
+        );
+
+        assert!(resolve_comment(&mut document, &mut history, parent, true));
+        assert!(document.comments[0].done);
+        history.undo(&mut document);
+        assert!(!document.comments[0].done, "resolving undoes");
+        history.undo(&mut document);
+        assert_eq!(document.comments.len(), 1, "the reply undoes as one step");
+        assert_eq!(comment_ranges(&document).len(), 1, "anchors and all");
+        assert!(!document.comments.iter().any(|c| c.id == reply));
+        history.undo(&mut document);
+        assert!(document.comments.is_empty());
+        assert!(comment_ranges(&document).is_empty());
+    }
 
     #[test]
     fn a_comments_range_runs_from_its_start_anchor_to_its_end_across_paragraphs() {

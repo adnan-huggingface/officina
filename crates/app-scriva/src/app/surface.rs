@@ -712,11 +712,9 @@ impl Scriva {
         if !self.view.show_comments {
             return Vec::new();
         }
-        if self.washes_for != self.stamp {
-            self.washes_for = self.stamp;
-            self.comment_ranges = crate::revise::comment_ranges(&self.document);
-        }
-        self.comment_ranges
+        self.comment_ranges_now();
+        let mut washes: Vec<view::Wash> = self
+            .comment_ranges
             .iter()
             .filter_map(|range| {
                 let comment = self.document.comment(range.id)?;
@@ -733,7 +731,27 @@ impl Scriva {
                     author,
                 })
             })
-            .collect()
+            .collect();
+        // The words a comment being written is about are washed from the
+        // moment the draft opens, in the writer's own colour — the next one
+        // the document has not used.
+        if let Some(draft) = &self.draft {
+            if draft.reply_to.is_none() {
+                let author = self
+                    .view
+                    .authors
+                    .iter()
+                    .position(|known| *known == self.author.name)
+                    .unwrap_or(self.view.authors.len());
+                washes.push(view::Wash {
+                    comment: u32::MAX,
+                    scope: draft.scope,
+                    range: draft.range,
+                    author,
+                });
+            }
+        }
+        washes
     }
 
     /// Turns a window point into a point on a page.

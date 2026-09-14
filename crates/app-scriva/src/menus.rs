@@ -448,30 +448,47 @@ impl Scriva {
                     chosen = Some(Command::TrackChanges);
                 }
                 menu::sep(ui);
+                if menu::item(ui, "&Accept", shortcut(&Command::AcceptOne)).clicked() {
+                    chosen = Some(Command::AcceptOne);
+                }
+                if menu::item(ui, "&Reject", shortcut(&Command::RejectOne)).clicked() {
+                    chosen = Some(Command::RejectOne);
+                }
+                if menu::item(ui, "Accept A&ll", shortcut(&Command::AcceptAll)).clicked() {
+                    chosen = Some(Command::AcceptAll);
+                }
+                if menu::item(ui, "Re&ject All", shortcut(&Command::RejectAll)).clicked() {
+                    chosen = Some(Command::RejectAll);
+                }
                 if menu::item(ui, "&Next Change", shortcut(&Command::NextChange)).clicked() {
                     chosen = Some(Command::NextChange);
                 }
-                if menu::item(ui, "&Accept", "").clicked() {
-                    chosen = Some(Command::AcceptOne);
-                }
-                if menu::item(ui, "&Reject", "").clicked() {
-                    chosen = Some(Command::RejectOne);
-                }
-                menu::sep(ui);
-                if menu::item(ui, "Accept A&ll", "").clicked() {
-                    chosen = Some(Command::AcceptAll);
-                }
-                if menu::item(ui, "Re&ject All", "").clicked() {
-                    chosen = Some(Command::RejectAll);
+                if menu::item(ui, "&Previous Change", shortcut(&Command::PreviousChange)).clicked()
+                {
+                    chosen = Some(Command::PreviousChange);
                 }
                 menu::sep(ui);
                 if menu::item(ui, "New &Comment", shortcut(&Command::AddComment)).clicked() {
                     chosen = Some(Command::AddComment);
                 }
-                if menu::item(ui, "&Delete Comment", "").clicked() {
+                if menu::item(ui, "Repl&y to Comment", shortcut(&Command::ReplyHere)).clicked() {
+                    chosen = Some(Command::ReplyHere);
+                }
+                if menu::item(ui, "Re&solve Comment", shortcut(&Command::ResolveHere)).clicked() {
+                    chosen = Some(Command::ResolveHere);
+                }
+                if menu::item(ui, "&Delete Comment", shortcut(&Command::DeleteComment)).clicked() {
                     chosen = Some(Command::DeleteComment);
                 }
-                if menu::check(ui, "Re&viewing Pane", "", reviewer).clicked() {
+                menu::sep(ui);
+                if menu::check(
+                    ui,
+                    "Re&viewing Pane",
+                    shortcut(&Command::Reviewer),
+                    reviewer,
+                )
+                .clicked()
+                {
                     chosen = Some(Command::Reviewer);
                 }
             });
@@ -652,114 +669,6 @@ impl Scriva {
                                     Some(Command::GoTo(wp_model::Scope::Body, bookmark.paragraph));
                             }
                         }
-                    }
-                });
-            });
-        chosen
-    }
-}
-
-/// Which flow something is in, for a list that shows more than one of them.
-/// `None` for the text, which needs no saying.
-fn flow_name(document: &wp_model::Document, scope: wp_model::Scope) -> Option<&'static str> {
-    let wp_model::Scope::Chrome(id) = scope else {
-        return None;
-    };
-    Some(match document.header(id)?.footer {
-        true => "footer",
-        false => "header",
-    })
-}
-
-impl Scriva {
-    /// The pane down the right: what has been changed, and what has been said
-    /// about it.
-    ///
-    /// A tracked change the user cannot find is a tracked change they will not
-    /// settle, and Word's own reviewing pane exists for exactly that reason.
-    pub(crate) fn reviewing_pane(&mut self, ui: &mut egui::Ui) -> Option<Command> {
-        let changes = crate::revise::tracked(self.document_ref());
-        let comments: Vec<(u32, String, String, String)> = self
-            .document_ref()
-            .comments
-            .iter()
-            .map(|comment| {
-                (
-                    comment.id,
-                    comment.author.to_string(),
-                    comment.text(),
-                    if comment.done { "resolved" } else { "" }.to_owned(),
-                )
-            })
-            .collect();
-        let mut chosen = None;
-
-        egui::Panel::right("scriva-reviewer")
-            .default_size(280.0)
-            .show(ui, |ui| {
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Reviewing").strong());
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.small_button("Reject all").clicked() {
-                            chosen = Some(Command::RejectAll);
-                        }
-                        if ui.small_button("Accept all").clicked() {
-                            chosen = Some(Command::AcceptAll);
-                        }
-                    });
-                });
-                ui.separator();
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    if changes.is_empty() && comments.is_empty() {
-                        ui.add_space(8.0);
-                        ui.label(egui::RichText::new("Nothing to review.").weak());
-                    }
-                    for change in &changes {
-                        ui.group(|ui| {
-                            ui.label(
-                                egui::RichText::new(format!(
-                                    "{} — {}{}",
-                                    change.mark.author,
-                                    change.what,
-                                    // Which flow, when it is not the text: two
-                                    // entries that read the same and settle
-                                    // different pages are two entries nobody
-                                    // can act on.
-                                    match flow_name(self.document_ref(), change.scope) {
-                                        Some(name) => format!(", in the {name}"),
-                                        None => String::new(),
-                                    }
-                                ))
-                                .strong(),
-                            );
-                            if !change.text.is_empty() {
-                                ui.label(&change.text);
-                            }
-                            ui.horizontal(|ui| {
-                                if ui.small_button("Go to").clicked() {
-                                    chosen = Some(Command::GoTo(change.scope, change.paragraph));
-                                }
-                            });
-                        });
-                    }
-                    for (id, author, text, state) in &comments {
-                        ui.group(|ui| {
-                            ui.label(egui::RichText::new(author).strong());
-                            ui.label(text);
-                            if !state.is_empty() {
-                                ui.label(egui::RichText::new(state.as_str()).weak());
-                            }
-                            ui.horizontal(|ui| {
-                                if ui.small_button("Go to").clicked() {
-                                    if let Some((scope, at)) =
-                                        crate::revise::comment_at(self.document_ref(), *id)
-                                    {
-                                        chosen = Some(Command::GoTo(scope, at.paragraph));
-                                    }
-                                }
-                            });
-                        });
                     }
                 });
             });

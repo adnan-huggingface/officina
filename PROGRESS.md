@@ -5464,3 +5464,46 @@ the range test asks for exactly the offsets it gave. `cargo xtask compare
 --check` is unchanged — attribution moves no word — and `cargo xtask
 fidelity` was run on its own here and stays at zero.
 
+## A change is settled on its own card, and a comment is written where its card will be (2026-09-14)
+
+Phase 4 of the redesign: `panes/review.rs`. The Reviewing pane listed cards
+with one "Go to" each and settled changes only all at once or "the nearest
+to the caret"; the Review pane's cards carry their own Accept and Reject, a
+comment's card its Reply, Resolve and Delete, and clicking a card anywhere
+else goes to its place. Cards stand in document order, with a bar of the
+author's colour down the left, a reply indented under the comment it
+answers, a resolved comment dimmed and saying so, and the card of the change
+or comment the caret stands in outlined in the accent and scrolled into view
+once per arrival. The header counts changes and comments and filters them;
+the footer is Accept All and Reject All, disabled when there is nothing.
+
+**A comment is drafted in the pane, not in a box over the page.** Ctrl+Alt+M
+opens the pane if it is closed and puts a draft card where the comment's
+card will stand, with a field holding the keyboard and the words it is
+about already washed on the page in the writer's own colour; Ctrl+Enter
+posts, Escape discards, and the field keeps Escape for itself — egui's own
+rule gives the focus up on Escape before any widget runs, so a field that
+did not hold a lock on the key had already lost the keyboard by the time it
+could ask what the key meant. **A comment with nothing selected is about the
+word at the caret**, as Word's is; the refusal box "Nothing selected" is
+gone. Reply and Resolve are new model functions beside `add_comment`, each
+undoable in one step through a new compound change — the anchors in the
+text and the comment in the list were two changes to the model and one to
+the person — and deleting a comment now undoes as one step too, where it
+had left the comment behind in the list. Previous Change is Alt+Shift+F7 and
+the pane is Alt+Shift+C.
+
+**No comment Scriva posted had ever reached the file.** `wp_docx::write`
+flushed numbering, headers, notes and the document part, and not
+`comments.xml`: the three anchors went into the text and the comment they
+name into nothing, which Word reports as a damaged file. Found by reading
+the pane's cards against what the package held, once the page had begun
+washing a comment's words. `comments_out` writes the part — authored with
+its relationship and content type when the package has none, rewritten when
+the comments read back different, kept byte for byte otherwise — and
+`commentsExtended.xml` beside it for what Word keeps there: resolved, and
+which comment a reply answers, both keyed by the id of a comment's last
+paragraph, which a comment born here is given before either part is
+written. The reader takes the parent from the same part. Fidelity stays at
+zero for both checks; `comments.docx` saves untouched.
+

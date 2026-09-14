@@ -151,7 +151,9 @@ would be worse than not offering it.
 |---|---|
 | `Ctrl+Shift+E` | Track changes on or off |
 | `Alt+F7` | Next change |
-| `Ctrl+Alt+M` | New comment |
+| `Alt+Shift+F7` | Previous change |
+| `Ctrl+Alt+M` | New comment — on the selection, or on the word at the caret; written in the Review pane, `Ctrl+Enter` posts it |
+| `Alt+Shift+C` | Review pane |
 
 Tracked changes and comments are editable, not merely preserved: accept, reject,
 reply and resolve all work and are written back.

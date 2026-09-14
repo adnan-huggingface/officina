@@ -2003,3 +2003,22 @@ own hint. What painted a thing is answered by reading the frame's shapes back
 in a test — a four-cornered mesh with two colours, at the bottom of the
 desk's clip — in a minute, where a screenshot could only say that it was there.
 
+**A comment is four things in a `.docx`, and the fourth lives in another
+part.** `commentRangeStart`, `commentRangeEnd` and a run holding
+`commentReference` go in the document part; the comment itself goes in
+`comments.xml`, and what Word has added since 2013 — resolved, and which
+comment a reply answers — in `commentsExtended.xml`, keyed not by the
+comment's id but by the `w14:paraId` of its last paragraph. A writer that
+emits the three anchors and not the part has written a reference to nothing,
+and Word calls that a damaged file rather than a missing comment. A comment
+made in the application therefore needs its paragraph given an id before
+the parts are written, or the extended part has no name to call it by.
+
+**egui gives up the focus on Escape before any widget runs.** The key is
+handled at input time, in `Memory::begin_pass`, unless the focused widget
+has set a lock filter that keeps Escape; a field that reads Escape itself
+during its own frame finds the focus already gone and the key already
+spent. The page surface had learned this; the comment draft learned it
+again. Any field whose Escape means something other than "leave" sets the
+filter every frame it holds the keyboard.
+

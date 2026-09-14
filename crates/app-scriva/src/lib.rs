@@ -16,6 +16,7 @@ pub mod find;
 mod icons;
 pub mod links;
 mod menus;
+mod panes;
 pub mod pictures;
 pub mod publish;
 pub mod revise;
