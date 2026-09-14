@@ -292,6 +292,15 @@ pub fn submit(ui: &mut egui::Ui, action: &str) -> Option<bool> {
     let clicked = confirm(ui, action);
     // After the buttons, so a click this frame wins over a key that arrived in
     // the same one.
+    clicked.or_else(|| answered(ui))
+}
+
+/// The keys of [`submit`] without its buttons, for a dialog whose action row
+/// is its own — one with a third button, or a primary that is not "OK".
+/// Enter is `Some(true)` and Escape `Some(false)`; both are taken out of the
+/// frame's input, so nothing behind the dialog sees the key that closed it.
+/// Call it after the row, for the reason [`submit`] gives.
+pub fn answered(ui: &mut egui::Ui) -> Option<bool> {
     let listing = egui::Popup::is_any_open(ui.ctx());
     let (enter, escape) = ui.input_mut(|i| {
         (
@@ -299,9 +308,7 @@ pub fn submit(ui: &mut egui::Ui, action: &str) -> Option<bool> {
             i.consume_key(egui::Modifiers::NONE, egui::Key::Escape),
         )
     });
-    clicked
-        .or_else(|| enter.then_some(true))
-        .or_else(|| escape.then_some(false))
+    enter.then_some(true).or_else(|| escape.then_some(false))
 }
 
 /// Draws `choices` into an action row and reports which one was pressed.

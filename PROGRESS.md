@@ -5003,3 +5003,21 @@ layout gave no page to a break inside a cell, but still ended a line at it,
 where Word runs the two halves together on one line. A page or column break
 inside a cell is now left out of the cell's units altogether. It is no byte
 of the text, so no caret moves.
+
+## Calx's dialogs answer Enter, and the Enter that answers one stays out of the grid (2026-09-13)
+
+Calx was driven by keystroke for the first time, on the hidden display the
+Scriva drives used. Two faults, one behind the other. Seven of its boxes —
+Format Cells, Data Validation, Protect Sheet, Column Width, Row Height, Text
+to Columns, Conditional Formatting — did nothing on Enter: they answered the
+pointer only, the gap the Insert Table fix had noted a day earlier and left.
+And where a box did answer Enter, the key went on into the grid, because the
+grid decides whether to take a frame's keys after the dialogs have run and
+the box had closed by then: Go To C5, Enter, and the cursor stood on C6; with
+a copy pending it pasted the clipboard at the target. The Zoom box alone
+carried a private consume for this, with a comment saying why. Every box now
+answers Enter and Escape through the same `submit` Scriva's use, or through
+its key half alone where the action row is the dialog's own; the multi-line
+Note keeps Enter as a new line; and the grid's gate remembers whether a modal
+was up when the frame began. Nothing about focus was wrong: typing reached
+the grid after every box.

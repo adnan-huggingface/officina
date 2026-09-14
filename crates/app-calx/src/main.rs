@@ -156,6 +156,15 @@ struct Calx {
     /// — a modal is modal — and a single `Option` makes that true rather than
     /// merely intended.
     dialog: Option<Dialog>,
+    /// Whether a modal was up when this frame began.
+    ///
+    /// The grid decides whether to take the frame's keys *after* the dialogs
+    /// have run, and a dialog that closed on Enter had gone by then — so the
+    /// Enter that answered Go To also walked the cursor a row down, and with
+    /// a copy pending pasted it at the target. The grid's gate reads this as
+    /// well as the dialog itself: the frame a dialog closes in is still the
+    /// dialog's.
+    dialog_was_up: bool,
     /// The sheet tab being dragged along the strip, if one is.
     dragging_tab: Option<usize>,
 }
@@ -470,6 +479,7 @@ impl Calx {
             name_box: "A1".to_string(),
             last_body: egui::vec2(800.0, 600.0),
             dialog: None,
+            dialog_was_up: false,
             dragging_tab: None,
         }
     }
@@ -4463,7 +4473,7 @@ impl Calx {
                     {
                         ui.colored_label(egui::Color32::from_rgb(0xB0, 0x30, 0x20), why);
                     }
-                    match dialog::confirm(ui, "Rename") {
+                    match dialog::submit(ui, "Rename") {
                         Some(true) => accept = true,
                         Some(false) => keep = false,
                         None => {}
@@ -4489,7 +4499,7 @@ impl Calx {
                     ui.add_space(2.0);
                     ui.weak("A cell, a range, or a defined name — B12, A1:D9, Sales.");
                     ui.add_space(4.0);
-                    match dialog::confirm(ui, "Go") {
+                    match dialog::submit(ui, "Go") {
                         Some(true) => accept = true,
                         Some(false) => keep = false,
                         None => {}
@@ -4655,6 +4665,11 @@ impl Calx {
                         });
                         accept = dialog::button(ui, "OK", true).clicked();
                     });
+                    match dialog::answered(ui) {
+                        Some(true) => accept = true,
+                        Some(false) => keep = false,
+                        None => {}
+                    }
                 });
                 let sheet = self.grid.sheet_index;
                 if accept {
@@ -4836,6 +4851,11 @@ impl Calx {
                         ui.add_space(12.0);
                         add = dialog::button(ui, "Add rule", false).clicked();
                     });
+                    match dialog::answered(ui) {
+                        Some(true) => accept = true,
+                        Some(false) => keep = false,
+                        None => {}
+                    }
                 });
                 if add && !selection.is_empty() {
                     let wins = formats
@@ -4965,7 +4985,7 @@ impl Calx {
                             }
                         });
                     ui.checkbox(copy, "Create a copy");
-                    match dialog::confirm(ui, "OK") {
+                    match dialog::submit(ui, "OK") {
                         Some(true) => go = true,
                         Some(false) => keep = false,
                         None => {}
@@ -5014,7 +5034,7 @@ impl Calx {
                             format!("A number from 0 to {ceiling}. Zero hides."),
                         );
                     }
-                    match dialog::confirm(ui, "OK") {
+                    match dialog::submit(ui, "OK") {
                         Some(true) => accept = true,
                         Some(false) => keep = false,
                         None => {}
@@ -5075,12 +5095,7 @@ impl Calx {
                         }
                         field.request_focus();
                     });
-                    // The percent field is the only thing to type into, so
-                    // Enter anywhere in the box means OK.
-                    if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                        accept = true;
-                    }
-                    match dialog::confirm(ui, "OK") {
+                    match dialog::submit(ui, "OK") {
                         Some(true) => accept = true,
                         Some(false) => keep = false,
                         None => {}
@@ -5091,15 +5106,6 @@ impl Calx {
                     if let Ok(percent) = text.trim().trim_end_matches('%').trim().parse::<f64>() {
                         self.grid.set_zoom(percent.clamp(10.0, 400.0) / 100.0);
                     }
-                    keep = false;
-                }
-                if accept || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-                    // The box closes this frame, after the grid's key gate
-                    // was already decided — without this, the very Enter
-                    // that confirmed the zoom would also walk the cursor.
-                    ctx.input_mut(|i| {
-                        i.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
-                    });
                     keep = false;
                 }
             }
@@ -5245,6 +5251,11 @@ impl Calx {
                             *editing = Some(names.len() - 1);
                         }
                     });
+                    match dialog::answered(ui) {
+                        Some(true) if editing.is_none() => save = true,
+                        Some(false) => keep = false,
+                        _ => {}
+                    }
                 });
                 if let Some(index) = remove {
                     names.remove(index);
@@ -5287,7 +5298,7 @@ impl Calx {
                             FormatTab::Fill => fill_tab(ui, &theme, look),
                             FormatTab::Protection => protection_tab(ui, look),
                         });
-                    match dialog::confirm(ui, "OK") {
+                    match dialog::submit(ui, "OK") {
                         Some(true) => apply = true,
                         Some(false) => keep = false,
                         None => {}
@@ -5382,7 +5393,7 @@ impl Calx {
                             ui.small(line);
                         }
                     });
-                    match dialog::confirm(ui, "Split") {
+                    match dialog::submit(ui, "Split") {
                         Some(true) => go = true,
                         Some(false) => keep = false,
                         None => {}
@@ -5433,7 +5444,7 @@ impl Calx {
                                 ui.checkbox(on, ss_model::column_name(*col));
                             }
                         });
-                    match dialog::confirm(ui, "Remove") {
+                    match dialog::submit(ui, "Remove") {
                         Some(true) => go = true,
                         Some(false) => keep = false,
                         None => {}
@@ -5477,7 +5488,7 @@ impl Calx {
                             ui.small(line);
                         }
                     });
-                    match dialog::confirm(ui, "Protect") {
+                    match dialog::submit(ui, "Protect") {
                         Some(true) => go = true,
                         Some(false) => keep = false,
                         None => {}
@@ -5500,7 +5511,7 @@ impl Calx {
                     ui.checkbox(&mut how.transpose, "Transpose");
                     ui.checkbox(&mut how.skip_blanks, "Skip blanks")
                         .on_hover_text("A blank in the copy leaves what is already there");
-                    match dialog::confirm(ui, "Paste") {
+                    match dialog::submit(ui, "Paste") {
                         Some(true) => go = true,
                         Some(false) => keep = false,
                         None => {}
@@ -5638,6 +5649,11 @@ impl Calx {
                             command = Some(FindCommand::Next);
                         }
                     });
+                    match dialog::answered(ui) {
+                        Some(true) if command.is_none() => command = Some(FindCommand::Next),
+                        Some(false) => keep = false,
+                        _ => {}
+                    }
                 });
                 if let Some(command) = command {
                     let outcome = self.find_command(command, query, with, *whole_workbook);
@@ -5714,7 +5730,7 @@ impl Calx {
                                 ui.end_row();
                             }
                         });
-                    match dialog::confirm(ui, "Sort") {
+                    match dialog::submit(ui, "Sort") {
                         Some(true) => go = true,
                         Some(false) => keep = false,
                         None => {}
@@ -5786,6 +5802,11 @@ impl Calx {
                         ui.add_space(12.0);
                         clear = dialog::button(ui, "Clear this column", false).clicked();
                     });
+                    match dialog::answered(ui) {
+                        Some(true) => go = true,
+                        Some(false) => keep = false,
+                        None => {}
+                    }
                 });
                 if go || clear {
                     let (ticked, blanks) = if clear {
@@ -7218,6 +7239,7 @@ impl DocumentApp for Calx {
                 }
             }
         }
+        self.dialog_was_up = self.dialog.is_some() || self.pending.is_some();
         self.unsaved_prompt(ctx);
         self.dialogs(ctx);
     }
@@ -7268,6 +7290,7 @@ impl DocumentApp for Calx {
         self.chart_panel(ui);
         self.last_body = ui.available_size();
         self.grid.blocked = self.dialog.is_some()
+            || self.dialog_was_up
             || self.pending.is_some()
             || self.asking.is_some()
             || egui::Popup::is_any_open(ui.ctx())
@@ -7616,6 +7639,99 @@ mod tests {
             plot.series[0].values,
             vec![Some(3.0), Some(1.0), Some(4.0)],
             "the numbers ride in the caches"
+        );
+    }
+
+    /// Frames of `overlay` — the dialogs — each with one key pressed.
+    fn press_in_dialogs(app: &mut Calx, keys: &[egui::Key]) {
+        let ctx = egui::Context::default();
+        ui_kit::fonts::register(&ctx, &[]);
+        let mut warm = ctx.run_ui(egui::RawInput::default(), |ui| app.overlay(ui.ctx()));
+        warm.textures_delta.clear();
+        for &key in keys {
+            let mut out = ctx.run_ui(input_of(key), |ui| app.overlay(ui.ctx()));
+            out.textures_delta.clear();
+        }
+    }
+
+    /// One whole frame — the dialogs, then the body with the grid in it —
+    /// with one key pressed, in the order the shell runs them.
+    fn whole_frame(app: &mut Calx, ctx: &egui::Context, key: egui::Key) {
+        let mut out = ctx.run_ui(input_of(key), |ui| {
+            app.overlay(ui.ctx());
+            app.ui(ui);
+        });
+        out.textures_delta.clear();
+    }
+
+    fn input_of(key: egui::Key) -> egui::RawInput {
+        let mut input = egui::RawInput::default();
+        input.events.push(egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        input
+    }
+
+    /// Driven on the rig: Column Width…, a number, Enter — and the box stayed
+    /// up, as did Format Cells, Protect Sheet, Data Validation and the rest.
+    /// They answered only to the pointer. Escape was the one key they knew.
+    #[test]
+    fn enter_answers_a_dialog_and_escape_closes_it_unanswered() {
+        let mut app = Calx::new();
+        app.open_size_dialog(Axis::Columns);
+        if let Some(Dialog::Size { text, .. }) = &mut app.dialog {
+            *text = "20".to_owned();
+        }
+        press_in_dialogs(&mut app, &[egui::Key::Enter]);
+        assert!(app.dialog.is_none(), "Enter closes the box");
+        let width = app
+            .doc
+            .workbook
+            .sheet(0)
+            .and_then(|s| s.column_widths.get(&0).copied());
+        assert_eq!(width, Some(20.0), "and applies the number");
+
+        app.open_size_dialog(Axis::Columns);
+        if let Some(Dialog::Size { text, .. }) = &mut app.dialog {
+            *text = "40".to_owned();
+        }
+        press_in_dialogs(&mut app, &[egui::Key::Escape]);
+        assert!(app.dialog.is_none(), "Escape closes it");
+        let width = app
+            .doc
+            .workbook
+            .sheet(0)
+            .and_then(|s| s.column_widths.get(&0).copied());
+        assert_eq!(width, Some(20.0), "and applies nothing");
+    }
+
+    /// Driven on the rig: Ctrl+G, C5, Enter landed on C6 — the Enter that
+    /// answered the box reached the grid too and walked the cursor. With a
+    /// copy pending it pasted the clipboard at the target instead.
+    #[test]
+    fn the_enter_that_answers_a_dialog_does_not_reach_the_grid() {
+        let ctx = egui::Context::default();
+        ui_kit::fonts::register(&ctx, &[]);
+        let mut app = Calx::new();
+        app.dialog = Some(Dialog::GoTo {
+            text: "C5".to_owned(),
+        });
+        whole_frame(&mut app, &ctx, egui::Key::Enter);
+        assert!(app.dialog.is_none());
+        assert_eq!(
+            app.grid.selection.cursor(),
+            CellRef::from_a1("C5").expect("valid"),
+            "the cursor is where Go To put it, not a row further"
+        );
+        // A frame later the grid has its keys back.
+        whole_frame(&mut app, &ctx, egui::Key::Enter);
+        assert_eq!(
+            app.grid.selection.cursor(),
+            CellRef::from_a1("C6").expect("valid")
         );
     }
 
