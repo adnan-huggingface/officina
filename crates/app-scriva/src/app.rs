@@ -242,7 +242,7 @@ enum Chosen {
 type Renamed = Vec<(usize, Option<std::sync::Arc<str>>)>;
 
 pub struct Scriva {
-    document: Document,
+    pub(crate) document: Document,
     /// The package the document came out of. The writer edits it rather than
     /// building a new one, which is the whole of the preservation guarantee.
     package: Option<ooxml::Package>,
@@ -286,7 +286,7 @@ pub struct Scriva {
     left_behind: Option<Selection>,
     shaper: Option<Egui>,
     recent: Recent,
-    message: Option<(String, String)>,
+    pub(crate) message: Option<(String, String)>,
     pending: Option<Pending>,
     /// A file chooser that is open, and what it was opened for.
     asking: Option<ui_kit::chooser::Asking<Chosen>>,
@@ -798,7 +798,7 @@ impl Scriva {
 
     // ------------------------------------------------------------ files
 
-    fn open_path(&mut self, path: &Path) {
+    pub(crate) fn open_path(&mut self, path: &Path) {
         match Format::of(path) {
             Format::Docx => self.open_docx(path),
             Format::Doc => self.open_doc(path),
@@ -1394,7 +1394,7 @@ impl Scriva {
     /// Separate from [`Scriva::save_as`] because a file dialog is the one part
     /// of this path no test can open, and everything that has ever gone wrong
     /// in it is on this side of the dialog.
-    fn save_to(&mut self, path: PathBuf) -> bool {
+    pub(crate) fn save_to(&mut self, path: PathBuf) -> bool {
         let path = with_extension(path);
         let format = Format::of(&path);
         if !format.is_writable() {
@@ -2999,7 +2999,7 @@ impl Scriva {
         }
     }
 
-    fn key(&mut self, key: egui::Key, modifiers: egui::Modifiers) {
+    pub(crate) fn key(&mut self, key: egui::Key, modifiers: egui::Modifiers) {
         use egui::Key;
         // A selected picture takes the keys that would otherwise edit text:
         // Delete removes it, Escape lets it go, and typing is not for it.
@@ -3258,7 +3258,7 @@ impl Scriva {
     }
 
     /// Types text, recording it as a tracked insertion when tracking is on.
-    fn type_text(&mut self, input: &str) {
+    pub(crate) fn type_text(&mut self, input: &str) {
         if !self.document.settings.track_changes {
             let caret = edit::type_text(
                 &mut self.document,
@@ -6019,7 +6019,7 @@ impl Scriva {
 
     /// Builds an evenly divided, fully ruled table and puts it above the
     /// caret's paragraph.
-    fn insert_table(&mut self, rows: usize, columns: usize) {
+    pub(crate) fn insert_table(&mut self, rows: usize, columns: usize) {
         use wp_model::table::{Cell, Row, Table, TableBorders, TableProps};
         let margins = &self.document.section.margins;
         let text_width = self.document.section.page.width.0 - margins.start.0 - margins.end.0;

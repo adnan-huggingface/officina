@@ -5053,3 +5053,25 @@ once, until `git add --renormalize .` or a fresh checkout; rustfmt and
 PowerShell both read LF. And the repository carries its author's identity in
 its own local config, where a command finds it, rather than in an environment
 every session had to set by hand.
+
+## What Scriva writes is in the corpus, authored by Scriva, and held to Word (2026-09-13)
+
+The handoff's first wish. Every corpus document was written by Word, and
+every one measures how Scriva reads; both of the week's real faults — the
+new document's defaults, the inserted table's cell widths — were in what it
+*writes*, found each time with a throwaway `#[ignore]` test, a document
+carried to Word by hand and numbers read off. `cargo xtask author` is that
+afternoon as a command: `corpus/scriva-authored.txt` is a script of the
+things a user does — type, press a key, Insert ▸ Table, a style, a page
+break — and `scriva --author` runs it through the same methods the menus and
+keys run and saves what they made as `corpus/docx/scriva-authored.docx`.
+Word's reading of it is committed beside the others', `LAYOUT.md` records it,
+and the check inside `cargo xtask check` holds the two together from now on.
+A test in `scriva::author` holds the file to the script as well: the day a
+writer, a default or an editing command changes what lands on disk, it fails,
+and the way through is `cargo xtask author` — which rewrites the document and
+renews its reading — never an edit to the file. Authoring is byte-for-byte
+repeatable, which a second test pins, because nothing above holds otherwise.
+First reading, of a heading, mixed emphasis, a wrapping bullet, a filled
+table, a page break, a centred line, a numbered list and a justified
+paragraph: 183 words matched, none out, worst 0.78pt; 8 rules matched.

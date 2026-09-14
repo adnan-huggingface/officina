@@ -1,0 +1,84 @@
+# What Scriva writes, written by Scriva.
+#
+# `cargo xtask author` runs this through the application's own commands — the
+# ones its menus and keys run — and saves the result as
+# docx/scriva-authored.docx, which is then measured against Word like every
+# other document here. The others measure how Scriva reads; this one measures
+# what it writes, which is where a new document's defaults and a table's cell
+# widths both went wrong without any document to say so.
+#
+# One command a line, `#` starts a comment. The words are the menus' own:
+#   type <text>              types the text; in double quotes where its end
+#                            spaces matter
+#   key <keys>               one press: Enter, Tab, Backspace, Home, End,
+#                            ArrowDown, A ... (egui's names), with ctrl+,
+#                            shift+ or alt+ in front
+#   table <rows> <columns>   Insert ▸ Table
+#   style <id>               a paragraph style by its id: Heading1, Normal
+#   align start|center|end|both
+#   size <points>   line-spacing <lines>   indent <steps>   borders on|off
+#   bold  italic  underline  strike  superscript  subscript  clear-formatting
+#   page-break  bullets  numbers  select-all  undo  redo  merge-cells
+#   edit-header  edit-footer  close-chrome  page-number  page-of-pages
+#   update-toc
+#
+# A change here changes the document, and `cargo xtask author` is how it is
+# written again; the reading is renewed with it, and LAYOUT.md re-recorded.
+
+style Heading1
+type An authored document
+key Enter
+style Normal
+type This document was written by Scriva itself, through the commands its menus run, and is measured against Word like the rest of the corpus. It carries the things a new document is most likely to carry after a first afternoon.
+key Enter
+type "Some "
+bold
+type bold
+bold
+type ", some "
+italic
+type italic
+italic
+type " and some "
+underline
+type underlined
+underline
+type " words share this paragraph, so that a run boundary falls inside a line."
+key Enter
+bullets
+type The first item of a bulleted list.
+key Enter
+type The second, which is long enough to wrap onto a second line at the width a new document has, so that the hanging indent is measured too.
+key Enter
+key Enter
+type A table of two rows and three columns, inserted as the dialog inserts one:
+key Enter
+table 2 3
+type A1
+key Tab
+type B1
+key Tab
+type C1
+key Tab
+type Second row
+key Tab
+type with more text than the first
+key Tab
+type C2
+key ctrl+End
+type After the table, this line ends the first page.
+page-break
+type The second page begins with a centred line.
+align center
+key Enter
+align start
+numbers
+type One.
+key Enter
+type Two.
+key Enter
+type Three.
+key Enter
+key Enter
+type The last paragraph, justified, is long enough to be set on more than one line so that the justification has something to spread: it goes on until it wraps, and a little further than that.
+align both

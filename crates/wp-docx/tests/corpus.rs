@@ -71,8 +71,13 @@ fn every_document_in_the_corpus_opens() {
 #[test]
 fn every_document_has_the_styles_word_writes() {
     for (name, document) in documents() {
+        // Word writes every style a document uses and a dozen it might; the one
+        // document Scriva wrote itself carries only the handful a new document
+        // has, and the count is not a thing to hold it to. The default style
+        // and the document defaults below are, since they are what it was
+        // measured against Word for.
         assert!(
-            document.styles.len() > 10,
+            document.styles.len() > 10 || name == "scriva-authored.docx",
             "{name}: only {} styles",
             document.styles.len()
         );

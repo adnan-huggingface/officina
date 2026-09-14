@@ -32,6 +32,7 @@ fn main() -> ExitCode {
         "fidelity" => fidelity(rest),
         "perf" => perf(rest),
         "compare" => compare(rest),
+        "author" => author(),
         "check" => check(),
         "help" | "--help" | "-h" => {
             usage();
@@ -68,6 +69,9 @@ cargo xtask <command>
              .doc, LibreOffice for .odt (--check runs inside `check` and
              needs neither; only --refresh does, and only for a document
              that changed)
+  author     write corpus/docx/scriva-authored.docx from corpus/scriva-authored.txt
+             through Scriva's own commands, and renew Word's reading of it if
+             the document changed
   help       this message"
     );
 }
@@ -213,6 +217,59 @@ fn compare(args: &[String]) -> Result<(), String> {
     let mut argv = vec!["run", "--release", "-q", "-p", "wp-compare", "--"];
     argv.extend(args.iter().map(String::as_str));
     cargo(&argv)
+}
+
+/// The corpus document the application writes itself, written again.
+///
+/// Every other corpus document was written by Word and measures how Scriva
+/// reads. This one is authored by Scriva from a script of its own commands,
+/// and Word's reading of it is committed beside it like the others', so what
+/// Scriva *writes* is held to Word by the same check. The test in
+/// `scriva::author` fails when the script no longer authors the committed
+/// bytes, and this is the way through: the document is rewritten, and if it
+/// changed, its reading is renewed — which needs Word, or the service that
+/// stands in for it — and both are left for a commit.
+fn author() -> Result<(), String> {
+    let root = workspace_root();
+    let script = root.join("corpus").join("scriva-authored.txt");
+    let out = root
+        .join("corpus")
+        .join("docx")
+        .join("scriva-authored.docx");
+    let before = std::fs::read(&out).ok();
+    // A configuration directory of its own: a save remembers its path in the
+    // user's recent list, and the corpus is not something the user opened.
+    let config = root.join("target").join("author");
+    std::fs::create_dir_all(&config).map_err(|e| format!("{}: {e}", config.display()))?;
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    let status = Command::new(&cargo)
+        .args(["run", "-q", "-p", "scriva", "--", "--author"])
+        .arg(&script)
+        .arg(&out)
+        .env("XDG_CONFIG_HOME", &config)
+        .current_dir(&root)
+        .status()
+        .map_err(|e| format!("failed to run scriva --author: {e}"))?;
+    if !status.success() {
+        return Err(format!("`scriva --author` failed with {status}"));
+    }
+    let after = std::fs::read(&out).map_err(|e| format!("{}: {e}", out.display()))?;
+    let name = out
+        .strip_prefix(&root)
+        .unwrap_or(&out)
+        .display()
+        .to_string();
+    if before.as_deref() == Some(after.as_slice()) {
+        println!("{name} is unchanged; its reading still answers for it");
+        return Ok(());
+    }
+    println!("wrote {name}; renewing Word's reading of it");
+    compare(&[name.clone(), "--refresh".to_owned()])?;
+    println!(
+        "Now `cargo xtask compare --record` if LAYOUT.md should hold what it measures, \
+         and commit {name}, corpus/rendered/scriva-authored.docx.tsv and LAYOUT.md together."
+    );
+    Ok(())
 }
 
 fn cargo(args: &[&str]) -> Result<(), String> {

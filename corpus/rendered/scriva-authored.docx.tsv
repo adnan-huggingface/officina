@@ -1,0 +1,225 @@
+# Word's own rendering of scriva-authored.docx, as the place every mark of it landed.
+# Written by `cargo xtask compare`. Not by hand, and not read by anything
+# but the comparison. In points, one mark to a line, of two kinds:
+#   word  page  x  baseline  text
+#   mark  page  x0  y0  x1  y1
+# document eda6fae0  export 67d00bda  reading bcd125f9
+# Stale? `cargo xtask compare --refresh` renews it, and needs Word for that
+# one document. Everything else goes on working without it.
+word	1	72.024	87.260	An
+word	1	93.857	87.260	authored
+word	1	158.958	87.260	document
+word	1	72.024	114.020	This
+word	1	94.332	114.020	document
+word	1	146.964	114.020	was
+word	1	168.660	114.020	written
+word	1	207.144	114.020	by
+word	1	221.640	114.020	Scriva
+word	1	253.080	114.020	itself,
+word	1	282.564	114.020	through
+word	1	324.396	114.020	the
+word	1	343.452	114.020	commands
+word	1	399.708	114.020	its
+word	1	413.844	114.020	menus
+word	1	449.448	114.020	run,
+word	1	471.852	114.020	and
+word	1	492.948	114.020	is
+word	1	72.024	131.060	measured
+word	1	123.576	131.060	against
+word	1	161.220	131.060	Word
+word	1	191.316	131.060	like
+word	1	210.864	131.060	the
+word	1	229.908	131.060	rest
+word	1	251.472	131.060	of
+word	1	264.060	131.060	the
+word	1	283.104	131.060	corpus.
+word	1	321.576	131.060	It
+word	1	331.416	131.060	carries
+word	1	366.684	131.060	the
+word	1	385.632	131.060	things
+word	1	418.092	131.060	a
+word	1	426.504	131.060	new
+word	1	450.012	131.060	document
+word	1	502.644	131.060	is
+word	1	512.832	131.060	most
+word	1	72.024	147.980	likely
+word	1	99.852	147.980	to
+word	1	113.028	147.980	carry
+word	1	140.376	147.980	after
+word	1	166.620	147.980	a
+word	1	175.008	147.980	first
+word	1	196.944	147.980	afternoon.
+word	1	72.024	172.940	Some
+word	1	102.140	172.940	bold,
+word	1	129.584	172.940	some
+word	1	158.900	172.940	italic
+word	1	184.688	172.940	and
+word	1	205.772	172.940	some
+word	1	235.010	172.940	underlined
+word	1	290.882	172.940	words
+word	1	323.726	172.940	share
+word	1	353.342	172.940	this
+word	1	373.730	172.940	paragraph,
+word	1	429.494	172.940	so
+word	1	443.282	172.940	that
+word	1	466.058	172.940	a
+word	1	474.566	172.940	run
+word	1	72.024	189.860	boundary
+word	1	121.680	189.860	falls
+word	1	144.096	189.860	inside
+word	1	175.512	189.860	a
+word	1	184.020	189.860	line.
+word	1	90.024	215.660	•
+word	1	108.020	215.660	The
+word	1	128.888	215.660	first
+word	1	150.944	215.660	item
+word	1	176.012	215.660	of
+word	1	188.708	215.660	a
+word	1	197.096	215.660	bulleted
+word	1	240.260	215.660	list.
+word	1	90.024	241.220	•
+word	1	108.020	241.220	The
+word	1	128.996	241.220	second,
+word	1	169.280	241.220	which
+word	1	201.044	241.220	is
+word	1	211.112	241.220	long
+word	1	234.860	241.220	enough
+word	1	274.424	241.220	to
+word	1	287.480	241.220	wrap
+word	1	314.936	241.220	onto
+word	1	340.712	241.220	a
+word	1	348.992	241.220	second
+word	1	386.516	241.220	line
+word	1	406.892	241.220	at
+word	1	419.360	241.220	the
+word	1	438.308	241.220	width
+word	1	468.884	241.220	a
+word	1	477.392	241.220	new
+word	1	108.020	258.170	document
+word	1	160.652	258.170	has,
+word	1	183.188	258.170	so
+word	1	196.748	258.170	that
+word	1	219.620	258.170	the
+word	1	238.568	258.170	hanging
+word	1	280.040	258.170	indent
+word	1	314.324	258.170	is
+word	1	324.512	258.170	measured
+word	1	375.824	258.170	too.
+word	1	72.024	283.130	A
+word	1	81.732	283.130	table
+word	1	109.188	283.130	of
+word	1	121.896	283.130	two
+word	1	143.592	283.130	rows
+word	1	170.088	283.130	and
+word	1	190.956	283.130	three
+word	1	220.200	283.130	columns,
+word	1	266.952	283.130	inserted
+word	1	309.684	283.130	as
+word	1	322.872	283.130	the
+word	1	341.928	283.130	dialog
+word	1	374.172	283.130	inserts
+word	1	409.416	283.130	one:
+word	1	72.744	308.570	A1
+word	1	228.650	308.570	B1
+word	1	384.550	308.570	C1
+word	1	72.744	334.010	Second
+word	1	110.988	334.010	row
+word	1	228.650	334.010	with
+word	1	253.094	334.010	more
+word	1	281.762	334.010	text
+word	1	303.698	334.010	than
+word	1	328.742	334.010	the
+word	1	347.678	334.010	first
+word	1	384.550	334.010	C2
+word	1	72.024	359.450	After
+word	1	99.588	359.450	the
+word	1	118.536	359.450	table,
+word	1	148.992	359.450	this
+word	1	169.476	359.450	line
+word	1	189.864	359.450	ends
+word	1	215.880	359.450	the
+word	1	234.936	359.450	first
+word	1	256.884	359.450	page.
+mark	1	232.370	174.260	235.010	175.100
+mark	1	72.024	296.690	72.504	297.170
+mark	1	72.024	296.690	72.504	297.170
+mark	1	72.504	296.690	227.924	297.170
+mark	1	227.930	296.690	228.410	297.170
+mark	1	228.410	296.690	383.830	297.170
+mark	1	383.830	296.690	384.310	297.170
+mark	1	384.310	296.690	539.610	297.170
+mark	1	539.620	296.690	540.100	297.170
+mark	1	539.620	296.690	540.100	297.170
+mark	1	72.024	297.170	72.504	322.130
+mark	1	227.930	297.170	228.410	322.130
+mark	1	383.830	297.170	384.310	322.130
+mark	1	539.620	297.170	540.100	322.130
+mark	1	72.024	322.130	72.504	322.610
+mark	1	72.504	322.130	227.924	322.610
+mark	1	227.930	322.130	228.410	322.610
+mark	1	228.410	322.130	383.830	322.610
+mark	1	383.830	322.130	384.310	322.610
+mark	1	384.310	322.130	539.610	322.610
+mark	1	539.620	322.130	540.100	322.610
+mark	1	72.024	322.610	72.504	347.570
+mark	1	72.024	347.570	72.504	348.050
+mark	1	72.024	347.570	72.504	348.050
+mark	1	72.504	347.570	227.924	348.050
+mark	1	227.930	322.610	228.410	347.570
+mark	1	227.930	347.570	228.410	348.050
+mark	1	228.410	347.570	383.830	348.050
+mark	1	383.830	322.610	384.310	347.570
+mark	1	383.830	347.570	384.310	348.050
+mark	1	384.310	347.570	539.610	348.050
+mark	1	539.620	322.610	540.100	347.570
+mark	1	539.620	347.570	540.100	348.050
+mark	1	539.620	347.570	540.100	348.050
+word	2	199.370	83.420	The
+word	2	220.346	83.420	second
+word	2	257.642	83.420	page
+word	2	284.018	83.420	begins
+word	2	318.326	83.420	with
+word	2	342.770	83.420	a
+word	2	351.278	83.420	centred
+word	2	391.682	83.420	line.
+word	2	90.024	108.380	1.
+word	2	108.020	108.380	One.
+word	2	90.024	133.340	2.
+word	2	108.020	133.340	Two.
+word	2	90.024	158.300	3.
+word	2	108.020	158.300	Three.
+word	2	72.024	183.260	The
+word	2	95.520	183.260	last
+word	2	117.936	183.260	paragraph,
+word	2	176.340	183.260	justified,
+word	2	224.052	183.260	is
+word	2	236.760	183.260	long
+word	2	263.016	183.260	enough
+word	2	305.088	183.260	to
+word	2	320.556	183.260	be
+word	2	338.172	183.260	set
+word	2	358.068	183.260	on
+word	2	376.044	183.260	more
+word	2	407.220	183.260	than
+word	2	434.772	183.260	one
+word	2	458.748	183.260	line
+word	2	481.764	183.260	so
+word	2	497.952	183.260	that
+word	2	523.344	183.260	the
+word	2	72.024	200.300	justification
+word	2	132.072	200.300	has
+word	2	151.500	200.300	something
+word	2	205.800	200.300	to
+word	2	218.868	200.300	spread:
+word	2	257.940	200.300	it
+word	2	267.408	200.300	goes
+word	2	292.716	200.300	on
+word	2	307.956	200.300	until
+word	2	332.868	200.300	it
+word	2	342.336	200.300	wraps,
+word	2	377.556	200.300	and
+word	2	398.568	200.300	a
+word	2	407.076	200.300	little
+word	2	431.880	200.300	further
+word	2	469.152	200.300	than
+word	2	494.196	200.300	that.

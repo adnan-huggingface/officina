@@ -16,7 +16,7 @@ These are not targets. They are what is true today, so that what is true tomorro
 
 | | documents | out | >5pt | unplaced | marks | lost | worst |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| totals | 26 | 1183 | 167 | 72 | 89 | 60 | 187.96 |
+| totals | 27 | 1183 | 167 | 72 | 89 | 60 | 187.96 |
 
 ## Every document
 
@@ -42,6 +42,7 @@ These are not targets. They are what is true today, so that what is true tomorro
 | `nested-tables.docx` | 1 | 0 | 0 | 0 | 0 | 1 | 0.53 |
 | `picture-watermark.docx` | 1 | 0 | 0 | 0 | 0 | 0 | 0.33 |
 | `rtl-and-cjk.docx` | 1 | 6 | 0 | 0 | 0 | 0 | 2.03 |
+| `scriva-authored.docx` | 2 | 0 | 0 | 0 | 0 | 0 | 0.78 |
 | `sections-mixed-orientation.docx` | 3 | 0 | 0 | 0 | 0 | 0 | 0.23 |
 | `styles-headings-toc.docx` | 1 | 0 | 0 | 0 | 0 | 0 | 0.30 |
 | `table-spanning-pages.docx` | 3 | 0 | 0 | 0 | 0 | 2 | 0.70 |

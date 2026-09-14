@@ -9,6 +9,21 @@ That rule was written for one family of formats and does not carry over to the
 other. See "OpenDocument" below: for `.odt` there is no single first producer,
 and the two that matter both have a file here.
 
+It has one deliberate exception. **`docx/scriva-authored.docx` is written by
+Scriva** — `cargo xtask author` runs `scriva-authored.txt` beside this README
+through the application's own commands, the ones its menus and keys run, and
+saves what they made. Every other document here measures how Scriva *reads*;
+this one measures what it *writes*, and it is here because two faults in what
+it wrote — a new document that stated none of Word's defaults and came back a
+third taller, a table whose cells stated no width and came back an inch wide —
+were found by hand, each with a throwaway document nobody could keep. Word's
+reading of it is committed like the others', so the layout check holds what
+Scriva writes to Word; and a test in `scriva::author` holds the file to the
+script, so a change to a writer or an editing command fails the gate until the
+document is authored again and Word has read the new one. Never edit it by
+hand: change the script, run `cargo xtask author`, re-record `LAYOUT.md`, and
+commit the three together.
+
 ## The gap this corpus has
 
 Every file here was written by Word or Excel, and that is exactly one producer's
