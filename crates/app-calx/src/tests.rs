@@ -989,3 +989,70 @@ fn a_row_typed_with_tab_and_arrows_lands_one_entry_a_cell_at_any_pace() {
         }
     }
 }
+
+/// A save that is refused — the file made read-only — puts up the Trouble
+/// box, not a status line. Enter is its default, Save As…, which asks for a
+/// chooser (refused in a test); Escape is OK and closes it; and the workbook
+/// stays edited, so the next Ctrl+S tries again.
+#[test]
+fn a_refused_save_says_so_in_a_box_that_answers_the_keyboard() {
+    let drive = ui_kit::drive::Driver::new();
+    let dir = std::env::temp_dir().join("calx-trouble-by-key");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("locked.xlsx");
+    let mut app = Calx::new();
+    type_into(&mut app, "A1", "1");
+    app.write(&path);
+    assert!(app.dialog.is_none(), "the first save went through");
+    let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+    permissions.set_readonly(true);
+    std::fs::set_permissions(&path, permissions.clone()).unwrap();
+
+    type_into(&mut app, "A2", "2");
+    drive.settle(&mut app);
+    drive.press(&mut app, "ctrl+S");
+    drive.settle(&mut app);
+    assert!(
+        matches!(
+            app.dialog,
+            Some(Dialog::Trouble {
+                offer_save_as: true,
+                ..
+            })
+        ),
+        "Ctrl+S on a read-only file put up the Trouble box"
+    );
+    assert!(app.edited, "and the workbook is still unsaved");
+
+    let before = ui_kit::headless::choosers_refused();
+    drive.press(&mut app, "Enter");
+    drive.settle(&mut app);
+    assert!(app.dialog.is_none(), "Enter answered it");
+    assert_eq!(
+        ui_kit::headless::choosers_refused(),
+        before + 1,
+        "with Save As…"
+    );
+
+    drive.press(&mut app, "ctrl+S");
+    drive.settle(&mut app);
+    assert!(
+        matches!(app.dialog, Some(Dialog::Trouble { .. })),
+        "and again"
+    );
+    drive.press(&mut app, "Escape");
+    drive.settle(&mut app);
+    assert!(app.dialog.is_none(), "Escape is OK");
+    assert_eq!(
+        ui_kit::headless::choosers_refused(),
+        before + 1,
+        "and asks for nothing"
+    );
+
+    // Writable again, so the directory can be cleared next time on Windows,
+    // which will not delete a read-only file.
+    #[allow(clippy::permissions_set_readonly_false)]
+    permissions.set_readonly(false);
+    let _ = std::fs::set_permissions(&path, permissions);
+}

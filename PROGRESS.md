@@ -5344,3 +5344,11 @@ than a point out of place, the worst 338 points, to none, the worst 0.75 —
 what the real face measures. The notice now says so of such a face: "laid at
 its own measured widths". Numbers, not a font, which is the line drawn
 against width tables for faces without a twin.
+
+## The Trouble box is driven (2026-09-14)
+
+The last box of the handoff's list that nobody had touched. A save refused
+because the file was made read-only puts up the Trouble box, not a status
+line; Enter is its default, Save As…, which asks for a chooser; Escape is OK
+and closes it; the workbook stays unsaved so the next Ctrl+S tries again. It
+all worked, and a test now says so.

@@ -48,7 +48,7 @@ Every source file, its size, and the first sentence of its module doc.
 - `crates/app-calx/src/inspector.rs` (803) The chart inspector: a panel beside the grid for as long as a chart is selected.
 - `crates/app-calx/src/lib.rs` (11) Calx — the spreadsheet application.
 - `crates/app-calx/src/main.rs` (5710) Calx — spreadsheet.
-- `crates/app-calx/src/tests.rs` (991) 
+- `crates/app-calx/src/tests.rs` (1058) 
 
 ### `scriva`
 
