@@ -583,6 +583,11 @@ pub fn insert_break(
     kind: wp_model::doc::Break,
 ) -> Caret {
     let caret = delete_selection(document, scope, history, selection);
+    if kind == wp_model::doc::Break::Page {
+        if let Some((block, row, _)) = table_cell_at(document, scope, caret) {
+            return break_table_before_row(document, scope, history, block, row, caret);
+        }
+    }
     let Some(before) = paragraph_at(document, scope, caret.paragraph) else {
         return caret;
     };
@@ -605,6 +610,63 @@ pub fn insert_break(
     Caret {
         paragraph: caret.paragraph + 1,
         offset: 0,
+    }
+}
+
+/// Ctrl+Enter with the caret in a table cell: the table is split before the
+/// caret's row, and the break stands in a paragraph of its own between the
+/// two halves. Nothing goes into the cell.
+///
+/// Measured on Word, not designed: a page break *inside* a cell is nothing
+/// to Word's layout, wherever in the cell it is, and the layout here ignores
+/// one too. So a break put in the cell would be a keystroke that did nothing
+/// visible. Word's own Ctrl+Enter in a cell does exactly this split, and in
+/// the first row it leaves no empty table above the break. The caret stays
+/// where it was in its cell, which is now the second table's. One undo puts
+/// the table back together.
+fn break_table_before_row(
+    document: &mut Document,
+    scope: Scope,
+    history: &mut History,
+    block: usize,
+    row: usize,
+    caret: Caret,
+) -> Caret {
+    let Some(Block::Table(table)) = document.blocks(scope).get(block).cloned() else {
+        return caret;
+    };
+    let mut upper = table.clone();
+    let mut lower = table;
+    lower.rows = upper.rows.split_off(row);
+    let mut breaking = Paragraph::new();
+    let mut run = wp_model::doc::Run::new();
+    run.content
+        .push(wp_model::doc::Piece::Break(wp_model::doc::Break::Page));
+    breaking.content.push(wp_model::doc::Inline::Run(run));
+    let mut with = Vec::with_capacity(3);
+    if !upper.rows.is_empty() {
+        with.push(Block::Table(upper));
+    }
+    with.push(Block::Paragraph(breaking));
+    with.push(Block::Table(lower));
+    let now = with.len();
+    let Some(blocks) = document.blocks_mut(scope) else {
+        return caret;
+    };
+    let before: Vec<Block> = blocks.splice(block..block + 1, with).collect();
+    history.push(
+        scope,
+        Change::Blocks {
+            index: block,
+            before,
+            now,
+        },
+    );
+    // The break's paragraph comes before the caret's cell in the walk, and
+    // nothing else moved.
+    Caret {
+        paragraph: caret.paragraph + 1,
+        offset: caret.offset,
     }
 }
 
@@ -1839,6 +1901,118 @@ mod tests {
         assert_eq!(
             texts(&document),
             ["first item", "second item", "after the table"]
+        );
+    }
+
+    /// Measured on Word 16 (`bugs/page-break-in-table-cell.md` in the story):
+    /// a break *in* a cell is nothing to the layout, and Ctrl+Enter in a cell
+    /// does not put one there. It splits the table before the caret's row and
+    /// writes the break in a paragraph of its own between the halves.
+    #[test]
+    fn a_page_break_in_a_cell_splits_the_table_before_the_carets_row() {
+        use wp_model::doc::{Break, Piece};
+        let row = |text: &str| wp_model::table::Row {
+            cells: vec![wp_model::table::Cell {
+                props: wp_model::table::CellProps::new(),
+                content: vec![Block::Paragraph(Paragraph::of(text))],
+            }],
+            ..wp_model::table::Row::new()
+        };
+        let table = wp_model::table::Table {
+            grid: vec![wp_model::units::Twips(4000)],
+            rows: vec![row("one"), row("two"), row("three")],
+            ..wp_model::table::Table::new()
+        };
+        let mut document = Document {
+            body: vec![
+                Block::Paragraph(Paragraph::of("before")),
+                Block::Table(table),
+                Block::Paragraph(Paragraph::of("after")),
+            ],
+            ..Document::new()
+        };
+        let shape = |document: &Document| -> Vec<String> {
+            document
+                .body
+                .iter()
+                .map(|block| match block {
+                    Block::Paragraph(p) => {
+                        let broken = p
+                            .runs()
+                            .iter()
+                            .flat_map(|run| run.content.iter())
+                            .any(|piece| matches!(piece, Piece::Break(Break::Page)));
+                        if broken {
+                            "break".to_owned()
+                        } else {
+                            p.text()
+                        }
+                    }
+                    Block::Table(t) => format!("table:{}", t.rows.len()),
+                    _ => "?".to_owned(),
+                })
+                .collect()
+        };
+        let mut history = History::new();
+        // The caret is in "two": paragraph 2 of the walk, one character in.
+        let caret = insert_break(
+            &mut document,
+            Scope::Body,
+            &mut history,
+            at(2, 1),
+            Break::Page,
+        );
+        assert_eq!(
+            shape(&document),
+            ["before", "table:1", "break", "table:2", "after"],
+            "the table is split before the caret's row, the break between the halves"
+        );
+        assert_eq!(
+            caret,
+            Caret {
+                paragraph: 3,
+                offset: 1
+            },
+            "the caret is where it was in its cell, which is now in the second table"
+        );
+        assert_eq!(texts(&document)[3], "two");
+        assert!(
+            !document.paragraphs()[3].text().contains('\u{c}'),
+            "nothing was put in the cell"
+        );
+
+        history.undo(&mut document).map(|(_, caret)| caret);
+        assert_eq!(
+            shape(&document),
+            ["before", "table:3", "after"],
+            "one undo puts the table back together"
+        );
+        history.redo(&mut document).map(|(_, caret)| caret);
+        assert_eq!(
+            shape(&document),
+            ["before", "table:1", "break", "table:2", "after"]
+        );
+
+        // In the first row there is no row to keep above the break: the
+        // break goes before the table, as Word's does.
+        let caret = insert_break(
+            &mut document,
+            Scope::Body,
+            &mut history,
+            at(1, 0),
+            Break::Page,
+        );
+        assert_eq!(
+            shape(&document),
+            ["before", "break", "table:1", "break", "table:2", "after"],
+            "no empty table is left above the break"
+        );
+        assert_eq!(
+            caret,
+            Caret {
+                paragraph: 2,
+                offset: 0
+            }
         );
     }
 

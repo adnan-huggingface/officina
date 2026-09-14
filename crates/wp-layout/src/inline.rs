@@ -1146,6 +1146,12 @@ fn push_run(
                 });
                 out.push(unit);
             }
+            // A page or column break inside a table cell is nothing to Word —
+            // measured: no new page, and the text either side of it runs on
+            // together, not even a line apart. A break that ended a line here
+            // gave a cell a line Word does not draw. It is no byte of the text,
+            // so leaving it out moves no caret.
+            Piece::Break(Break::Page | Break::Column) if ctx.table_part.is_some() => {}
             Piece::Break(kind) => {
                 let style = style_for(' ', &props, ctx);
                 out.push(Unit {

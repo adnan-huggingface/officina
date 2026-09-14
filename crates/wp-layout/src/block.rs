@@ -4231,6 +4231,77 @@ mod tests {
         assert_eq!(page.content[2].y, page.geometry.top + 10.0);
     }
 
+    /// Measured on Word 16: a page break inside a table cell is nothing to
+    /// the layout, whether mid-paragraph, alone in its paragraph or as
+    /// `pageBreakBefore` on a cell's paragraph. One page, and the two halves
+    /// of a broken paragraph run together on one line.
+    #[test]
+    fn a_page_break_inside_a_cell_is_nothing_as_word_has_it() {
+        let broken = Paragraph {
+            content: vec![Inline::Run(Run {
+                content: vec![
+                    Piece::Text("before".into()),
+                    Piece::Break(Break::Page),
+                    Piece::Text("after".into()),
+                ],
+                ..Run::new()
+            })],
+            ..Paragraph::new()
+        };
+        let mut alone = Paragraph::new();
+        alone.content.push(Inline::Run(Run {
+            content: vec![Piece::Break(Break::Page)],
+            ..Run::new()
+        }));
+        let mut before = Paragraph::of("stated");
+        before.props.page_break_before = Some(true);
+        let cell_of = |content: Vec<Block>| wp_model::table::Cell {
+            props: wp_model::table::CellProps::new(),
+            content,
+        };
+        let table = Table {
+            grid: vec![Twips(4000)],
+            rows: vec![
+                Row {
+                    cells: vec![cell_of(vec![Block::Paragraph(broken)])],
+                    ..Row::new()
+                },
+                Row {
+                    cells: vec![cell_of(vec![
+                        Block::Paragraph(alone),
+                        Block::Paragraph(Paragraph::of("under the lone break")),
+                    ])],
+                    ..Row::new()
+                },
+                Row {
+                    cells: vec![cell_of(vec![Block::Paragraph(before)])],
+                    ..Row::new()
+                },
+            ],
+            ..Table::new()
+        };
+        let mut document = document(vec![Block::Table(table)]);
+        document.section = page_of(400);
+        let pages = pages(&document);
+        assert_eq!(pages.len(), 1, "none of the three breaks starts a page");
+        // One line for the broken paragraph, its halves together; the lone
+        // break's empty paragraph takes a line of its own, as Word's did,
+        // and the paragraph under it another; one for the last row.
+        let seen: Vec<(f64, usize)> = pages[0]
+            .content
+            .iter()
+            .filter_map(|item| match &item.kind {
+                Placed::Line { paragraph, .. } => Some((item.y, *paragraph)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            seen.len(),
+            4,
+            "the halves either side of the mid-paragraph break share one line: {seen:?}"
+        );
+    }
+
     #[test]
     fn a_table_styles_cell_margins_pad_every_row() {
         // The margins live in the table's *style* — where Google Docs puts

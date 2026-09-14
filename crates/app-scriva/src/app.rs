@@ -9122,6 +9122,59 @@ mod tests {
         assert_eq!(texts, ["First."], "the typing, then the break, undo away");
     }
 
+    /// The keystroke drive's sequence in a table: fill row one, Tab to row two,
+    /// Ctrl+Enter, type. The break landed in the cell, the layout rightly
+    /// ignored it (Word does), and the key looked dead. Word splits the table.
+    #[test]
+    fn ctrl_enter_in_a_cell_splits_the_table_and_the_rest_is_on_the_next_page() {
+        let mut app = laid_app("", 200.0);
+        app.insert_table(2, 1);
+        app.type_text("first row");
+        app.key(egui::Key::Tab, egui::Modifiers::NONE);
+        app.type_text("second row");
+        app.run(Command::PageBreak);
+        app.type_text(" continued");
+        let tables: Vec<Vec<String>> = app
+            .document
+            .body
+            .iter()
+            .filter_map(|block| match block {
+                Block::Table(table) => {
+                    Some(table.rows.iter().map(|row| row.cells[0].text()).collect())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            tables,
+            [vec!["first row"], vec!["second row continued"]],
+            "two tables, and the typing went on in the caret's cell"
+        );
+        let shaper = app.shaper.as_mut().expect("laid out");
+        app.view.refresh(
+            &app.document,
+            &wp_layout::FieldValues::new(),
+            app.stamp,
+            shaper,
+        );
+        assert_eq!(
+            app.view.pages().len(),
+            2,
+            "the break between the halves takes"
+        );
+        assert_eq!(app.caret_page(), 1, "and the caret is on the second page");
+
+        app.run(Command::Undo);
+        app.run(Command::Undo);
+        let tables = app
+            .document
+            .body
+            .iter()
+            .filter(|block| matches!(block, Block::Table(_)))
+            .count();
+        assert_eq!(tables, 1, "the typing, then the split, undo away");
+    }
+
     #[test]
     fn home_and_end_move_on_the_visual_line_not_the_paragraph() {
         let text = "aa bb cc dd ee ff gg hh";

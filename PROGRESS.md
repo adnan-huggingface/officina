@@ -4984,3 +4984,22 @@ it back, so the six `.doc` copies saved as `.docx` — which stated the edge in
 a file Word read as 2007's — have their tables where the `.doc` has them.
 `simple-table.doc` as `.docx` measured 5.4pt out on every cell before and none
 after. No corpus `.docx` states an indent, which is why nothing had noticed.
+
+## Ctrl+Enter in a table cell splits the table, as Word's does (2026-09-13)
+
+The keystroke drive's last open item. Ctrl+Enter with the caret in a cell put
+the break in the cell, where the layout rightly ignores it, so the key looked
+dead. Measured on Word the day before: a break inside a cell is nothing to
+its layout, and its own Ctrl+Enter splits the table before the caret's row
+and writes the break in a paragraph of its own between the halves. The editor
+now does the same: the table at the caret becomes two, the break paragraph
+between them, nothing in the cell; in the first row no empty table is left
+above the break; the caret stays where it was in its cell, now the second
+table's; one undo puts the table back together. A caret in a nested table
+splits the outer one, which is the one the undo history replaces whole.
+
+The layout's half was pinned while at it, and the pin found a line: the
+layout gave no page to a break inside a cell, but still ended a line at it,
+where Word runs the two halves together on one line. A page or column break
+inside a cell is now left out of the cell's units altogether. It is no byte
+of the text, so no caret moves.
