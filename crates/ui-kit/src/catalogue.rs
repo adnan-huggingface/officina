@@ -31,6 +31,24 @@ pub fn installed() -> &'static BTreeMap<FaceKey, PathBuf> {
     CATALOGUE.get_or_init(|| build(&crate::fonts::font_directories()))
 }
 
+/// Every family the machine has, by the name its plain face states, sorted
+/// and each once — what a font list offers. Read once: the names come from
+/// the files' own tables, and a list that re-read every font file on every
+/// frame it was open would be a list nobody could scroll.
+pub fn families() -> &'static [String] {
+    static FAMILIES: OnceLock<Vec<String>> = OnceLock::new();
+    FAMILIES.get_or_init(|| {
+        let mut names: Vec<String> = installed()
+            .iter()
+            .filter(|((_, bold, italic), _)| !bold && !italic)
+            .filter_map(|(_, path)| display_family(path))
+            .collect();
+        names.sort_by_key(|name| name.to_ascii_lowercase());
+        names.dedup();
+        names
+    })
+}
+
 /// Whether the machine has any face of this family.
 pub fn has_family(name: &str) -> bool {
     let name = name.to_ascii_lowercase();

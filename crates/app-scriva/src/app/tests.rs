@@ -797,7 +797,10 @@ fn frame_of(app: &mut Scriva, ctx: &egui::Context, events: Vec<egui::Event>) {
         events,
         ..Default::default()
     };
-    let mut out = ctx.run_ui(input, |ui| app.ui(ui));
+    let mut out = ctx.run_ui(input, |ui| {
+        egui::Panel::top("test-toolbar").show(ui, |ui| app.toolbar(ui));
+        egui::CentralPanel::no_frame().show(ui, |ui| app.ui(ui));
+    });
     out.textures_delta.clear();
 }
 
@@ -1404,7 +1407,7 @@ fn naming_a_font_speaks_for_the_latin_slots_and_silences_the_theme() {
     app.format_runs(|props| {
         props.fonts.ascii_theme = Some(wp_model::prop::ThemeFont::MinorHighAnsi)
     });
-    app.run(Command::Font("Verdana"));
+    app.run(Command::Font("Verdana".to_owned()));
     assert!(app.probe_runs(|props| {
         props.fonts.ascii.as_deref() == Some("Verdana")
             && props.fonts.high_ansi.as_deref() == Some("Verdana")
@@ -4658,4 +4661,143 @@ fn the_caret_blinks_and_stands_solid_after_a_key() {
             "solid with a selection at {beats}"
         );
     }
+}
+
+#[test]
+fn the_carets_style_face_and_size_are_read_from_the_document() {
+    use wp_model::units::HalfPoint;
+    let mut app = app_with(&["plain words here", "second paragraph"]);
+    let normal = app
+        .document
+        .styles
+        .default_style(wp_model::StyleKind::Paragraph)
+        .expect("a default paragraph style");
+    assert_eq!(
+        app.style_at(),
+        Some(normal),
+        "a fresh paragraph is in Normal"
+    );
+    let default_face = app
+        .face_at()
+        .expect("a face is resolved even when nothing names one");
+    let default_size = app
+        .size_at()
+        .expect("a size is resolved even when nothing names one");
+    assert_ne!(default_size, HalfPoint(28));
+
+    // The word at the caret takes the change, and the caret reads it back.
+    app.run(Command::Font("Verdana".to_owned()));
+    app.run(Command::Size(HalfPoint(28)));
+    assert_eq!(app.face_at().as_deref(), Some("Verdana"));
+    assert_eq!(app.size_at(), Some(HalfPoint(28)));
+
+    let heading = app
+        .quick_styles()
+        .into_iter()
+        .find(|(_, name)| name.to_ascii_lowercase().starts_with("heading"))
+        .map(|(id, _)| id)
+        .expect("a heading style in a new document");
+    app.run(Command::Style(heading));
+    assert_eq!(app.style_at(), Some(heading));
+
+    // A selection across the styled word and plain text mixes, and a mixed
+    // selection is an empty box, not the first value.
+    app.run(Command::SelectAll);
+    assert_eq!(
+        app.face_at(),
+        None,
+        "mixed faces: {default_face} and Verdana"
+    );
+    assert_eq!(app.size_at(), None, "mixed sizes");
+    assert_eq!(app.style_at(), None, "mixed styles");
+}
+
+#[test]
+fn every_toolbar_command_is_reachable_at_eight_hundred_wide() {
+    let drive = ui_kit::drive::Driver::sized(egui::vec2(800.0, 600.0));
+    let mut app = app_with(&["text"]);
+    drive.settle(&mut app);
+    drive.settle(&mut app);
+    let on_row = crate::toolbar::drawn(drive.ctx());
+    let more = on_row
+        .iter()
+        .find(|drawn| drawn.control == crate::toolbar::Control::More)
+        .expect("at 800 wide something folds, so the overflow is drawn")
+        .rect;
+    drive.click(&mut app, more.center());
+    drive.settle(&mut app);
+    let (rows, open) = ui_kit::menu::innermost_rows(drive.ctx());
+    assert_eq!(open, 1, "the overflow menu is open");
+    let mut reachable: Vec<String> = on_row.iter().map(|d| d.control.name().to_owned()).collect();
+    reachable.extend(rows.iter().map(|row| row.label.clone()));
+    let missing: Vec<&str> = crate::toolbar::Control::all()
+        .map(|control| control.name())
+        .filter(|name| !reachable.iter().any(|r| r == name))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "not on the row or in the overflow: {missing:?}"
+    );
+}
+
+#[test]
+fn every_toolbar_tooltip_ends_with_the_key_the_table_gives() {
+    let drive = ui_kit::drive::Driver::new();
+    let mut app = app_with(&["text"]);
+    drive.settle(&mut app);
+    drive.settle(&mut app);
+    let drawn = crate::toolbar::drawn(drive.ctx());
+    assert!(
+        drawn.len() > 20,
+        "the whole row is drawn at 1600: {}",
+        drawn.len()
+    );
+    for control in crate::toolbar::Control::all() {
+        let drawn = drawn
+            .iter()
+            .find(|d| d.control == control)
+            .unwrap_or_else(|| panic!("{control:?} is on the row"));
+        assert!(
+            drawn.tip.starts_with(control.name()),
+            "{control:?}'s tooltip {:?} starts with its name",
+            drawn.tip
+        );
+        let key = match control {
+            crate::toolbar::Control::Bold => "Ctrl+B",
+            crate::toolbar::Control::Undo => "Ctrl+Z",
+            crate::toolbar::Control::AlignCentre => "Ctrl+E",
+            crate::toolbar::Control::Find => "Ctrl+F",
+            crate::toolbar::Control::Track => "Ctrl+Shift+E",
+            crate::toolbar::Control::Comment => "Ctrl+Alt+M",
+            _ => continue,
+        };
+        assert!(
+            drawn.tip.ends_with(key),
+            "{control:?}'s tooltip {:?} ends with {key}",
+            drawn.tip
+        );
+    }
+}
+
+#[test]
+fn a_click_on_bold_toggles_bold_through_the_command() {
+    let drive = ui_kit::drive::Driver::new();
+    let mut app = app_with(&["word"]);
+    drive.settle(&mut app);
+    drive.settle(&mut app);
+    assert!(!app.emphasis().0);
+    let bold = crate::toolbar::drawn(drive.ctx())
+        .into_iter()
+        .find(|d| d.control == crate::toolbar::Control::Bold)
+        .expect("B is on the row")
+        .rect;
+    drive.click(&mut app, bold.center());
+    assert!(
+        app.emphasis().0,
+        "the word at the caret is bold after the click"
+    );
+    // And the key does the same thing, through the same command.
+    drive.press(&mut app, "ctrl+B");
+    drive.settle(&mut app);
+    assert!(!app.emphasis().0, "and Ctrl+B takes it off again");
 }

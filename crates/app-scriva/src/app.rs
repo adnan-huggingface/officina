@@ -64,6 +64,9 @@ pub enum Command {
     InsertPicture,
     /// Insert ▸ Table… — the rows-and-columns dialog.
     InsertTable,
+    /// The toolbar's grid picker: a table of this many rows and columns,
+    /// without a dialog.
+    InsertTableOf(usize, usize),
     /// The Size box for the selected picture or chart.
     PictureSize,
     /// Takes the selected picture or chart out of the document.
@@ -79,10 +82,9 @@ pub enum Command {
     Grow,
     Shrink,
     Size(HalfPoint),
-    /// Format ▸ Font — one of the faces the menu offers. Word's font box
-    /// speaks for the Latin slots only; East Asian and complex runs keep
-    /// their own faces.
-    Font(&'static str),
+    /// Format ▸ Font — a face by name. Word's font box speaks for the Latin
+    /// slots only; East Asian and complex runs keep their own faces.
+    Font(String),
     /// Format ▸ Text Colour — a palette entry, or `Auto` for Automatic.
     Color(wp_model::Color),
     /// The dialog for a colour the palette does not offer.
@@ -398,6 +400,17 @@ pub struct Scriva {
     /// The frame clock's reading at the last key or click, which is when the
     /// caret's blink last started over.
     blink_from: f64,
+    /// The colour the toolbar's colour button applies, and the highlight its
+    /// marker applies: the last one chosen, as Word's split buttons keep.
+    pub(crate) last_colour: wp_model::Color,
+    pub(crate) last_highlight: wp_model::Highlight,
+    /// The size box's text while it is being typed into.
+    pub(crate) size_text: Option<String>,
+    /// Whether a field on the toolbar held the keyboard this frame, so that
+    /// what is typed there is not also typed into the document.
+    pub(crate) field_held: bool,
+    /// The same for the find bar, which the toolbar draws last.
+    find_held: bool,
     /// What was last copied, with its formatting.
     clipboard: Option<Clip>,
     /// The picture or chart last copied as an object.
@@ -529,6 +542,11 @@ impl Scriva {
             zoom_draft: None,
             zoom_fresh: false,
             blink_from: 0.0,
+            last_colour: wp_model::Color::Rgb([0xC0, 0x00, 0x00]),
+            last_highlight: wp_model::Highlight::Yellow,
+            size_text: None,
+            field_held: false,
+            find_held: false,
             clipboard: None,
         }
     }
@@ -757,6 +775,126 @@ impl Scriva {
 
     pub(crate) fn alignment(&self) -> Option<Justify> {
         edit::justify_at(&self.document, self.scope, self.caret())
+    }
+
+    /// Whether the selection is struck through, for the toolbar.
+    pub(crate) fn struck(&self) -> bool {
+        let range = self.formatting_range();
+        edit::all_runs(&self.document, self.scope, range, |props| {
+            props.toggles.is_on(Toggle::Strike)
+        })
+    }
+
+    /// Whether every covered paragraph is in a bulleted list, and whether
+    /// every one is in a numbered one.
+    pub(crate) fn list_state(&self) -> (bool, bool) {
+        (self.in_list(true), self.in_list(false))
+    }
+
+    /// The line spacing of the caret's paragraph, where it is a multiple of
+    /// the line — the only kind the menu offers.
+    pub(crate) fn line_spacing_at(&self) -> Option<Line240> {
+        let paragraph = self
+            .document
+            .paragraph_in(self.scope, self.caret().paragraph)?;
+        match self
+            .document
+            .styles
+            .resolve_paragraph(&paragraph.props, None)
+            .para
+            .spacing
+            .line
+        {
+            Some(LineSpacing::Multiple(line)) => Some(line),
+            Some(_) => None,
+            None => Some(Line240::SINGLE),
+        }
+    }
+
+    /// The paragraph style the selection is in — the caret's paragraph's,
+    /// or the one every covered paragraph shares; nothing when they differ.
+    pub(crate) fn style_at(&self) -> Option<wp_model::StyleId> {
+        let (start, end) = self.selection.ordered();
+        let paragraphs = self.document.paragraphs_in(self.scope);
+        let default = self
+            .document
+            .styles
+            .default_style(wp_model::StyleKind::Paragraph);
+        let mut found: Option<Option<wp_model::StyleId>> = None;
+        for index in start.paragraph..=end.paragraph.min(paragraphs.len().saturating_sub(1)) {
+            let style = paragraphs
+                .get(index)
+                .and_then(|p| p.props.style)
+                .or(default);
+            match found {
+                Some(other) if other != style => return None,
+                _ => found = Some(style),
+            }
+        }
+        found.flatten()
+    }
+
+    /// The face the selection is set in, resolved through the styles and
+    /// the theme the way the page resolves it — or nothing when the
+    /// selection mixes faces, which is what an empty box says.
+    pub(crate) fn face_at(&self) -> Option<String> {
+        let mut face: Option<String> = None;
+        for props in self.resolved_runs() {
+            let family = wp_layout::resolve::family(
+                &props,
+                &self.document.theme,
+                wp_model::prop::Script::Ascii,
+                "Calibri",
+            )
+            .to_string();
+            match &face {
+                Some(other) if *other != family => return None,
+                _ => face = Some(family),
+            }
+        }
+        face
+    }
+
+    /// The size the selection is set in, in half-points, or nothing when
+    /// it mixes sizes.
+    pub(crate) fn size_at(&self) -> Option<HalfPoint> {
+        let mut size: Option<HalfPoint> = None;
+        for props in self.resolved_runs() {
+            let this = props.font_size();
+            match size {
+                Some(other) if other != this => return None,
+                _ => size = Some(this),
+            }
+        }
+        size
+    }
+
+    /// The run properties the selection covers, each resolved through its
+    /// paragraph's style chain — one run, the caret's, when nothing is
+    /// selected.
+    fn resolved_runs(&self) -> Vec<wp_model::RunProps> {
+        let styles = &self.document.styles;
+        let (start, end) = self.selection.ordered();
+        let paragraphs = self.document.paragraphs_in(self.scope);
+        let mut out = Vec::new();
+        if self.selection.is_empty() {
+            if let Some(paragraph) = paragraphs.get(start.paragraph) {
+                let layers = styles.resolve_paragraph(&paragraph.props, None);
+                let direct = text::props_at(paragraph, start.offset);
+                out.push(styles.resolve_run(&layers, &direct));
+            }
+            return out;
+        }
+        for index in start.paragraph..=end.paragraph.min(paragraphs.len().saturating_sub(1)) {
+            let Some(paragraph) = paragraphs.get(index) else {
+                continue;
+            };
+            let layers = styles.resolve_paragraph(&paragraph.props, None);
+            for run in paragraph.runs() {
+                out.push(styles.resolve_run(&layers, &run.props));
+            }
+        }
+        out
     }
 
     /// What a formatting command with no selection would act on: the word the
@@ -1743,14 +1881,17 @@ impl Scriva {
             Command::Grow => self.resize(2),
             Command::Shrink => self.resize(-2),
             Command::Size(size) => self.format_runs(move |props| props.size = Some(size)),
-            Command::Font(name) => self.format_runs(move |props| {
-                // A theme reference outranks the cached name beside it, so
-                // leaving one behind would silently undo this choice.
-                props.fonts.ascii = Some(name.into());
-                props.fonts.high_ansi = Some(name.into());
-                props.fonts.ascii_theme = None;
-                props.fonts.high_ansi_theme = None;
-            }),
+            Command::Font(name) => {
+                let name: &str = &name;
+                self.format_runs(move |props| {
+                    // A theme reference outranks the cached name beside it, so
+                    // leaving one behind would silently undo this choice.
+                    props.fonts.ascii = Some(name.into());
+                    props.fonts.high_ansi = Some(name.into());
+                    props.fonts.ascii_theme = None;
+                    props.fonts.high_ansi_theme = None;
+                })
+            }
             Command::Color(color) => self.format_runs(move |props| props.color = Some(color)),
             Command::CustomColor => self.color_draft = Some((ColorTarget::Text, String::new())),
             Command::ParagraphDialog => self.open_paragraph_dialog(),
@@ -1967,6 +2108,7 @@ impl Scriva {
             Command::InsertTable => {
                 self.table_draft = Some(["2".to_owned(), "2".to_owned()]);
             }
+            Command::InsertTableOf(rows, columns) => self.insert_table(rows, columns),
             Command::PictureSize => self.open_size_dialog(),
             Command::DeletePicture => {
                 self.delete_drawing();
@@ -2228,9 +2370,8 @@ impl Scriva {
         self.changed();
     }
 
-    /// The bullet and numbering buttons: on when every covered paragraph is
-    /// already in a list of that kind, and the press then takes them out.
-    fn toggle_list(&mut self, bullets: bool) {
+    /// Whether every covered paragraph is already in a list of this kind.
+    fn in_list(&self, bullets: bool) -> bool {
         let (start, end) = self.selection.ordered();
         let paragraphs = self.document.paragraphs_in(self.scope);
         let last = end.paragraph.min(paragraphs.len().saturating_sub(1));
@@ -2241,9 +2382,17 @@ impl Scriva {
                 .level(reference.num_id, reference.level);
             level.is_some_and(|l| matches!(l.format, wp_model::NumFormat::Bullet) == bullets)
         };
-        let on = (start.paragraph..=last)
-            .all(|index| paragraphs[index].props.numbering.is_some_and(kind));
-        drop(paragraphs);
+        (start.paragraph..=last).all(|index| {
+            paragraphs
+                .get(index)
+                .is_some_and(|p| p.props.numbering.is_some_and(kind))
+        })
+    }
+
+    /// The bullet and numbering buttons: on when every covered paragraph is
+    /// already in a list of that kind, and the press then takes them out.
+    fn toggle_list(&mut self, bullets: bool) {
+        let on = self.in_list(bullets);
         if on {
             self.format_paragraphs(move |props| props.numbering = None);
         } else {
@@ -2887,79 +3036,10 @@ impl Scriva {
     // ------------------------------------------------------------ keys
 
     /// Word's keyboard, as far as it is implemented.
+    /// The command a keystroke asks for, from the one table the menus and
+    /// the tooltips read.
     fn keys(&mut self, ui: &egui::Ui) -> Option<Command> {
-        use egui::Key;
-        let ctrl = egui::Modifiers::COMMAND;
-        let ctrl_shift = egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT);
-
-        // Exactly these modifiers, so that the order of the list below does not
-        // decide which command a shifted key runs.
-        let taken = |ui: &egui::Ui, modifiers: egui::Modifiers, key: Key| -> bool {
-            ui.input_mut(|i| ui_kit::keys::take(i, modifiers, key))
-        };
-
-        for (modifiers, key, command) in [
-            (ctrl, Key::N, Command::New),
-            (ctrl, Key::O, Command::Open),
-            (ctrl, Key::S, Command::Save),
-            (ctrl_shift, Key::S, Command::SaveAs),
-            (ctrl, Key::P, Command::Print),
-            (ctrl, Key::W, Command::Close),
-            (ctrl, Key::Z, Command::Undo),
-            (ctrl, Key::Y, Command::Redo),
-            (ctrl, Key::A, Command::SelectAll),
-            (ctrl, Key::B, Command::Bold),
-            (ctrl, Key::I, Command::Italic),
-            (ctrl, Key::U, Command::Underline),
-            (ctrl, Key::L, Command::Align(Justify::Start)),
-            (ctrl, Key::E, Command::Align(Justify::Center)),
-            (ctrl, Key::R, Command::Align(Justify::End)),
-            (ctrl, Key::J, Command::Align(Justify::Both)),
-            (ctrl, Key::Num1, Command::LineSpacing(Line240::SINGLE)),
-            (ctrl, Key::Num2, Command::LineSpacing(Line240::DOUBLE)),
-            (
-                ctrl,
-                Key::Num5,
-                Command::LineSpacing(Line240::ONE_AND_A_HALF),
-            ),
-            (ctrl, Key::M, Command::Indent(1)),
-            (ctrl_shift, Key::M, Command::Indent(-1)),
-            (ctrl, Key::Space, Command::ClearFormatting),
-            (ctrl, Key::Enter, Command::PageBreak),
-            (ctrl, Key::F, Command::Find),
-            (ctrl, Key::H, Command::Replace),
-            (egui::Modifiers::NONE, Key::F3, Command::FindNext),
-            (egui::Modifiers::SHIFT, Key::F3, Command::FindPrevious),
-            (egui::Modifiers::NONE, Key::F9, Command::UpdateToc),
-            (ctrl_shift, Key::E, Command::TrackChanges),
-            (
-                egui::Modifiers::COMMAND.plus(egui::Modifiers::ALT),
-                Key::M,
-                Command::AddComment,
-            ),
-            (ctrl_shift, Key::Z, Command::Redo),
-        ] {
-            if taken(ui, modifiers, key) {
-                return Some(command);
-            }
-        }
-        // Ctrl+Shift+> and Ctrl+Shift+< — the key is the unshifted one.
-        if taken(ui, ctrl_shift, Key::Period) {
-            return Some(Command::Grow);
-        }
-        if taken(ui, ctrl_shift, Key::Comma) {
-            return Some(Command::Shrink);
-        }
-        if taken(ui, ctrl, Key::Equals) {
-            return Some(Command::Subscript);
-        }
-        if taken(ui, ctrl_shift, Key::Equals) {
-            return Some(Command::Superscript);
-        }
-        if taken(ui, ctrl_shift, Key::Num8) {
-            return Some(Command::ShowMarks);
-        }
-        None
+        crate::commands::keys(ui)
     }
 
     /// Movement, typing and deletion. Everything that changes the caret.
@@ -4111,7 +4191,7 @@ impl DocumentApp for Scriva {
     fn toolbar(&mut self, ui: &mut egui::Ui) {
         let command = self.menus(ui);
         rule(ui);
-        let bar = self.format_bar(ui);
+        let bar = self.toolbar_row(ui);
         let band = match self.scope {
             wp_model::Scope::Body => None,
             wp_model::Scope::Chrome(_) => {
@@ -4119,6 +4199,9 @@ impl DocumentApp for Scriva {
                 self.band_bar(ui)
             }
         };
+        // The find bar hangs from the toolbar rather than standing over the
+        // page, so that opening it does not push the page down.
+        self.find_held = self.finder.is_some() && self.find_bar(ui);
         if let Some(command) = command.or(bar).or(band) {
             // The same guard the keyboard route takes: File ▸ New discarding
             // an unsaved document would be a menu doing what Ctrl+N will not.
@@ -4385,7 +4468,7 @@ impl DocumentApp for Scriva {
                 self.run(command);
             }
         }
-        let bar_held = self.finder.is_some() && self.find_bar(ui);
+        let bar_held = self.find_held || self.field_held;
 
         // Any key, letter or press starts the caret's blink over, solid.
         let touched = ui.input(|i| {

@@ -5384,3 +5384,45 @@ read the screen rather than the model. Widening the gap found that the
 surface's click mapping carried its own copy of the old gap, sixteen, and
 would have put every click on the second page eight points up the paper.
 
+## The toolbar is one row, and the caret's state can be read from it (2026-09-14)
+
+Phase 2 of the redesign. The formatting row had thirteen controls and said
+nothing about what the caret was in; `toolbar.rs` replaces it with the row
+the design asked for: undo and redo; Style, Font and Size as combos in the
+field style, each showing the caret's value and an empty box for a mixed
+selection; B, I, U and S as toggles that wear the lit tint and a two-point
+bar of the accent; text colour and highlight as split buttons whose glyph
+applies the last colour chosen and whose chevron opens a popover of drawn
+swatches (`menu::swatches`, the same card and rows as a menu, with
+Automatic or None above the squares and More Colours… below); the four
+alignments; bullets, numbering, the two indents and line spacing; a table
+picker of eight squares by eight and the picture chooser; and at the right
+edge Find, New Comment, Track Changes, Navigate and Review. The Font list
+puts the document's own faces first, a rule, then every family the machine
+has from `ui_kit::catalogue::families`, typed-to-filter and with no per-row
+previews, since previewing means registering every family with egui's atlas.
+The Size box takes a typed number and Enter applies it. What does not fit
+folds from the right into an overflow menu whose rows carry their keys;
+the row is planned from the controls' stated widths so the answer is the
+same on the first frame and can be asked without a window, and a test at 800
+points wide finds every command on the row or in the overflow.
+
+**Every command's name and key are in one table now.** `commands.rs` is
+what the menus print beside a row, what a tooltip ends with, what the frame
+matches a keystroke against and, from phase 9, what the guide is checked
+against — four copies of one fact, and they had drifted: the Review menu
+promised Alt+F7 for Next Change and no handler read it. It does now,
+because claiming a key in the table is wiring it. The caret's state comes
+from five new queries on the application — `style_at`, `face_at`, `size_at`,
+`list_state`, `line_spacing_at` — each resolved through the style chain and
+the theme the way the page resolves them, and tested on fixtures. The find
+bar hangs from the toolbar's panel rather than standing over the page, so
+opening it no longer pushes the page down; measured from inside its own
+closure, because a panel nested in a panel reports a rectangle of no
+height, and a bar of no height held nothing — its Enter went to the
+document. Two things the driver gained for the tests: a window of another
+size, and a click. And one race that was only ever the harness's: a headless
+chooser's refusal answered from a thread, and a test that looked two frames
+later found the thread had not yet run when the suite was busy; it answers
+on the spot now.
+

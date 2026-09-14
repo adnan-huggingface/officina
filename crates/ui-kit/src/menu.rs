@@ -609,6 +609,83 @@ pub fn sub<R>(ui: &mut egui::Ui, label: &str, add: impl FnOnce(&mut egui::Ui) ->
     inner.map(|inner| inner.inner)
 }
 
+/// What a swatch popover was answered with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Swatch {
+    /// The row above the squares: `Automatic`, or `None`.
+    First,
+    /// The square at this index in the list handed in.
+    Index(usize),
+    /// The row below the squares: `More Colours…`.
+    More,
+}
+
+/// A palette as squares rather than as a column of names.
+///
+/// A colour is a thing to look at, and a menu of thirteen rows reading
+/// "Dark Red", "Light Green" asks the user to imagine each one. The squares
+/// are drawn in the colour, seven to a row, with the name as a tooltip; the
+/// row above them is the one that is not a colour — Automatic for text, None
+/// for a highlight — and the row below opens the dialog for a colour the
+/// palette does not offer. Both rows are ordinary menu rows with letters.
+pub fn swatches(
+    ui: &mut egui::Ui,
+    first: &str,
+    colours: &[(&str, egui::Color32)],
+    current: Option<usize>,
+    more: Option<&str>,
+) -> Option<Swatch> {
+    let mut chosen = None;
+    if item(ui, first, "").clicked() {
+        chosen = Some(Swatch::First);
+    }
+    sep(ui);
+    const SIDE: f32 = 22.0;
+    const PER_ROW: usize = 7;
+    let rows = colours.len().div_ceil(PER_ROW);
+    let (grid, _) = ui.allocate_exact_size(
+        egui::vec2(
+            PER_ROW as f32 * (SIDE + 4.0) + 6.0,
+            rows as f32 * (SIDE + 4.0) + 2.0,
+        ),
+        egui::Sense::hover(),
+    );
+    for (index, (name, colour)) in colours.iter().enumerate() {
+        let column = index % PER_ROW;
+        let row = index / PER_ROW;
+        let rect = egui::Rect::from_min_size(
+            grid.min
+                + egui::vec2(
+                    6.0 + column as f32 * (SIDE + 4.0),
+                    2.0 + row as f32 * (SIDE + 4.0),
+                ),
+            egui::vec2(SIDE, SIDE),
+        );
+        let response = ui.interact(rect, ui.id().with(("swatch", index)), egui::Sense::click());
+        if ui.is_rect_visible(rect) {
+            ui.painter().rect_filled(rect, 3.0, *colour);
+            let edge = match (current == Some(index), response.hovered()) {
+                (true, _) => egui::Stroke::new(2.0, crate::theme::ACCENT),
+                (false, true) => egui::Stroke::new(1.5, crate::theme::INK),
+                (false, false) => egui::Stroke::new(1.0, crate::theme::FIELD_EDGE),
+            };
+            ui.painter()
+                .rect_stroke(rect, 3.0, edge, egui::StrokeKind::Inside);
+        }
+        if response.on_hover_text(*name).clicked() {
+            chosen = Some(Swatch::Index(index));
+            ui.close();
+        }
+    }
+    if let Some(more) = more {
+        sep(ui);
+        if item(ui, more, "").clicked() {
+            chosen = Some(Swatch::More);
+        }
+    }
+    chosen
+}
+
 /// The rule between one group of commands and the next.
 ///
 /// Inset from both edges rather than run wall to wall: a full-width rule cuts

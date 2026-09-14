@@ -99,7 +99,9 @@ impl Scriva {
                     crate::icons::Icon::ChevronUp,
                     false,
                     "Previous match (Shift+F3)",
-                ) {
+                )
+                .clicked()
+                {
                     back = true;
                 }
                 if crate::icons::button(
@@ -107,7 +109,9 @@ impl Scriva {
                     crate::icons::Icon::ChevronDown,
                     false,
                     "Next match (F3)",
-                ) {
+                )
+                .clicked()
+                {
                     forward = true;
                 }
                 let standing = match &note {
@@ -161,6 +165,10 @@ impl Scriva {
                 });
             });
             ui.add_space(6.0);
+            // Measured from inside: a panel nested in the toolbar's panel
+            // reports a rectangle of no height, and a bar of no height
+            // holds nothing — its Enter went to the document.
+            ui.min_rect()
         });
 
         if let Some(finder) = &mut self.finder {
@@ -174,7 +182,7 @@ impl Scriva {
         // Anything in the bar holding the keyboard is the bar holding it: a
         // button pressed there keeps it, as a dialog's does, rather than
         // passing the next keystroke to a document whose caret is not showing.
-        let bar = panel.response.rect;
+        let bar = panel.inner;
         let focused_now = ui
             .memory(|m| m.focused())
             .and_then(|id| ui.ctx().read_response(id))

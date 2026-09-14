@@ -40,6 +40,7 @@ pub const WINDOW: egui::Vec2 = egui::vec2(1600.0, 1000.0);
 /// would give the application, and a way to run frames through it.
 pub struct Driver {
     ctx: egui::Context,
+    window: egui::Vec2,
 }
 
 impl Default for Driver {
@@ -57,7 +58,19 @@ impl Driver {
         let ctx = egui::Context::default();
         crate::fonts::register(&ctx, &[]);
         shell::theme(&ctx);
-        Driver { ctx }
+        Driver {
+            ctx,
+            window: WINDOW,
+        }
+    }
+
+    /// The same, in a window of another size — for what a toolbar does when
+    /// it does not fit.
+    pub fn sized(window: egui::Vec2) -> Driver {
+        Driver {
+            window,
+            ..Driver::new()
+        }
     }
 
     pub fn ctx(&self) -> &egui::Context {
@@ -84,7 +97,7 @@ impl Driver {
         time: Option<f64>,
     ) -> Vec<egui::epaint::ClippedShape> {
         let input = egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, WINDOW)),
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, self.window)),
             events,
             time,
             ..Default::default()
@@ -110,6 +123,20 @@ impl Driver {
     pub fn press<A: DocumentApp>(&self, app: &mut A, spec: &str) {
         let (key, modifiers) = key_spec(spec).unwrap_or_else(|why| panic!("{why}"));
         self.key(app, key, modifiers);
+    }
+
+    /// A click of the pointer at a place in the window: the press in one
+    /// frame and the release in the next, which is the least a click is.
+    pub fn click<A: DocumentApp>(&self, app: &mut A, at: egui::Pos2) {
+        let button = |pressed: bool| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        self.frame(app, vec![egui::Event::PointerMoved(at), button(true)]);
+        self.frame(app, vec![button(false)]);
+        self.settle(app);
     }
 
     /// Text, as typed: one frame carrying it, the way a paste or a burst of

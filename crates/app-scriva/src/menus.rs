@@ -11,17 +11,12 @@
 
 use ui_kit::{egui, menu};
 
-use crate::icons::{self, Icon};
 use wp_model::prop::Justify;
 use wp_model::units::{HalfPoint, Line240, Twips};
 
 use crate::app::{Command, Scriva};
-
-/// Font sizes the size box offers — Word's own list, in half-points because
-/// the list has 10.5 in it and a whole-point list cannot say so.
-const SIZES: [i32; 17] = [
-    16, 18, 20, 21, 22, 24, 28, 32, 36, 40, 44, 48, 56, 64, 72, 96, 144,
-];
+use crate::commands::shortcut;
+use crate::toolbar::{HIGHLIGHTS, PALETTE, SIZES};
 
 /// Faces the font menu offers: the classic trio the generic families always
 /// resolve, and the names in `ui-kit`'s exact-face table — so what the menu
@@ -58,43 +53,6 @@ const FAMILIES: [&str; 27] = [
     "Verdana",
 ];
 
-/// Word's standard-colours row, under Word's own names.
-const PALETTE: [(&str, [u8; 3]); 13] = [
-    ("Black", [0x00, 0x00, 0x00]),
-    ("Dark Red", [0xC0, 0x00, 0x00]),
-    ("Red", [0xFF, 0x00, 0x00]),
-    ("Orange", [0xFF, 0xC0, 0x00]),
-    ("Yellow", [0xFF, 0xFF, 0x00]),
-    ("Light Green", [0x92, 0xD0, 0x50]),
-    ("Green", [0x00, 0xB0, 0x50]),
-    ("Light Blue", [0x00, 0xB0, 0xF0]),
-    ("Blue", [0x00, 0x70, 0xC0]),
-    ("Dark Blue", [0x00, 0x20, 0x60]),
-    ("Purple", [0x70, 0x30, 0xA0]),
-    ("Gray", [0x80, 0x80, 0x80]),
-    ("White", [0xFF, 0xFF, 0xFF]),
-];
-
-/// The marker-pen palette in Word's gallery order, under the names Word's
-/// tooltips use — which are not the names the attribute values use.
-const HIGHLIGHTS: [(&str, wp_model::Highlight); 15] = [
-    ("Yellow", wp_model::Highlight::Yellow),
-    ("Bright Green", wp_model::Highlight::Green),
-    ("Turquoise", wp_model::Highlight::Cyan),
-    ("Pink", wp_model::Highlight::Magenta),
-    ("Blue", wp_model::Highlight::Blue),
-    ("Red", wp_model::Highlight::Red),
-    ("Dark Blue", wp_model::Highlight::DarkBlue),
-    ("Teal", wp_model::Highlight::DarkCyan),
-    ("Green", wp_model::Highlight::DarkGreen),
-    ("Violet", wp_model::Highlight::DarkMagenta),
-    ("Dark Red", wp_model::Highlight::DarkRed),
-    ("Dark Yellow", wp_model::Highlight::DarkYellow),
-    ("Gray 50%", wp_model::Highlight::DarkGray),
-    ("Gray 25%", wp_model::Highlight::LightGray),
-    ("Black", wp_model::Highlight::Black),
-];
-
 impl Scriva {
     pub(crate) fn menus(&mut self, ui: &mut egui::Ui) -> Option<Command> {
         // Everything the menus need, read before the bar is drawn: a menu
@@ -111,15 +69,17 @@ impl Scriva {
         let (orientation, paper, margins) = self.page_setup();
         let in_band = self.editing_band();
         let (has_header, has_footer) = self.has_bands();
+        let face = self.face_at();
+        let size = self.size_at();
 
         menu::bar(ui, |ui| {
             let mut chosen = None;
 
             menu::top(ui, "&File", |ui| {
-                if menu::item(ui, "&New", "Ctrl+N").clicked() {
+                if menu::item(ui, "&New", shortcut(&Command::New)).clicked() {
                     chosen = Some(Command::New);
                 }
-                if menu::item(ui, "&Open…", "Ctrl+O").clicked() {
+                if menu::item(ui, "&Open…", shortcut(&Command::Open)).clicked() {
                     chosen = Some(Command::Open);
                 }
                 menu::sub(ui, "&Recent", |ui| {
@@ -142,60 +102,60 @@ impl Scriva {
                     }
                 });
                 menu::sep(ui);
-                if menu::item(ui, "&Save", "Ctrl+S").clicked() {
+                if menu::item(ui, "&Save", shortcut(&Command::Save)).clicked() {
                     chosen = Some(Command::Save);
                 }
-                if menu::item(ui, "Save &As…", "Ctrl+Shift+S").clicked() {
+                if menu::item(ui, "Save &As…", shortcut(&Command::SaveAs)).clicked() {
                     chosen = Some(Command::SaveAs);
                 }
                 menu::sep(ui);
-                if menu::item(ui, "&Print…", "Ctrl+P").clicked() {
+                if menu::item(ui, "&Print…", shortcut(&Command::Print)).clicked() {
                     chosen = Some(Command::Print);
                 }
                 if menu::item(ui, "Export as P&DF…", "").clicked() {
                     chosen = Some(Command::ExportPdf);
                 }
                 menu::sep(ui);
-                if menu::item(ui, "&Close", "Ctrl+W").clicked() {
+                if menu::item(ui, "&Close", shortcut(&Command::Close)).clicked() {
                     chosen = Some(Command::Close);
                 }
-                if menu::item(ui, "E&xit", "Alt+F4").clicked() {
+                if menu::item(ui, "E&xit", shortcut(&Command::Exit)).clicked() {
                     chosen = Some(Command::Exit);
                 }
             });
 
             menu::top(ui, "&Edit", |ui| {
                 ui.add_enabled_ui(undo, |ui| {
-                    if menu::item(ui, "&Undo", "Ctrl+Z").clicked() {
+                    if menu::item(ui, "&Undo", shortcut(&Command::Undo)).clicked() {
                         chosen = Some(Command::Undo);
                     }
                 });
                 ui.add_enabled_ui(redo, |ui| {
-                    if menu::item(ui, "&Redo", "Ctrl+Y").clicked() {
+                    if menu::item(ui, "&Redo", shortcut(&Command::Redo)).clicked() {
                         chosen = Some(Command::Redo);
                     }
                 });
                 menu::sep(ui);
                 ui.add_enabled_ui(selected, |ui| {
-                    if menu::item(ui, "Cu&t", "Ctrl+X").clicked() {
+                    if menu::item(ui, "Cu&t", shortcut(&Command::Cut)).clicked() {
                         chosen = Some(Command::Cut);
                     }
-                    if menu::item(ui, "&Copy", "Ctrl+C").clicked() {
+                    if menu::item(ui, "&Copy", shortcut(&Command::Copy)).clicked() {
                         chosen = Some(Command::Copy);
                     }
                 });
-                if menu::item(ui, "&Paste", "Ctrl+V").clicked() {
+                if menu::item(ui, "&Paste", shortcut(&Command::Paste)).clicked() {
                     chosen = Some(Command::Paste);
                 }
                 menu::sep(ui);
-                if menu::item(ui, "&Find…", "Ctrl+F").clicked() {
+                if menu::item(ui, "&Find…", shortcut(&Command::Find)).clicked() {
                     chosen = Some(Command::Find);
                 }
-                if menu::item(ui, "R&eplace…", "Ctrl+H").clicked() {
+                if menu::item(ui, "R&eplace…", shortcut(&Command::Replace)).clicked() {
                     chosen = Some(Command::Replace);
                 }
                 menu::sep(ui);
-                if menu::item(ui, "Select &All", "Ctrl+A").clicked() {
+                if menu::item(ui, "Select &All", shortcut(&Command::SelectAll)).clicked() {
                     chosen = Some(Command::SelectAll);
                 }
             });
@@ -230,7 +190,14 @@ impl Scriva {
                     });
                 }
                 menu::sep(ui);
-                if menu::check(ui, "Formatting &Marks", "Ctrl+Shift+8", marks).clicked() {
+                if menu::check(
+                    ui,
+                    "Formatting &Marks",
+                    shortcut(&Command::ShowMarks),
+                    marks,
+                )
+                .clicked()
+                {
                     chosen = Some(Command::ShowMarks);
                 }
                 if menu::check(ui, "Tracked &Changes", "", revisions).clicked() {
@@ -242,13 +209,13 @@ impl Scriva {
             });
 
             menu::top(ui, "F&ormat", |ui| {
-                if menu::item(ui, "&Bold", "Ctrl+B").clicked() {
+                if menu::item(ui, "&Bold", shortcut(&Command::Bold)).clicked() {
                     chosen = Some(Command::Bold);
                 }
-                if menu::item(ui, "&Italic", "Ctrl+I").clicked() {
+                if menu::item(ui, "&Italic", shortcut(&Command::Italic)).clicked() {
                     chosen = Some(Command::Italic);
                 }
-                if menu::item(ui, "&Underline", "Ctrl+U").clicked() {
+                if menu::item(ui, "&Underline", shortcut(&Command::Underline)).clicked() {
                     chosen = Some(Command::Underline);
                 }
                 if menu::item(ui, "Strike&through", "").clicked() {
@@ -263,10 +230,10 @@ impl Scriva {
                     chosen = Some(Command::Watermark);
                 }
                 menu::sep(ui);
-                if menu::item(ui, "Su&perscript", "Ctrl+Shift+=").clicked() {
+                if menu::item(ui, "Su&perscript", shortcut(&Command::Superscript)).clicked() {
                     chosen = Some(Command::Superscript);
                 }
-                if menu::item(ui, "Subsc&ript", "Ctrl+=").clicked() {
+                if menu::item(ui, "Subsc&ript", shortcut(&Command::Subscript)).clicked() {
                     chosen = Some(Command::Subscript);
                 }
                 menu::sep(ui);
@@ -278,8 +245,9 @@ impl Scriva {
                         .max_height(340.0)
                         .show(ui, |ui| {
                             for name in FAMILIES {
-                                if menu::item(ui, name, "").clicked() {
-                                    chosen = Some(Command::Font(name));
+                                let on = face.as_deref() == Some(name);
+                                if menu::check(ui, name, "", on).clicked() {
+                                    chosen = Some(Command::Font(name.to_owned()));
                                 }
                             }
                         });
@@ -291,15 +259,16 @@ impl Scriva {
                         } else {
                             format!("{}.5", half / 2)
                         };
-                        if menu::item(ui, &label, "").clicked() {
+                        let on = size == Some(HalfPoint(half));
+                        if menu::check(ui, &label, "", on).clicked() {
                             chosen = Some(Command::Size(HalfPoint(half)));
                         }
                     }
                 });
-                if menu::item(ui, "&Grow", "Ctrl+Shift+>").clicked() {
+                if menu::item(ui, "&Grow", shortcut(&Command::Grow)).clicked() {
                     chosen = Some(Command::Grow);
                 }
-                if menu::item(ui, "S&hrink", "Ctrl+Shift+<").clicked() {
+                if menu::item(ui, "S&hrink", shortcut(&Command::Shrink)).clicked() {
                     chosen = Some(Command::Shrink);
                 }
                 menu::sep(ui);
@@ -321,14 +290,16 @@ impl Scriva {
                     if menu::item(ui, "&None", "").clicked() {
                         chosen = Some(Command::Highlight(wp_model::Highlight::None));
                     }
-                    for (name, value) in HIGHLIGHTS {
+                    for (name, value, _) in HIGHLIGHTS {
                         if menu::item(ui, name, "").clicked() {
                             chosen = Some(Command::Highlight(value));
                         }
                     }
                 });
                 menu::sep(ui);
-                if menu::item(ui, "&Clear Formatting", "Ctrl+Space").clicked() {
+                if menu::item(ui, "&Clear Formatting", shortcut(&Command::ClearFormatting))
+                    .clicked()
+                {
                     chosen = Some(Command::ClearFormatting);
                 }
                 menu::sep(ui);
@@ -347,35 +318,56 @@ impl Scriva {
                     chosen = Some(Command::Numbers);
                 }
                 menu::sep(ui);
-                if menu::item(ui, "Align &Left", "Ctrl+L").clicked() {
+                if menu::item(ui, "Align &Left", shortcut(&Command::Align(Justify::Start)))
+                    .clicked()
+                {
                     chosen = Some(Command::Align(Justify::Start));
                 }
-                if menu::item(ui, "&Centre", "Ctrl+E").clicked() {
+                if menu::item(ui, "&Centre", shortcut(&Command::Align(Justify::Center))).clicked() {
                     chosen = Some(Command::Align(Justify::Center));
                 }
-                if menu::item(ui, "Align &Right", "Ctrl+R").clicked() {
+                if menu::item(ui, "Align &Right", shortcut(&Command::Align(Justify::End))).clicked()
+                {
                     chosen = Some(Command::Align(Justify::End));
                 }
-                if menu::item(ui, "&Justify", "Ctrl+J").clicked() {
+                if menu::item(ui, "&Justify", shortcut(&Command::Align(Justify::Both))).clicked() {
                     chosen = Some(Command::Align(Justify::Both));
                 }
                 menu::sep(ui);
                 menu::sub(ui, "Line &Spacing", |ui| {
-                    if menu::item(ui, "&Single", "Ctrl+1").clicked() {
+                    if menu::item(
+                        ui,
+                        "&Single",
+                        shortcut(&Command::LineSpacing(Line240::SINGLE)),
+                    )
+                    .clicked()
+                    {
                         chosen = Some(Command::LineSpacing(Line240::SINGLE));
                     }
-                    if menu::item(ui, "&1.5 Lines", "Ctrl+5").clicked() {
+                    if menu::item(
+                        ui,
+                        "&1.5 Lines",
+                        shortcut(&Command::LineSpacing(Line240::ONE_AND_A_HALF)),
+                    )
+                    .clicked()
+                    {
                         chosen = Some(Command::LineSpacing(Line240::ONE_AND_A_HALF));
                     }
-                    if menu::item(ui, "&Double", "Ctrl+2").clicked() {
+                    if menu::item(
+                        ui,
+                        "&Double",
+                        shortcut(&Command::LineSpacing(Line240::DOUBLE)),
+                    )
+                    .clicked()
+                    {
                         chosen = Some(Command::LineSpacing(Line240::DOUBLE));
                     }
                 });
                 menu::sep(ui);
-                if menu::item(ui, "&Increase Indent", "Ctrl+M").clicked() {
+                if menu::item(ui, "&Increase Indent", shortcut(&Command::Indent(1))).clicked() {
                     chosen = Some(Command::Indent(1));
                 }
-                if menu::item(ui, "&Decrease Indent", "Ctrl+Shift+M").clicked() {
+                if menu::item(ui, "&Decrease Indent", shortcut(&Command::Indent(-1))).clicked() {
                     chosen = Some(Command::Indent(-1));
                 }
                 menu::sep(ui);
@@ -433,17 +425,24 @@ impl Scriva {
                     }
                 });
                 menu::sep(ui);
-                if menu::item(ui, "Page &Break", "Ctrl+Enter").clicked() {
+                if menu::item(ui, "Page &Break", shortcut(&Command::PageBreak)).clicked() {
                     chosen = Some(Command::PageBreak);
                 }
             });
 
             menu::top(ui, "&Review", |ui| {
-                if menu::check(ui, "&Track Changes", "Ctrl+Shift+E", tracking).clicked() {
+                if menu::check(
+                    ui,
+                    "&Track Changes",
+                    shortcut(&Command::TrackChanges),
+                    tracking,
+                )
+                .clicked()
+                {
                     chosen = Some(Command::TrackChanges);
                 }
                 menu::sep(ui);
-                if menu::item(ui, "&Next Change", "Alt+F7").clicked() {
+                if menu::item(ui, "&Next Change", shortcut(&Command::NextChange)).clicked() {
                     chosen = Some(Command::NextChange);
                 }
                 if menu::item(ui, "&Accept", "").clicked() {
@@ -460,7 +459,7 @@ impl Scriva {
                     chosen = Some(Command::RejectAll);
                 }
                 menu::sep(ui);
-                if menu::item(ui, "New &Comment", "Ctrl+Alt+M").clicked() {
+                if menu::item(ui, "New &Comment", shortcut(&Command::AddComment)).clicked() {
                     chosen = Some(Command::AddComment);
                 }
                 if menu::item(ui, "&Delete Comment", "").clicked() {
@@ -478,7 +477,13 @@ impl Scriva {
                 if menu::item(ui, "&Table…", "").clicked() {
                     chosen = Some(Command::InsertTable);
                 }
-                if menu::item(ui, "&Update Table of Contents", "F9").clicked() {
+                if menu::item(
+                    ui,
+                    "&Update Table of Contents",
+                    shortcut(&Command::UpdateToc),
+                )
+                .clicked()
+                {
                     chosen = Some(Command::UpdateToc);
                 }
                 menu::sep(ui);
@@ -577,62 +582,6 @@ impl Scriva {
 
             chosen
         })
-    }
-
-    /// The row of formatting controls under the menu bar.
-    ///
-    /// Icons rather than words, and *drawn* icons rather than typed ones — see
-    /// `crate::icons`.
-    pub(crate) fn format_bar(&mut self, ui: &mut egui::Ui) -> Option<Command> {
-        let mut chosen = None;
-        let (undo, redo) = self.can_undo_redo();
-        let (bold, italic, underline) = self.emphasis();
-        let alignment = self.alignment();
-
-        ui.horizontal(|ui| {
-            ui.add_enabled_ui(undo, |ui| {
-                if icons::button(ui, Icon::Undo, false, "Undo (Ctrl+Z)") {
-                    chosen = Some(Command::Undo);
-                }
-            });
-            ui.add_enabled_ui(redo, |ui| {
-                if icons::button(ui, Icon::Redo, false, "Redo (Ctrl+Y)") {
-                    chosen = Some(Command::Redo);
-                }
-            });
-            ui.separator();
-
-            if icons::emphasis(ui, "B", bold, "Bold (Ctrl+B)") {
-                chosen = Some(Command::Bold);
-            }
-            if icons::emphasis(ui, "I", italic, "Italic (Ctrl+I)") {
-                chosen = Some(Command::Italic);
-            }
-            if icons::emphasis(ui, "U", underline, "Underline (Ctrl+U)") {
-                chosen = Some(Command::Underline);
-            }
-            ui.separator();
-
-            for (icon, justify, tip) in [
-                (Icon::AlignLeft, Justify::Start, "Align left (Ctrl+L)"),
-                (Icon::AlignCenter, Justify::Center, "Centre (Ctrl+E)"),
-                (Icon::AlignRight, Justify::End, "Align right (Ctrl+R)"),
-                (Icon::Justify, Justify::Both, "Justify (Ctrl+J)"),
-            ] {
-                if icons::button(ui, icon, alignment == Some(justify), tip) {
-                    chosen = Some(Command::Align(justify));
-                }
-            }
-            ui.separator();
-
-            if icons::button(ui, Icon::Shrink, false, "Shrink (Ctrl+Shift+<)") {
-                chosen = Some(Command::Shrink);
-            }
-            if icons::button(ui, Icon::Grow, false, "Grow (Ctrl+Shift+>)") {
-                chosen = Some(Command::Grow);
-            }
-        });
-        chosen
     }
 }
 

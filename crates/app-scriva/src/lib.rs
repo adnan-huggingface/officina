@@ -9,6 +9,7 @@
 pub mod app;
 pub mod author;
 pub mod clip;
+pub mod commands;
 pub mod drawings;
 pub mod edit;
 pub mod find;
@@ -20,4 +21,5 @@ pub mod publish;
 pub mod revise;
 pub mod shaper;
 pub mod text;
+mod toolbar;
 pub mod view;

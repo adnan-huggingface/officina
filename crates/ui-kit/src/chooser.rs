@@ -59,7 +59,13 @@ impl<T> Asking<T> {
     ) -> Asking<T> {
         if crate::headless::active() {
             crate::headless::refuse_chooser();
-            return Asking::new(|| None, then);
+            // Answered on the spot rather than from a thread: a refusal is
+            // not a question, and a test that asked and looked two frames
+            // later found the thread had not yet run when the suite was
+            // busy — a race that was only ever the harness's.
+            let (tell, answer) = mpsc::channel();
+            let _ = tell.send(None);
+            return Asking { answer, then };
         }
         Asking::new(chooser, then)
     }
