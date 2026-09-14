@@ -33,7 +33,7 @@ fn main() -> ExitCode {
         "perf" => perf(rest),
         "compare" => compare(rest),
         "author" => author(),
-        "check" => check(),
+        "check" => check(rest),
         "help" | "--help" | "-h" => {
             usage();
             Ok(())
@@ -55,8 +55,9 @@ fn usage() {
         "\
 cargo xtask <command>
 
-  check      fmt --check, clippy -D warnings, the test suite, and the
-             layout of every corpus document against LAYOUT.md
+  check      fmt, clippy -D warnings, the test suite, and the layout of
+             every corpus document against LAYOUT.md (--quick: clippy and
+             the tests of the crates the working tree has changed only)
   dist       release build of both apps
   package    dist, then a versioned zip in target/dist/
   install    dist, then copy binaries to ~/.local/bin
@@ -76,17 +77,42 @@ cargo xtask <command>
     );
 }
 
-fn check() -> Result<(), String> {
-    cargo(&["fmt", "--all", "--check"])?;
-    cargo(&[
-        "clippy",
-        "--workspace",
-        "--all-targets",
-        "--",
-        "-D",
-        "warnings",
-    ])?;
-    cargo(&["test", "--workspace"])?;
+fn check(args: &[String]) -> Result<(), String> {
+    let quick = args.iter().any(|a| a == "--quick");
+    if let Some(other) = args.iter().find(|a| *a != "--quick") {
+        return Err(format!("unknown option `{other}` for check; only --quick"));
+    }
+    // Formatted rather than checked. A gate that fails on formatting is a
+    // gate run twice for every change, the second time to learn nothing —
+    // rustfmt has one answer and this applies it, and what it changed is in
+    // the diff for the commit to carry.
+    cargo(&["fmt", "--all"])?;
+    // The quick tier is for the middle of the work, when the question is
+    // whether the last edit broke the crate it touched; the whole workspace
+    // is for the commit, because a change in `wp-model` breaks `scriva`
+    // without touching a line of it, and only the whole run sees that.
+    let packages = match quick {
+        true => changed_packages()?,
+        false => Vec::new(),
+    };
+    let mut clippy = vec!["clippy"];
+    let mut test = vec!["test"];
+    match packages.as_slice() {
+        [] => {
+            clippy.push("--workspace");
+            test.push("--workspace");
+        }
+        changed => {
+            println!("check --quick: {}", changed.join(", "));
+            for package in changed {
+                clippy.extend(["-p", package]);
+                test.extend(["-p", package]);
+            }
+        }
+    }
+    clippy.extend(["--all-targets", "--", "-D", "warnings"]);
+    cargo(&clippy)?;
+    cargo(&test)?;
     // Where the document lands on the page, against Word's own rendering of the
     // same file — held to `LAYOUT.md`. It belongs here rather than beside it
     // because a layout regression is not a thing anybody notices: the tests all
@@ -96,6 +122,64 @@ fn check() -> Result<(), String> {
     // Office on it. Eight seconds, in debug, on the build the tests just made.
     cargo(&["run", "-q", "-p", "wp-compare", "--", "--check"])?;
     Ok(())
+}
+
+/// The packages whose files the working tree has changed since the last
+/// commit — or, with nothing changed, the ones the last commit touched.
+///
+/// A change outside any crate — the workspace manifest, the corpus, a
+/// script — is a change to everything, and answers with an empty list, which
+/// the caller reads as the whole workspace. Read from `git` and the crates'
+/// own manifests rather than from cargo metadata, since this crate stays free
+/// of dependencies and a package's name is one line of its `Cargo.toml`.
+fn changed_packages() -> Result<Vec<String>, String> {
+    let root = workspace_root();
+    let git = |args: &[&str]| -> Result<String, String> {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(&root)
+            .output()
+            .map_err(|e| format!("failed to run git: {e}"))?;
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    };
+    let mut files: Vec<String> = git(&["status", "--porcelain", "--untracked-files=all"])?
+        .lines()
+        .filter_map(|line| line.get(3..))
+        .map(|path| path.rsplit(" -> ").next().unwrap_or(path).to_owned())
+        .collect();
+    if files.is_empty() {
+        files = git(&["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"])?
+            .lines()
+            .map(str::to_owned)
+            .collect();
+    }
+    let mut packages = Vec::new();
+    for file in files {
+        let Some(rest) = file.strip_prefix("crates/") else {
+            return Ok(Vec::new());
+        };
+        let Some((dir, _)) = rest.split_once('/') else {
+            return Ok(Vec::new());
+        };
+        let manifest = root.join("crates").join(dir).join("Cargo.toml");
+        let text = std::fs::read_to_string(&manifest)
+            .map_err(|e| format!("{}: {e}", manifest.display()))?;
+        let name = text
+            .lines()
+            .find_map(|line| {
+                line.trim()
+                    .strip_prefix("name = ")?
+                    .trim()
+                    .strip_prefix('"')?
+                    .strip_suffix('"')
+            })
+            .ok_or_else(|| format!("{}: no package name", manifest.display()))?
+            .to_owned();
+        if !packages.contains(&name) {
+            packages.push(name);
+        }
+    }
+    Ok(packages)
 }
 
 fn build_dist() -> Result<(), String> {

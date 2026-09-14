@@ -5094,3 +5094,31 @@ Enter puts a table in the document and types no letter on the way, and
 Calx's Alt+E, G, C5, Enter lands the cursor on C5 and nothing in the grid.
 The display is still what the file choosers and the look of a page need, and
 nothing else.
+
+## The gate formats in place, and has a quick tier for the middle of the work (2026-09-13)
+
+The handoff's fourth wish. The full gate is minutes, and the last session
+ran it six times, twice only to be told about formatting — rustfmt has one
+answer, and a gate that fails on it is a gate run again to learn nothing.
+`cargo xtask check` now runs `cargo fmt --all` rather than `--check`, and
+what it changed goes into the commit's diff with everything else. And
+`--quick` runs clippy and the tests of the crates the working tree has
+changed only — read off `git status` and the crates' own manifests, so the
+task crate stays free of dependencies — with the layout check as before,
+since that is eight seconds. A change outside any crate is a change to
+everything and runs the whole workspace, as does the commit: a change in
+`wp-model` breaks `scriva` without touching a line of it, and only the whole
+run sees that.
+
+## A probe document states which Word it is for (2026-09-13)
+
+The handoff's sixth item. `tools/probe/makeprobes.py` wrote no
+`settings.xml`, and a document that states no compatibility mode is a Word
+2007 document to Word, laid out with other metrics: Calibri and Carlito, which
+break identically in mode 15, broke two points apart in mode 12, and every
+probe measured before today was a mode-12 probe. Each probe now carries the
+`compatibilityMode` 15 that Word's own documents and everything Scriva writes
+carry. The bases in `measured_base()` were taken from the old probes and are
+left as they are, since the documents they answer for are mode 15 and the
+records they hold have not moved; a base measured again is a base measured
+in the mode the documents are in.
