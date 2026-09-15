@@ -269,17 +269,11 @@ impl Scriva {
         let from = edit::table_cell_at(&self.document, self.scope, start);
         let to = edit::table_cell_at(&self.document, self.scope, end);
         let (Some((index, at_row, first)), Some((index_end, row_end, last))) = (from, to) else {
-            self.message = Some((
-                "Not in a table".to_owned(),
-                "Select across the cells of one row first, then try again.".to_owned(),
-            ));
+            self.say("Not in a table: select across the cells of one row first");
             return;
         };
         if index != index_end || at_row != row_end || first == last {
-            self.message = Some((
-                "Nothing to merge".to_owned(),
-                "Select across two or more cells of one row first, then try again.".to_owned(),
-            ));
+            self.say("Nothing to merge: select across two or more cells of one row first");
             return;
         }
         self.history.push(

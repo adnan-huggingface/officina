@@ -549,6 +549,15 @@ pub fn named_face(name: &str, bold: bool, italic: bool) -> Option<egui::FontFami
         .cloned()
 }
 
+/// Whether `family` is bound in `ctx`. The tables behind [`named_face`] are
+/// process-wide and a context is not: a name registered on one context —
+/// a test's, say — is a name another context panics on when asked to set
+/// text in it, so a face is checked against the context it will be drawn
+/// on before it is used.
+pub fn bound(ctx: &egui::Context, family: &egui::FontFamily) -> bool {
+    ctx.fonts(|fonts| fonts.families().contains(family))
+}
+
 /// The registered face for exactly this name, substitution not applied.
 ///
 /// This is how a caller keying its own tables — measured line pitches — asks

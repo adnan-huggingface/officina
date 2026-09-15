@@ -107,6 +107,24 @@ impl Driver {
         out.shapes
     }
 
+    /// Files dropped on the window, in a frame of their own — what the
+    /// desktop sends when a document is dragged out of a file manager.
+    pub fn drop_files<A: DocumentApp>(&self, app: &mut A, paths: &[std::path::PathBuf]) {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, self.window)),
+            dropped_files: paths
+                .iter()
+                .map(|path| {
+                    let file: egui::DroppedFileHandle = std::sync::Arc::new(Dropped(path.clone()));
+                    file
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let mut out = self.ctx.run_ui(input, |ui| shell::frame(app, ui));
+        out.textures_delta.clear();
+    }
+
     /// A frame in which nothing is pressed — what a window does between keys,
     /// and what a menu or a dialog opened last frame needs in order to appear.
     pub fn settle<A: DocumentApp>(&self, app: &mut A) {
@@ -157,6 +175,20 @@ impl Driver {
         self.settle(app);
         self.key(app, letter(item), egui::Modifiers::NONE);
         self.settle(app);
+    }
+}
+
+/// A file as the desktop drops one: its path, and its bytes read from it.
+#[derive(Debug)]
+struct Dropped(std::path::PathBuf);
+
+impl egui::DroppedFile for Dropped {
+    fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+
+    fn bytes(&self) -> Result<Vec<u8>, String> {
+        std::fs::read(&self.0).map_err(|why| why.to_string())
     }
 }
 

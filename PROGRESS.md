@@ -5712,3 +5712,36 @@ rectangle with height; it fails against the old panel. The rule is in
 LEARNINGS.md, and the story's `bugs/find-bar-never-drawn.md` has the
 account.
 
+## Three sizes of telling, a document that can be dropped, and a badge that says where the desk is (2026-09-15)
+
+Phase 10 of the redesign. D13's three tiers are in `app/notices.rs`: a
+status notice — one sentence at the left of the status bar, stamped with
+the clock on its first frame and gone four seconds later, a queue of one
+— a notice bar of `NOTICE` bands under the toolbar for facts about this
+document, each with its one action and its `×`, cleared when the document
+changes, and the modal, which `dialog::message` keeps for questions and
+failures. Every message was reassigned: a save says `Saved report.docx`,
+a copy says `Copied`, a posted comment says `Comment added`; "Opened as a
+copy" and "Cannot print" are notice bars, the print one with `Export…` on
+it; "No tracked changes", "Not in a table", "Nothing to merge", "Nothing
+selected", "No comment at the caret", "No such page", the comment refused
+in a band and the edit Track Changes cannot record are status notices;
+"Cannot open", "Cannot save", "Cannot export", "Save changes?" and the
+format warning stay boxes, because those stop an action or lose work.
+Six older tests that asserted the box now assert the notice.
+
+A file dropped on the window opens through the same guard Open takes —
+`Driver::drop_files` sends what the desktop sends, and the test holds a
+dirty document to asking first — and a dropped picture goes in at the
+caret. The status bar is D15's: the page count and the word count as
+before, the count reading `12 of 1,204 words` with a selection; chips for
+Track changes, the band being edited and the table the caret is in; the
+notice; and at the right the fonts-substituted chip and the zoom corner,
+whose percentage now opens a menu of presets, the two fits and Custom….
+The desk shows a page badge — `Page 4 of 12` in a chrome pill at its
+right edge — while it is scrolled and for 800 ms after, fading, and not
+when the caret moved it. Named faces are checked against the context they
+are drawn on before a menu or a preview sets text in them: the tables
+behind them are process-wide and a context is not, and a test's second
+context panicked on a face the first had registered.
+

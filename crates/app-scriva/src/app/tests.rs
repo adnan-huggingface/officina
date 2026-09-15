@@ -666,13 +666,14 @@ fn the_table_menu_by_its_letters() {
     // merge, and Enter dismisses the saying.
     drive.menu(&mut app, 'A', 'G');
     drive.settle(&mut app);
-    assert_eq!(
-        app.message.as_ref().map(|(title, _)| title.as_str()),
-        Some("Nothing to merge")
+    assert!(
+        app.notice
+            .as_ref()
+            .is_some_and(|(text, _)| text.starts_with("Nothing to merge")),
+        "the status bar says so: {:?}",
+        app.notice
     );
-    drive.press(&mut app, "Enter");
-    drive.settle(&mut app);
-    assert!(app.message.is_none(), "Enter dismissed it");
+    assert!(app.message.is_none(), "and no box stands in the way");
     drive.menu(&mut app, 'A', 'M');
     assert!(
         app.cell_margin_draft.is_some(),
@@ -1512,8 +1513,8 @@ fn merging_needs_a_selection_across_cells_of_one_row() {
     app.insert_table(2, 2);
     // One cell: nothing to merge.
     app.run(Command::MergeCells);
-    assert!(app.message.is_some(), "a caret in one cell is told why");
-    app.message = None;
+    assert!(app.notice.is_some(), "a caret in one cell is told why");
+    app.notice = None;
     // Two cells in different rows: not a merge either.
     app.selection = Selection {
         anchor: Caret {
@@ -1526,7 +1527,7 @@ fn merging_needs_a_selection_across_cells_of_one_row() {
         },
     };
     app.run(Command::MergeCells);
-    assert!(app.message.is_some());
+    assert!(app.notice.is_some());
     let Block::Table(table) = &app.document.body[0] else {
         panic!("the table is the first block");
     };
@@ -2023,7 +2024,7 @@ fn a_comment_asked_for_in_a_header_is_refused_rather_than_put_somewhere_else() {
     app.run(Command::AddComment);
 
     assert!(app.draft.is_none(), "no draft opened");
-    assert!(app.message.is_some(), "and it said why");
+    assert!(app.notice.is_some(), "and it said why");
     assert!(app.document.comments.is_empty());
     assert!(app.editing_band(), "the band is left as it was");
 }
@@ -2286,8 +2287,9 @@ fn replace_all_reaches_the_headers_too() {
 fn the_table_menu_says_so_when_the_caret_is_not_in_a_table() {
     let mut app = app_with(&["just a paragraph"]);
     app.run(Command::TableBorders(false));
-    let (title, _) = app.message.as_ref().expect("it says why");
-    assert_eq!(title, "Not in a table");
+    let (text, _) = app.notice.as_ref().expect("it says why, in the status bar");
+    assert!(text.starts_with("Not in a table"), "{text}");
+    assert!(app.message.is_none(), "and no box");
     assert!(!app.history.can_undo(), "and nothing was recorded to undo");
 }
 
@@ -2909,8 +2911,8 @@ fn asking_to_size_nothing_says_so_rather_than_doing_nothing() {
     let mut app = app_with(&["ab"]);
     app.run(Command::PictureSize);
     assert!(app.size_draft.is_none(), "no box, because no picture");
-    let (title, _) = app.message.as_ref().expect("it says why");
-    assert_eq!(title, "Nothing selected");
+    let (text, _) = app.notice.as_ref().expect("it says why, in the status bar");
+    assert!(text.starts_with("Nothing selected"), "{text}");
 }
 
 #[test]
@@ -3393,7 +3395,7 @@ fn typing_with_track_changes_off_is_an_ordinary_edit() {
 fn accept_all_with_nothing_tracked_says_so_rather_than_doing_nothing() {
     let mut app = app_with(["plain"].as_slice());
     app.run(Command::AcceptAll);
-    assert!(app.message.is_some());
+    assert!(app.notice.is_some());
     assert!(!app.dirty);
 }
 
@@ -3445,7 +3447,7 @@ fn updating_a_table_of_contents_with_no_toc_field_says_so() {
     // has to be told why nothing happened.
     let mut app = app_with(&["body text"]);
     app.run(Command::UpdateToc);
-    assert!(app.message.is_some());
+    assert!(app.notice.is_some());
     assert!(!app.dirty, "and nothing was changed");
 }
 
@@ -4537,12 +4539,22 @@ fn print_by_menu_letters_says_where_printing_is() {
     let mut app = app_with(&["text"]);
     drive.settle(&mut app);
     drive.menu(&mut app, 'F', 'P');
-    let said = app.message.clone().expect("a message");
-    assert_eq!(said.0, "Cannot print");
-    assert!(said.1.contains("PDF"), "{}", said.1);
-    drive.press(&mut app, "Enter");
     drive.settle(&mut app);
-    assert!(app.message.is_none());
+    assert!(
+        app.message.is_none(),
+        "no box: a fact about this platform is not a question"
+    );
+    let notice = app.notices.first().expect("the notice bar says so");
+    assert!(notice.text.contains("Export a PDF"), "{}", notice.text);
+    assert_eq!(
+        notice.action.as_ref().map(|(_, command)| command),
+        Some(&Command::ExportPdf),
+        "with the way out on it"
+    );
+    // The same notice twice is one notice.
+    drive.menu(&mut app, 'F', 'P');
+    drive.settle(&mut app);
+    assert_eq!(app.notices.len(), 1);
 }
 
 /// The rectangles a frame painted, with their fill, in the order they were
@@ -5876,4 +5888,124 @@ fn the_find_bar_is_drawn_where_it_can_be_seen() {
             "{label} at {rect:?} is visible inside its clip {clip:?}"
         );
     }
+}
+
+/// A save says `Saved <name>` at the left of the status bar for four
+/// seconds — read off the driver's clock — and not after.
+#[test]
+fn a_save_says_so_in_the_status_for_four_seconds_and_not_after() {
+    let drive = ui_kit::drive::Driver::new();
+    let dir = scratch("status-notice");
+    let path = dir.join("said.docx");
+    let mut app = app_with(&["words"]);
+    app.path = Some(path.clone());
+    drive.settle(&mut app);
+    drive.frame_at(&mut app, Vec::new(), Some(100.0));
+    app.run(Command::Save);
+    assert!(path.is_file(), "the save wrote the file");
+    let shown = |app: &Scriva| app.notice.as_ref().map(|(text, _)| text.clone());
+    assert_eq!(shown(&app), Some("Saved said.docx".to_owned()));
+    // Stamped on its first frame, still there at 3.9 seconds, gone at 4.1.
+    drive.frame_at(&mut app, Vec::new(), Some(100.5));
+    assert_eq!(shown(&app), Some("Saved said.docx".to_owned()), "shown");
+    drive.frame_at(&mut app, Vec::new(), Some(104.4));
+    assert_eq!(
+        shown(&app),
+        Some("Saved said.docx".to_owned()),
+        "still shown at 3.9 s"
+    );
+    drive.frame_at(&mut app, Vec::new(), Some(104.6));
+    assert_eq!(shown(&app), None, "gone after four seconds");
+    // A new notice replaces the old: a queue of one.
+    app.say("first");
+    app.say("second");
+    drive.frame_at(&mut app, Vec::new(), Some(105.0));
+    assert_eq!(shown(&app), Some("second".to_owned()));
+}
+
+/// A document dropped on the window opens through the same guard Open
+/// takes: a clean document opens it at once, and a dirty one asks first.
+#[test]
+fn a_dropped_document_opens_through_the_unsaved_guard() {
+    let drive = ui_kit::drive::Driver::new();
+    let document = corpus_docx("comments.docx");
+    // Clean: it opens.
+    let mut app = app_with(&["fresh"]);
+    app.dirty = false;
+    drive.settle(&mut app);
+    drive.drop_files(&mut app, std::slice::from_ref(&document));
+    drive.settle(&mut app);
+    assert_eq!(
+        app.path.as_deref(),
+        Some(document.as_path()),
+        "the dropped document opened"
+    );
+    assert!(app.pending.is_none());
+    // Dirty: it asks, and Cancel keeps what was there.
+    let mut app = app_with(&["unsaved words"]);
+    app.dirty = true;
+    drive.settle(&mut app);
+    drive.drop_files(&mut app, std::slice::from_ref(&document));
+    drive.settle(&mut app);
+    assert!(
+        matches!(&app.pending, Some(Pending::Unsaved(command)) if **command == Command::Reopen(document.clone())),
+        "the guard asks first: {:?}",
+        app.pending
+    );
+    assert_eq!(app.document.paragraphs()[0].text(), "unsaved words");
+    drive.press(&mut app, "Escape");
+    drive.settle(&mut app);
+    assert!(app.pending.is_none(), "Cancel put the question away");
+    assert_eq!(
+        app.document.paragraphs()[0].text(),
+        "unsaved words",
+        "and kept the document"
+    );
+    assert!(app.path.is_none());
+}
+
+/// A `.doc` opened shows the copy notice in the bar under the toolbar,
+/// with no box to dismiss first, and its `×` takes it away.
+#[test]
+fn a_doc_opened_shows_the_notice_bar_and_no_box() {
+    let drive = ui_kit::drive::Driver::new();
+    let mut app = Scriva::new();
+    drive.settle(&mut app);
+    app.open_path(&corpus_doc("plain-paragraphs.doc"));
+    drive.settle(&mut app);
+    assert!(app.message.is_none(), "no box: {:?}", app.message);
+    let notice = app.notices.first().expect("the notice bar has the fact");
+    assert!(
+        notice
+            .text
+            .starts_with("Opened as a copy of plain-paragraphs.doc"),
+        "{}",
+        notice.text
+    );
+    assert!(
+        notice.text.contains("plain-paragraphs.docx"),
+        "{}",
+        notice.text
+    );
+    // Opening another document clears the bar: the fact was about that one.
+    app.open_path(&corpus_docx("comments.docx"));
+    drive.settle(&mut app);
+    assert!(
+        app.notices.is_empty(),
+        "the notice was about the other document"
+    );
+}
+
+/// A Word 97-2003 document from the corpus, by name.
+fn corpus_doc(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../corpus/doc")
+        .join(name)
+}
+
+/// A `.docx` from the corpus, by name.
+fn corpus_docx(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../corpus/docx")
+        .join(name)
 }

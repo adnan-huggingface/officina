@@ -7,12 +7,13 @@
 
 use std::path::{Path, PathBuf};
 
-use ui_kit::{dialog, egui, AppId, DocumentApp, Recent, SCRIVA};
+use ui_kit::{dialog, egui, menu, AppId, DocumentApp, Recent, SCRIVA};
 use wp_model::doc::{Block, Document, Paragraph};
 use wp_model::prop::{Justify, LineSpacing, Toggle};
 use wp_model::units::{HalfPoint, Line240, Twips};
 
 use crate::clip;
+use crate::commands::tooltip;
 use crate::edit::{self, Caret, History, Selection};
 use crate::find::{self, Finder};
 use crate::shaper::Egui;
@@ -26,6 +27,7 @@ mod find_bar;
 mod font_dialog;
 mod goto;
 mod help;
+mod notices;
 mod page_setup;
 mod strips;
 mod surface;
@@ -34,6 +36,7 @@ mod watermark;
 mod word_count;
 
 pub(crate) use font_dialog::FontDraft;
+pub(crate) use notices::{thousands, Notice};
 pub(crate) use page_setup::PageSetupDraft;
 pub(crate) use strips::shading_rows;
 pub(crate) use tables::TableAt;
@@ -462,6 +465,13 @@ pub struct Scriva {
     about_up: bool,
     /// The last six colours chosen in the colour box, newest first.
     recent_colours: Vec<[u8; 3]>,
+    /// The status notice: a sentence and the clock when it was first shown.
+    pub(crate) notice: Option<(String, Option<f64>)>,
+    /// The notice bar's facts about this document.
+    pub(crate) notices: Vec<Notice>,
+    /// When the page badge on the desk stops showing: set by a scroll of the
+    /// desk, and not by the caret moving.
+    pub(crate) badge_until: f64,
     /// The insert-table dialog: columns, then rows.
     table_draft: Option<[String; 2]>,
     /// The colour dialog: what it colours, and six hex digits, as Word's
@@ -672,6 +682,9 @@ impl Scriva {
             shortcuts_up: false,
             about_up: false,
             recent_colours: Vec::new(),
+            notice: None,
+            notices: Vec::new(),
+            badge_until: 0.0,
             table_draft: None,
             color_draft: None,
             column_draft: None,
@@ -1046,7 +1059,10 @@ impl Scriva {
 
     /// The face each quick style's paragraphs are set in, where this machine
     /// has it — for a menu that shows a style in its own face.
-    pub(crate) fn style_faces(&self) -> Vec<(wp_model::StyleId, String, Option<egui::FontFamily>)> {
+    pub(crate) fn style_faces(
+        &self,
+        ctx: &egui::Context,
+    ) -> Vec<(wp_model::StyleId, String, Option<egui::FontFamily>)> {
         self.quick_styles()
             .into_iter()
             .map(|(id, name)| {
@@ -1063,7 +1079,8 @@ impl Scriva {
                 );
                 let bold = run.toggles.is_on(wp_model::prop::Toggle::Bold);
                 let italic = run.toggles.is_on(wp_model::prop::Toggle::Italic);
-                let face = ui_kit::fonts::named_face(&family, bold, italic);
+                let face = ui_kit::fonts::named_face(&family, bold, italic)
+                    .filter(|face| ui_kit::fonts::bound(ctx, face));
                 (id, name, face)
             })
             .collect()
@@ -1222,6 +1239,7 @@ impl Scriva {
         self.left_behind = None;
         self.band_page = None;
         self.scroll = 0.0;
+        self.notices.clear();
         self.stamp = self.stamp.wrapping_add(1);
         self.view.invalidate();
         self.recent.remember(SCRIVA, path);
@@ -1262,6 +1280,7 @@ impl Scriva {
                 self.band_page = None;
                 self.picked = None;
                 self.scroll = 0.0;
+                self.notices.clear();
                 self.stamp = self.stamp.wrapping_add(1);
                 self.view.invalidate();
                 self.recent.remember(SCRIVA, path);
@@ -1306,19 +1325,26 @@ impl Scriva {
                 self.band_page = None;
                 self.picked = None;
                 self.scroll = 0.0;
+                self.notices.clear();
                 self.stamp = self.stamp.wrapping_add(1);
                 self.view.invalidate();
                 self.recent.remember(SCRIVA, path);
                 self.refresh_fields();
-                self.message = Some((
-                    "Opened as a copy".to_owned(),
-                    "Word 97-2003 documents are read but not written, so this \
-                     one will be saved as a .docx. Its pictures come with it, \
-                     the diagrams the old format kept as metafiles included, \
-                     and so does its watermark; the shapes it draws a page \
-                     frame with are shown but are not written into the copy."
-                        .to_owned(),
-                ));
+                // A fact about this document, for the band under the toolbar:
+                // a box would have to be dismissed before the copy could be
+                // read.
+                let name = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                self.post_notice(
+                    format!(
+                        "Opened as a copy of {name}. Saving writes {}.docx; the page frame's \
+                         shapes are shown but not written.",
+                        self.published_name()
+                    ),
+                    None,
+                );
             }
             Err(error) => {
                 self.message = Some((
@@ -1365,6 +1391,7 @@ impl Scriva {
                 self.left_behind = None;
                 self.band_page = None;
                 self.scroll = 0.0;
+                self.notices.clear();
                 self.stamp = self.stamp.wrapping_add(1);
                 self.view.invalidate();
                 self.recent.remember(SCRIVA, path);
@@ -1834,6 +1861,17 @@ impl Scriva {
 
     /// What this document is called off the screen: for a PDF's title, for the
     /// print queue's entry.
+    /// `Saved report.docx`, in the status bar.
+    fn say_saved(&mut self) {
+        let name = self
+            .path
+            .as_ref()
+            .and_then(|path| path.file_name())
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "document".to_owned());
+        self.say(format!("Saved {name}"));
+    }
+
     fn published_name(&self) -> String {
         self.path
             .as_ref()
@@ -1919,11 +1957,10 @@ impl Scriva {
 
     #[cfg(not(windows))]
     fn print(&mut self) {
-        self.message = Some((
-            "Cannot print".to_owned(),
-            "Printing is not wired up on this platform yet. Export a PDF and print that."
-                .to_owned(),
-        ));
+        self.post_notice(
+            "Printing is not wired up on this platform. Export a PDF instead.",
+            Some(("Export\u{2026}", Command::ExportPdf)),
+        );
     }
 
     /// Writes the document as text, keeping the encoding and the line endings
@@ -1972,6 +2009,7 @@ impl Scriva {
         self.left_behind = None;
         self.band_page = None;
         self.scroll = 0.0;
+        self.notices.clear();
         self.stamp = self.stamp.wrapping_add(1);
         self.view.invalidate();
     }
@@ -2023,7 +2061,9 @@ impl Scriva {
             Command::Reopen(path) => self.open_path(&path),
             Command::ForgetRecent => self.recent.clear(SCRIVA),
             Command::Save => {
-                self.save();
+                if self.save() {
+                    self.say_saved();
+                }
             }
             Command::SaveAs => self.save_as(None),
             Command::Print => self.print(),
@@ -2060,8 +2100,9 @@ impl Scriva {
                 // the text selection is what it means the rest of the time.
                 if self.picked.is_some() {
                     self.copy_drawing();
-                } else {
-                    self.copy_selection();
+                    self.say("Copied");
+                } else if self.copy_selection() {
+                    self.say("Copied");
                 }
             }
             Command::Cut => {
@@ -2375,7 +2416,13 @@ impl Scriva {
                 }
                 None => self.no_comment_here(),
             },
-            Command::PostComment => self.post_draft(),
+            Command::PostComment => {
+                let before = self.document.comments.len();
+                self.post_draft();
+                if self.document.comments.len() > before {
+                    self.say("Comment added");
+                }
+            }
             Command::DiscardComment => self.draft = None,
             Command::DeleteCommentOf(id) => {
                 if crate::revise::delete_comment(&mut self.document, &mut self.history, id) {
@@ -2392,12 +2439,7 @@ impl Scriva {
                 // silently lands on whatever paragraph of the text wore the
                 // caret's number.
                 if self.editing_band() {
-                    self.message = Some((
-                        "A comment belongs to the text".to_owned(),
-                        "A header or a footer cannot carry one. Close the band \
-                         and select the words in the document."
-                            .to_owned(),
-                    ));
+                    self.say("A header or footer cannot carry a comment");
                 } else {
                     // Nothing selected: the word at the caret, as Word does.
                     // A refusal here asked the user to select something
@@ -2497,22 +2539,14 @@ impl Scriva {
     /// it would leave a list of headings that is no longer a field at all.
     fn update_toc(&mut self) {
         let Some(span) = wp_model::outline::toc_span(&self.document) else {
-            self.message = Some((
-                "No table of contents".to_owned(),
-                "This document has no TOC field to rebuild. Word writes one from \
-                 References \u{203a} Table of Contents."
-                    .to_owned(),
-            ));
+            self.say("No table of contents to update: Insert \u{203a} Update Table of Contents builds one from the headings");
             return;
         };
         let entries = wp_model::outline::table_of_contents(&self.document, span.levels.clone());
         if entries.is_empty() {
-            self.message = Some((
-                "No headings".to_owned(),
-                "A table of contents is built from the paragraphs that have a \
-                 heading style or an outline level. This document has none."
-                    .to_owned(),
-            ));
+            self.say(
+                "No headings: a table of contents is built from paragraphs in a heading style",
+            );
             return;
         }
         let rows: Vec<Paragraph> = entries
@@ -2544,10 +2578,7 @@ impl Scriva {
     fn settle_all(&mut self, how: crate::revise::Resolve) {
         let count = crate::revise::resolve_all(&mut self.document, &mut self.history, how);
         if count == 0 {
-            self.message = Some((
-                "No tracked changes".to_owned(),
-                "This document has nothing to accept or reject.".to_owned(),
-            ));
+            self.say("No tracked changes");
             return;
         }
         self.selection = Selection::at(clamp(&self.document, self.scope, self.caret()));
@@ -2569,10 +2600,7 @@ impl Scriva {
             .iter()
             .min_by_key(|change| (change.scope != self.scope, change.paragraph.abs_diff(here)))
         else {
-            self.message = Some((
-                "No tracked changes".to_owned(),
-                "This document has nothing to accept or reject.".to_owned(),
-            ));
+            self.say("No tracked changes");
             return;
         };
         let mark = found.mark.clone();
@@ -2758,10 +2786,7 @@ impl Scriva {
     }
 
     fn no_comment_here(&mut self) {
-        self.message = Some((
-            "No comment here".to_owned(),
-            "Put the caret in the text a comment is about.".to_owned(),
-        ));
+        self.say("No comment at the caret");
     }
 
     /// Every comment's range, worked out once per document revision.
@@ -3956,12 +3981,7 @@ impl Scriva {
                 // than an unrecorded one, so the edit is refused and said.
                 drop(paragraphs);
                 self.history.undo(&mut self.document);
-                self.message = Some((
-                    "Cannot record this change".to_owned(),
-                    "Track Changes cannot record an edit inside a hyperlink, a \
-                     content control or a field. Turn tracking off to edit here."
-                        .to_owned(),
-                ));
+                self.say("Track Changes cannot record an edit inside a hyperlink, a content control or a field");
             }
         }
     }
@@ -4775,7 +4795,8 @@ impl DocumentApp for Scriva {
         // The find bar hangs from the toolbar rather than standing over the
         // page, so that opening it does not push the page down.
         self.find_held = self.finder.is_some() && self.find_bar(ui);
-        if let Some(command) = command.or(bar).or(band) {
+        let noticed = self.notice_bar(ui);
+        if let Some(command) = command.or(bar).or(band).or(noticed) {
             // The same guard the keyboard route takes: File ▸ New discarding
             // an unsaved document would be a menu doing what Ctrl+N will not.
             match command {
@@ -4788,7 +4809,9 @@ impl DocumentApp for Scriva {
     }
 
     fn status(&mut self, ui: &mut egui::Ui) {
+        use ui_kit::theme;
         ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
             let pages = self.view.pages().len().max(1);
             let page = view::caret_rect(&self.view, self.scope, self.caret())
                 .map(|(index, _)| index + 1)
@@ -4803,55 +4826,98 @@ impl DocumentApp for Scriva {
             }
             self.goto_popover(ui, &page_label);
             ui.separator();
+            let words = match self.selected_plain_text() {
+                Some(text) => format!(
+                    "{} of {} words",
+                    thousands(crate::app::word_count::Count::of_text(&text).words),
+                    thousands(self.word_count())
+                ),
+                None => format!("{} words", thousands(self.word_count())),
+            };
             if ui
-                .add(egui::Button::new(format!("{} words", self.word_count())).frame(false))
+                .add(egui::Button::new(words).frame(false))
                 .on_hover_text("Word count")
                 .clicked()
             {
                 self.word_count_up = true;
             }
             ui.separator();
-            if !self.selection.is_empty() {
-                ui.label("Selection");
-                ui.separator();
+            // The chips: what mode the document is in, each a small pill
+            // with words on it, lit when its state is on.
+            let tracking = self.document.settings.track_changes;
+            if chip(
+                ui,
+                "Track changes",
+                tracking,
+                &tooltip(&Command::TrackChanges),
+            )
+            .clicked()
+            {
+                self.run(Command::TrackChanges);
             }
-            // Word keeps quiet about a face it had to stand in for, and a user
-            // whose every line breaks somewhere else is left to wonder why.
-            // One phrase here, and the whole story one click away.
-            if !self.substitutions.is_empty() {
-                let label = match self.substitutions.len() {
-                    1 => "1 font substituted".to_owned(),
-                    n => format!("{n} fonts substituted"),
+            if self.editing_band() {
+                let label = match self.in_footer() {
+                    true => "Editing footer \u{00b7} Esc",
+                    false => "Editing header \u{00b7} Esc",
                 };
-                let hover: Vec<String> = self
-                    .substitutions
-                    .iter()
-                    .map(|s| format!("{} \u{2192} {}", s.asked, s.shown))
-                    .collect();
-                if ui
-                    .add(egui::Button::new(label).frame(false))
-                    .on_hover_text(hover.join("\n"))
-                    .clicked()
-                {
-                    self.fonts_listing = true;
+                if chip(ui, label, true, "Back to the text  Esc").clicked() {
+                    self.run(Command::CloseChrome);
                 }
-                ui.separator();
             }
+            if let Some(table) = self.table_at_caret() {
+                chip(
+                    ui,
+                    &format!("Table {} \u{00d7} {}", table.rows, table.columns),
+                    false,
+                    "The caret is in a table; its commands are on the strip and the Table menu",
+                );
+            }
+            self.status_notice(ui);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                // Word's corner, right to left: the percentage (click it to
-                // type an exact one), zoom in, the slider with its 100%
+                // Word's corner, right to left: the percentage with its menu
+                // of presets and fits, zoom in, the slider with its 100%
                 // detent, zoom out. The buttons step to the next round ten.
                 let shown = (self.view.zoom * 100.0).round();
                 let mut percent = shown;
                 ui.spacing_mut().item_spacing.x = 4.0;
                 let label = ui
                     .add(
-                        egui::Button::new(format!("{}%", percent as i32))
+                        egui::Button::new(format!("{}% \u{2304}", percent as i32))
                             .frame(false)
-                            .min_size(egui::vec2(40.0, 0.0)),
+                            .min_size(egui::vec2(48.0, 0.0)),
                     )
-                    .on_hover_text("Zoom level — click to set an exact zoom");
-                if label.clicked() {
+                    .on_hover_text("Zoom: presets, the two fits, or an exact number");
+                let fits = (self.fit_percent(true), self.fit_percent(false));
+                let mut zoom_to: Option<f64> = None;
+                let mut custom = false;
+                menu::under(&label, |ui| {
+                    for preset in [50, 75, 100, 125, 150, 200] {
+                        if menu::check(ui, &format!("{preset}%"), "", shown as i32 == preset)
+                            .clicked()
+                        {
+                            zoom_to = Some(preset as f64);
+                        }
+                    }
+                    menu::sep(ui);
+                    if let Some(fit) = fits.0 {
+                        if menu::item(ui, "Page &Width", "").clicked() {
+                            zoom_to = Some(fit as f64);
+                        }
+                    }
+                    if let Some(fit) = fits.1 {
+                        if menu::item(ui, "W&hole Page", "").clicked() {
+                            zoom_to = Some(fit as f64);
+                        }
+                    }
+                    menu::sep(ui);
+                    if menu::item(ui, "&Custom\u{2026}", "").clicked() {
+                        custom = true;
+                    }
+                });
+                if let Some(zoom) = zoom_to {
+                    percent = zoom;
+                }
+                if custom {
                     self.zoom_draft = Some((percent as i32).to_string());
                     self.zoom_fresh = true;
                 }
@@ -4859,13 +4925,37 @@ impl DocumentApp for Scriva {
                     percent = (percent / 10.0).floor() * 10.0 + 10.0;
                 }
                 zoom_slider(ui, &mut percent);
-                if ui.small_button("−").on_hover_text("Zoom out").clicked() {
+                if ui
+                    .small_button("\u{2212}")
+                    .on_hover_text("Zoom out")
+                    .clicked()
+                {
                     percent = (percent / 10.0).ceil() * 10.0 - 10.0;
                 }
                 let percent = percent.clamp(10.0, 500.0);
                 if percent != shown {
                     self.view.zoom = percent / 100.0;
                 }
+                // Word keeps quiet about a face it had to stand in for, and a
+                // user whose every line breaks somewhere else is left to
+                // wonder why. One phrase here, and the whole story one click
+                // away.
+                if !self.substitutions.is_empty() {
+                    let label = match self.substitutions.len() {
+                        1 => "1 font substituted".to_owned(),
+                        n => format!("{n} fonts substituted"),
+                    };
+                    let hover: Vec<String> = self
+                        .substitutions
+                        .iter()
+                        .map(|s| format!("{} \u{2192} {}", s.asked, s.shown))
+                        .collect();
+                    ui.separator();
+                    if chip(ui, &label, false, &hover.join("\n")).clicked() {
+                        self.fonts_listing = true;
+                    }
+                }
+                let _ = theme::STATUS;
             });
         });
     }
@@ -5028,6 +5118,33 @@ impl DocumentApp for Scriva {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui) {
+        // A file dropped on the window opens it, through the same guard Open
+        // goes through, which is how a document arrives when it is already
+        // in front of you in a file manager; a picture dropped goes in at
+        // the caret.
+        let dropped: Vec<PathBuf> = ui.input(|i| {
+            i.raw
+                .dropped_files
+                .iter()
+                .map(|file| file.path().to_path_buf())
+                .collect()
+        });
+        if let Some(path) = dropped.into_iter().next() {
+            let picture = path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| {
+                    matches!(
+                        ext.to_ascii_lowercase().as_str(),
+                        "png" | "jpg" | "jpeg" | "gif" | "bmp"
+                    )
+                });
+            if picture {
+                self.insert_picture_from(&path);
+            } else if self.pending.is_none() && self.asking.is_none() {
+                self.guarded(Command::Reopen(path));
+            }
+        }
         // A change of fonts lands between frames, so the atlas this frame draws
         // with is still the old one and every width the shaper has cached was
         // measured against it — and a family registered but not yet live is
@@ -5191,6 +5308,42 @@ fn drawing_ending_at(paragraph: &Paragraph, offset: usize) -> Option<usize> {
         }
     }
     None
+}
+
+/// A status-bar chip: a small pill with words on it, in the soft ink, lit
+/// with the on-tint when its state is on. Words, so that no state is
+/// carried by colour alone.
+fn chip(ui: &mut egui::Ui, label: &str, on: bool, tip: &str) -> egui::Response {
+    use ui_kit::theme;
+    let galley = ui.painter().layout_no_wrap(
+        label.to_owned(),
+        egui::FontId::proportional(theme::TEXT_SMALL),
+        theme::INK_SOFT,
+    );
+    let size = egui::vec2(galley.size().x + 16.0, 22.0);
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    let fill = match (on, response.hovered()) {
+        (true, _) => theme::TINT_ON,
+        (false, true) => theme::TINT_HOVER,
+        _ => egui::Color32::TRANSPARENT,
+    };
+    ui.painter().rect(
+        rect,
+        11.0,
+        fill,
+        egui::Stroke::new(1.0, theme::CHROME_RULE),
+        egui::StrokeKind::Inside,
+    );
+    let at = egui::pos2(rect.left() + 8.0, rect.center().y - galley.size().y / 2.0);
+    ui.painter().galley(
+        at,
+        galley,
+        match on {
+            true => theme::INK,
+            false => theme::INK_SOFT,
+        },
+    );
+    response.on_hover_text(tip)
 }
 
 /// A hairline the full width of the bar.

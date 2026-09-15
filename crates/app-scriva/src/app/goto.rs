@@ -108,11 +108,8 @@ impl Scriva {
                 match page_asked(&text, here, pages) {
                     Some(page) => self.go_to_page(page),
                     None => {
-                        self.message = Some((
-                            "No such page".to_owned(),
-                            format!(
-                                "Type a page from 1 to {pages}, or +3 or -2 to move from here."
-                            ),
+                        self.say(format!(
+                            "No such page: type 1 to {pages}, or +3 or -2 to move from here"
                         ));
                     }
                 }

@@ -114,6 +114,18 @@ away everything that is not words.
 | `Ctrl+P` | Print |
 | `Alt+F4` | Exit |
 
+A document dragged out of a file manager and dropped on the window opens,
+asking first if the one in front of you has unsaved changes; a picture dropped
+goes in at the caret. What the program has to tell you comes in three sizes: a
+sentence at the left of the status bar for four seconds — `Saved report.docx`,
+`Copied`, `No tracked changes` — a band under the toolbar for a fact about this
+document that stays until its `×` (opened as a copy, no printing on this
+platform), and a box only for a question whose wrong answer loses work or a
+failure that stops what you asked for. The status bar's chips say what mode
+the document is in: `Track changes` (click to toggle), `Editing header · Esc`,
+`Table 3 × 4`. While the desk scrolls, a badge at its right edge says which
+page is in view.
+
 ### Editing
 
 Typing, selection, `Ctrl+Arrow` by word, `Home` and `End`, `Ctrl+Home` and

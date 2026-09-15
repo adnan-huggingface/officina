@@ -78,7 +78,7 @@ impl Scriva {
         let spacing = self.line_spacing_at();
         let picked = self.has_picked();
         let fits = (self.fit_percent(true), self.fit_percent(false));
-        let style_faces = self.style_faces();
+        let style_faces = self.style_faces(ui.ctx());
 
         menu::bar(ui, |ui| {
             let mut chosen = None;

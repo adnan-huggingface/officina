@@ -22,6 +22,7 @@ impl Scriva {
             extent_h as f32 * zoom,
         );
 
+        let mut revealed = false;
         let scroll = egui::ScrollArea::both()
             .auto_shrink([false, false])
             .show(ui, |ui| {
@@ -428,6 +429,7 @@ impl Scriva {
                 if self.reveal.is_some() && self.view.is_stale(self.stamp) {
                     ui.ctx().request_repaint();
                 } else if let Some(caret) = self.reveal.take() {
+                    revealed = true;
                     let prefer = self.reveal_on.take();
                     if let Some((page, rect)) =
                         view::caret_rect_on(&self.view, self.scope, caret, prefer)
@@ -446,7 +448,51 @@ impl Scriva {
                 }
                 response
             });
+        // The page badge: a pill at the right of the desk saying which page
+        // is in view, while the desk is being scrolled and for a moment after
+        // — and not when the caret moved the desk, since the status bar says
+        // where the caret is.
+        let now = ui.input(|i| i.time);
+        let moved = (scroll.state.offset.y - self.scroll).abs() > 0.5;
         self.scroll = scroll.state.offset.y;
+        if moved && !revealed {
+            self.badge_until = now + 0.8;
+        }
+        let remaining = self.badge_until - now;
+        if remaining > 0.0 && self.view.pages().len() > 1 {
+            let middle = (self.scroll + outer.height() / 2.0) as f64 / zoom as f64;
+            let count = self.view.pages().len();
+            let shown = (0..count)
+                .rev()
+                .find(|index| self.view.page_origin(*index).1 <= middle)
+                .unwrap_or(0);
+            let alpha = (remaining / 0.8).clamp(0.0, 1.0) as f32;
+            let text = format!("Page {} of {count}", shown + 1);
+            let galley = ui.painter().layout_no_wrap(
+                text,
+                egui::FontId::proportional(ui_kit::theme::TEXT),
+                ui_kit::theme::INK.gamma_multiply(alpha),
+            );
+            let size = egui::vec2(galley.size().x + 20.0, 26.0);
+            let pill = egui::Rect::from_min_size(
+                egui::pos2(outer.right() - size.x - 24.0, outer.top() + 16.0),
+                size,
+            );
+            ui.painter().rect(
+                pill,
+                13.0,
+                ui_kit::theme::CHROME.gamma_multiply(alpha),
+                egui::Stroke::new(1.0, ui_kit::theme::CHROME_RULE.gamma_multiply(alpha)),
+                egui::StrokeKind::Inside,
+            );
+            ui.painter().galley(
+                egui::pos2(pill.left() + 10.0, pill.center().y - galley.size().y / 2.0),
+                galley,
+                ui_kit::theme::INK,
+            );
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(16));
+        }
     }
 
     /// Moves or resizes the picked drawing by one step of a drag.
@@ -571,13 +617,7 @@ impl Scriva {
         let (Some(picked), Some(drawing)) = (self.picked, self.picked_drawing()) else {
             // The box is about a picture, so say which one is missing rather
             // than doing nothing and leaving the user to guess.
-            self.message = Some((
-                "Nothing selected".to_owned(),
-                "Click the picture or chart to size, then try again.\n\n\
-                 A selected picture shows eight handles, and dragging one \
-                 resizes it."
-                    .to_owned(),
-            ));
+            self.say("Nothing selected: click a picture first");
             return;
         };
         let (width, height) = (drawing.extent.0.points(), drawing.extent.1.points());
@@ -651,10 +691,7 @@ impl Scriva {
     /// none to ask; both say so.
     pub(super) fn picture_original_size(&mut self) {
         let (Some(picked), Some(drawing)) = (self.picked, self.picked_drawing()) else {
-            self.message = Some((
-                "Nothing selected".to_owned(),
-                "Click the picture to put back to its own size, then try again.".to_owned(),
-            ));
+            self.say("Nothing selected: click a picture first");
             return;
         };
         let natural = drawing
@@ -669,10 +706,7 @@ impl Scriva {
         match natural {
             Some((width, height)) => self.resize_drawing(picked, width, height),
             None => {
-                self.message = Some((
-                    "No original size".to_owned(),
-                    "A chart has no pixels of its own to go back to.".to_owned(),
-                ));
+                self.say("A chart has no pixels of its own to go back to");
             }
         }
     }
@@ -683,10 +717,7 @@ impl Scriva {
     /// text on the line with it, as it does in Word. One undo step.
     pub(super) fn align_picture(&mut self, alignment: wp_model::doc::Alignment) {
         let (Some(picked), Some(drawing)) = (self.picked, self.picked_drawing()) else {
-            self.message = Some((
-                "Nothing selected".to_owned(),
-                "Click the picture to align, then try again.".to_owned(),
-            ));
+            self.say("Nothing selected: click a picture first");
             return;
         };
         if !drawing.anchored {

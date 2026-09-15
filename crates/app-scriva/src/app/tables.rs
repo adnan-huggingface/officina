@@ -257,10 +257,7 @@ impl Scriva {
     fn table_cell_or_say(&mut self) -> Option<(usize, usize, usize)> {
         let found = edit::table_cell_at(&self.document, self.scope, self.caret());
         if found.is_none() {
-            self.message = Some((
-                "Not in a table".to_owned(),
-                "Put the caret in a table cell first, then try again.".to_owned(),
-            ));
+            self.say("Not in a table: put the caret in a cell first");
         }
         found
     }
@@ -272,10 +269,7 @@ impl Scriva {
         let caret = self.caret();
         let Some((index, row, cell)) = edit::table_cell_at(&self.document, self.scope, caret)
         else {
-            self.message = Some((
-                "Not in a table".to_owned(),
-                "Put the caret in a table cell first, then try again.".to_owned(),
-            ));
+            self.say("Not in a table: put the caret in a cell first");
             return;
         };
         self.history.push(
@@ -298,10 +292,7 @@ impl Scriva {
     pub(super) fn open_cell_margin_dialog(&mut self) {
         let caret = self.caret();
         let Some((index, _, _)) = edit::table_cell_at(&self.document, self.scope, caret) else {
-            self.message = Some((
-                "Not in a table".to_owned(),
-                "Put the caret in a table cell first, then try again.".to_owned(),
-            ));
+            self.say("Not in a table: put the caret in a cell first");
             return;
         };
         let Block::Table(table) = &self.document.body[index] else {
@@ -402,10 +393,7 @@ impl Scriva {
         let caret = self.caret();
         let Some((index, row, cell)) = edit::table_cell_at(&self.document, self.scope, caret)
         else {
-            self.message = Some((
-                "Not in a table".to_owned(),
-                "Put the caret in a table cell first, then try again.".to_owned(),
-            ));
+            self.say("Not in a table: put the caret in a cell first");
             return;
         };
         let Block::Table(table) = &self.document.body[index] else {

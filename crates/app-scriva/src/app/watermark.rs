@@ -162,6 +162,7 @@ impl Scriva {
                             })
                             .unwrap_or(egui::Color32::from_gray(0xC0));
                         let family = ui_kit::fonts::named_face(&draft.font, false, false)
+                            .filter(|face| ui_kit::fonts::bound(ui.ctx(), face))
                             .unwrap_or_else(|| {
                                 ui_kit::fonts::face(ui_kit::fonts::Family::Sans, false, false)
                             });

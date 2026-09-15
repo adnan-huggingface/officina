@@ -352,9 +352,11 @@ fn swatch_button(ui: &mut egui::Ui, colour: Option<[u8; 3]>, name: &str) -> egui
 fn preview(ui: &mut egui::Ui, draft: &FontDraft) {
     let bold = draft.style == 1 || draft.style == 3;
     let italic = draft.style == 2 || draft.style == 3;
-    let family = ui_kit::fonts::named_face(&draft.family, bold, italic).unwrap_or_else(|| {
-        ui_kit::fonts::face(ui_kit::fonts::Family::of(&draft.family), bold, italic)
-    });
+    let family = ui_kit::fonts::named_face(&draft.family, bold, italic)
+        .filter(|face| ui_kit::fonts::bound(ui.ctx(), face))
+        .unwrap_or_else(|| {
+            ui_kit::fonts::face(ui_kit::fonts::Family::of(&draft.family), bold, italic)
+        });
     let size = crate::toolbar::parse_size(&draft.size)
         .map(|half| half as f32 / 2.0)
         .unwrap_or(12.0)
