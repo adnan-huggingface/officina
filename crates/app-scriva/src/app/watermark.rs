@@ -41,21 +41,153 @@ impl Scriva {
                     ui.set_width(320.0);
                     ui.label(egui::RichText::new("Watermark").font(dialog::heading_font(16.0)));
                     ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        ui.add_sized([56.0, 20.0], egui::Label::new("Text:"));
-                        dialog::first_field(ui, "scriva-watermark", &mut draft.text, 232.0);
+                    dialog::labelled(ui, "Text:", |ui| {
+                        dialog::first_field(ui, "scriva-watermark", &mut draft.text, 200.0);
                     });
-                    ui.horizontal(|ui| {
-                        ui.add_sized([56.0, 20.0], egui::Label::new("Font:"));
-                        dialog::field(ui, &mut draft.font, 150.0);
+                    dialog::labelled(ui, "Font:", |ui| {
+                        let shown = match draft.font.trim().is_empty() {
+                            true => "Calibri (default)".to_owned(),
+                            false => draft.font.clone(),
+                        };
+                        egui::ComboBox::from_id_salt("scriva-watermark-font")
+                            .selected_text(shown)
+                            .width(200.0)
+                            .show_ui(ui, |ui| {
+                                egui::ScrollArea::vertical()
+                                    .max_height(300.0)
+                                    .show(ui, |ui| {
+                                        if ui
+                                            .selectable_label(
+                                                draft.font.trim().is_empty(),
+                                                "(default)",
+                                            )
+                                            .clicked()
+                                        {
+                                            draft.font.clear();
+                                        }
+                                        for name in ui_kit::catalogue::families() {
+                                            if ui
+                                                .selectable_label(draft.font == *name, name)
+                                                .clicked()
+                                            {
+                                                draft.font = name.clone();
+                                            }
+                                        }
+                                    });
+                            });
                     });
-                    ui.horizontal(|ui| {
-                        ui.add_sized([56.0, 20.0], egui::Label::new("Colour:"));
-                        dialog::field(ui, &mut draft.color, 64.0);
-                        ui.label("hex");
+                    dialog::labelled(ui, "Colour:", |ui| {
+                        let current =
+                            wp_model::Color::from_val(draft.color.trim()).and_then(|c| match c {
+                                wp_model::Color::Rgb(rgb) => Some(rgb),
+                                _ => None,
+                            });
+                        let colours: Vec<(&str, egui::Color32)> = crate::toolbar::PALETTE
+                            .iter()
+                            .map(|(name, [r, g, b])| (*name, egui::Color32::from_rgb(*r, *g, *b)))
+                            .collect();
+                        let index = current.and_then(|rgb| {
+                            crate::toolbar::PALETTE
+                                .iter()
+                                .position(|(_, other)| *other == rgb)
+                        });
+                        let name =
+                            index
+                                .map(|i| crate::toolbar::PALETTE[i].0)
+                                .unwrap_or(match current {
+                                    Some(_) => "Custom",
+                                    None => "Silver (default)",
+                                });
+                        let (rect, response) =
+                            ui.allocate_exact_size(egui::vec2(150.0, 24.0), egui::Sense::click());
+                        ui.painter().rect(
+                            rect,
+                            ui_kit::theme::RADIUS_CONTROL as f32,
+                            ui_kit::theme::FIELD,
+                            egui::Stroke::new(1.0, ui_kit::theme::FIELD_EDGE),
+                            egui::StrokeKind::Inside,
+                        );
+                        let well = egui::Rect::from_min_size(
+                            rect.min + egui::vec2(5.0, 5.0),
+                            egui::vec2(14.0, 14.0),
+                        );
+                        let shown = current.unwrap_or([0xC0, 0xC0, 0xC0]);
+                        ui.painter().rect_filled(
+                            well,
+                            2.0,
+                            egui::Color32::from_rgb(shown[0], shown[1], shown[2]),
+                        );
+                        ui.painter().text(
+                            egui::pos2(well.right() + 8.0, rect.center().y),
+                            egui::Align2::LEFT_CENTER,
+                            name,
+                            egui::FontId::proportional(ui_kit::theme::TEXT),
+                            ui_kit::theme::INK,
+                        );
+                        if let Some(Some(pick)) = ui_kit::menu::under(&response, |ui| {
+                            ui_kit::menu::swatches(ui, "&Default", &colours, index, None)
+                        }) {
+                            draft.color = match pick {
+                                ui_kit::menu::Swatch::Index(i) => {
+                                    let [r, g, b] = crate::toolbar::PALETTE[i].1;
+                                    format!("{r:02X}{g:02X}{b:02X}")
+                                }
+                                _ => String::new(),
+                            };
+                        }
                     });
-                    ui.add_space(4.0);
-                    ui.checkbox(&mut draft.diagonal, "Diagonal");
+                    dialog::labelled(ui, "", |ui| {
+                        ui.checkbox(&mut draft.diagonal, "Diagonal");
+                    });
+                    // The word as it will lie on the page: grey, and turned
+                    // when asked.
+                    let (rect, _) = ui.allocate_exact_size(
+                        egui::vec2(ui.available_width(), 96.0),
+                        egui::Sense::hover(),
+                    );
+                    ui.painter().rect(
+                        rect,
+                        ui_kit::theme::RADIUS_CONTROL as f32,
+                        egui::Color32::WHITE,
+                        egui::Stroke::new(1.0, ui_kit::theme::FIELD_EDGE),
+                        egui::StrokeKind::Inside,
+                    );
+                    if !draft.text.trim().is_empty() {
+                        let colour = wp_model::Color::from_val(draft.color.trim())
+                            .and_then(|c| match c {
+                                wp_model::Color::Rgb([r, g, b]) => {
+                                    Some(egui::Color32::from_rgb(r, g, b))
+                                }
+                                _ => None,
+                            })
+                            .unwrap_or(egui::Color32::from_gray(0xC0));
+                        let family = ui_kit::fonts::named_face(&draft.font, false, false)
+                            .unwrap_or_else(|| {
+                                ui_kit::fonts::face(ui_kit::fonts::Family::Sans, false, false)
+                            });
+                        let galley = ui.painter().layout_no_wrap(
+                            draft.text.trim().to_owned(),
+                            egui::FontId::new(28.0, family),
+                            colour,
+                        );
+                        let angle = match draft.diagonal {
+                            true => -std::f32::consts::FRAC_PI_8 * 1.6,
+                            false => 0.0,
+                        };
+                        // A text shape turns about its top-left corner, so
+                        // the corner is put where the turned word's centre
+                        // lands on the box's centre.
+                        let size = galley.size();
+                        let (sin, cos) = angle.sin_cos();
+                        let half = egui::vec2(
+                            size.x / 2.0 * cos - size.y / 2.0 * sin,
+                            size.x / 2.0 * sin + size.y / 2.0 * cos,
+                        );
+                        let mut shape =
+                            egui::epaint::TextShape::new(rect.center() - half, galley, colour);
+                        shape.angle = angle;
+                        ui.painter().with_clip_rect(rect).add(shape);
+                    }
                     ui.add_space(4.0);
                     ui.label(
                         egui::RichText::new(

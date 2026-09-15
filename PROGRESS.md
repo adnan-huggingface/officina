@@ -5617,3 +5617,54 @@ read with Shift, and the table lists the key as one delivered another
 way. Calx's two raw menus — the sheet tab's and the grid's — moved onto
 the same card; the tab's rows have letters, the grid's forty do not yet.
 
+## The boxes speak one language, and the page is set up in one of them (2026-09-15)
+
+Phase 8 of the redesign. `ui_kit::dialog` gained the form vocabulary of
+D14: a right-aligned label column (`labelled`), fields that draw their
+unit inside their right end (`unit_field`), section titles, and one
+parser, `measure`, that reads `1.25`, `1.25 in`, `2"`, `3 cm`, `30 mm` and
+`36 pt` as inches and anything else as nothing — tested, and used by every
+box that takes a length. The boxes:
+
+- **Page Setup** (`app/page_setup.rs`, Layout ▸ Page Setup…, and the band
+  strip's From edge…) replaces Custom Margins: margins, from-edge, paper
+  as a combo of Letter, Legal, A4 and Custom with the width and height
+  beside it — typing a size chooses Custom — and two orientation toggles
+  with page glyphs, all drawn as a preview that follows the fields. One
+  undo step whatever changed, because it is one `Change::Section`; the
+  model's width is the printed width, so landscape stores the two swapped
+  with the orientation beside them, as the reader found Word does.
+- **Font** (`app/font_dialog.rs`, Format ▸ Font…, Ctrl+D): family from the
+  document's faces and the machine's, style, size typed or picked, colour
+  and highlight as swatch buttons opening the same swatches the toolbar
+  opens, the effects the model writes — strikethrough, superscript,
+  subscript, small caps, all caps — and the pangram in the face where the
+  machine has it. Only what changed since the box opened is applied, in
+  one `format_runs`, which is one undo.
+- **Paragraph** gained alignment as four toggles and line spacing as a
+  combo — Single, 1.5, Double, Exactly, At least, Multiple, or the style's
+  — with the number beside the kinds that take one.
+- **Colour** (More Colours…) is the grid of Word's ten standard colours in
+  five tints computed toward white, a hex field that stays the one truth,
+  three sliders that write it, a well, and the last six chosen.
+- **Watermark** takes its face from a combo and its colour from a swatch
+  button, and draws the word turned in grey as it will lie.
+- **Word Count** (`app/word_count.rs`, from the status bar's count): pages,
+  words, characters with and without spaces, paragraphs, lines — and with a
+  selection, the selection beside the document.
+- **Go To** (`app/goto.rs`, Edit ▸ Go To…, Ctrl+G, or the status bar's page
+  count) is a popover on the page count, not a modal: a page number, `+3`
+  or `-2` from here, Enter goes, and Heading ▾ lists the headings. The
+  caret lands on the page's first line through the same `caret_at` a click
+  uses, aimed at the page's top-left text corner.
+- **Help** (`app/help.rs`) is a new menu: Keyboard Shortcuts…, generated
+  from the command table so that it cannot drift; User Guide, which opens
+  `GUIDE.md` beside the executable with the system's opener or says where
+  it is; About, with the version and the two licences.
+
+Format's Text Colour and Highlight submenus are swatch rows now, as the
+Table menu's were made in phase 6. The keyboard goes into each new box's
+first field on opening, and the existing test holds Page Setup, Font,
+Paragraph and Text Colour to it beside the old four. Two things egui
+taught on the way are in LEARNINGS.md.
+

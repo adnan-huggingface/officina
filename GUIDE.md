@@ -120,6 +120,14 @@ typing collapses into one undo at word boundaries, as Word does.
 
 ### Formatting
 
+Every box that takes a measure reads it in any unit — `1.25`, `1.25 in`,
+`3 cm`, `36 pt` — and shows it in inches. Layout ▸ Page Setup… holds the
+paper, its orientation, the margins and the bands' distance from the edge in
+one box, with the page drawn from the numbers as they are typed; applying it
+is one undo. Format ▸ Text Colour and Highlight, and the toolbar's two colour
+buttons, open a row of swatches; More Colours… is the grid of standard colours
+in five tints, a hex field, three sliders and the last six chosen.
+
 | | |
 |---|---|
 | `Ctrl+B` / `Ctrl+I` / `Ctrl+U` | Bold, italic, underline |
@@ -129,6 +137,7 @@ typing collapses into one undo at word boundaries, as Word does.
 | `Ctrl+L` / `Ctrl+E` / `Ctrl+R` / `Ctrl+J` | Left, centre, right, justify |
 | `Ctrl+1` / `Ctrl+5` / `Ctrl+2` | Single, 1.5, double line spacing |
 | `Ctrl+M` / `Ctrl+Shift+M` | Increase, decrease indent |
+| `Ctrl+D` | The Font box: family, style, size, colour, highlight and effects, with a preview; applied as one undo |
 
 Styles are in the Styles menu, and applying one is what a heading *is* — Scriva
 does not fake a heading with bold text, so the navigation pane and the table of
@@ -190,6 +199,11 @@ reply and resolve all work and are written back.
 | `F9` | Update the table of contents |
 | `Shift+F10` | The page's right-click menu, at the caret. Its rows are the menus' own: Cut, Copy, Paste, Paste Unformatted, the three emphases, Paragraph, Styles, New Comment, Select All — with Open Hyperlink and Copy Link Address first on a link, a Table submenu first in a table, Accept and Reject first on a tracked change, and a menu of its own on a picked picture |
 | `Ctrl+Shift+V` | Paste the board's text without its formatting |
+| `Ctrl+G` | Go To: a small box on the status bar's page count. A page number, or `+3` and `-2` from here, and `Enter` goes; `Heading ▾` lists the headings. Clicking the page count opens the same box, and clicking the word count opens Word Count |
+
+Help ▸ Keyboard Shortcuts… lists every key above, generated from the same
+table the keys are read from; Help ▸ User Guide opens this file from beside
+the program; Help ▸ About says the version and the licences.
 
 ---
 

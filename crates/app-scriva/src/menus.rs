@@ -73,6 +73,8 @@ impl Scriva {
         let face = self.face_at();
         let size = self.size_at();
         let table = self.table_at_caret();
+        let colour = self.colour_at();
+        let highlight = self.highlight_at();
 
         menu::bar(ui, |ui| {
             let mut chosen = None;
@@ -156,6 +158,9 @@ impl Scriva {
                 if menu::item(ui, "R&eplace…", shortcut(&Command::Replace)).clicked() {
                     chosen = Some(Command::Replace);
                 }
+                if menu::item(ui, "&Go To…", shortcut(&Command::GoToPage)).clicked() {
+                    chosen = Some(Command::GoToPage);
+                }
                 menu::sep(ui);
                 if menu::item(ui, "Select &All", shortcut(&Command::SelectAll)).clicked() {
                     chosen = Some(Command::SelectAll);
@@ -216,6 +221,10 @@ impl Scriva {
             });
 
             menu::top(ui, "F&ormat", |ui| {
+                if menu::item(ui, "Fo&nt…", shortcut(&Command::FontDialog)).clicked() {
+                    chosen = Some(Command::FontDialog);
+                }
+                menu::sep(ui);
                 if menu::item(ui, "&Bold", shortcut(&Command::Bold)).clicked() {
                     chosen = Some(Command::Bold);
                 }
@@ -280,27 +289,52 @@ impl Scriva {
                 }
                 menu::sep(ui);
                 menu::sub(ui, "Text C&olour", |ui| {
-                    if menu::item(ui, "&Automatic", "").clicked() {
-                        chosen = Some(Command::Color(wp_model::Color::Auto));
-                    }
-                    for (name, rgb) in PALETTE {
-                        if menu::item(ui, name, "").clicked() {
-                            chosen = Some(Command::Color(wp_model::Color::Rgb(rgb)));
+                    let colours: Vec<(&str, egui::Color32)> = PALETTE
+                        .iter()
+                        .map(|(name, [r, g, b])| (*name, egui::Color32::from_rgb(*r, *g, *b)))
+                        .collect();
+                    let current = match colour {
+                        Some(wp_model::Color::Rgb(rgb)) => {
+                            PALETTE.iter().position(|(_, other)| *other == rgb)
                         }
-                    }
-                    menu::sep(ui);
-                    if menu::item(ui, "&Other…", "").clicked() {
-                        chosen = Some(Command::CustomColor);
+                        _ => None,
+                    };
+                    let picked = match menu::swatches(
+                        ui,
+                        "&Automatic",
+                        &colours,
+                        current,
+                        Some("&More Colours…"),
+                    ) {
+                        Some(menu::Swatch::First) => Some(Command::Color(wp_model::Color::Auto)),
+                        Some(menu::Swatch::Index(index)) => {
+                            Some(Command::Color(wp_model::Color::Rgb(PALETTE[index].1)))
+                        }
+                        Some(menu::Swatch::More) => Some(Command::CustomColor),
+                        None => None,
+                    };
+                    if picked.is_some() {
+                        chosen = picked;
                     }
                 });
                 menu::sub(ui, "High&light", |ui| {
-                    if menu::item(ui, "&None", "").clicked() {
-                        chosen = Some(Command::Highlight(wp_model::Highlight::None));
-                    }
-                    for (name, value, _) in HIGHLIGHTS {
-                        if menu::item(ui, name, "").clicked() {
-                            chosen = Some(Command::Highlight(value));
+                    let colours: Vec<(&str, egui::Color32)> = HIGHLIGHTS
+                        .iter()
+                        .map(|(name, _, [r, g, b])| (*name, egui::Color32::from_rgb(*r, *g, *b)))
+                        .collect();
+                    let current = highlight
+                        .and_then(|h| HIGHLIGHTS.iter().position(|(_, value, _)| *value == h));
+                    let picked = match menu::swatches(ui, "&None", &colours, current, None) {
+                        Some(menu::Swatch::First) => {
+                            Some(Command::Highlight(wp_model::Highlight::None))
                         }
+                        Some(menu::Swatch::Index(index)) => {
+                            Some(Command::Highlight(HIGHLIGHTS[index].1))
+                        }
+                        _ => None,
+                    };
+                    if picked.is_some() {
+                        chosen = picked;
                     }
                 });
                 menu::sep(ui);
@@ -384,6 +418,10 @@ impl Scriva {
             });
 
             menu::top(ui, "&Layout", |ui| {
+                if menu::item(ui, "&Page Setup…", "").clicked() {
+                    chosen = Some(Command::PageSetup);
+                }
+                menu::sep(ui);
                 menu::sub(ui, "&Margins", |ui| {
                     for (name, top, bottom, side) in [
                         ("&Normal — 1\" all round", 1440, 1440, 1440),
@@ -647,6 +685,19 @@ impl Scriva {
                 }
                 if styles.is_empty() {
                     ui.add_enabled(false, egui::Button::new("No styles in this document"));
+                }
+            });
+
+            menu::top(ui, "&Help", |ui| {
+                if menu::item(ui, "&Keyboard Shortcuts…", "").clicked() {
+                    chosen = Some(Command::KeyboardShortcuts);
+                }
+                if menu::item(ui, "&User Guide", "").clicked() {
+                    chosen = Some(Command::UserGuide);
+                }
+                menu::sep(ui);
+                if menu::item(ui, "&About Scriva", "").clicked() {
+                    chosen = Some(Command::About);
                 }
             });
 

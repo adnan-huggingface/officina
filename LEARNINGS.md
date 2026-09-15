@@ -2048,3 +2048,17 @@ the geometric shapes block — while the same glyph in a test passes, because
 a test never rasterises. Every chevron in the chrome is drawn as an icon
 (`icons::Icon::ChevronDown`), as the toolbar's always were; a glyph the
 face might not have is not a way to draw an arrow.
+
+**`Response::has_focus` inside `input_mut` deadlocks.** The response asks
+the context for its memory, which is behind the same lock `input_mut` is
+holding, and epaint's lock is not reentrant: the frame waits ten seconds and
+panics. The same shape as `Popup::is_any_open` inside `data_mut`, met in
+phase 2. Anything read from the context goes before the lock is taken.
+
+**A single-line `TextEdit` gives its focus up on Enter before anyone can
+ask.** The field is drawn, sees Enter, surrenders focus and returns; a
+`has_focus()` read after it is already false, so "Enter while the field is
+focused" can never be true on the frame Enter arrives. Read `lost_focus()`
+with the key, or — where the field is the only thing in the box — take
+Enter from the input regardless, which is what the Zoom box already did.
+

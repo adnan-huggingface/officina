@@ -54,17 +54,22 @@ Every source file, its size, and the first sentence of its module doc.
 
 - `crates/app-scriva/src/app/bands.rs` (589) Headers and footers — the bands above and below the text of a page: which one the caret is in, making one a section does not have yet, first-page and odd/even kinds, linking to the previous section, the band bar, and …
 - `crates/app-scriva/src/app/context.rs` (208) The page's right-click menu: what a click or Shift+F10 on the document offers, drawn on the same card as every other menu.
-- `crates/app-scriva/src/app/dialogs.rs` (803) Scriva's boxes: page margins, Insert Table, colour, paragraph, column width, picture size, fonts, zoom and the comment box.
+- `crates/app-scriva/src/app/dialogs.rs` (918) Scriva's boxes: Insert Table, colour, paragraph, column width, picture size, fonts and zoom.
 - `crates/app-scriva/src/app/find_bar.rs` (229) The find bar: one bar for Find and Replace, which holds the keyboard while it is open and hands it back to the document when it closes.
+- `crates/app-scriva/src/app/font_dialog.rs` (395) Format ▸ Font… (Ctrl+D): family, style, size, colour, highlight and the effects the model writes, with a line of preview, applied to the selection as one undo step.
+- `crates/app-scriva/src/app/goto.rs` (171) Edit ▸ Go To… (Ctrl+G): a small popover on the status bar's page count.
+- `crates/app-scriva/src/app/help.rs` (145) The Help menu's boxes: every key the application answers to, generated from the command table so that it cannot drift; the user guide, opened beside the executable; and About.
+- `crates/app-scriva/src/app/page_setup.rs` (319) Layout ▸ Page Setup…: paper, orientation, margins and the bands' distance from the edge in one box, with the page drawn from the numbers as they are typed.
 - `crates/app-scriva/src/app/strips.rs` (230) The mode strips: one row under the toolbar that appears for the thing the caret is in — a table, a picked picture — and goes when it is left.
 - `crates/app-scriva/src/app/surface.rs` (850) The page surface: the scrolling desk the pages sit on, what the pointer does there — carets, selections, a picture picked, dragged and resized — and where on a page a point lands.
 - `crates/app-scriva/src/app/tables.rs` (498) Editing a table: Tab from cell to cell, the edit every table command goes through, cell margins, column widths, and Insert Table itself.
-- `crates/app-scriva/src/app/tests.rs` (5592) 
-- `crates/app-scriva/src/app/watermark.rs` (289) The watermark: the box that asks for one, and the shape it becomes in a header, written the way Word writes its own so that Word finds it again.
-- `crates/app-scriva/src/app.rs` (5053) The application: the window, the commands, and the keys.
+- `crates/app-scriva/src/app/tests.rs` (5715) 
+- `crates/app-scriva/src/app/watermark.rs` (421) The watermark: the box that asks for one, and the shape it becomes in a header, written the way Word writes its own so that Word finds it again.
+- `crates/app-scriva/src/app/word_count.rs` (158) The Word Count box, from the status bar's count: pages, words, characters with and without spaces, paragraphs and lines — and, with a selection, the selection beside the document.
+- `crates/app-scriva/src/app.rs` (5177) The application: the window, the commands, and the keys.
 - `crates/app-scriva/src/author.rs` (339) A document written by the application itself, from a script of its own commands.
 - `crates/app-scriva/src/clip.rs` (955) The formatted halves of a copy: CF_HTML and Rich Text Format.
-- `crates/app-scriva/src/commands.rs` (395) Every command with a name and a key, in one table.
+- `crates/app-scriva/src/commands.rs` (402) Every command with a name and a key, in one table.
 - `crates/app-scriva/src/drawings.rs` (353) A picture as an object: selected, moved, resized, deleted.
 - `crates/app-scriva/src/edit.rs` (2102) Editing a document, and taking it back.
 - `crates/app-scriva/src/find.rs` (214) Finding text in the document, and putting something else in its place.
@@ -72,7 +77,7 @@ Every source file, its size, and the first sentence of its module doc.
 - `crates/app-scriva/src/lib.rs` (26) Scriva — the word processor.
 - `crates/app-scriva/src/links.rs` (117) Following a hyperlink out of the document, or to somewhere inside it.
 - `crates/app-scriva/src/main.rs` (31) Scriva — word processor.
-- `crates/app-scriva/src/menus.rs` (656) The menu bar and the formatting row.
+- `crates/app-scriva/src/menus.rs` (707) The menu bar and the formatting row.
 - `crates/app-scriva/src/panes/mod.rs` (12) The panes beside the page: Review on the right, and — from phase 5 of the redesign — Navigate on the left.
 - `crates/app-scriva/src/panes/navigate.rs` (507) The Navigate pane: the document's headings as a tree, and its bookmarks.
 - `crates/app-scriva/src/panes/review.rs` (779) The Review pane: every tracked change and comment as a card, in document order, with what can be done about each on the card itself.
@@ -234,7 +239,7 @@ Every source file, its size, and the first sentence of its module doc.
 - `crates/ui-kit/src/catalogue.rs` (475) What type the machine actually has, by the name a document calls it.
 - `crates/ui-kit/src/chart.rs` (319) Drawing a chart on the screen.
 - `crates/ui-kit/src/chooser.rs` (141) The operating system's file chooser, asked without stopping the window.
-- `crates/ui-kit/src/dialog.rs` (727) The look of every dialog both apps put on the screen.
+- `crates/ui-kit/src/dialog.rs` (851) The look of every dialog both apps put on the screen.
 - `crates/ui-kit/src/drive.rs` (524) Driving an application by keystroke, without a window.
 - `crates/ui-kit/src/fonts.rs` (1371) Real type faces, loaded from the system at startup.
 - `crates/ui-kit/src/headless.rs` (54) An application running without a person in front of it: under a test.
@@ -368,10 +373,10 @@ Every comment that says an application was *measured* — the rules this code ke
 - `crates/app-scriva/src/app/bands.rs:224` `content` is what goes in it: nothing for a band being made from scratch, and a copy of the inherited one for a section being unlinked — which is what Word does, measured: unlink a section's header and the words stay …
 - `crates/app-scriva/src/app/bands.rs:349` **Breaking it copies rather than empties.** Word's own answer, measured over COM: unlink a second section's header and the words are still there, while the first section keeps a copy of its own — so the two can then b…
 - `crates/app-scriva/src/app/tables.rs:472` Measured: a cell that states none is laid to its *content* by Word, whatever the grid says — a 468pt table came back 28pt wide, its second column as wide as "B1", and an empty column under a point.
-- `crates/app-scriva/src/app/watermark.rs:137` measured against a watermark Word wrote itself, which put the shape in the default header and left the other two parts empty.
-- `crates/app-scriva/src/app.rs:434` Word's own Page Setup keeps those last two on the same sheet, under "From edge", and they belong with the margins because they are measured against the same four edges.
-- `crates/app-scriva/src/app.rs:4425` 96 pixels to the inch: what a screen snippet is measured in, and what Word assumes of an image that does not say otherwise.
-- `crates/app-scriva/src/app.rs:4559` What a new document is in Word today, measured on the reference machine (Word 16.0.20326, 2026-09-13): twelve points, eight points after every paragraph, and a line of 278 to 240 — the document defaults Word writes in…
+- `crates/app-scriva/src/app/watermark.rs:269` measured against a watermark Word wrote itself, which put the shape in the default header and left the other two parts empty.
+- `crates/app-scriva/src/app.rs:454` Word's own Page Setup keeps those last two on the same sheet, under "From edge", and they belong with the margins because they are measured against the same four edges.
+- `crates/app-scriva/src/app.rs:4514` 96 pixels to the inch: what a screen snippet is measured in, and what Word assumes of an image that does not say otherwise.
+- `crates/app-scriva/src/app.rs:4648` What a new document is in Word today, measured on the reference machine (Word 16.0.20326, 2026-09-13): twelve points, eight points after every paragraph, and a line of 278 to 240 — the document defaults Word writes in…
 - `crates/app-scriva/src/author.rs:5` Nothing measured what it *writes* — and the faults that cost a week of afternoons were all there: a new document that stated no defaults and came back from Word a third taller, an inserted table whose cells stated no …
 - `crates/app-scriva/src/edit.rs:677` Measured on Word, not designed: a page break *inside* a cell is nothing to Word's layout, wherever in the cell it is, and the layout here ignores one too.
 - `crates/app-scriva/src/edit.rs:1964` Measured on Word 16 (`bugs/page-break-in-table-cell.md` in the story):
@@ -540,6 +545,7 @@ Every row of every menu, and the keys that choose it from the document — walke
 | `Alt+E, P` | Paste |
 | `Alt+E, F` | Find… |
 | `Alt+E, E` | Replace… |
+| `Alt+E, G` | Go To… |
 | `Alt+E, A` | Select All |
 | `Alt+F, N` | New |
 | `Alt+F, O` | Open… |
@@ -552,6 +558,9 @@ Every row of every menu, and the keys that choose it from the document — walke
 | `Alt+F, X` | Exit |
 | `Alt+F, R, 1` | 1 walked.docx |
 | `Alt+F, R, L` | Clear List |
+| `Alt+H, K` | Keyboard Shortcuts… |
+| `Alt+H, U` | User Guide |
+| `Alt+H, A` | About Scriva |
 | `Alt+I, P` | Picture… |
 | `Alt+I, T` | Table… |
 | `Alt+I, U` | Update Table of Contents |
@@ -564,6 +573,7 @@ Every row of every menu, and the keys that choose it from the document — walke
 | `Alt+I, H, R` | Remove Header *(disabled here)* |
 | `Alt+I, N, P` | Plain Number |
 | `Alt+I, N, X` | Page X of Y |
+| `Alt+L, P` | Page Setup… |
 | `Alt+L, M` | Margins ▸ |
 | `Alt+L, O` | Orientation ▸ |
 | `Alt+L, S` | Size ▸ |
@@ -578,6 +588,7 @@ Every row of every menu, and the keys that choose it from the document — walke
 | `Alt+L, S, L` | Letter — 8.5" × 11" |
 | `Alt+L, S, G` | Legal — 8.5" × 14" |
 | `Alt+L, S, A` | A4 — 210 × 297 mm |
+| `Alt+O, N` | Font… |
 | `Alt+O, B` | Bold |
 | `Alt+O, I` | Italic |
 | `Alt+O, U` | Underline |
@@ -621,36 +632,8 @@ Every row of every menu, and the keys that choose it from the document — walke
 | `Alt+O, F, —` | Trebuchet MS |
 | `Alt+O, F, —` | Verdana |
 | `Alt+O, L, N` | None |
-| `Alt+O, L, —` | Yellow |
-| `Alt+O, L, —` | Bright Green |
-| `Alt+O, L, —` | Turquoise |
-| `Alt+O, L, —` | Pink |
-| `Alt+O, L, —` | Blue |
-| `Alt+O, L, —` | Red |
-| `Alt+O, L, —` | Dark Blue |
-| `Alt+O, L, —` | Teal |
-| `Alt+O, L, —` | Green |
-| `Alt+O, L, —` | Violet |
-| `Alt+O, L, —` | Dark Red |
-| `Alt+O, L, —` | Dark Yellow |
-| `Alt+O, L, —` | Gray 50% |
-| `Alt+O, L, —` | Gray 25% |
-| `Alt+O, L, —` | Black |
 | `Alt+O, O, A` | Automatic |
-| `Alt+O, O, —` | Black |
-| `Alt+O, O, —` | Dark Red |
-| `Alt+O, O, —` | Red |
-| `Alt+O, O, —` | Orange |
-| `Alt+O, O, —` | Yellow |
-| `Alt+O, O, —` | Light Green |
-| `Alt+O, O, —` | Green |
-| `Alt+O, O, —` | Light Blue |
-| `Alt+O, O, —` | Blue |
-| `Alt+O, O, —` | Dark Blue |
-| `Alt+O, O, —` | Purple |
-| `Alt+O, O, —` | Gray |
-| `Alt+O, O, —` | White |
-| `Alt+O, O, O` | Other… |
+| `Alt+O, O, M` | More Colours… |
 | `Alt+O, S, —` | 8 |
 | `Alt+O, S, —` | 9 |
 | `Alt+O, S, —` | 10 |

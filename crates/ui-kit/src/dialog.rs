@@ -493,6 +493,113 @@ pub fn button(ui: &mut egui::Ui, label: &str, primary: bool) -> egui::Response {
     .inner
 }
 
+/// The form vocabulary: a label column, fields that say their unit, and a
+/// number typed in any unit read as inches.
+///
+/// A form whose labels sit at ragged lengths against their fields, with the
+/// unit as a separate word after each, reads as a list; one whose labels
+/// end on a line and whose fields carry their unit reads as a form.
+pub const LABEL: f32 = 96.0;
+
+/// A section title inside a form: small, bold, a little air above.
+pub fn section(ui: &mut egui::Ui, title: &str) {
+    ui.add_space(6.0);
+    ui.label(
+        egui::RichText::new(title)
+            .font(heading_font(crate::theme::TEXT_SMALL))
+            .color(crate::theme::INK),
+    );
+    ui.add_space(2.0);
+}
+
+/// One row of a form: the label right-aligned in the [`LABEL`] column, and
+/// whatever `add` puts beside it.
+pub fn labelled<R>(ui: &mut egui::Ui, label: &str, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 8.0;
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(LABEL, 24.0), egui::Sense::hover());
+        ui.painter().text(
+            egui::pos2(rect.right(), rect.center().y),
+            egui::Align2::RIGHT_CENTER,
+            label,
+            egui::FontId::proportional(crate::theme::TEXT),
+            crate::theme::INK,
+        );
+        add(ui)
+    })
+    .inner
+}
+
+/// A [`field`] whose unit is drawn inside its right end, in the soft ink,
+/// so that `1.00` reads as `1.00 in` without a word after the box.
+pub fn unit_field(ui: &mut egui::Ui, text: &mut String, unit: &str, width: f32) -> egui::Response {
+    let chars = text.chars().count();
+    let tag = ui.painter().layout_no_wrap(
+        unit.to_owned(),
+        egui::FontId::proportional(crate::theme::TEXT_SMALL),
+        crate::theme::INK_SOFT,
+    );
+    let reserved = tag.size().x + 10.0;
+    let response = ui.add(
+        egui::TextEdit::singleline(text)
+            .desired_width(width)
+            .margin(egui::Margin {
+                left: 4,
+                right: reserved as i8,
+                top: 2,
+                bottom: 2,
+            }),
+    );
+    let at = egui::pos2(
+        response.rect.right() - reserved + 5.0,
+        response.rect.center().y - tag.size().y / 2.0,
+    );
+    ui.painter().galley(at, tag, crate::theme::INK_SOFT);
+    selects_on_focus(ui, &response, chars);
+    response
+}
+
+/// The first [`unit_field`] of a box: takes the keyboard when it opens.
+pub fn first_unit_field(
+    ui: &mut egui::Ui,
+    dialog: impl Into<egui::Id>,
+    text: &mut String,
+    unit: &str,
+    width: f32,
+) -> egui::Response {
+    let chars = text.chars().count();
+    let response = unit_field(ui, text, unit, width);
+    focus_on_open(ui, dialog, &response, chars);
+    response
+}
+
+/// A measure as typed, in inches: `1.25` and `1.25 in` and `1.25"` are
+/// inches, `3 cm` and `30 mm` are metric, `36 pt` is points, and anything
+/// else is nothing — a field that does not parse changes nothing, and the
+/// dialog is not the place to argue about a typo.
+pub fn measure(text: &str) -> Option<f64> {
+    let text = text.trim().to_ascii_lowercase();
+    let split = text
+        .find(|c: char| !(c.is_ascii_digit() || c == '.' || c == '-' || c == '+'))
+        .unwrap_or(text.len());
+    let (number, unit) = text.split_at(split);
+    let value: f64 = number.trim().parse().ok()?;
+    let per_inch = match unit.trim() {
+        "" | "in" | "\"" | "inch" | "inches" => 1.0,
+        "cm" => 2.54,
+        "mm" => 25.4,
+        "pt" => 72.0,
+        _ => return None,
+    };
+    Some(value / per_inch)
+}
+
+/// Inches as a field shows them: two decimals, trailing zeros kept, so that
+/// `1.00` and `1.25` line up.
+pub fn inches(value: f64) -> String {
+    format!("{value:.2}")
+}
+
 /// Body text: one label per line, an empty line as a paragraph break.
 ///
 /// Not one wrapped label, because the lines are written as lines — a path, then
@@ -659,6 +766,23 @@ mod tests {
             }],
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn a_measure_is_read_in_inches_centimetres_and_points() {
+        let close = |a: f64, b: f64| (a - b).abs() < 0.005;
+        assert!(close(measure("3 cm").unwrap(), 1.18));
+        assert!(close(measure("36 pt").unwrap(), 0.5));
+        assert!(close(measure("1.25").unwrap(), 1.25));
+        assert!(close(measure("1.25 in").unwrap(), 1.25));
+        assert!(close(measure("2\"").unwrap(), 2.0));
+        assert!(close(measure("25.4mm").unwrap(), 1.0));
+        assert!(close(measure(" -0.5 ").unwrap(), -0.5));
+        assert_eq!(measure("wide"), None);
+        assert_eq!(measure("3 furlongs"), None);
+        assert_eq!(measure(""), None);
+        assert_eq!(inches(1.0), "1.00");
+        assert_eq!(inches(1.25), "1.25");
     }
 
     #[test]

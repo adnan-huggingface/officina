@@ -1,5 +1,6 @@
-//! Scriva's boxes: page margins, Insert Table, colour, paragraph, column
-//! width, picture size, fonts, zoom and the comment box.
+//! Scriva's boxes: Insert Table, colour, paragraph, column width, picture
+//! size, fonts and zoom. Page Setup, Font, Go To, Word Count and Help have
+//! files of their own beside this one.
 //!
 //! Each is drawn from a draft the command that opened it filled in, and each
 //! answers Enter and Escape through `ui_kit::dialog`, with its first field
@@ -9,84 +10,6 @@
 use super::*;
 
 impl Scriva {
-    /// The custom-margins box: four numbers in inches, the way Word asks.
-    pub(super) fn margins_dialog(&mut self, ctx: &egui::Context) {
-        let Some(mut draft) = self.margins_draft.clone() else {
-            return;
-        };
-        let mut done: Option<bool> = None;
-        egui::Modal::new(egui::Id::new("scriva-margins"))
-            .frame(dialog::frame(ctx))
-            .show(ctx, |ui| {
-                dialog::form_style(ui.style_mut());
-                dialog::body(ui, |ui| {
-                    ui.set_width(260.0);
-                    ui.label(egui::RichText::new("Margins").font(dialog::heading_font(16.0)));
-                    ui.add_space(8.0);
-                    for (index, (label, field)) in ["Top:", "Bottom:", "Left:", "Right:"]
-                        .into_iter()
-                        .chain(["Header:", "Footer:"])
-                        .zip(draft.iter_mut())
-                        .enumerate()
-                    {
-                        if index == 4 {
-                            ui.add_space(8.0);
-                            ui.label(
-                                egui::RichText::new("From edge — where the bands sit")
-                                    .small()
-                                    .weak(),
-                            );
-                        }
-                        ui.horizontal(|ui| {
-                            ui.add_sized([56.0, 20.0], egui::Label::new(label));
-                            match index == 0 {
-                                true => {
-                                    dialog::first_field(ui, "scriva-margins", field, 64.0);
-                                }
-                                false => {
-                                    dialog::field(ui, field, 64.0);
-                                }
-                            }
-                            ui.label("in");
-                        });
-                    }
-                    ui.add_space(12.0);
-                    if let Some(answer) = dialog::submit(ui, "Set") {
-                        done = Some(answer);
-                    }
-                });
-            });
-        self.margins_draft = Some(draft.clone());
-        match done {
-            Some(true) => {
-                self.margins_draft = None;
-                // A field that does not parse keeps the margin it had — the
-                // dialog is not the place to argue about a typo.
-                let m = self.document.section.margins;
-                let parse = |text: &str, was: Twips| {
-                    text.trim()
-                        .parse::<f64>()
-                        .ok()
-                        .filter(|v| (0.0..=5.0).contains(v))
-                        .map(|v| Twips((v * 1440.0).round() as i32))
-                        .unwrap_or(was)
-                };
-                let mut section = self.document.section.clone();
-                section.margins.top = parse(&draft[0], m.top);
-                section.margins.bottom = parse(&draft[1], m.bottom);
-                section.margins.start = parse(&draft[2], m.start);
-                section.margins.end = parse(&draft[3], m.end);
-                section.margins.header = parse(&draft[4], m.header);
-                section.margins.footer = parse(&draft[5], m.footer);
-                if section.margins != m {
-                    self.set_section(section);
-                }
-            }
-            Some(false) => self.margins_draft = None,
-            None => {}
-        }
-    }
-
     /// The insert-table box: how many columns and rows, the way Word asks.
     pub(super) fn table_dialog(&mut self, ctx: &egui::Context) {
         let Some(mut draft) = self.table_draft.clone() else {
@@ -146,28 +69,96 @@ impl Scriva {
         }
     }
 
+    /// More Colours…: Word's standard colours in five tints, a hex field,
+    /// three sliders, a well showing the answer, and the last six chosen.
+    /// The hex field is the one truth; the grid and the sliders write it.
     pub(super) fn color_dialog(&mut self, ctx: &egui::Context) {
         let Some((target, mut draft)) = self.color_draft.clone() else {
             return;
         };
+        let recent = self.recent_colours.clone();
         let mut done: Option<bool> = None;
         egui::Modal::new(egui::Id::new("scriva-color"))
             .frame(dialog::frame(ctx))
             .show(ctx, |ui| {
                 dialog::form_style(ui.style_mut());
                 dialog::body(ui, |ui| {
-                    ui.set_width(260.0);
+                    ui.set_width(380.0);
                     let title = match target {
                         ColorTarget::Text => "Text Colour",
                         ColorTarget::Borders => "Border Colour",
                     };
                     ui.label(egui::RichText::new(title).font(dialog::heading_font(16.0)));
                     ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        ui.add_sized([72.0, 20.0], egui::Label::new("Hex:"));
-                        dialog::first_field(ui, "scriva-color", &mut draft, 64.0);
+                    let current = wp_model::Color::from_val(draft.trim()).and_then(|c| match c {
+                        wp_model::Color::Rgb(rgb) => Some(rgb),
+                        _ => None,
                     });
-                    ui.add_space(12.0);
+                    ui.horizontal_top(|ui| {
+                        ui.vertical(|ui| {
+                            dialog::section(ui, "Standard colours");
+                            if let Some(rgb) = colour_grid(ui, current) {
+                                draft = hex_of(rgb);
+                            }
+                            if !recent.is_empty() {
+                                dialog::section(ui, "Recent");
+                                ui.horizontal(|ui| {
+                                    for rgb in &recent {
+                                        if well(ui, *rgb, current == Some(*rgb), 18.0).clicked() {
+                                            draft = hex_of(*rgb);
+                                        }
+                                    }
+                                });
+                            }
+                        });
+                        ui.add_space(12.0);
+                        ui.vertical(|ui| {
+                            dialog::section(ui, "Colour");
+                            dialog::labelled(ui, "Hex:", |ui| {
+                                dialog::first_field(ui, "scriva-color", &mut draft, 72.0);
+                            });
+                            let mut rgb = current.unwrap_or([0, 0, 0]);
+                            let mut moved = false;
+                            for (label, channel) in [("R:", 0), ("G:", 1), ("B:", 2)] {
+                                dialog::labelled(ui, label, |ui| {
+                                    ui.scope(|ui| {
+                                        dialog::slider_style(ui.style_mut());
+                                        moved |= ui
+                                            .add(
+                                                egui::Slider::new(&mut rgb[channel], 0..=255)
+                                                    .show_value(true),
+                                            )
+                                            .changed();
+                                    });
+                                });
+                            }
+                            if moved {
+                                draft = hex_of(rgb);
+                            }
+                            dialog::labelled(ui, "", |ui| {
+                                let (rect, _) = ui.allocate_exact_size(
+                                    egui::vec2(72.0, 28.0),
+                                    egui::Sense::hover(),
+                                );
+                                match current {
+                                    Some([r, g, b]) => ui.painter().rect(
+                                        rect,
+                                        ui_kit::theme::RADIUS_CONTROL as f32,
+                                        egui::Color32::from_rgb(r, g, b),
+                                        egui::Stroke::new(1.0, ui_kit::theme::FIELD_EDGE),
+                                        egui::StrokeKind::Inside,
+                                    ),
+                                    None => ui.painter().rect_stroke(
+                                        rect,
+                                        ui_kit::theme::RADIUS_CONTROL as f32,
+                                        egui::Stroke::new(1.0, ui_kit::theme::INK_FAINT),
+                                        egui::StrokeKind::Inside,
+                                    ),
+                                }
+                            });
+                        });
+                    });
+                    ui.add_space(4.0);
                     if let Some(answer) = dialog::submit(ui, "Apply") {
                         done = Some(answer);
                     }
@@ -181,7 +172,12 @@ impl Scriva {
                 // digits, with or without the `#`, or the word `auto`.
                 // Anything else applies nothing rather than guessing at a
                 // colour nobody named.
-                if let Some(color) = wp_model::Color::from_val(&draft) {
+                if let Some(color) = wp_model::Color::from_val(draft.trim()) {
+                    if let wp_model::Color::Rgb(rgb) = color {
+                        self.recent_colours.retain(|other| *other != rgb);
+                        self.recent_colours.insert(0, rgb);
+                        self.recent_colours.truncate(6);
+                    }
                     match target {
                         ColorTarget::Text => {
                             self.format_runs(move |props| props.color = Some(color))
@@ -354,6 +350,15 @@ impl Scriva {
             t.map(|t| trim_number(t.0 as f64 / 1440.0))
                 .unwrap_or_default()
         };
+        let (line, line_value) = match props.spacing.line {
+            Some(LineSpacing::Multiple(Line240::SINGLE)) => (0, String::new()),
+            Some(LineSpacing::Multiple(Line240::ONE_AND_A_HALF)) => (1, String::new()),
+            Some(LineSpacing::Multiple(Line240::DOUBLE)) => (2, String::new()),
+            Some(LineSpacing::Exact(t)) => (3, trim_number(t.0 as f64 / 20.0)),
+            Some(LineSpacing::AtLeast(t)) => (4, trim_number(t.0 as f64 / 20.0)),
+            Some(LineSpacing::Multiple(line)) => (5, trim_number(line.0 as f64 / 240.0)),
+            None => (6, String::new()),
+        };
         let draft = ParagraphDraft {
             before: points(props.spacing.before),
             after: points(props.spacing.after),
@@ -361,6 +366,9 @@ impl Scriva {
             right: inches(props.indent.end),
             first_line: inches(props.indent.first_line),
             hanging: inches(props.indent.hanging),
+            justify: props.justify,
+            line,
+            line_value,
         };
         self.paragraph_draft = Some((draft.clone(), draft));
     }
@@ -375,40 +383,70 @@ impl Scriva {
             .show(ctx, |ui| {
                 dialog::form_style(ui.style_mut());
                 dialog::body(ui, |ui| {
-                    ui.set_width(280.0);
+                    ui.set_width(320.0);
                     ui.label(egui::RichText::new("Paragraph").font(dialog::heading_font(16.0)));
-                    ui.add_space(8.0);
-                    ui.label(egui::RichText::new("Spacing").strong());
-                    for (index, (label, field)) in
-                        [("Before:", &mut draft.before), ("After:", &mut draft.after)]
-                            .into_iter()
-                            .enumerate()
-                    {
-                        ui.horizontal(|ui| {
-                            ui.add_sized([80.0, 20.0], egui::Label::new(label));
-                            match index == 0 {
-                                true => {
-                                    dialog::first_field(ui, "scriva-paragraph", field, 64.0);
-                                }
-                                false => {
-                                    dialog::field(ui, field, 64.0);
-                                }
+                    ui.add_space(4.0);
+                    dialog::section(ui, "Alignment");
+                    dialog::labelled(ui, "", |ui| {
+                        use crate::icons::{self, Icon};
+                        for (icon, justify, tip) in [
+                            (Icon::AlignLeft, Justify::Start, "Left"),
+                            (Icon::AlignCenter, Justify::Center, "Centre"),
+                            (Icon::AlignRight, Justify::End, "Right"),
+                            (Icon::Justify, Justify::Both, "Justify"),
+                        ] {
+                            let on = draft.justify == Some(justify);
+                            if icons::button(ui, icon, on, tip).clicked() {
+                                draft.justify = match on {
+                                    true => None,
+                                    false => Some(justify),
+                                };
                             }
-                            ui.label("pt");
-                        });
-                    }
-                    ui.add_space(6.0);
-                    ui.label(egui::RichText::new("Indentation").strong());
+                        }
+                    });
+                    dialog::section(ui, "Spacing");
+                    dialog::labelled(ui, "Before:", |ui| {
+                        dialog::first_unit_field(
+                            ui,
+                            "scriva-paragraph",
+                            &mut draft.before,
+                            "pt",
+                            64.0,
+                        );
+                    });
+                    dialog::labelled(ui, "After:", |ui| {
+                        dialog::unit_field(ui, &mut draft.after, "pt", 64.0);
+                    });
+                    dialog::labelled(ui, "Line spacing:", |ui| {
+                        egui::ComboBox::from_id_salt("scriva-paragraph-line")
+                            .selected_text(LINE_KINDS[draft.line.min(6)])
+                            .width(110.0)
+                            .show_ui(ui, |ui| {
+                                for (index, name) in LINE_KINDS.iter().enumerate() {
+                                    if ui.selectable_label(draft.line == index, *name).clicked() {
+                                        draft.line = index;
+                                    }
+                                }
+                            });
+                        match draft.line {
+                            3 | 4 => {
+                                dialog::unit_field(ui, &mut draft.line_value, "pt", 56.0);
+                            }
+                            5 => {
+                                dialog::unit_field(ui, &mut draft.line_value, "lines", 56.0);
+                            }
+                            _ => {}
+                        }
+                    });
+                    dialog::section(ui, "Indentation");
                     for (label, field) in [
                         ("Left:", &mut draft.left),
                         ("Right:", &mut draft.right),
                         ("First line:", &mut draft.first_line),
                         ("Hanging:", &mut draft.hanging),
                     ] {
-                        ui.horizontal(|ui| {
-                            ui.add_sized([80.0, 20.0], egui::Label::new(label));
-                            dialog::field(ui, field, 64.0);
-                            ui.label("in");
+                        dialog::labelled(ui, label, |ui| {
+                            dialog::unit_field(ui, field, "in", 64.0);
                         });
                     }
                     ui.add_space(4.0);
@@ -460,13 +498,25 @@ impl Scriva {
         let right = value(&opened.right, &draft.right, 1440.0);
         let first_line = value(&opened.first_line, &draft.first_line, 1440.0);
         let hanging = value(&opened.hanging, &draft.hanging, 1440.0);
+        let justify = (opened.justify != draft.justify).then_some(draft.justify);
+        let line = ((opened.line, &opened.line_value) != (draft.line, &draft.line_value))
+            .then(|| line_spacing_of(draft.line, &draft.line_value))
+            .flatten();
         if [before, after, left, right, first_line, hanging]
             .iter()
             .all(Option::is_none)
+            && justify.is_none()
+            && line.is_none()
         {
             return;
         }
         self.format_paragraphs(move |props| {
+            if let Some(justify) = justify {
+                props.justify = justify;
+            }
+            if let Some(line) = line {
+                props.spacing.line = line;
+            }
             if let Some(v) = before {
                 props.spacing.before = v;
             }
@@ -800,4 +850,69 @@ impl Scriva {
         };
         Some(((percent * 100.0).floor() as i32).clamp(10, 500))
     }
+}
+
+/// The line spacing the box's kind and number mean: `Some(None)` is the
+/// style's own, `None` a number that does not parse.
+fn line_spacing_of(kind: usize, value: &str) -> Option<Option<LineSpacing>> {
+    let number = || value.trim().parse::<f64>().ok().filter(|v| *v > 0.0);
+    Some(match kind {
+        0 => Some(LineSpacing::Multiple(Line240::SINGLE)),
+        1 => Some(LineSpacing::Multiple(Line240::ONE_AND_A_HALF)),
+        2 => Some(LineSpacing::Multiple(Line240::DOUBLE)),
+        3 => Some(LineSpacing::Exact(Twips((number()? * 20.0).round() as i32))),
+        4 => Some(LineSpacing::AtLeast(Twips(
+            (number()? * 20.0).round() as i32
+        ))),
+        5 => Some(LineSpacing::Multiple(Line240(
+            (number()? * 240.0).round() as i32
+        ))),
+        _ => None,
+    })
+}
+
+/// A colour as the hex field spells it.
+fn hex_of(rgb: [u8; 3]) -> String {
+    format!("{:02X}{:02X}{:02X}", rgb[0], rgb[1], rgb[2])
+}
+
+/// Word's ten standard colours across, each in five tints down — the
+/// colour itself, then mixed with white by a fifth, two fifths, three and
+/// four — with the chosen one outlined. The colours are the palette's; the
+/// pattern is Word's own gallery.
+fn colour_grid(ui: &mut egui::Ui, current: Option<[u8; 3]>) -> Option<[u8; 3]> {
+    let bases: Vec<[u8; 3]> = crate::toolbar::PALETTE
+        .iter()
+        .filter(|(name, _)| !matches!(*name, "Black" | "White" | "Gray"))
+        .map(|(_, rgb)| *rgb)
+        .collect();
+    let mut chosen = None;
+    ui.spacing_mut().item_spacing = egui::vec2(3.0, 3.0);
+    for tint in 0..5 {
+        ui.horizontal(|ui| {
+            for base in &bases {
+                let mix = tint as f32 / 5.0;
+                let rgb = base.map(|c| (c as f32 + (255.0 - c as f32) * mix).round() as u8);
+                if well(ui, rgb, current == Some(rgb), 18.0).clicked() {
+                    chosen = Some(rgb);
+                }
+            }
+        });
+    }
+    chosen
+}
+
+/// One square of colour, outlined in the ink when it is the chosen one.
+fn well(ui: &mut egui::Ui, rgb: [u8; 3], on: bool, side: f32) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(side, side), egui::Sense::click());
+    ui.painter()
+        .rect_filled(rect, 2.0, egui::Color32::from_rgb(rgb[0], rgb[1], rgb[2]));
+    let stroke = match (on, response.hovered()) {
+        (true, _) => egui::Stroke::new(2.0, ui_kit::theme::INK),
+        (_, true) => egui::Stroke::new(1.0, ui_kit::theme::INK_SOFT),
+        _ => egui::Stroke::new(1.0, ui_kit::theme::FIELD_EDGE),
+    };
+    ui.painter()
+        .rect_stroke(rect, 2.0, stroke, egui::StrokeKind::Inside);
+    response.on_hover_text(hex_of(rgb))
 }

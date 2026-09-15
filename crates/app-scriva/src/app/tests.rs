@@ -394,13 +394,10 @@ fn paragraph_margins_and_column_width_dialogs_answer_enter_unchanged() {
     drive.menu(&mut app, 'L', 'M');
     drive.press(&mut app, "C");
     drive.settle(&mut app);
-    assert!(
-        app.margins_draft.is_some(),
-        "Alt+L, M, C opened Custom Margins"
-    );
+    assert!(app.page_setup.is_some(), "Alt+L, M, C opened Page Setup");
     drive.press(&mut app, "Enter");
     drive.settle(&mut app);
-    assert!(app.margins_draft.is_none(), "Enter closed Custom Margins");
+    assert!(app.page_setup.is_none(), "Enter closed Page Setup");
     assert_eq!(app.document.section.margins, before.section.margins);
     assert_eq!(
         app.document.paragraphs()[0].props,
@@ -446,8 +443,17 @@ fn a_box_that_opens_puts_the_keyboard_in_its_first_field() {
     check("Watermark", Command::Watermark, "DRAFT", &|app| {
         app.watermark_draft.as_ref().map(|d| d.text.clone())
     });
-    check("Custom Margins", Command::CustomMargins, "2", &|app| {
-        app.margins_draft.as_ref().map(|d| d[0].clone())
+    check("Page Setup", Command::PageSetup, "2", &|app| {
+        app.page_setup.as_ref().map(|d| d.top.clone())
+    });
+    check("Font", Command::FontDialog, "14", &|app| {
+        app.font_draft.as_ref().map(|(_, d)| d.size.clone())
+    });
+    check("Paragraph", Command::ParagraphDialog, "6", &|app| {
+        app.paragraph_draft.as_ref().map(|(_, d)| d.before.clone())
+    });
+    check("Text Colour", Command::CustomColor, "FF0000", &|app| {
+        app.color_draft.as_ref().map(|(_, d)| d.clone())
     });
     check("Column Width", Command::ColumnWidth, "3", &|app| {
         app.column_draft.clone()
@@ -603,7 +609,7 @@ fn numbers_typed_into_boxes_by_menu_letters_reach_the_document() {
     drive.type_text(&mut app, "2");
     drive.press(&mut app, "Enter");
     drive.settle(&mut app);
-    assert!(app.margins_draft.is_none());
+    assert!(app.page_setup.is_none());
     assert_eq!(
         app.document.section.margins.top,
         Twips(2880),
@@ -764,7 +770,7 @@ fn no_two_rows_of_a_menu_share_a_letter() {
     app.recent
         .remember(SCRIVA, Path::new("/nowhere/walked.docx"));
     drive.settle(&mut app);
-    let menus = drive.every_menu(&mut app, "FEVOPLRIAS");
+    let menus = drive.every_menu(&mut app, "FEVOPLRIASH");
     for (path, rows) in &menus {
         eprintln!(
             "MENU {path}: {}",
@@ -5589,4 +5595,121 @@ fn no_two_rows_of_the_context_menu_share_a_letter() {
     );
     assert!(labels.contains(&"Original size".to_owned()), "{labels:?}");
     assert!(!labels.contains(&"Paste".to_owned()), "not the text's menu");
+}
+
+/// Layout ▸ Page Setup… with A4 and Landscape chosen and applied: the
+/// section's paper is A4 on its side — width and height stored swapped,
+/// as the model stores a landscape page — and one undo puts Letter upright
+/// back, because the box is one decision however many fields it has.
+#[test]
+fn page_setup_a4_landscape_is_one_undo_step() {
+    let drive = ui_kit::drive::Driver::new();
+    let mut app = app_with(&["a paragraph"]);
+    drive.settle(&mut app);
+    let was = app.document.section.page;
+    assert_eq!(
+        (was.width, was.height),
+        (Twips(12240), Twips(15840)),
+        "Letter to start"
+    );
+    drive.menu(&mut app, 'L', 'P');
+    drive.settle(&mut app);
+    let mut draft = app.page_setup.clone().expect("Alt+L, P opened Page Setup");
+    assert_eq!(draft.paper, 0, "and it shows Letter");
+    assert!(!draft.landscape);
+    // The A4 row of the combo, and the Landscape toggle, as the box would
+    // set them; then Enter applies.
+    draft.paper = 2;
+    draft.width = "8.27".to_owned();
+    draft.height = "11.69".to_owned();
+    draft.landscape = true;
+    app.page_setup = Some(draft);
+    drive.settle(&mut app);
+    drive.press(&mut app, "Enter");
+    drive.settle(&mut app);
+    assert!(app.page_setup.is_none(), "Enter applied and closed it");
+    let page = &app.document.section.page;
+    assert_eq!(page.orientation, wp_model::Orientation::Landscape);
+    assert_eq!(
+        (page.width, page.height),
+        (Twips(16838), Twips(11906)),
+        "A4 on its side"
+    );
+    app.run(Command::Undo);
+    let page = &app.document.section.page;
+    assert_eq!(
+        page.orientation,
+        wp_model::Orientation::Portrait,
+        "one undo"
+    );
+    assert_eq!(
+        (page.width, page.height),
+        (Twips(12240), Twips(15840)),
+        "Letter upright again"
+    );
+    app.run(Command::Redo);
+    assert_eq!(
+        app.document.section.page.orientation,
+        wp_model::Orientation::Landscape
+    );
+}
+
+/// Ctrl+G, `5`, Enter: the caret is on page five's first line, the box is
+/// gone, and nothing was typed into the document on the way.
+#[test]
+fn ctrl_g_five_enter_puts_the_caret_on_page_five() {
+    let drive = ui_kit::drive::Driver::new();
+    let mut app = app_with(&["one", "two", "three", "four", "five", "six"]);
+    drive.settle(&mut app);
+    // A page break before each paragraph after the first: six pages.
+    for paragraph in (1..6).rev() {
+        app.selection = Selection::at(Caret {
+            paragraph,
+            offset: 0,
+        });
+        app.run(Command::PageBreak);
+    }
+    drive.settle(&mut app);
+    drive.settle(&mut app);
+    assert!(
+        app.view.pages().len() >= 6,
+        "{} pages",
+        app.view.pages().len()
+    );
+    app.selection = Selection::at(Caret::default());
+    drive.press(&mut app, "ctrl+G");
+    drive.settle(&mut app);
+    assert!(app.goto.is_some(), "Ctrl+G opened Go To");
+    drive.type_text(&mut app, "5");
+    drive.settle(&mut app);
+    assert_eq!(app.goto.as_deref(), Some("5"), "the field took the 5");
+    drive.press(&mut app, "Enter");
+    drive.settle(&mut app);
+    drive.settle(&mut app);
+    assert!(app.goto.is_none(), "Enter closed it");
+    let page = view::caret_rect(&app.view, app.scope, app.caret())
+        .map(|(index, _)| index + 1)
+        .expect("the caret is on a page");
+    assert_eq!(page, 5, "the caret is on page five");
+    assert_eq!(
+        app.document.paragraphs()[app.caret().paragraph].text(),
+        "five",
+        "on its first line"
+    );
+    let text: String = app.document.paragraphs().iter().map(|p| p.text()).collect();
+    assert!(
+        !text.contains('5'),
+        "nothing was typed into the document: {text:?}"
+    );
+    // And a step from here.
+    drive.press(&mut app, "ctrl+G");
+    drive.settle(&mut app);
+    drive.type_text(&mut app, "-2");
+    drive.press(&mut app, "Enter");
+    drive.settle(&mut app);
+    drive.settle(&mut app);
+    let page = view::caret_rect(&app.view, app.scope, app.caret())
+        .map(|(index, _)| index + 1)
+        .expect("still on a page");
+    assert_eq!(page, 3, "-2 from five is three");
 }

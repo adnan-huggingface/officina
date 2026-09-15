@@ -83,6 +83,7 @@ pub const TABLE: &[Entry] = &[
         Command::PasteUnformatted,
     ),
     entry("Find", "Ctrl+F", Some((CTRL, Key::F)), Command::Find),
+    entry("Go To", "Ctrl+G", Some((CTRL, Key::G)), Command::GoToPage),
     entry("Replace", "Ctrl+H", Some((CTRL, Key::H)), Command::Replace),
     entry("Find Next", "F3", Some((NONE, Key::F3)), Command::FindNext),
     entry(
@@ -97,6 +98,7 @@ pub const TABLE: &[Entry] = &[
         Some((CTRL, Key::A)),
         Command::SelectAll,
     ),
+    entry("Font", "Ctrl+D", Some((CTRL, Key::D)), Command::FontDialog),
     entry("Bold", "Ctrl+B", Some((CTRL, Key::B)), Command::Bold),
     entry("Italic", "Ctrl+I", Some((CTRL, Key::I)), Command::Italic),
     entry(
@@ -216,6 +218,11 @@ pub const TABLE: &[Entry] = &[
     ),
     entry("Paragraph", "", None, Command::ParagraphDialog),
     entry("Custom Margins", "", None, Command::CustomMargins),
+    entry("Page Setup", "", None, Command::PageSetup),
+    entry("Word Count", "", None, Command::WordCount),
+    entry("Keyboard Shortcuts", "", None, Command::KeyboardShortcuts),
+    entry("User Guide", "", None, Command::UserGuide),
+    entry("About Scriva", "", None, Command::About),
     entry(
         "Page Break",
         "Ctrl+Enter",

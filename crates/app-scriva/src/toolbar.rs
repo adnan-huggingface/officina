@@ -870,7 +870,7 @@ pub(crate) fn parse_size(text: &str) -> Option<i32> {
     Some((number * 2.0).round() as i32)
 }
 
-fn size_label(half: i32) -> String {
+pub(crate) fn size_label(half: i32) -> String {
     if half % 2 == 0 {
         format!("{}", half / 2)
     } else {

@@ -23,13 +23,20 @@ mod bands;
 mod context;
 mod dialogs;
 mod find_bar;
+mod font_dialog;
+mod goto;
+mod help;
+mod page_setup;
 mod strips;
 mod surface;
 mod tables;
+mod watermark;
+mod word_count;
 
+pub(crate) use font_dialog::FontDraft;
+pub(crate) use page_setup::PageSetupDraft;
 pub(crate) use strips::shading_rows;
 pub(crate) use tables::TableAt;
-mod watermark;
 
 /// A comment being written in the Review pane, before it is posted: the
 /// words it is about, the comment it answers if it is a reply, and the text
@@ -126,6 +133,19 @@ pub enum Command {
     Margins(wp_model::PageMargins),
     /// The dialog for margins none of the presets offer.
     CustomMargins,
+    /// Layout ▸ Page Setup…: paper, orientation, margins and the bands'
+    /// distance from the edge, in one box.
+    PageSetup,
+    /// Format ▸ Font… (Ctrl+D).
+    FontDialog,
+    /// Edit ▸ Go To… (Ctrl+G): the popover on the status bar's page count.
+    GoToPage,
+    /// The Word Count box, from the status bar's count.
+    WordCount,
+    /// Help ▸ Keyboard Shortcuts…, User Guide, About Scriva.
+    KeyboardShortcuts,
+    UserGuide,
+    About,
     Orient(wp_model::Orientation),
     /// A paper size, stated portrait; the section's orientation re-applies.
     Paper(wp_model::units::Twips, wp_model::units::Twips),
@@ -432,7 +452,16 @@ pub struct Scriva {
     /// from the bottom. Word's own Page Setup keeps those last two on the same
     /// sheet, under "From edge", and they belong with the margins because
     /// they are measured against the same four edges.
-    margins_draft: Option<[String; 6]>,
+    pub(crate) page_setup: Option<PageSetupDraft>,
+    /// Format ▸ Font…: as opened, and as it stands.
+    pub(crate) font_draft: Option<(FontDraft, FontDraft)>,
+    /// The Go To popover's field while it is open.
+    pub(crate) goto: Option<String>,
+    word_count_up: bool,
+    shortcuts_up: bool,
+    about_up: bool,
+    /// The last six colours chosen in the colour box, newest first.
+    recent_colours: Vec<[u8; 3]>,
     /// The insert-table dialog: columns, then rows.
     table_draft: Option<[String; 2]>,
     /// The colour dialog: what it colours, and six hex digits, as Word's
@@ -636,7 +665,13 @@ impl Scriva {
             pane_held: false,
             review_filter: Default::default(),
             review_scrolled: None,
-            margins_draft: None,
+            page_setup: None,
+            font_draft: None,
+            goto: None,
+            word_count_up: false,
+            shortcuts_up: false,
+            about_up: false,
+            recent_colours: Vec::new(),
             table_draft: None,
             color_draft: None,
             column_draft: None,
@@ -1002,6 +1037,32 @@ impl Scriva {
             }
         }
         size
+    }
+
+    /// The colour the selection is set in where every run agrees.
+    pub(crate) fn colour_at(&self) -> Option<wp_model::Color> {
+        let mut colour: Option<wp_model::Color> = None;
+        for props in self.resolved_runs() {
+            let this = props.color.unwrap_or(wp_model::Color::Auto);
+            match colour {
+                Some(other) if other != this => return None,
+                _ => colour = Some(this),
+            }
+        }
+        colour
+    }
+
+    /// The highlight the selection wears where every run agrees.
+    pub(crate) fn highlight_at(&self) -> Option<wp_model::Highlight> {
+        let mut highlight: Option<wp_model::Highlight> = None;
+        for props in self.resolved_runs() {
+            let this = props.highlight.unwrap_or(wp_model::Highlight::None);
+            match highlight {
+                Some(other) if other != this => return None,
+                _ => highlight = Some(this),
+            }
+        }
+        highlight
     }
 
     /// The run properties the selection covers, each resolved through its
@@ -2052,7 +2113,15 @@ impl Scriva {
                 })
             }
             Command::Color(color) => self.format_runs(move |props| props.color = Some(color)),
-            Command::CustomColor => self.color_draft = Some((ColorTarget::Text, String::new())),
+            Command::CustomColor => {
+                // Opened on the colour the selection has, so the sliders and
+                // the well start from it rather than from black.
+                let hex = match self.colour_at() {
+                    Some(wp_model::Color::Rgb([r, g, b])) => format!("{r:02X}{g:02X}{b:02X}"),
+                    _ => String::new(),
+                };
+                self.color_draft = Some((ColorTarget::Text, hex));
+            }
             Command::ParagraphDialog => self.open_paragraph_dialog(),
             Command::InsertRow { below } => self.insert_row(below),
             Command::InsertColumn { after } => self.insert_column(after),
@@ -2154,18 +2223,15 @@ impl Scriva {
                 };
                 self.set_section(section);
             }
-            Command::CustomMargins => {
-                let inches = |t: Twips| format!("{:.2}", t.0 as f64 / 1440.0);
-                let m = self.document.section.margins;
-                self.margins_draft = Some([
-                    inches(m.top),
-                    inches(m.bottom),
-                    inches(m.start),
-                    inches(m.end),
-                    inches(m.header),
-                    inches(m.footer),
-                ]);
+            Command::CustomMargins | Command::PageSetup => self.open_page_setup(),
+            Command::FontDialog => self.open_font_dialog(),
+            Command::GoToPage => {
+                self.goto = Some((self.caret_page() + 1).to_string());
             }
+            Command::WordCount => self.word_count_up = true,
+            Command::KeyboardShortcuts => self.shortcuts_up = true,
+            Command::UserGuide => self.open_user_guide(),
+            Command::About => self.about_up = true,
             Command::Orient(orientation) => {
                 let mut section = self.document.section.clone();
                 if section.page.orientation != orientation {
@@ -2560,7 +2626,12 @@ impl Scriva {
         self.pending.is_some()
             || self.asking.is_some()
             || self.message.is_some()
-            || self.margins_draft.is_some()
+            || self.page_setup.is_some()
+            || self.font_draft.is_some()
+            || self.goto.is_some()
+            || self.word_count_up
+            || self.shortcuts_up
+            || self.about_up
             || self.table_draft.is_some()
             || self.color_draft.is_some()
             || self.column_draft.is_some()
@@ -4025,7 +4096,25 @@ struct ParagraphDraft {
     right: String,
     first_line: String,
     hanging: String,
+    /// The alignment, or none stated.
+    justify: Option<Justify>,
+    /// Which of [`LINE_KINDS`] the line spacing is: Single, 1.5, Double,
+    /// Exactly, At least, Multiple — or the style's, at the end.
+    line: usize,
+    /// The number beside Exactly and At least (points) and Multiple (lines).
+    line_value: String,
 }
+
+/// The line-spacing kinds the paragraph box offers, in its order.
+const LINE_KINDS: [&str; 7] = [
+    "Single",
+    "1.5 lines",
+    "Double",
+    "Exactly",
+    "At least",
+    "Multiple",
+    "(style's)",
+];
 
 /// The one paragraph a newly made header or footer starts with.
 ///
@@ -4673,9 +4762,23 @@ impl DocumentApp for Scriva {
             let page = view::caret_rect(&self.view, self.scope, self.caret())
                 .map(|(index, _)| index + 1)
                 .unwrap_or(1);
-            ui.label(format!("Page {page} of {pages}"));
+            // The page count is the Go To popover's anchor, and the word
+            // count opens the box with the rest of the figures.
+            let page_label = ui
+                .add(egui::Button::new(format!("Page {page} of {pages}")).frame(false))
+                .on_hover_text("Go to a page  Ctrl+G");
+            if page_label.clicked() && self.goto.is_none() {
+                self.goto = Some(page.to_string());
+            }
+            self.goto_popover(ui, &page_label);
             ui.separator();
-            ui.label(format!("{} words", self.word_count()));
+            if ui
+                .add(egui::Button::new(format!("{} words", self.word_count())).frame(false))
+                .on_hover_text("Word count")
+                .clicked()
+            {
+                self.word_count_up = true;
+            }
             ui.separator();
             if !self.selection.is_empty() {
                 ui.label("Selection");
@@ -4763,8 +4866,24 @@ impl DocumentApp for Scriva {
             }
             return;
         }
-        if self.margins_draft.is_some() {
-            self.margins_dialog(ctx);
+        if self.page_setup.is_some() {
+            self.page_setup_dialog(ctx);
+            return;
+        }
+        if self.font_draft.is_some() {
+            self.font_dialog(ctx);
+            return;
+        }
+        if self.word_count_up {
+            self.word_count_dialog(ctx);
+            return;
+        }
+        if self.shortcuts_up {
+            self.shortcuts_dialog(ctx);
+            return;
+        }
+        if self.about_up {
+            self.about_dialog(ctx);
             return;
         }
         if self.table_draft.is_some() {
@@ -4956,7 +5075,12 @@ impl DocumentApp for Scriva {
             || self.message.is_some()
             || self.pane_held
             || self.keyboard != Keyboard::Document
-            || self.margins_draft.is_some()
+            || self.page_setup.is_some()
+            || self.font_draft.is_some()
+            || self.goto.is_some()
+            || self.word_count_up
+            || self.shortcuts_up
+            || self.about_up
             || self.table_draft.is_some()
             || self.color_draft.is_some()
             || self.column_draft.is_some()
