@@ -134,11 +134,33 @@ Styles are in the Styles menu, and applying one is what a heading *is* — Scriv
 does not fake a heading with bold text, so the navigation pane and the table of
 contents both find it.
 
+### Tables
+
+Insert ▸ Table puts one in above the caret's paragraph — the grid picker on
+the toolbar for up to eight by eight, the box for numbers. While the caret is
+in a table a strip under the toolbar says its size and offers what the Table
+menu offers: `Row above`, `Row below`, `Column left`, `Column right`, `Delete ▾`
+(row, column, table), `Merge`, `Borders ▾`, `Shading ▾`, `Width…`, `Margins…`.
+Every one is one undo. A new row is shaped like the caret's — height, rules,
+shading, cell widths — with empty cells; a new column is as wide as the column
+to its right and narrows nothing, which is what Word does. Deleting the last
+row or column deletes the table, leaving an empty paragraph where it stood.
+
+| | |
+|---|---|
+| `Tab` / `Shift+Tab` | Next cell, previous cell, selecting what is in it; `Tab` in the last cell adds a row |
+| `Ctrl+Tab` | A tab character inside a cell |
+| `Alt+A` | The Table menu; its rows are disabled outside a table, and say so |
+
 ### Pictures
 
-Click a picture to select it. Drag its body to move it, a corner to resize it
-keeping its shape, an edge to stretch one axis, and press `Delete` to remove it.
-`Esc` lets it go. The whole drag is one undo.
+Click a picture to select it — a picture just put in is selected already.
+Drag its body to move it, a corner to resize it keeping its shape, an edge to
+stretch one axis, and press `Delete` to remove it. `Esc` lets it go. The
+whole drag is one undo. While one is selected a strip under the toolbar says
+its size and offers `Size…`, `Align ▾` (left, centre, right — an inline
+picture is aligned with its line, an anchored one on its own), `Original
+size` and `Delete`.
 
 Only the size and the position can be changed. Everything else about a picture —
 crops, effects, rotations — is kept exactly as it was, because those are not

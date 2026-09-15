@@ -5541,3 +5541,49 @@ resizable; the Navigate pane's is held between 200 and 420. Calx's chart
 inspector should take the same cycle once it is moved onto the shell's
 notion of the keyboard; noted, not done.
 
+## A table can be reshaped from where the caret is, and a picture from where it is picked (2026-09-14)
+
+Phase 6 of the redesign. `wp_model::table::Table` gained `insert_row`,
+`insert_column`, `delete_row` and `delete_column`, in the model because
+they are what the format's grid means and the fidelity harness has no
+application to borrow them from. A new row is the caret's row blank —
+height, rules, shading, cell widths and spans, the paragraph style of each
+cell's last paragraph — and continues a vertical merge it lands inside
+rather than cutting it. A new column takes the width of the column to its
+right, or of the last when appended, and narrows nothing: the table grows
+by the new one, a span that straddles the place grows by one, a row that
+begins past it begins one further on, and a table stating a fixed width
+states the new total. This is what Word 16 was measured doing (LEARNINGS.md,
+"A column Word inserts…"). Deleting a column narrows a straddling span and
+takes a bare cell away; deleting a row hands a merge it began to the row
+below. Seven tests in the module.
+
+In Scriva, `edit::table_change` records any of these as one `Change::Blocks`
+— the table before it, whole — and `edit::delete_table` leaves an empty
+paragraph where the table stood, so that a document is never left with
+nothing where the caret is; Tab's `append_row` is now `insert_row` at the
+end. Five commands — `InsertRow`, `InsertColumn`, `DeleteRow`,
+`DeleteColumn`, `DeleteTable` — sit in the Table menu of D2 (Insert ▸ and
+Delete ▸ submenus, then Merge, Borders, Border Colour and Shading as swatch
+submenus, then Width and Margins), every row disabled outside a table with
+the reason as its tooltip. Deleting the last row or the last column is
+deleting the table, as Word's is. The fidelity harness's edit round-trip
+now inserts a row under the first row of the first table of every `.docx`
+that has one, and stays at zero: a row the model made, with no source of
+its own, is written among rows that have one.
+
+`app/strips.rs` draws the mode strips of D11 under the toolbar: `Table ·
+3 × 4` with the four inserts, Delete ▾, Merge, Borders ▾, Shading ▾, Width…
+and Margins… as flat chips wearing the menu's own tooltips; `Picture ·
+3.25 × 2.10 in` with Size…, Align ▾, Original size and Delete. A picture
+just put in is left picked, as Word leaves one, so the strip and the handles
+are there for it; Backspace still takes it out. Align on an inline picture
+aligns its paragraph — an inline picture is in its line, and Word moves the
+line — and on an anchored one sets its own position through
+`drawings::align`; Original size is the pixels at 96 to the inch, and a
+chart, which has none, says so. The header strip reads `Header · Section 2
+· First page` in the words its own switches use, and its buttons are `Go to
+footer` and `Close  Esc`; the sentence about the page not being edited went,
+the washed body already says it. Cell selection by drag stays out of scope,
+as decided.
+

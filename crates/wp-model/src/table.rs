@@ -429,6 +429,15 @@ impl Row {
             + self.cells.iter().map(|cell| cell.props.span()).sum::<u32>()
     }
 
+    /// The row's text, cell by cell, tabs between.
+    pub fn text(&self) -> String {
+        self.cells
+            .iter()
+            .map(Cell::text)
+            .collect::<Vec<_>>()
+            .join("\t")
+    }
+
     /// The cell covering a grid column, and where that cell starts.
     ///
     /// `None` for a column this row skips — which is a real answer, not a
@@ -506,15 +515,241 @@ impl Table {
     pub fn text(&self) -> String {
         let mut out = String::new();
         for row in &self.rows {
-            for (index, cell) in row.cells.iter().enumerate() {
-                if index > 0 {
-                    out.push('\t');
-                }
-                out.push_str(&cell.text());
-            }
+            out.push_str(&row.text());
             out.push('\n');
         }
         out
+    }
+}
+
+/// Editing the shape of a table: rows and columns in and out.
+///
+/// These change the grid and every row that crosses the place changed, and
+/// nothing else — a span that straddles an inserted column grows by one, a
+/// row that begins past it (`gridBefore`) begins one further on, and a
+/// vertical merge the new row lands inside is continued rather than cut.
+impl Table {
+    /// A blank row shaped like row `like`: the same height, rule, shading,
+    /// cell widths and spans, each cell holding one empty paragraph in the
+    /// style of the paragraph its model ends with — so that text typed into
+    /// the new row looks like the text beside it. Measured: this is what
+    /// Word's Insert Below copies, with empty cells (LEARNINGS.md, "A column
+    /// Word inserts…"). A tracked insertion is not carried, and neither is a
+    /// vertical merge: [`Table::insert_row`] decides that from where the row
+    /// goes.
+    pub fn blank_row_like(&self, like: usize) -> Option<Row> {
+        use crate::doc::{Block, Paragraph};
+        let mut row = self.rows.get(like)?.clone();
+        row.props.revision = None;
+        for cell in &mut row.cells {
+            let props = cell.content.iter().rev().find_map(|block| match block {
+                Block::Paragraph(paragraph) => Some(paragraph.props.clone()),
+                _ => None,
+            });
+            cell.props.v_merge = None;
+            cell.content = vec![Block::Paragraph(Paragraph {
+                props: props.unwrap_or_default(),
+                ..Paragraph::default()
+            })];
+        }
+        Some(row)
+    }
+
+    /// Puts a blank row shaped like row `like` at `at`, so that it becomes
+    /// row `at`. `at` may be one past the end. A cell that lands inside a
+    /// vertical merge — the row below it continues one — continues it too,
+    /// which is what keeps a merged cell one cell.
+    pub fn insert_row(&mut self, at: usize, like: usize) -> bool {
+        if at > self.rows.len() {
+            return false;
+        }
+        let Some(mut row) = self.blank_row_like(like) else {
+            return false;
+        };
+        if let Some(below) = self.rows.get(at) {
+            let mut column = row.props.grid_before;
+            for cell in &mut row.cells {
+                if below
+                    .cell_at(column)
+                    .is_some_and(|(_, c)| c.props.is_merged_up())
+                {
+                    cell.props.v_merge = Some(VMerge::Continue);
+                }
+                column += cell.props.span();
+            }
+        }
+        self.rows.insert(at, row);
+        true
+    }
+
+    /// Puts a grid column in at `at` — before the column that is there, or at
+    /// the end when `at` is the column count — and a blank cell in every row
+    /// that crosses it.
+    ///
+    /// Measured on Word 16: the new column takes the width of the column to
+    /// its right, or of the last column when it is appended, and every other
+    /// column keeps its width — the table grows by the new one
+    /// (LEARNINGS.md, "A column Word inserts takes the width of the column to
+    /// its right, and narrows nothing"). A cell whose span straddles the
+    /// place grows by one column rather than being split; a new cell takes
+    /// the formatting of the cell it is put beside, with an empty paragraph
+    /// in that cell's last paragraph's style. A table stating a fixed width
+    /// states the new total.
+    pub fn insert_column(&mut self, at: usize) -> bool {
+        let count = self.grid.len();
+        if at > count {
+            return false;
+        }
+        let Some(width) = self.grid.get(at).or(self.grid.last()).copied() else {
+            return false;
+        };
+        self.grid.insert(at, width);
+        if let Width::Fixed(total) = &mut self.props.width {
+            total.0 += width.0;
+        }
+        let at = at as u32;
+        for row in &mut self.rows {
+            if at < row.props.grid_before {
+                row.props.grid_before += 1;
+                continue;
+            }
+            let mut position = row.props.grid_before;
+            let mut placed = false;
+            for index in 0..row.cells.len() {
+                let span = row.cells[index].props.span();
+                if at == position {
+                    let cell = blank_cell_like(&row.cells[index], width);
+                    row.cells.insert(index, cell);
+                    placed = true;
+                    break;
+                }
+                if at < position + span {
+                    let cell = &mut row.cells[index];
+                    cell.props.grid_span = span + 1;
+                    if let Width::Fixed(own) = &mut cell.props.width {
+                        own.0 += width.0;
+                    }
+                    placed = true;
+                    break;
+                }
+                position += span;
+            }
+            if placed {
+                continue;
+            }
+            if at == position {
+                let cell = match row.cells.last() {
+                    Some(last) => blank_cell_like(last, width),
+                    None => {
+                        let mut cell = Cell::new();
+                        cell.props.width = Width::Fixed(width);
+                        cell
+                    }
+                };
+                row.cells.push(cell);
+            } else if row.props.grid_after > 0 {
+                row.props.grid_after += 1;
+            }
+            // A row shorter than the grid with no `gridAfter` to say so stays
+            // as short as it was: the file left it that way.
+        }
+        true
+    }
+
+    /// Takes row `at` out. A vertical merge the row began is begun by the
+    /// row below it instead, so that no cell is left continuing nothing.
+    pub fn delete_row(&mut self, at: usize) -> bool {
+        if at >= self.rows.len() {
+            return false;
+        }
+        let removed = self.rows.remove(at);
+        if let Some(below) = self.rows.get_mut(at) {
+            let mut column = below.props.grid_before;
+            for cell in &mut below.cells {
+                let span = cell.props.span();
+                if cell.props.is_merged_up()
+                    && !removed
+                        .cell_at(column)
+                        .is_some_and(|(_, above)| above.props.is_merged_up())
+                {
+                    cell.props.v_merge = Some(VMerge::Restart);
+                }
+                column += span;
+            }
+        }
+        true
+    }
+
+    /// Takes grid column `at` out of the grid and out of every row: a cell
+    /// spanning it narrows by one column, a cell that is only it goes, and a
+    /// row that begins past it begins one nearer. A row left with no cells
+    /// goes with them. The other columns keep their widths.
+    pub fn delete_column(&mut self, at: usize) -> bool {
+        if at >= self.grid.len() {
+            return false;
+        }
+        self.grid.remove(at);
+        let at = at as u32;
+        for row in &mut self.rows {
+            if at < row.props.grid_before {
+                row.props.grid_before -= 1;
+                continue;
+            }
+            let mut position = row.props.grid_before;
+            let mut found = None;
+            for (index, cell) in row.cells.iter().enumerate() {
+                let span = cell.props.span();
+                if at < position + span {
+                    found = Some((index, position, span));
+                    break;
+                }
+                position += span;
+            }
+            match found {
+                Some((index, _, 1)) => {
+                    row.cells.remove(index);
+                }
+                Some((index, position, span)) => {
+                    let cell = &mut row.cells[index];
+                    cell.props.grid_span = span - 1;
+                    if let Width::Fixed(_) = cell.props.width {
+                        let from = position as usize;
+                        let to = (from + span as usize - 1).min(self.grid.len());
+                        let total: i32 = self.grid[from.min(to)..to].iter().map(|t| t.0).sum();
+                        cell.props.width = Width::Fixed(Twips(total));
+                    }
+                }
+                None if row.props.grid_after > 0 => row.props.grid_after -= 1,
+                None => {}
+            }
+        }
+        self.rows.retain(|row| !row.cells.is_empty());
+        if let Width::Fixed(total) = &mut self.props.width {
+            total.0 = self.grid.iter().map(|t| t.0).sum();
+        }
+        true
+    }
+}
+
+/// A blank cell formatted like `model`, one grid column wide and `width`
+/// wide, holding one empty paragraph in the style of the model's last.
+fn blank_cell_like(model: &Cell, width: Twips) -> Cell {
+    use crate::doc::{Block, Paragraph};
+    let props = model.content.iter().rev().find_map(|block| match block {
+        Block::Paragraph(paragraph) => Some(paragraph.props.clone()),
+        _ => None,
+    });
+    Cell {
+        props: CellProps {
+            width: Width::Fixed(width),
+            grid_span: 1,
+            v_merge: None,
+            ..model.props.clone()
+        },
+        content: vec![Block::Paragraph(Paragraph {
+            props: props.unwrap_or_default(),
+            ..Paragraph::default()
+        })],
     }
 }
 
@@ -662,5 +897,200 @@ mod tests {
         let cell = Cell::new();
         assert_eq!(cell.content.len(), 1);
         assert!(matches!(cell.content[0], Block::Paragraph(_)));
+    }
+
+    fn table_of(widths: &[i32], rows: &[&[&str]]) -> Table {
+        Table {
+            grid: widths.iter().map(|w| Twips(*w)).collect(),
+            rows: rows
+                .iter()
+                .map(|texts| Row {
+                    cells: texts
+                        .iter()
+                        .zip(widths)
+                        .map(|(text, width)| {
+                            let mut cell = cell(text, 1, None);
+                            cell.props.width = Width::Fixed(Twips(*width));
+                            cell
+                        })
+                        .collect(),
+                    ..Row::default()
+                })
+                .collect(),
+            ..Table::default()
+        }
+    }
+
+    fn widths(table: &Table) -> Vec<i32> {
+        table.grid.iter().map(|t| t.0).collect()
+    }
+
+    #[test]
+    fn a_row_inserted_below_is_blank_and_shaped_like_the_one_above() {
+        let mut table = table_of(&[2880, 5760], &[&["a", "b"], &["c", "d"]]);
+        table.rows[0].props.height = Some(RowHeight::AtLeast(Twips(400)));
+        table.rows[0].cells[1].props.shading = Some(Shading::default());
+        assert!(table.insert_row(1, 0));
+        assert_eq!(table.rows.len(), 3);
+        let new = &table.rows[1];
+        assert_eq!(new.props.height, Some(RowHeight::AtLeast(Twips(400))));
+        assert_eq!(new.cells.len(), 2);
+        assert!(new.cells[1].props.shading.is_some(), "the shading came too");
+        assert_eq!(new.cells[0].props.width, Width::Fixed(Twips(2880)));
+        assert_eq!(new.text(), "\t", "and every cell is empty");
+        assert_eq!(table.rows[2].text(), "c\td", "the row below moved down");
+        assert!(table.insert_row(3, 2), "one past the end appends");
+        assert!(!table.insert_row(5, 0), "two past the end is nowhere");
+    }
+
+    #[test]
+    fn a_row_inserted_inside_a_vertical_merge_continues_it() {
+        let mut table = Table {
+            grid: vec![Twips(1000), Twips(1000)],
+            rows: vec![
+                Row {
+                    cells: vec![cell("tall", 1, Some(VMerge::Restart)), cell("a", 1, None)],
+                    ..Row::default()
+                },
+                Row {
+                    cells: vec![cell("", 1, Some(VMerge::Continue)), cell("b", 1, None)],
+                    ..Row::default()
+                },
+            ],
+            ..Table::default()
+        };
+        assert!(table.insert_row(1, 0));
+        assert_eq!(
+            table.rows[1].cells[0].props.v_merge,
+            Some(VMerge::Continue),
+            "the new row is inside the merge, so it continues it"
+        );
+        assert_eq!(table.rows[1].cells[1].props.v_merge, None);
+        assert!(table.insert_row(3, 2), "below the merge");
+        assert_eq!(table.rows[3].cells[0].props.v_merge, None);
+    }
+
+    #[test]
+    fn a_column_inserted_takes_its_right_neighbours_width_and_narrows_nothing() {
+        // Word 16, measured: 2in, 4in, 1in; a column right of the 4in one is
+        // 1in, one left of the 2in one is 2in, one after the last copies it.
+        let (two, four, one) = (2880, 5760, 1440);
+        let mut table = table_of(&[two, four, one], &[&["a", "b", "c"], &["d", "e", "f"]]);
+        table.props.width = Width::Fixed(Twips(two + four + one));
+        assert!(table.insert_column(2), "right of the 4in column");
+        assert_eq!(widths(&table), vec![two, four, one, one]);
+        assert_eq!(table.rows[0].text(), "a\tb\t\tc");
+        assert_eq!(table.rows[1].cells[2].props.width, Width::Fixed(Twips(one)));
+        assert_eq!(
+            table.props.width,
+            Width::Fixed(Twips(two + four + one + one))
+        );
+        assert!(table.insert_column(0), "left of the 2in column");
+        assert_eq!(widths(&table), vec![two, two, four, one, one]);
+        assert_eq!(table.rows[0].text(), "\ta\tb\t\tc");
+        assert!(table.insert_column(5), "after the last");
+        assert_eq!(widths(&table), vec![two, two, four, one, one, one]);
+        assert_eq!(table.rows[1].text(), "\td\te\t\tf\t");
+        assert!(!table.insert_column(7), "past that is nowhere");
+    }
+
+    #[test]
+    fn a_column_inserted_under_a_span_widens_the_span_and_moves_a_late_row_along() {
+        let mut table = table_of(&[1000, 1000, 1000], &[&["a", "b", "c"]]);
+        table.rows.push(Row {
+            cells: vec![cell("wide", 2, None), cell("z", 1, None)],
+            ..Row::default()
+        });
+        table.rows[1].cells[0].props.width = Width::Fixed(Twips(2000));
+        table.rows.push(Row {
+            props: RowProps {
+                grid_before: 2,
+                ..RowProps::default()
+            },
+            cells: vec![cell("late", 1, None)],
+        });
+        assert!(table.insert_column(1));
+        assert_eq!(widths(&table), vec![1000, 1000, 1000, 1000]);
+        assert_eq!(table.rows[0].text(), "a\t\tb\tc");
+        let wide = &table.rows[1].cells[0];
+        assert_eq!(wide.props.grid_span, 3, "the span grew by the column");
+        assert_eq!(wide.props.width, Width::Fixed(Twips(3000)));
+        assert_eq!(table.rows[1].cells.len(), 2);
+        assert_eq!(
+            table.rows[2].props.grid_before, 3,
+            "the late row starts one further on"
+        );
+    }
+
+    #[test]
+    fn a_deleted_row_hands_its_merge_to_the_row_below() {
+        let mut table = Table {
+            grid: vec![Twips(1000), Twips(1000)],
+            rows: vec![
+                Row {
+                    cells: vec![cell("tall", 1, Some(VMerge::Restart)), cell("a", 1, None)],
+                    ..Row::default()
+                },
+                Row {
+                    cells: vec![cell("", 1, Some(VMerge::Continue)), cell("b", 1, None)],
+                    ..Row::default()
+                },
+                Row {
+                    cells: vec![cell("", 1, Some(VMerge::Continue)), cell("c", 1, None)],
+                    ..Row::default()
+                },
+            ],
+            ..Table::default()
+        };
+        assert!(table.delete_row(0));
+        assert_eq!(table.rows.len(), 2);
+        assert_eq!(table.rows[0].cells[0].props.v_merge, Some(VMerge::Restart));
+        assert_eq!(table.rows[1].cells[0].props.v_merge, Some(VMerge::Continue));
+        assert!(table.delete_row(1), "a middle continuation goes quietly");
+        assert_eq!(table.rows[0].cells[0].props.v_merge, Some(VMerge::Restart));
+        assert!(!table.delete_row(1), "nothing there");
+    }
+
+    #[test]
+    fn a_deleted_column_narrows_the_grid_and_nothing_else() {
+        let mut table = table_of(&[2880, 5760, 1440], &[&["a", "b", "c"], &["d", "e", "f"]]);
+        table.props.width = Width::Fixed(Twips(2880 + 5760 + 1440));
+        assert!(table.delete_column(1));
+        assert_eq!(widths(&table), vec![2880, 1440]);
+        assert_eq!(table.rows[0].text(), "a\tc");
+        assert_eq!(
+            table.rows[1].cells[1].props.width,
+            Width::Fixed(Twips(1440))
+        );
+        assert_eq!(table.props.width, Width::Fixed(Twips(2880 + 1440)));
+        assert!(!table.delete_column(2), "no third column any more");
+    }
+
+    #[test]
+    fn a_deleted_column_under_a_span_narrows_the_span_and_empties_no_row_but_a_bare_one() {
+        let mut table = table_of(&[1000, 1000, 1000], &[&["a", "b", "c"]]);
+        table.rows.push(Row {
+            cells: vec![cell("wide", 2, None), cell("z", 1, None)],
+            ..Row::default()
+        });
+        table.rows[1].cells[0].props.width = Width::Fixed(Twips(2000));
+        table.rows.push(Row {
+            props: RowProps {
+                grid_before: 2,
+                ..RowProps::default()
+            },
+            cells: vec![cell("late", 1, None)],
+        });
+        assert!(table.delete_column(0));
+        assert_eq!(widths(&table), vec![1000, 1000]);
+        assert_eq!(table.rows[0].text(), "b\tc");
+        assert_eq!(table.rows[1].cells[0].props.grid_span, 1);
+        assert_eq!(
+            table.rows[1].cells[0].props.width,
+            Width::Fixed(Twips(1000))
+        );
+        assert_eq!(table.rows[2].props.grid_before, 1);
+        assert!(table.delete_column(1), "the late row's only column");
+        assert_eq!(table.rows.len(), 2, "and the row went with it");
     }
 }

@@ -191,7 +191,7 @@ fn saved(path: &Path, before: &Package, regenerate: bool) -> Result<Vec<Differen
 /// fails the second, and reprinting is exactly what would quietly drop the
 /// content controls, the rsids and the equations.
 fn document_edit_round_trip(path: &Path) -> Result<Vec<String>, String> {
-    use wp_model::doc::{Inline, Run};
+    use wp_model::doc::{Block, Inline, Run};
 
     let original = Package::open(path).map_err(|e| format!("open: {e}"))?;
     let mut package = Package::open(path).map_err(|e| format!("open: {e}"))?;
@@ -206,6 +206,19 @@ fn document_edit_round_trip(path: &Path) -> Result<Vec<String>, String> {
             return Ok(vec!["no paragraph to edit".to_owned()]);
         };
         paragraph.content = vec![Inline::Run(Run::of(MARKER))];
+    }
+
+    // And a table edit where there is a table: a blank row under the first
+    // row of the first one, made by the model with no source of its own,
+    // written among rows that have one. What Scriva's Table ▸ Insert does.
+    if let Some(table) = document.body.iter_mut().find_map(|block| match block {
+        Block::Table(table) => Some(table),
+        _ => None,
+    }) {
+        let at = 1.min(table.rows.len());
+        if !table.insert_row(at, 0) {
+            return Ok(vec!["the table would not take a row".to_owned()]);
+        }
     }
 
     let expected: Vec<String> = document

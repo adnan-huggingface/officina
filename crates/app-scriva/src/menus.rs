@@ -72,6 +72,7 @@ impl Scriva {
         let (has_header, has_footer) = self.has_bands();
         let face = self.face_at();
         let size = self.size_at();
+        let table = self.table_at_caret();
 
         menu::bar(ui, |ui| {
             let mut chosen = None;
@@ -544,52 +545,98 @@ impl Scriva {
             });
 
             // Everything here acts on the table the caret is in, and says so
-            // when it is not in one.
+            // when it is not in one: every row is disabled, and resting on
+            // one says why.
             menu::top(ui, "T&able", |ui| {
-                menu::sub(ui, "&Borders", |ui| {
-                    if menu::item(ui, "&All", "").clicked() {
-                        chosen = Some(Command::TableBorders(true));
-                    }
-                    if menu::item(ui, "&None", "").clicked() {
-                        chosen = Some(Command::TableBorders(false));
-                    }
-                });
-                menu::sub(ui, "Border &Colour", |ui| {
-                    if menu::item(ui, "&Automatic", "").clicked() {
-                        chosen = Some(Command::BorderColor(wp_model::Color::Auto));
-                    }
-                    menu::sep(ui);
-                    for (name, rgb) in PALETTE {
-                        if menu::item(ui, name, "").clicked() {
-                            chosen = Some(Command::BorderColor(wp_model::Color::Rgb(rgb)));
+                let why = "Put the caret in a table cell first";
+                ui.add_enabled_ui(table.is_some(), |ui| {
+                    let row = |ui: &mut egui::Ui, label: &str, command: Command| {
+                        let item = menu::item(ui, label, shortcut(&command));
+                        let chosen = item.clicked();
+                        item.response.on_disabled_hover_text(why);
+                        chosen.then_some(command)
+                    };
+                    menu::sub(ui, "&Insert", |ui| {
+                        if let Some(command) =
+                            row(ui, "Row &Above", Command::InsertRow { below: false })
+                        {
+                            chosen = Some(command);
                         }
-                    }
-                    menu::sep(ui);
-                    if menu::item(ui, "&Other…", "").clicked() {
-                        chosen = Some(Command::CustomBorderColor);
-                    }
-                });
-                menu::sub(ui, "&Shading", |ui| {
-                    if menu::item(ui, "&No Fill", "").clicked() {
-                        chosen = Some(Command::TableShading(None));
-                    }
-                    menu::sep(ui);
-                    for (name, rgb) in PALETTE {
-                        if menu::item(ui, name, "").clicked() {
-                            chosen = Some(Command::TableShading(Some(rgb)));
+                        if let Some(command) =
+                            row(ui, "Row &Below", Command::InsertRow { below: true })
+                        {
+                            chosen = Some(command);
                         }
+                        if let Some(command) =
+                            row(ui, "Column &Left", Command::InsertColumn { after: false })
+                        {
+                            chosen = Some(command);
+                        }
+                        if let Some(command) =
+                            row(ui, "Column &Right", Command::InsertColumn { after: true })
+                        {
+                            chosen = Some(command);
+                        }
+                    });
+                    menu::sub(ui, "&Delete", |ui| {
+                        if let Some(command) = row(ui, "&Row", Command::DeleteRow) {
+                            chosen = Some(command);
+                        }
+                        if let Some(command) = row(ui, "&Column", Command::DeleteColumn) {
+                            chosen = Some(command);
+                        }
+                        if let Some(command) = row(ui, "&Table", Command::DeleteTable) {
+                            chosen = Some(command);
+                        }
+                    });
+                    menu::sep(ui);
+                    if let Some(command) = row(ui, "Mer&ge Cells", Command::MergeCells) {
+                        chosen = Some(command);
+                    }
+                    menu::sub(ui, "&Borders", |ui| {
+                        if let Some(command) = row(ui, "&All", Command::TableBorders(true)) {
+                            chosen = Some(command);
+                        }
+                        if let Some(command) = row(ui, "&None", Command::TableBorders(false)) {
+                            chosen = Some(command);
+                        }
+                    });
+                    menu::sub(ui, "Border &Colour", |ui| {
+                        let colours: Vec<(&str, egui::Color32)> = PALETTE
+                            .iter()
+                            .map(|(name, [r, g, b])| (*name, egui::Color32::from_rgb(*r, *g, *b)))
+                            .collect();
+                        let picked =
+                            match menu::swatches(ui, "&Automatic", &colours, None, Some("&Other…"))
+                            {
+                                Some(menu::Swatch::First) => {
+                                    Some(Command::BorderColor(wp_model::Color::Auto))
+                                }
+                                Some(menu::Swatch::Index(index)) => Some(Command::BorderColor(
+                                    wp_model::Color::Rgb(PALETTE[index].1),
+                                )),
+                                Some(menu::Swatch::More) => Some(Command::CustomBorderColor),
+                                None => None,
+                            };
+                        if picked.is_some() {
+                            chosen = picked;
+                        }
+                    });
+                    menu::sub(ui, "&Shading", |ui| {
+                        let picked =
+                            crate::app::shading_rows(ui, table.and_then(|table| table.shading));
+                        if picked.is_some() {
+                            chosen = picked;
+                        }
+                    });
+                    menu::sep(ui);
+                    if let Some(command) = row(ui, "Column &Width…", Command::ColumnWidth) {
+                        chosen = Some(command);
+                    }
+                    if let Some(command) = row(ui, "Cell &Margins…", Command::CellMargins) {
+                        chosen = Some(command);
                     }
                 });
-                menu::sep(ui);
-                if menu::item(ui, "Column &Width…", "").clicked() {
-                    chosen = Some(Command::ColumnWidth);
-                }
-                if menu::item(ui, "Cell &Margins…", "").clicked() {
-                    chosen = Some(Command::CellMargins);
-                }
-                if menu::item(ui, "Mer&ge Cells", "").clicked() {
-                    chosen = Some(Command::MergeCells);
-                }
             });
 
             menu::top(ui, "&Styles", |ui| {

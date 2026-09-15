@@ -3,6 +3,15 @@
 
 use super::*;
 
+/// What the strip and the Table menu say about the table the caret is in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TableAt {
+    pub rows: usize,
+    pub columns: usize,
+    /// The caret cell's own fill, when it states one in RGB.
+    pub shading: Option<[u8; 3]>,
+}
+
 impl Scriva {
     /// Runs one edit against the table the caret is in, as one undo step, or
     /// says why nothing happened.
@@ -73,6 +82,187 @@ impl Scriva {
         };
         self.reveal = Some(self.caret());
         true
+    }
+
+    /// The shape of the table the caret is in — rows, columns and the
+    /// caret cell's fill — for the strip and the menu, or nothing.
+    pub(crate) fn table_at_caret(&self) -> Option<TableAt> {
+        let (index, row, cell) = edit::table_cell_at(&self.document, self.scope, self.caret())?;
+        let Block::Table(table) = self.document.blocks(self.scope).get(index)? else {
+            return None;
+        };
+        let shading = table
+            .rows
+            .get(row)
+            .and_then(|r| r.cells.get(cell))
+            .and_then(|c| c.props.shading.as_ref())
+            .and_then(|shading| match shading.fill {
+                Some(wp_model::Color::Rgb(rgb)) => Some(rgb),
+                _ => None,
+            });
+        Some(TableAt {
+            rows: table.rows.len(),
+            columns: table.columns() as usize,
+            shading,
+        })
+    }
+
+    /// Table ▸ Insert ▸ Row Above / Row Below. The caret stays in its cell:
+    /// the new row is empty and beside it, and Tab reaches it.
+    pub(super) fn insert_row(&mut self, below: bool) {
+        let Some((block, row, _)) = self.table_cell_or_say() else {
+            return;
+        };
+        let at = match below {
+            true => row + 1,
+            false => row,
+        };
+        if edit::table_change(
+            &mut self.document,
+            self.scope,
+            &mut self.history,
+            block,
+            |table| table.insert_row(at, row),
+        ) {
+            self.changed();
+        }
+    }
+
+    /// Table ▸ Insert ▸ Column Left / Column Right of the caret's cell. A
+    /// cell spanning several columns gets the new one at its outer edge.
+    pub(super) fn insert_column(&mut self, after: bool) {
+        let Some((block, row, cell)) = self.table_cell_or_say() else {
+            return;
+        };
+        let Some(Block::Table(table)) = self.document.blocks(self.scope).get(block) else {
+            return;
+        };
+        let column = starting_column(table, row, cell);
+        let span = table.rows[row].cells[cell].props.span() as usize;
+        let at = match after {
+            true => column + span,
+            false => column,
+        };
+        if edit::table_change(
+            &mut self.document,
+            self.scope,
+            &mut self.history,
+            block,
+            |table| table.insert_column(at),
+        ) {
+            self.changed();
+        }
+    }
+
+    /// Table ▸ Delete ▸ Row: the caret's. The caret lands in the row that
+    /// takes its place, or the one above when it was the last; deleting the
+    /// only row deletes the table, as Word's does.
+    pub(super) fn delete_row(&mut self) {
+        let Some((block, row, cell)) = self.table_cell_or_say() else {
+            return;
+        };
+        let rows = match self.document.blocks(self.scope).get(block) {
+            Some(Block::Table(table)) => table.rows.len(),
+            _ => return,
+        };
+        if rows <= 1 {
+            self.delete_table();
+            return;
+        }
+        if edit::table_change(
+            &mut self.document,
+            self.scope,
+            &mut self.history,
+            block,
+            |table| table.delete_row(row),
+        ) {
+            self.land_in_cell(block, row.min(rows - 2), cell);
+            self.changed();
+        }
+    }
+
+    /// Table ▸ Delete ▸ Column: the caret's, spans and all. The caret lands
+    /// in the cell that takes its place; deleting the only column deletes
+    /// the table.
+    pub(super) fn delete_column(&mut self) {
+        let Some((block, row, cell)) = self.table_cell_or_say() else {
+            return;
+        };
+        let Some(Block::Table(table)) = self.document.blocks(self.scope).get(block) else {
+            return;
+        };
+        if table.grid.len() <= 1 {
+            self.delete_table();
+            return;
+        }
+        let column = starting_column(table, row, cell);
+        let span = table.rows[row].cells[cell].props.span() as usize;
+        let changed = edit::table_change(
+            &mut self.document,
+            self.scope,
+            &mut self.history,
+            block,
+            |table| (0..span).all(|_| table.delete_column(column)),
+        );
+        if changed {
+            self.land_in_cell(block, row, cell);
+            self.changed();
+        }
+    }
+
+    /// Table ▸ Delete ▸ Table: the caret's, leaving an empty paragraph where
+    /// it stood, with the caret on it.
+    pub(super) fn delete_table(&mut self) {
+        let Some((block, _, _)) = self.table_cell_or_say() else {
+            return;
+        };
+        if let Some(caret) =
+            edit::delete_table(&mut self.document, self.scope, &mut self.history, block)
+        {
+            self.selection = Selection::at(clamp(&self.document, self.scope, caret));
+            self.reveal = Some(self.caret());
+            self.changed();
+        }
+    }
+
+    /// The caret to the start of a cell, or the nearest cell the row still
+    /// has, or the table's first paragraph when the row is gone.
+    fn land_in_cell(&mut self, block: usize, row: usize, cell: usize) {
+        let Some(Block::Table(table)) = self.document.blocks(self.scope).get(block) else {
+            return;
+        };
+        let row = row.min(table.rows.len().saturating_sub(1));
+        let cell = cell.min(
+            table
+                .rows
+                .get(row)
+                .map_or(0, |r| r.cells.len().saturating_sub(1)),
+        );
+        let paragraph = edit::cell_paragraphs(&self.document, self.scope, block, row, cell)
+            .map(|range| range.start)
+            .unwrap_or(0);
+        self.selection = Selection::at(clamp(
+            &self.document,
+            self.scope,
+            Caret {
+                paragraph,
+                offset: 0,
+            },
+        ));
+        self.reveal = Some(self.caret());
+    }
+
+    /// The table cell the caret is in, or the message every table command
+    /// gives when it is not in one.
+    fn table_cell_or_say(&mut self) -> Option<(usize, usize, usize)> {
+        let found = edit::table_cell_at(&self.document, self.scope, self.caret());
+        if found.is_none() {
+            self.message = Some((
+                "Not in a table".to_owned(),
+                "Put the caret in a table cell first, then try again.".to_owned(),
+            ));
+        }
+        found
     }
 
     pub(super) fn edit_table(

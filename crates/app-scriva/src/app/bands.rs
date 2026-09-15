@@ -432,7 +432,16 @@ impl Scriva {
     /// which one and offering the two ways out of it.
     pub(super) fn band_bar(&mut self, ui: &mut egui::Ui) -> Option<Command> {
         let footer = self.in_footer();
-        let index = self.page_section(self.caret_page());
+        let page = self.caret_page();
+        let index = self.page_section(page);
+        let kind = match self.band_kind(page) {
+            wp_model::HeaderKind::First => "First page",
+            wp_model::HeaderKind::Even => "Even pages",
+            wp_model::HeaderKind::Default if self.document.settings.even_and_odd_headers => {
+                "Odd pages"
+            }
+            wp_model::HeaderKind::Default => "Every page",
+        };
         let was = (
             self.document
                 .sections()
@@ -466,12 +475,14 @@ impl Scriva {
                     true => "Footer",
                     false => "Header",
                 })
-                .strong(),
+                .strong()
+                .color(ui_kit::theme::INK),
             );
+            // Which band, in the words the page-kind switches use, so that a
+            // reader who ticks "Different first page" sees the name change.
             ui.label(
-                egui::RichText::new("— the page itself is not being edited")
-                    .weak()
-                    .small(),
+                egui::RichText::new(format!("Section {} · {kind}", index + 1))
+                    .color(ui_kit::theme::INK_SOFT),
             );
             ui.add_space(12.0);
             // Word keeps these two on the Header & Footer tab, and they belong
@@ -490,7 +501,7 @@ impl Scriva {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.add_space(8.0);
                 if ui
-                    .button("Close")
+                    .button("Close  Esc")
                     .on_hover_text("Go back to the text — Esc, or double-click the page")
                     .clicked()
                 {
@@ -498,8 +509,8 @@ impl Scriva {
                 }
                 if ui
                     .button(match footer {
-                        true => "Go to Header",
-                        false => "Go to Footer",
+                        true => "Go to header",
+                        false => "Go to footer",
                     })
                     .clicked()
                 {

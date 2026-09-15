@@ -4475,10 +4475,10 @@ fn a_picture_by_menu_letters_goes_in_and_backspace_takes_it_out() {
     };
     assert_eq!(drawings(&app), 1, "the picture is in");
     assert!(app.message.is_none(), "{:?}", app.message);
-    // The caret is after the picture, and Backspace takes it out as it would
-    // a character. (Word leaves a picture it has just inserted picked;
-    // unmeasured here, and nothing is lost either way.)
-    assert!(app.picked.is_none());
+    // The picture is left picked, as Word leaves one it has just put in, so
+    // that the strip and the handles are there for it — and Backspace takes
+    // it out as it would a character.
+    assert!(app.picked.is_some(), "the picture just put in is picked");
     drive.press(&mut app, "Backspace");
     drive.settle(&mut app);
     assert_eq!(drawings(&app), 0, "Backspace took the picture out");
@@ -5245,5 +5245,221 @@ fn the_heading_containing_the_caret_is_the_lit_row() {
         lit(drive.ctx()),
         vec![Some(2)],
         "Ctrl+End puts it under Method"
+    );
+}
+
+/// A picture put in beside text is picked as *that* picture: the second
+/// drawing of the paragraph when one stood before it.
+#[test]
+fn a_picture_just_put_in_is_the_picked_one() {
+    let mut app = app_with(&["ab"]);
+    app.selection = Selection::at(Caret {
+        paragraph: 0,
+        offset: 2,
+    });
+    assert!(app.insert_picture(PIXEL, "image/png", 96, 48));
+    assert_eq!(
+        app.picked,
+        Some(crate::drawings::Picked {
+            paragraph: 0,
+            nth: 0
+        })
+    );
+    app.selection = Selection::at(Caret {
+        paragraph: 0,
+        offset: 1,
+    });
+    app.picked = None;
+    assert!(app.insert_picture(PIXEL, "image/png", 96, 48));
+    assert_eq!(
+        app.picked,
+        Some(crate::drawings::Picked {
+            paragraph: 0,
+            nth: 0
+        }),
+        "put in before the first, it is the first"
+    );
+    app.selection = Selection::at(Caret {
+        paragraph: 0,
+        offset: text::len(app.document.paragraphs()[0]),
+    });
+    assert!(app.insert_picture(PIXEL, "image/png", 96, 48));
+    assert_eq!(
+        app.picked.map(|picked| picked.nth),
+        Some(2),
+        "put in at the end, it is the third"
+    );
+}
+
+/// Table ▸ Insert ▸ Row Below by its letters, from the last cell of the
+/// first row: the new row is under the caret's, empty, and Tab — which goes
+/// from the row's last cell to the next row's first — lands in it. One undo
+/// takes the row away.
+#[test]
+fn a_row_inserted_below_by_menu_takes_tab_into_its_first_cell() {
+    let drive = ui_kit::drive::Driver::new();
+    let mut app = app_with(&["after"]);
+    drive.settle(&mut app);
+    app.insert_table(2, 2);
+    drive.type_text(&mut app, "a1");
+    drive.press(&mut app, "Tab");
+    drive.type_text(&mut app, "b1");
+    drive.settle(&mut app);
+    let table = |app: &Scriva| match &app.document.body[0] {
+        Block::Table(table) => table.clone(),
+        other => panic!("the table is the first block, not {other:?}"),
+    };
+    assert_eq!(table(&app).rows.len(), 2);
+    drive.menu(&mut app, 'A', 'I');
+    drive.press(&mut app, "B");
+    drive.settle(&mut app);
+    let now = table(&app);
+    assert_eq!(now.rows.len(), 3, "a row went in");
+    assert_eq!(
+        now.rows[0].text(),
+        "a1\tb1",
+        "above the caret's row, untouched"
+    );
+    assert_eq!(now.rows[1].text(), "\t", "the new one, empty");
+    assert_eq!(now.rows[1].cells.len(), 2);
+    assert_eq!(
+        edit::table_cell_at(&app.document, app.scope, app.caret()),
+        Some((0, 0, 1)),
+        "the caret stayed in its cell"
+    );
+    drive.press(&mut app, "Tab");
+    drive.settle(&mut app);
+    assert_eq!(
+        edit::table_cell_at(&app.document, app.scope, app.caret()),
+        Some((0, 1, 0)),
+        "and Tab went into the new row's first cell"
+    );
+    let text: String = app
+        .document
+        .paragraphs()
+        .iter()
+        .map(|paragraph| paragraph.text())
+        .collect();
+    assert_eq!(text, "a1b1after", "no letter of the sequence was typed");
+    app.run(Command::Undo);
+    assert_eq!(table(&app).rows.len(), 2, "one undo takes the row away");
+    assert_eq!(table(&app).rows[1].text(), "\t");
+}
+
+/// Delete ▸ Column on the middle of three: the grid loses that column's
+/// width, the other two keep theirs, every row is a cell shorter, the caret
+/// lands in the cell that took its place, and undo puts it all back.
+#[test]
+fn deleting_the_caret_column_narrows_the_grid_and_nothing_else() {
+    let mut app = app_with(&["after"]);
+    app.insert_table(2, 3);
+    let widths = [Twips(2880), Twips(5760), Twips(1440)];
+    if let Block::Table(table) = &mut app.document.body[0] {
+        table.grid = widths.to_vec();
+        for row in &mut table.rows {
+            for (cell, width) in row.cells.iter_mut().zip(widths) {
+                cell.props.width = wp_model::table::Width::Fixed(width);
+                cell.content = vec![Block::Paragraph(Paragraph::of(&format!("{}", width.0)))];
+            }
+        }
+    }
+    app.stamp += 1;
+    // Into the middle column of the second row.
+    let range = edit::cell_paragraphs(&app.document, app.scope, 0, 1, 1).expect("cell (1, 1)");
+    app.selection = Selection::at(Caret {
+        paragraph: range.start,
+        offset: 0,
+    });
+    app.run(Command::DeleteColumn);
+    let Block::Table(table) = &app.document.body[0] else {
+        panic!("the table is still there");
+    };
+    assert_eq!(
+        table.grid,
+        vec![Twips(2880), Twips(1440)],
+        "the grid lost the middle"
+    );
+    for row in &table.rows {
+        assert_eq!(row.text(), "2880\t1440", "each row lost its middle cell");
+        assert_eq!(
+            row.cells[0].props.width,
+            wp_model::table::Width::Fixed(Twips(2880)),
+            "and the others keep their widths"
+        );
+        assert_eq!(
+            row.cells[1].props.width,
+            wp_model::table::Width::Fixed(Twips(1440))
+        );
+    }
+    assert_eq!(
+        edit::table_cell_at(&app.document, app.scope, app.caret()),
+        Some((0, 1, 1)),
+        "the caret is in the cell that took the place"
+    );
+    assert!(app.message.is_none(), "{:?}", app.message);
+    app.run(Command::Undo);
+    let Block::Table(table) = &app.document.body[0] else {
+        panic!("the table is still there after undo");
+    };
+    assert_eq!(
+        table.grid,
+        widths.to_vec(),
+        "one undo brings the column back"
+    );
+    assert_eq!(table.rows[1].text(), "2880\t5760\t1440");
+}
+
+/// Delete ▸ Table leaves an empty paragraph where the table stood — a
+/// document is never left with nothing where the caret is — with the caret
+/// on it, and one undo brings the table back whole.
+#[test]
+fn deleting_a_table_leaves_an_empty_paragraph_and_undo_brings_it_back() {
+    let drive = ui_kit::drive::Driver::new();
+    let mut app = app_with(&["after"]);
+    drive.settle(&mut app);
+    app.insert_table(2, 2);
+    drive.type_text(&mut app, "cell");
+    drive.settle(&mut app);
+    assert!(matches!(app.document.body[0], Block::Table(_)));
+    app.run(Command::DeleteTable);
+    assert_eq!(app.document.body.len(), 2);
+    assert!(
+        matches!(&app.document.body[0], Block::Paragraph(p) if p.text().is_empty()),
+        "an empty paragraph where the table was"
+    );
+    assert_eq!(app.document.paragraphs()[1].text(), "after");
+    assert_eq!(
+        app.caret(),
+        Caret {
+            paragraph: 0,
+            offset: 0
+        },
+        "the caret is on it"
+    );
+    assert!(app.message.is_none(), "{:?}", app.message);
+    app.run(Command::Undo);
+    let Block::Table(table) = &app.document.body[0] else {
+        panic!("undo brings the table back");
+    };
+    assert_eq!(table.rows[0].text(), "cell\t");
+    assert_eq!(
+        app.document.paragraphs().last().map(|p| p.text()),
+        Some("after".to_owned())
+    );
+
+    // Deleting the only row, or the only column, is deleting the table.
+    let mut app = app_with(&["after"]);
+    app.insert_table(1, 2);
+    app.run(Command::DeleteRow);
+    assert!(
+        matches!(app.document.body[0], Block::Paragraph(_)),
+        "the last row took the table"
+    );
+    let mut app = app_with(&["after"]);
+    app.insert_table(2, 1);
+    app.run(Command::DeleteColumn);
+    assert!(
+        matches!(app.document.body[0], Block::Paragraph(_)),
+        "the last column took the table"
     );
 }

@@ -52,25 +52,26 @@ Every source file, its size, and the first sentence of its module doc.
 
 ### `scriva`
 
-- `crates/app-scriva/src/app/bands.rs` (578) Headers and footers — the bands above and below the text of a page: which one the caret is in, making one a section does not have yet, first-page and odd/even kinds, linking to the previous section, the band bar, and …
+- `crates/app-scriva/src/app/bands.rs` (589) Headers and footers — the bands above and below the text of a page: which one the caret is in, making one a section does not have yet, first-page and odd/even kinds, linking to the previous section, the band bar, and …
 - `crates/app-scriva/src/app/dialogs.rs` (803) Scriva's boxes: page margins, Insert Table, colour, paragraph, column width, picture size, fonts, zoom and the comment box.
 - `crates/app-scriva/src/app/find_bar.rs` (229) The find bar: one bar for Find and Replace, which holds the keyboard while it is open and hands it back to the document when it closes.
-- `crates/app-scriva/src/app/surface.rs` (790) The page surface: the scrolling desk the pages sit on, what the pointer does there — carets, selections, a picture picked, dragged and resized — and where on a page a point lands.
-- `crates/app-scriva/src/app/tables.rs` (308) Editing a table: Tab from cell to cell, the edit every table command goes through, cell margins, column widths, and Insert Table itself.
-- `crates/app-scriva/src/app/tests.rs` (5249) 
+- `crates/app-scriva/src/app/strips.rs` (230) The mode strips: one row under the toolbar that appears for the thing the caret is in — a table, a picked picture — and goes when it is left.
+- `crates/app-scriva/src/app/surface.rs` (886) The page surface: the scrolling desk the pages sit on, what the pointer does there — carets, selections, a picture picked, dragged and resized — and where on a page a point lands.
+- `crates/app-scriva/src/app/tables.rs` (498) Editing a table: Tab from cell to cell, the edit every table command goes through, cell margins, column widths, and Insert Table itself.
+- `crates/app-scriva/src/app/tests.rs` (5465) 
 - `crates/app-scriva/src/app/watermark.rs` (289) The watermark: the box that asks for one, and the shape it becomes in a header, written the way Word writes its own so that Word finds it again.
-- `crates/app-scriva/src/app.rs` (4944) The application: the window, the commands, and the keys.
+- `crates/app-scriva/src/app.rs` (5010) The application: the window, the commands, and the keys.
 - `crates/app-scriva/src/author.rs` (339) A document written by the application itself, from a script of its own commands.
 - `crates/app-scriva/src/clip.rs` (955) The formatted halves of a copy: CF_HTML and Rich Text Format.
-- `crates/app-scriva/src/commands.rs` (339) Every command with a name and a key, in one table.
+- `crates/app-scriva/src/commands.rs` (376) Every command with a name and a key, in one table.
 - `crates/app-scriva/src/drawings.rs` (353) A picture as an object: selected, moved, resized, deleted.
-- `crates/app-scriva/src/edit.rs` (2071) Editing a document, and taking it back.
+- `crates/app-scriva/src/edit.rs` (2102) Editing a document, and taking it back.
 - `crates/app-scriva/src/find.rs` (214) Finding text in the document, and putting something else in its place.
 - `crates/app-scriva/src/icons.rs` (445) Toolbar icons, drawn from lines rather than typed.
 - `crates/app-scriva/src/lib.rs` (26) Scriva — the word processor.
 - `crates/app-scriva/src/links.rs` (117) Following a hyperlink out of the document, or to somewhere inside it.
 - `crates/app-scriva/src/main.rs` (31) Scriva — word processor.
-- `crates/app-scriva/src/menus.rs` (609) The menu bar and the formatting row.
+- `crates/app-scriva/src/menus.rs` (656) The menu bar and the formatting row.
 - `crates/app-scriva/src/panes/mod.rs` (12) The panes beside the page: Review on the right, and — from phase 5 of the redesign — Navigate on the left.
 - `crates/app-scriva/src/panes/navigate.rs` (507) The Navigate pane: the document's headings as a tree, and its bookmarks.
 - `crates/app-scriva/src/panes/review.rs` (779) The Review pane: every tracked change and comment as a card, in document order, with what can be done about each on the card itself.
@@ -319,7 +320,7 @@ Every source file, its size, and the first sentence of its module doc.
 - `crates/wp-model/src/revision.rs` (323) Tracked changes, comments, and bookmarks.
 - `crates/wp-model/src/section.rs` (753) Sections: page size, margins, columns, and the headers and footers that belong to them.
 - `crates/wp-model/src/style.rs` (989) Styles, and the layers a paragraph's appearance is assembled from.
-- `crates/wp-model/src/table.rs` (666) Tables: a grid of columns, a list of rows, and two different ways a cell can cover more than one square of it.
+- `crates/wp-model/src/table.rs` (1096) Tables: a grid of columns, a list of rows, and two different ways a cell can cover more than one square of it.
 - `crates/wp-model/src/units.rs` (370) The five units a Word document measures in.
 
 ### `wp-odf`
@@ -365,14 +366,14 @@ Every comment that says an application was *measured* — the rules this code ke
 
 - `crates/app-scriva/src/app/bands.rs:224` `content` is what goes in it: nothing for a band being made from scratch, and a copy of the inherited one for a section being unlinked — which is what Word does, measured: unlink a section's header and the words stay …
 - `crates/app-scriva/src/app/bands.rs:349` **Breaking it copies rather than empties.** Word's own answer, measured over COM: unlink a second section's header and the words are still there, while the first section keeps a copy of its own — so the two can then b…
-- `crates/app-scriva/src/app/tables.rs:282` Measured: a cell that states none is laid to its *content* by Word, whatever the grid says — a 468pt table came back 28pt wide, its second column as wide as "B1", and an empty column under a point.
+- `crates/app-scriva/src/app/tables.rs:472` Measured: a cell that states none is laid to its *content* by Word, whatever the grid says — a 468pt table came back 28pt wide, its second column as wide as "B1", and an empty column under a point.
 - `crates/app-scriva/src/app/watermark.rs:137` measured against a watermark Word wrote itself, which put the shape in the default header and left the other two parts empty.
-- `crates/app-scriva/src/app.rs:400` Word's own Page Setup keeps those last two on the same sheet, under "From edge", and they belong with the margins because they are measured against the same four edges.
-- `crates/app-scriva/src/app.rs:4339` 96 pixels to the inch: what a screen snippet is measured in, and what Word assumes of an image that does not say otherwise.
-- `crates/app-scriva/src/app.rs:4473` What a new document is in Word today, measured on the reference machine (Word 16.0.20326, 2026-09-13): twelve points, eight points after every paragraph, and a line of 278 to 240 — the document defaults Word writes in…
+- `crates/app-scriva/src/app.rs:424` Word's own Page Setup keeps those last two on the same sheet, under "From edge", and they belong with the margins because they are measured against the same four edges.
+- `crates/app-scriva/src/app.rs:4382` 96 pixels to the inch: what a screen snippet is measured in, and what Word assumes of an image that does not say otherwise.
+- `crates/app-scriva/src/app.rs:4516` What a new document is in Word today, measured on the reference machine (Word 16.0.20326, 2026-09-13): twelve points, eight points after every paragraph, and a line of 278 to 240 — the document defaults Word writes in…
 - `crates/app-scriva/src/author.rs:5` Nothing measured what it *writes* — and the faults that cost a week of afternoons were all there: a new document that stated no defaults and came back from Word a third taller, an inserted table whose cells stated no …
-- `crates/app-scriva/src/edit.rs:646` Measured on Word, not designed: a page break *inside* a cell is nothing to Word's layout, wherever in the cell it is, and the layout here ignores one too.
-- `crates/app-scriva/src/edit.rs:1933` Measured on Word 16 (`bugs/page-break-in-table-cell.md` in the story):
+- `crates/app-scriva/src/edit.rs:677` Measured on Word, not designed: a page break *inside* a cell is nothing to Word's layout, wherever in the cell it is, and the layout here ignores one too.
+- `crates/app-scriva/src/edit.rs:1964` Measured on Word 16 (`bugs/page-break-in-table-cell.md` in the story):
 - `crates/app-scriva/src/shaper.rs:454` A face this machine does not have, whose line Word was measured to lay: its ideal, and the base every face without a measured base gets — the ideal to a twenty-fourth of a point.
 - `crates/app-scriva/src/shaper.rs:565` Word's laid line pitch, measured rather than derived.
 - `crates/app-scriva/src/shaper.rs:576` **Aptos is measured and deliberately absent.** Word's default face since 2024 fits the same law with a base of exactly 1.2 times the size and a correction of *six* tenths of a point — `tools/probe` writes the probes a…
@@ -490,6 +491,9 @@ Every comment that says an application was *measured* — the rules this code ke
 - `crates/wp-model/src/doc.rs:1238` **The two formats answer this differently and neither states it.** Measured on `word-odf-export.odt`, whose body sets `Body Text` an eighth of an inch above and below and `Heading 2` a quarter above: LibreOffice puts …
 - `crates/wp-model/src/style.rs:373` Nothing in ECMA-376 says so; it was measured, by asking Word for the resolved size of one cell across twenty-three variants of one document (2026-08-23):
 - `crates/wp-model/src/style.rs:497` Measured against a second producer's tables, whose styles pad every cell by 115 twips and whose tables state an indent of -7: Word rules them seven twips into the margin and sets their text a padding further in, so an…
+- `crates/wp-model/src/table.rs:535` Measured: this is what Word's Insert Below copies, with empty cells (LEARNINGS.md, "A column Word inserts…").
+- `crates/wp-model/src/table.rs:589` Measured on Word 16: the new column takes the width of the column to its right, or of the last column when it is appended, and every other column keeps its width — the table grows by the new one (LEARNINGS.md, "A colu…
+- `crates/wp-model/src/table.rs:975` Word 16, measured: 2in, 4in, 1in; a column right of the 4in one is 1in, one left of the 2in one is 2in, one after the last copies it.
 
 ### `wp-odf`
 
@@ -508,43 +512,26 @@ Every row of every menu, and the keys that choose it from the document — walke
 
 | keys | row |
 |---|---|
+| `Alt+A, I` | Insert ▸ |
+| `Alt+A, D` | Delete ▸ |
+| `Alt+A, G` | Merge Cells |
 | `Alt+A, B` | Borders ▸ |
 | `Alt+A, C` | Border Colour ▸ |
 | `Alt+A, S` | Shading ▸ |
 | `Alt+A, W` | Column Width… |
 | `Alt+A, M` | Cell Margins… |
-| `Alt+A, G` | Merge Cells |
 | `Alt+A, B, A` | All |
 | `Alt+A, B, N` | None |
 | `Alt+A, C, A` | Automatic |
-| `Alt+A, C, —` | Black |
-| `Alt+A, C, —` | Dark Red |
-| `Alt+A, C, —` | Red |
-| `Alt+A, C, —` | Orange |
-| `Alt+A, C, —` | Yellow |
-| `Alt+A, C, —` | Light Green |
-| `Alt+A, C, —` | Green |
-| `Alt+A, C, —` | Light Blue |
-| `Alt+A, C, —` | Blue |
-| `Alt+A, C, —` | Dark Blue |
-| `Alt+A, C, —` | Purple |
-| `Alt+A, C, —` | Gray |
-| `Alt+A, C, —` | White |
 | `Alt+A, C, O` | Other… |
+| `Alt+A, D, R` | Row |
+| `Alt+A, D, C` | Column |
+| `Alt+A, D, T` | Table |
+| `Alt+A, I, A` | Row Above |
+| `Alt+A, I, B` | Row Below |
+| `Alt+A, I, L` | Column Left |
+| `Alt+A, I, R` | Column Right |
 | `Alt+A, S, N` | No Fill |
-| `Alt+A, S, —` | Black |
-| `Alt+A, S, —` | Dark Red |
-| `Alt+A, S, —` | Red |
-| `Alt+A, S, —` | Orange |
-| `Alt+A, S, —` | Yellow |
-| `Alt+A, S, —` | Light Green |
-| `Alt+A, S, —` | Green |
-| `Alt+A, S, —` | Light Blue |
-| `Alt+A, S, —` | Blue |
-| `Alt+A, S, —` | Dark Blue |
-| `Alt+A, S, —` | Purple |
-| `Alt+A, S, —` | Gray |
-| `Alt+A, S, —` | White |
 | `Alt+E, U` | Undo |
 | `Alt+E, R` | Redo *(disabled here)* |
 | `Alt+E, T` | Cut *(disabled here)* |

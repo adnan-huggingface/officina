@@ -676,6 +676,102 @@ impl Scriva {
         self.changed();
     }
 
+    /// The picked picture's size, in points — width, then height.
+    pub(super) fn picked_size(&self) -> Option<(f64, f64)> {
+        self.picked_drawing()
+            .map(|drawing| (drawing.extent.0.points(), drawing.extent.1.points()))
+    }
+
+    /// Puts the picked picture back to the size its pixels ask for, at 96 to
+    /// the inch. A chart has no pixels, and a picture not yet decoded has
+    /// none to ask; both say so.
+    pub(super) fn picture_original_size(&mut self) {
+        let (Some(picked), Some(drawing)) = (self.picked, self.picked_drawing()) else {
+            self.message = Some((
+                "Nothing selected".to_owned(),
+                "Click the picture to put back to its own size, then try again.".to_owned(),
+            ));
+            return;
+        };
+        let natural = drawing
+            .rel
+            .as_deref()
+            .filter(|_| drawing.chart.is_none())
+            .and_then(|rel| self.pictures.texture(rel))
+            .map(|texture| {
+                let [w, h] = texture.size();
+                (w as f64 * 0.75, h as f64 * 0.75)
+            });
+        match natural {
+            Some((width, height)) => self.resize_drawing(picked, width, height),
+            None => {
+                self.message = Some((
+                    "No original size".to_owned(),
+                    "A chart has no pixels of its own to go back to.".to_owned(),
+                ));
+            }
+        }
+    }
+
+    /// Puts the picked picture at the left, the centre or the right. An
+    /// anchored picture is placed by its own position; an inline one sits
+    /// in its line, so its paragraph is aligned instead — which moves any
+    /// text on the line with it, as it does in Word. One undo step.
+    pub(super) fn align_picture(&mut self, alignment: wp_model::doc::Alignment) {
+        let (Some(picked), Some(drawing)) = (self.picked, self.picked_drawing()) else {
+            self.message = Some((
+                "Nothing selected".to_owned(),
+                "Click the picture to align, then try again.".to_owned(),
+            ));
+            return;
+        };
+        if !drawing.anchored {
+            let justify = match alignment {
+                wp_model::doc::Alignment::Center => Justify::Center,
+                wp_model::doc::Alignment::Right => Justify::End,
+                _ => Justify::Start,
+            };
+            let at = Caret {
+                paragraph: picked.paragraph,
+                offset: 0,
+            };
+            edit::format_paragraphs(
+                &mut self.document,
+                self.scope,
+                &mut self.history,
+                Selection::at(at),
+                |props| props.justify = Some(justify),
+            );
+            self.changed();
+            return;
+        }
+        let before = match self
+            .document
+            .paragraphs_in(self.scope)
+            .get(picked.paragraph)
+        {
+            Some(paragraph) => (*paragraph).clone(),
+            None => return,
+        };
+        {
+            let mut paragraphs = self.document.paragraphs_in_mut(self.scope);
+            if let Some(drawing) = paragraphs
+                .get_mut(picked.paragraph)
+                .and_then(|paragraph| paragraph.drawing_mut(picked.nth))
+            {
+                crate::drawings::align(drawing, Some(alignment), None);
+            }
+        }
+        self.history.push(
+            self.scope,
+            crate::edit::Change::Paragraph {
+                index: picked.paragraph,
+                before: Box::new(before),
+            },
+        );
+        self.changed();
+    }
+
     /// Takes the picked drawing out of the document.
     pub(super) fn delete_drawing(&mut self) -> bool {
         let Some(picked) = self.picked else {

@@ -22,8 +22,12 @@ use crate::view::{self, View};
 mod bands;
 mod dialogs;
 mod find_bar;
+mod strips;
 mod surface;
 mod tables;
+
+pub(crate) use strips::shading_rows;
+pub(crate) use tables::TableAt;
 mod watermark;
 
 /// A comment being written in the Review pane, before it is posted: the
@@ -100,6 +104,11 @@ pub enum Command {
     InsertTableOf(usize, usize),
     /// The Size box for the selected picture or chart.
     PictureSize,
+    /// The picked picture put back to the size its own pixels ask for.
+    PictureOriginalSize,
+    /// The picked picture anchored at the left, the centre or the right of
+    /// the column — `Alignment::Left`, `Center` or `Right`.
+    AlignPicture(wp_model::doc::Alignment),
     /// Takes the selected picture or chart out of the document.
     DeletePicture,
     /// One of the margin presets, whole. Header, footer and gutter distances
@@ -123,6 +132,21 @@ pub enum Command {
     Highlight(wp_model::Highlight),
     /// Paragraph ▸ Paragraph…: spacing and indents, by number.
     ParagraphDialog,
+    /// Table ▸ Insert ▸ Row Above / Row Below: a blank row shaped like the
+    /// caret's, on the side named.
+    InsertRow {
+        below: bool,
+    },
+    /// Table ▸ Insert ▸ Column Left / Column Right: a blank column beside the
+    /// caret's, as wide as the one to its right.
+    InsertColumn {
+        after: bool,
+    },
+    /// Table ▸ Delete ▸ Row, Column, Table: the caret's. Deleting the last
+    /// row or the last column deletes the table, which is what Word does.
+    DeleteRow,
+    DeleteColumn,
+    DeleteTable,
     /// Table ▸ Merge Cells: the cells the selection runs across, in one row,
     /// become one.
     MergeCells,
@@ -1992,6 +2016,11 @@ impl Scriva {
             Command::Color(color) => self.format_runs(move |props| props.color = Some(color)),
             Command::CustomColor => self.color_draft = Some((ColorTarget::Text, String::new())),
             Command::ParagraphDialog => self.open_paragraph_dialog(),
+            Command::InsertRow { below } => self.insert_row(below),
+            Command::InsertColumn { after } => self.insert_column(after),
+            Command::DeleteRow => self.delete_row(),
+            Command::DeleteColumn => self.delete_column(),
+            Command::DeleteTable => self.delete_table(),
             Command::MergeCells => self.merge_cells(),
             Command::BorderColor(color) => self.color_borders(color),
             Command::CustomBorderColor => {
@@ -2319,6 +2348,8 @@ impl Scriva {
             }
             Command::InsertTableOf(rows, columns) => self.insert_table(rows, columns),
             Command::PictureSize => self.open_size_dialog(),
+            Command::PictureOriginalSize => self.picture_original_size(),
+            Command::AlignPicture(alignment) => self.align_picture(alignment),
             Command::DeletePicture => {
                 self.delete_drawing();
             }
@@ -3119,6 +3150,18 @@ impl Scriva {
             &clip,
         );
         self.selection = Selection::at(clamp(&self.document, self.scope, caret));
+        // Word leaves a picture it has just put in picked, with its handles
+        // showing, so that the next thing done is done to the picture — its
+        // size, its place — rather than typed beside it.
+        self.picked = self
+            .document
+            .paragraphs_in(self.scope)
+            .get(caret.paragraph)
+            .and_then(|paragraph| drawing_ending_at(paragraph, caret.offset))
+            .map(|nth| crate::drawings::Picked {
+                paragraph: caret.paragraph,
+                nth,
+            });
         self.changed();
         self.reveal = Some(self.caret());
         true
@@ -4557,8 +4600,10 @@ impl DocumentApp for Scriva {
         let command = self.menus(ui);
         rule(ui);
         let bar = self.toolbar_row(ui);
+        // The mode strip: one at a time, and the band's first, because the
+        // way out of a band matters more than a table in it.
         let band = match self.scope {
-            wp_model::Scope::Body => None,
+            wp_model::Scope::Body => self.strip(ui),
             wp_model::Scope::Chrome(_) => {
                 rule(ui);
                 self.band_bar(ui)
@@ -4927,6 +4972,27 @@ impl Scriva {
             other => self.run(other),
         }
     }
+}
+
+/// Which of a paragraph's drawings ends exactly at `offset` — the one a
+/// paste just put in, with the caret after it — counted the way
+/// [`Paragraph::drawings`] counts them, anchored ones included.
+fn drawing_ending_at(paragraph: &Paragraph, offset: usize) -> Option<usize> {
+    let mut at = 0;
+    let mut nth = 0;
+    for run in paragraph.runs() {
+        for piece in &run.content {
+            let len = piece.text_len();
+            if let wp_model::doc::Piece::Drawing(drawing) = piece {
+                if !drawing.anchored && at + len == offset {
+                    return Some(nth);
+                }
+                nth += 1;
+            }
+            at += len;
+        }
+    }
+    None
 }
 
 /// A hairline the full width of the bar.

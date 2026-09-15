@@ -2040,3 +2040,11 @@ copies the row above's height and its rule, its shading, its cell widths and
 its run formatting, with empty cells. (`bugs/evidence/word/table-insert*.ps1`
 in the story directory, results beside them.)
 
+
+**The chrome's proportional face has no `▾`.** A strip chip that spelled its
+menu chevron as U+25BE drew a box on the rig — the face `ui_kit::fonts`
+installs for the chrome covers the letters and the punctuation and none of
+the geometric shapes block — while the same glyph in a test passes, because
+a test never rasterises. Every chevron in the chrome is drawn as an icon
+(`icons::Icon::ChevronDown`), as the toolbar's always were; a glyph the
+face might not have is not a way to draw an arrow.
