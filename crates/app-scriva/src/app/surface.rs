@@ -23,6 +23,12 @@ impl Scriva {
         );
 
         let mut revealed = false;
+        // Read before the scroll area takes the wheel out of the input.
+        let wheeled = ui.input(|i| {
+            i.events
+                .iter()
+                .any(|event| matches!(event, egui::Event::MouseWheel { .. }))
+        });
         let scroll = egui::ScrollArea::both()
             .auto_shrink([false, false])
             .show(ui, |ui| {
@@ -452,10 +458,13 @@ impl Scriva {
         // is in view, while the desk is being scrolled and for a moment after
         // — and not when the caret moved the desk, since the status bar says
         // where the caret is.
-        let now = ui.input(|i| i.time);
+        let (now, dragging) = ui.input(|i| (i.time, i.pointer.primary_down()));
         let moved = (scroll.state.offset.y - self.scroll).abs() > 0.5;
         self.scroll = scroll.state.offset.y;
-        if moved && !revealed {
+        // By the wheel — which moves the offset over the frames after, as
+        // the scrolling is smoothed — or by the bar, and not by a layout that
+        // moved the offset under a caret that stayed where it was.
+        if wheeled || (moved && !revealed && dragging) {
             self.badge_until = now + 0.8;
         }
         let remaining = self.badge_until - now;

@@ -6009,3 +6009,81 @@ fn corpus_docx(name: &str) -> PathBuf {
         .join("../../corpus/docx")
         .join(name)
 }
+
+/// A wheel over the desk brings the page badge up — `Page 2 of 6`, painted
+/// at the right of the desk — and eight hundred milliseconds after the last
+/// tick it has faded away; the caret moving the desk brings no badge, since
+/// the status bar already says where the caret is.
+#[test]
+fn the_page_badge_shows_while_the_desk_scrolls_and_fades_after() {
+    let drive = ui_kit::drive::Driver::new();
+    let mut app = app_with(&["one", "two", "three", "four", "five", "six"]);
+    drive.settle(&mut app);
+    for paragraph in (1..6).rev() {
+        app.selection = Selection::at(Caret {
+            paragraph,
+            offset: 0,
+        });
+        app.run(Command::PageBreak);
+    }
+    app.selection = Selection::at(Caret::default());
+    drive.frame_at(&mut app, Vec::new(), Some(10.0));
+    drive.frame_at(&mut app, Vec::new(), Some(10.1));
+    assert!(app.view.pages().len() >= 6);
+    fn badge_texts(shapes: &[egui::epaint::ClippedShape]) -> Vec<String> {
+        fn walk(shape: &egui::Shape, into: &mut Vec<String>) {
+            match shape {
+                egui::Shape::Vec(many) => many.iter().for_each(|one| walk(one, into)),
+                egui::Shape::Text(text) if text.galley.text().starts_with("Page ") => {
+                    into.push(text.galley.text().to_owned());
+                }
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        for clipped in shapes {
+            walk(&clipped.shape, &mut out);
+        }
+        out
+    }
+    // Nothing before the wheel but the status bar's own count.
+    let before = badge_texts(&drive.frame_at(&mut app, Vec::new(), Some(10.2)));
+    assert_eq!(before, ["Page 1 of 6"], "the status bar alone: {before:?}");
+    let wheel = |delta: f32| {
+        vec![
+            egui::Event::PointerMoved(egui::pos2(800.0, 500.0)),
+            egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0.0, delta),
+                phase: egui::TouchPhase::Move,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]
+    };
+    drive.frame_at(&mut app, wheel(-1600.0), Some(10.3));
+    drive.frame_at(&mut app, Vec::new(), Some(10.4));
+    drive.frame_at(&mut app, Vec::new(), Some(10.5));
+    let during = badge_texts(&drive.frame_at(&mut app, Vec::new(), Some(10.6)));
+    assert_eq!(
+        during.len(),
+        2,
+        "the badge beside the status count: {during:?}"
+    );
+    assert!(
+        during.iter().any(|text| text != "Page 1 of 6"),
+        "and it names the page the desk shows: {during:?}"
+    );
+    let after = badge_texts(&drive.frame_at(&mut app, Vec::new(), Some(11.5)));
+    assert_eq!(after.len(), 1, "faded a second later: {after:?}");
+    // The caret moving the desk: no badge.
+    app.run(Command::GoToPage);
+    app.goto = None;
+    app.go_to_page(1);
+    drive.frame_at(&mut app, Vec::new(), Some(12.0));
+    let moved = badge_texts(&drive.frame_at(&mut app, Vec::new(), Some(12.1)));
+    assert_eq!(
+        moved,
+        ["Page 1 of 6"],
+        "no badge for a caret move: {moved:?}"
+    );
+}

@@ -2074,3 +2074,12 @@ and a test now reads the painted shapes back and asks that the bar's
 switches lie inside a clip rectangle with height — the only kind of test
 that can see a thing the keyboard can reach and the eye cannot.
 
+
+**The scroll area takes the wheel out of the input before anything after
+it can read it.** `ScrollArea::show` subtracts what it scrolled from
+`smooth_scroll_delta`, so a widget drawn after the desk that asks "was the
+wheel turned this frame" is answered no, every frame. The page badge asked
+after and never came up; it reads the frame's `MouseWheel` events before
+the scroll area is shown now. The scrolling is also smoothed over the
+frames that follow, so "the offset moved" and "the wheel turned" are not
+the same frame either.

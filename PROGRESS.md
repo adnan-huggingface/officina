@@ -5745,3 +5745,39 @@ are drawn on before a menu or a preview sets text in them: the tables
 behind them are process-wide and a context is not, and a test's second
 context panicked on a face the first had registered.
 
+## What driving the redesign found (2026-09-15)
+
+The ten phases were each driven on the rig as they landed — the real
+binary on a hidden display, the tour script pressing what a person
+presses — and the whole tour was run once more at the end against the
+audit's "before" (`bugs/scriva-ux-audit.md` in the story, "After"), with
+Calx alongside after every phase that touched `ui_kit`. What the driving
+found that the tests had not:
+
+- **The find bar had never been on the screen** (phase 9). A
+  `Panel::top` nested in the shell's content-sized panel is handed no
+  height and clips everything in it; the field still took every key, so
+  every test that typed into it passed. Now a `Frame`, and a test reads
+  the painted shapes back — the only kind of test that can see a thing
+  the keyboard reaches and the eye cannot.
+- **Glyphs the chrome face does not have** (phases 6 and 8): the strip
+  chips and the Go To button spelled their chevron as U+25BE and drew a
+  box. Every chevron is drawn as an icon now.
+- **A nested context lock** (phase 8): `Response::has_focus` inside
+  `input_mut` waits on itself for ever; a single-line field has already
+  let its focus go by the time Enter can be read.
+- **The wheel is consumed by the scroll area** (phase 10): a badge that
+  read the scroll delta after the desk had scrolled never saw a wheel.
+- **Word's column insert narrows nothing** (phase 6, measured through
+  the service before pinning): the new column takes its right neighbour's
+  width and the table grows.
+- **Two lessons for the rig itself**, in the story's notes: never point
+  a tour at a corpus document — a `Ctrl+S` in the tour rewrote one, and
+  `git checkout` put it back — and the portal chooser opens with the
+  stem selected and the extension not, so a path typed whole gains a
+  second `.docx`.
+
+What stays as decided: cell selection by drag, wrap around pictures,
+`Update <style> to Match Selection`, and Calx's own toolbar and grid.
+What is next is in the story's HANDOFF.
+
