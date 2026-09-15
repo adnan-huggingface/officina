@@ -4233,26 +4233,26 @@ impl Calx {
                         if response.drag_started() {
                             self.dragging_tab = Some(index);
                         }
-                        response.context_menu(|ui| {
+                        menu::context(&response, |ui| {
                             let mut chose = |command| context = Some((index, command));
-                            if ui.button("Insert…").clicked() {
+                            if menu::item(ui, "&Insert…", "").clicked() {
                                 chose(TabCommand::Insert);
                                 ui.close();
                             }
-                            if ui.button("Delete").clicked() {
+                            if menu::item(ui, "&Delete", "").clicked() {
                                 chose(TabCommand::Delete);
                                 ui.close();
                             }
-                            if ui.button("Rename…").clicked() {
+                            if menu::item(ui, "&Rename…", "").clicked() {
                                 chose(TabCommand::Rename);
                                 ui.close();
                             }
-                            if ui.button("Move or Copy…").clicked() {
+                            if menu::item(ui, "&Move or Copy…", "").clicked() {
                                 chose(TabCommand::MoveOrCopy);
                                 ui.close();
                             }
-                            ui.separator();
-                            ui.menu_button("Tab Colour", |ui| {
+                            menu::sep(ui);
+                            menu::sub(ui, "Tab &Colour", |ui| {
                                 // Excel's own standard row, plus the way back.
                                 for (label, rgb) in TAB_COLORS {
                                     let [r, g, b] = *rgb;
@@ -4261,19 +4261,18 @@ impl Calx {
                                         ui.close();
                                     }
                                 }
-                                if ui.button("No colour").clicked() {
+                                if menu::item(ui, "&No colour", "").clicked() {
                                     chose(TabCommand::Color(None));
                                     ui.close();
                                 }
                             });
-                            ui.separator();
-                            if ui.button("Hide").clicked() {
+                            menu::sep(ui);
+                            if menu::item(ui, "&Hide", "").clicked() {
                                 chose(TabCommand::Hide);
                                 ui.close();
                             }
                             ui.add_enabled_ui(hidden_count > 0, |ui| {
-                                if ui
-                                    .button("Unhide…")
+                                if menu::item(ui, "&Unhide…", "")
                                     .on_disabled_hover_text("No sheets are hidden")
                                     .clicked()
                                 {
@@ -4281,8 +4280,8 @@ impl Calx {
                                     ui.close();
                                 }
                             });
-                            ui.separator();
-                            if ui.button("Select All Sheets").clicked() {
+                            menu::sep(ui);
+                            if menu::item(ui, "&Select All Sheets", "").clicked() {
                                 chose(TabCommand::SelectAll);
                                 ui.close();
                             }
@@ -4530,17 +4529,17 @@ impl Calx {
                 .weak()
                 .small(),
         );
-        ui.separator();
+        menu::sep(ui);
         for (label, action) in [
             ("Cut", Action::Copy { cut: true }),
             ("Copy", Action::Copy { cut: false }),
         ] {
-            if ui.button(label).clicked() {
+            if menu::item(ui, label, "").clicked() {
                 requested = Some(action);
                 ui.close();
             }
         }
-        if ui.button("Paste").clicked() {
+        if menu::item(ui, "Paste", "").clicked() {
             requested = Some(Action::Paste(self.os_clipboard_text()));
             ui.close();
         }
@@ -4551,12 +4550,12 @@ impl Calx {
             ("Paste values", ss_formula::clip::PasteKind::Values),
             ("Paste formats", ss_formula::clip::PasteKind::Formats),
         ] {
-            if ui.button(label).clicked() {
+            if menu::item(ui, label, "").clicked() {
                 special = Some(Some(kind));
                 ui.close();
             }
         }
-        if ui.button("Paste special…").clicked() {
+        if menu::item(ui, "Paste special…", "").clicked() {
             special = Some(None);
             ui.close();
         }
@@ -4578,17 +4577,19 @@ impl Calx {
             }
             None => {}
         }
-        ui.separator();
+        menu::sep(ui);
         let has_note = self
             .doc
             .workbook
             .sheet(self.grid.sheet_index)
             .is_some_and(|s| s.comments.iter().any(|note| note.at == cursor));
         let mut note = false;
-        if ui
-            .button(if has_note { "Edit note" } else { "Insert note" })
-            .on_hover_text("Shift+F2")
-            .clicked()
+        if menu::item(
+            ui,
+            if has_note { "Edit note" } else { "Insert note" },
+            "Shift+F2",
+        )
+        .clicked()
         {
             note = true;
             ui.close();
@@ -4596,19 +4597,19 @@ impl Calx {
         if note {
             self.open_note();
         }
-        ui.separator();
+        menu::sep(ui);
         for (label, action) in [
             ("Insert rows", Action::Insert(Axis::Rows)),
             ("Delete rows", Action::Delete(Axis::Rows)),
             ("Insert columns", Action::Insert(Axis::Columns)),
             ("Delete columns", Action::Delete(Axis::Columns)),
         ] {
-            if ui.button(label).clicked() {
+            if menu::item(ui, label, "").clicked() {
                 requested = Some(action);
                 ui.close();
             }
         }
-        ui.separator();
+        menu::sep(ui);
         for (label, action) in [
             (
                 "Hide rows",
@@ -4669,7 +4670,7 @@ impl Calx {
             ("Fit columns to contents", Action::AutoFit(Axis::Columns)),
             ("Fit rows to contents", Action::AutoFit(Axis::Rows)),
         ] {
-            if ui.button(label).clicked() {
+            if menu::item(ui, label, "").clicked() {
                 requested = Some(action);
                 ui.close();
             }
@@ -4677,46 +4678,43 @@ impl Calx {
         // Not an `Action`: the dialog belongs to the application, and nothing
         // has happened to the document yet for the grid to be told about.
         let mut size: Option<Axis> = None;
-        if ui.button("Column width…").clicked() {
+        if menu::item(ui, "Column width…", "").clicked() {
             size = Some(Axis::Columns);
             ui.close();
         }
-        if ui.button("Row height…").clicked() {
+        if menu::item(ui, "Row height…", "").clicked() {
             size = Some(Axis::Rows);
             ui.close();
         }
         if let Some(axis) = size {
             self.open_size_dialog(axis);
         }
-        ui.separator();
+        menu::sep(ui);
         let merged = self
             .doc
             .workbook
             .sheet(self.grid.sheet_index)
             .is_some_and(|s| s.merge_at(cursor).is_some());
-        if ui
-            .button(if merged { "Unmerge" } else { "Merge cells" })
-            .clicked()
-        {
+        if menu::item(ui, if merged { "Unmerge" } else { "Merge cells" }, "").clicked() {
             requested = Some(Action::Merge(!merged));
             ui.close();
         }
-        if ui.button("Clear contents").clicked() {
+        if menu::item(ui, "Clear contents", "").clicked() {
             requested = Some(Action::Clear);
             ui.close();
         }
         let mut find_dialog = false;
         let mut validation = false;
         let mut cond = false;
-        if ui.button("Data validation…").clicked() {
+        if menu::item(ui, "Data validation…", "").clicked() {
             validation = true;
             ui.close();
         }
-        if ui.button("Conditional formatting…").clicked() {
+        if menu::item(ui, "Conditional formatting…", "").clicked() {
             cond = true;
             ui.close();
         }
-        if ui.button("Find and replace…").clicked() {
+        if menu::item(ui, "Find and replace…", "").clicked() {
             find_dialog = true;
             ui.close();
         }
@@ -4729,31 +4727,31 @@ impl Calx {
         if cond {
             self.open_cond_format();
         }
-        if ui.button("Clear formatting").clicked() {
+        if menu::item(ui, "Clear formatting", "").clicked() {
             requested = Some(Action::Format(Format::Clear));
             ui.close();
         }
         let mut format_cells = false;
-        if ui.button("Format cells…").on_hover_text("Ctrl+1").clicked() {
+        if menu::item(ui, "Format cells…", "Ctrl+1").clicked() {
             format_cells = true;
             ui.close();
         }
         if format_cells {
             self.open_format_cells();
         }
-        ui.separator();
+        menu::sep(ui);
         let mut deferred: Option<FilterCommand> = None;
         let mut sort: Option<bool> = None;
-        ui.menu_button("Sort", |ui| {
-            if ui.button("A to Z").clicked() {
+        menu::sub(ui, "Sort", |ui| {
+            if menu::item(ui, "A to Z", "").clicked() {
                 sort = Some(false);
                 ui.close();
             }
-            if ui.button("Z to A").clicked() {
+            if menu::item(ui, "Z to A", "").clicked() {
                 sort = Some(true);
                 ui.close();
             }
-            if ui.button("Custom sort…").clicked() {
+            if menu::item(ui, "Custom sort…", "").clicked() {
                 deferred = Some(FilterCommand::SortDialog);
                 ui.close();
             }
@@ -4763,10 +4761,7 @@ impl Calx {
             .workbook
             .sheet(self.grid.sheet_index)
             .is_some_and(|s| s.filter.is_some());
-        if ui
-            .button(if filtered { "Remove filter" } else { "Filter" })
-            .clicked()
-        {
+        if menu::item(ui, if filtered { "Remove filter" } else { "Filter" }, "").clicked() {
             deferred = Some(FilterCommand::Toggle);
             ui.close();
         }
@@ -5517,7 +5512,7 @@ impl DocumentApp for Calx {
             || elsewhere_before
             || keys_belong_elsewhere(ui.ctx());
         let response = self.grid.show(ui, &mut self.doc.workbook);
-        response.context_menu(|ui| self.context_menu(ui));
+        menu::context(&response, |ui| self.context_menu(ui));
 
         for action in self.grid.take_actions() {
             self.act(ui, action);

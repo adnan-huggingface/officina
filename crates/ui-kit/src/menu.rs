@@ -188,6 +188,14 @@ impl Item {
             by_key: self.by_key,
         }
     }
+
+    /// The reason a disabled row is disabled, shown on rest.
+    pub fn on_disabled_hover_text(self, text: impl Into<egui::WidgetText>) -> Self {
+        Item {
+            response: self.response.on_disabled_hover_text(text),
+            by_key: self.by_key,
+        }
+    }
 }
 
 /// The menu bar across the top of the window.
@@ -304,7 +312,20 @@ pub fn context<R>(response: &egui::Response, add: impl FnOnce(&mut egui::Ui) -> 
     let config = egui::containers::menu::MenuConfig::new()
         .style(menu_style as fn(&mut egui::Style))
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
-    egui::Popup::context_menu(response)
+    let id = egui::Popup::default_response_id(response);
+    let ctx = &response.ctx;
+    // Opened by the keyboard, it stands where the keyboard said — at the
+    // caret — and not at wherever the pointer happens to be resting.
+    let asked: Option<egui::Pos2> = ctx.data(|d| d.get_temp(id.with("at")));
+    if response.secondary_clicked() {
+        ctx.data_mut(|d| d.remove::<egui::Pos2>(id.with("at")));
+    }
+    let popup = egui::Popup::context_menu(response);
+    let popup = match asked.filter(|_| !response.secondary_clicked()) {
+        Some(at) => popup.at_position(at),
+        None => popup,
+    };
+    let shown = popup
         .style(menu_style as fn(&mut egui::Style))
         .info(
             egui::UiStackInfo::new(egui::UiKind::Menu)
@@ -314,7 +335,25 @@ pub fn context<R>(response: &egui::Response, add: impl FnOnce(&mut egui::Ui) -> 
             ui.set_min_width(MIN_WIDTH);
             add(ui)
         })
-        .map(|inner| inner.inner)
+        .map(|inner| inner.inner);
+    if !egui::Popup::is_id_open(ctx, id) {
+        ctx.data_mut(|d| d.remove::<egui::Pos2>(id.with("at")));
+    }
+    shown
+}
+
+/// Opens the context menu of `response` from the keyboard — Shift+F10 —
+/// at `at`, which is where the caret is: the menu a key opens is about the
+/// place the keyboard is, and it is drawn there by the next [`context`].
+pub fn open_context(ctx: &egui::Context, response: &egui::Response, at: egui::Pos2) {
+    let id = egui::Popup::default_response_id(response);
+    ctx.data_mut(|d| d.insert_temp(id.with("at"), at));
+    egui::Popup::open_id(ctx, id);
+}
+
+/// Whether the context menu of `response` is up.
+pub fn context_open(response: &egui::Response) -> bool {
+    egui::Popup::is_id_open(&response.ctx, egui::Popup::default_response_id(response))
 }
 
 /// A command: a label, and the keystroke that does the same thing.
@@ -344,6 +383,12 @@ fn entry(ui: &mut egui::Ui, label: &str, shortcut: &str, checked: Option<bool>) 
     atoms.push_right("".atom_size(egui::vec2(GUTTER, 0.0)));
     marked.atoms(showing_marks(ui.ctx()), &mut atoms);
     let hot = hot_row(ui);
+    if !shortcut.is_empty() {
+        // The least a label and its key may stand apart: a row whose label
+        // is long — Paste Unformatted, Ctrl+Shift+V — otherwise runs the
+        // two together, the button's gap being zero.
+        atoms.push_right("".atom_size(egui::vec2(GUTTER * 3.0, 0.0)));
+    }
     let mut button = egui::Button::new(atoms).gap(0.0).selected(hot.is_hot);
     if !shortcut.is_empty() {
         button = button.shortcut_text(shortcut);

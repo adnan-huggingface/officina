@@ -3,6 +3,7 @@
 //! and where on a page a point lands.
 
 use super::*;
+use ui_kit::menu;
 
 impl Scriva {
     /// The page surface: a scrolling desk with the pages on it.
@@ -358,73 +359,36 @@ impl Scriva {
                         .and_then(|caret| self.link_at(caret));
                     self.menu_link = clicked;
                 }
-                let has_selection = !self.selection.is_empty();
-                let picture = self.picked.is_some();
-                let mut chosen: Option<Command> = None;
-                let mut follow: Option<crate::links::Destination> = None;
-                response.context_menu(|ui| {
-                    ui.set_min_width(160.0);
-                    // A picked picture has its own menu: Cut and Copy are the
-                    // text's, and a picture is not a stretch of text.
-                    if picture {
-                        if ui.button("Cut").clicked() {
-                            chosen = Some(Command::Cut);
-                            ui.close();
-                        }
-                        if ui.button("Copy").clicked() {
-                            chosen = Some(Command::Copy);
-                            ui.close();
-                        }
-                        ui.separator();
-                        if ui.button("Size…").clicked() {
-                            chosen = Some(Command::PictureSize);
-                            ui.close();
-                        }
-                        ui.separator();
-                        if ui.button("Delete").clicked() {
-                            chosen = Some(Command::DeletePicture);
-                            ui.close();
-                        }
-                        return;
-                    }
-                    // Word offers this too, and it is how a reader who never
-                    // hears about the modifier follows a link.
-                    if let Some(destination) = &self.menu_link {
-                        if ui.button("Open Hyperlink").clicked() {
-                            follow = Some(destination.clone());
-                            ui.close();
-                        }
-                        ui.separator();
-                    }
-                    if ui
-                        .add_enabled(has_selection, egui::Button::new("Cut"))
-                        .clicked()
-                    {
-                        chosen = Some(Command::Cut);
-                        ui.close();
-                    }
-                    if ui
-                        .add_enabled(has_selection, egui::Button::new("Copy"))
-                        .clicked()
-                    {
-                        chosen = Some(Command::Copy);
-                        ui.close();
-                    }
-                    if ui.button("Paste").clicked() {
-                        chosen = Some(Command::Paste);
-                        ui.close();
-                    }
-                    ui.separator();
-                    if ui.button("Select All").clicked() {
-                        chosen = Some(Command::SelectAll);
-                        ui.close();
-                    }
-                });
+                // Shift+F10: the same menu, at the caret. The popup is
+                // opened here, where the response it hangs from exists.
+                if std::mem::take(&mut self.context_requested) {
+                    let caret = self.caret();
+                    let at = view::caret_rect_on(&self.view, self.scope, caret, None)
+                        .map(|(page, rect)| {
+                            let (page_x, page_y) = self.view.page_origin(page);
+                            origin
+                                + egui::vec2(
+                                    (page_x as f32 + rect.min.x) * zoom,
+                                    (page_y as f32 + rect.max.y) * zoom,
+                                )
+                        })
+                        .unwrap_or(response.rect.min);
+                    menu::open_context(ui.ctx(), &response, at);
+                }
+                // Read on the frame the menu opens — the right-click has
+                // moved the caret by now — and on every frame it is up.
+                let state = match response.secondary_clicked() || menu::context_open(&response) {
+                    true => Some(self.context_state()),
+                    false => None,
+                };
+                let chosen = state
+                    .as_ref()
+                    .and_then(|state| {
+                        menu::context(&response, |ui| context::context_rows(ui, state))
+                    })
+                    .flatten();
                 if let Some(command) = chosen {
                     self.run(command);
-                }
-                if let Some(destination) = follow {
-                    self.follow_link(destination);
                 }
                 if response.drag_started() {
                     self.sweeping = false;

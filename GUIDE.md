@@ -188,6 +188,8 @@ reply and resolve all work and are written back.
 | `Esc` | From a pane, the find bar or the toolbar: back to the document, closing nothing. In the document: close the header or footer first, then the find bar |
 | `Ctrl+Shift+8` | Formatting marks |
 | `F9` | Update the table of contents |
+| `Shift+F10` | The page's right-click menu, at the caret. Its rows are the menus' own: Cut, Copy, Paste, Paste Unformatted, the three emphases, Paragraph, Styles, New Comment, Select All — with Open Hyperlink and Copy Link Address first on a link, a Table submenu first in a table, Accept and Reject first on a tracked change, and a menu of its own on a picked picture |
+| `Ctrl+Shift+V` | Paste the board's text without its formatting |
 
 ---
 

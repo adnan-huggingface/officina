@@ -5463,3 +5463,130 @@ fn deleting_a_table_leaves_an_empty_paragraph_and_undo_brings_it_back() {
         "the last column took the table"
     );
 }
+
+/// Shift+F10 opens the page's menu at the caret, Escape closes it, and the
+/// caret is where it was through both — a menu opened from the keyboard is
+/// about the place the keyboard is, and closing it must not lose the place.
+#[test]
+fn shift_f10_opens_the_context_menu_and_escape_closes_it_without_moving_the_caret() {
+    let drive = ui_kit::drive::Driver::new();
+    let mut app = app_with(&["the quick fox"]);
+    let at = Caret {
+        paragraph: 0,
+        offset: 4,
+    };
+    app.selection = Selection::at(at);
+    drive.settle(&mut app);
+    drive.press(&mut app, "shift+F10");
+    drive.settle(&mut app);
+    drive.settle(&mut app);
+    assert!(
+        egui::Popup::is_any_open(drive.ctx()),
+        "Shift+F10 opened the menu"
+    );
+    let (rows, _) = ui_kit::menu::innermost_rows(drive.ctx());
+    let labels: Vec<&str> = rows.iter().map(|row| row.label.as_str()).collect();
+    assert!(
+        labels.contains(&"Paste") && labels.contains(&"Select All"),
+        "the text menu's rows: {labels:?}"
+    );
+    assert_eq!(app.caret(), at, "the caret stayed put while it opened");
+    drive.press(&mut app, "Escape");
+    drive.settle(&mut app);
+    drive.settle(&mut app);
+    assert!(
+        !egui::Popup::is_any_open(drive.ctx()),
+        "Escape closed the menu"
+    );
+    assert_eq!(app.caret(), at, "and the caret is still where it was");
+    assert_eq!(app.document.paragraphs()[0].text(), "the quick fox");
+}
+
+/// The page's menu in each of the states it has rows for — text, a table
+/// with the caret in it, a tracked change under the caret, a picked picture
+/// — with every submenu opened by its letter: no two rows of any of them
+/// share a letter, and every state has rows at all.
+#[test]
+fn no_two_rows_of_the_context_menu_share_a_letter() {
+    let drive = ui_kit::drive::Driver::new();
+    let open = |drive: &ui_kit::drive::Driver, app: &mut Scriva, subs: &[&str]| {
+        drive.settle(app);
+        drive.press(app, "shift+F10");
+        drive.settle(app);
+        drive.settle(app);
+        assert!(egui::Popup::is_any_open(drive.ctx()), "the menu opened");
+        let (rows, _) = ui_kit::menu::innermost_rows(drive.ctx());
+        assert!(!rows.is_empty(), "it has rows");
+        let labels: Vec<String> = rows.iter().map(|row| row.label.clone()).collect();
+        for sub in subs {
+            drive.press(app, sub);
+            drive.settle(app);
+            drive.settle(app);
+            let (inner, depth) = ui_kit::menu::innermost_rows(drive.ctx());
+            assert_eq!(depth, 2, "{sub} opened its submenu: {inner:?}");
+            assert!(!inner.is_empty(), "{sub}'s submenu has rows");
+            drive.press(app, "Escape");
+            drive.settle(app);
+        }
+        let clashes = ui_kit::menu::clashes(drive.ctx());
+        assert!(clashes.is_empty(), "{labels:?}: {}", clashes.join("\n"));
+        for _ in 0..2 {
+            drive.press(app, "Escape");
+            drive.settle(app);
+        }
+        assert!(!egui::Popup::is_any_open(drive.ctx()), "closed again");
+        labels
+    };
+
+    // Text.
+    let mut app = app_with(&["plain text"]);
+    let labels = open(&drive, &mut app, &["S"]);
+    assert!(
+        labels.contains(&"Paste Unformatted".to_owned()),
+        "{labels:?}"
+    );
+
+    // In a table: the Table submenu in front.
+    let mut app = app_with(&["after"]);
+    app.insert_table(2, 2);
+    let labels = open(&drive, &mut app, &["T", "S"]);
+    assert_eq!(
+        labels.first().map(String::as_str),
+        Some("Table"),
+        "{labels:?}"
+    );
+
+    // On a tracked change: Accept and Reject in front.
+    let mut app = app_with(&["plain text"]);
+    drive.settle(&mut app);
+    app.run(Command::TrackChanges);
+    app.selection = Selection::at(Caret {
+        paragraph: 0,
+        offset: 5,
+    });
+    drive.type_text(&mut app, " new");
+    drive.settle(&mut app);
+    app.selection = Selection::at(Caret {
+        paragraph: 0,
+        offset: 7,
+    });
+    let labels = open(&drive, &mut app, &["S"]);
+    assert_eq!(
+        labels.first().map(String::as_str),
+        Some("Accept Change"),
+        "{labels:?}"
+    );
+
+    // A picked picture: its own menu.
+    let mut app = app_with(&["ab"]);
+    assert!(app.insert_picture(PIXEL, "image/png", 96, 48));
+    assert!(app.picked.is_some());
+    let labels = open(&drive, &mut app, &["A"]);
+    assert_eq!(
+        labels.first().map(String::as_str),
+        Some("Cut"),
+        "{labels:?}"
+    );
+    assert!(labels.contains(&"Original size".to_owned()), "{labels:?}");
+    assert!(!labels.contains(&"Paste".to_owned()), "not the text's menu");
+}

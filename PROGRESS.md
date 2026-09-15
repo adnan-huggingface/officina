@@ -5587,3 +5587,33 @@ footer` and `Close  Esc`; the sentence about the page not being edited went,
 the washed body already says it. Cell selection by drag stays out of scope,
 as decided.
 
+## The page's right-click menu is a menu (2026-09-14)
+
+Phase 7 of the redesign. The surface's menu was egui's raw `context_menu`
+— plain buttons on a card of their own, no letters, no rule, and Word's
+rows missing — and the navigate pane had already shown what
+`ui_kit::menu::context` looks like. `app/context.rs` now holds the rows of
+D12: Cut, Copy, Paste, Paste Unformatted, Bold, Italic and Underline
+ticked as they stand, Paragraph…, a Styles submenu with the current one
+ticked, New Comment, Select All; with Open Hyperlink and Copy Link Address
+in front on a link, a Table submenu of the strip's rows in front in a
+table, Accept Change and Reject Change in front on a tracked change the
+caret stands in, and a picked picture's own menu — Cut, Copy, Size…,
+Align ▸, Original size, Delete. What the click landed on is read once,
+when the menu opens, because the menu outlives the click. Letters are
+unique down the whole menu in every state, which
+`no_two_rows_of_the_context_menu_share_a_letter` holds by opening each
+state and its submenus.
+
+Shift+F10 opens the same menu at the caret. The key is a row of the
+command table like any other; the command sets a flag, and the surface —
+the only place the response the popup hangs from exists — opens the popup
+there, through `menu::open_context`, which stores the place for
+`menu::context` to anchor at instead of the pointer. Escape closes it and
+the caret has not moved, because the keyboard handler is already held
+back while any popup is up. Paste Unformatted is Ctrl+Shift+V: the
+platform makes the same paste event of it as of Ctrl+V, so the event is
+read with Shift, and the table lists the key as one delivered another
+way. Calx's two raw menus — the sheet tab's and the grid's — moved onto
+the same card; the tab's rows have letters, the grid's forty do not yet.
+

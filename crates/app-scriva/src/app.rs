@@ -20,6 +20,7 @@ use crate::text;
 use crate::view::{self, View};
 
 mod bands;
+mod context;
 mod dialogs;
 mod find_bar;
 mod strips;
@@ -80,6 +81,15 @@ pub enum Command {
     Cut,
     Copy,
     Paste,
+    /// The board's text, taking the formatting of where it lands — what
+    /// Ctrl+Shift+V does, and the right-click menu's Paste Unformatted.
+    PasteUnformatted,
+    /// The right-click menu of the page, opened from the keyboard at the
+    /// caret: Shift+F10.
+    ContextMenu,
+    /// The right-click menu's two rows for the link it was opened on.
+    OpenLink,
+    CopyLinkAddress,
     /// Open the find bar, or bring it back to the keyboard.
     Find,
     /// The find bar with the replace controls showing.
@@ -476,6 +486,9 @@ pub struct Scriva {
     /// The link the last right-click landed on, for the menu it opened: the
     /// menu is drawn on later frames, when the click is long gone.
     menu_link: Option<crate::links::Destination>,
+    /// Shift+F10 was pressed: the surface opens its menu at the caret on
+    /// its next draw, where the response the menu hangs from exists.
+    context_requested: bool,
     /// The find bar, when it is open.
     finder: Option<Finder>,
     /// Whether one of the find bar's fields held the keyboard last frame —
@@ -648,6 +661,7 @@ impl Scriva {
             reveal_on: None,
             band_page: None,
             menu_link: None,
+            context_requested: false,
             finder: None,
             finder_focused: false,
             find_matches: Vec::new(),
@@ -1970,6 +1984,30 @@ impl Scriva {
                 }
             }
             Command::Paste => self.paste_from_board(),
+            Command::PasteUnformatted => {
+                self.picked = None;
+                if let Some(text) = clipboard_get().filter(|text| !text.is_empty()) {
+                    self.paste_text(&text);
+                }
+            }
+            Command::ContextMenu => {
+                self.menu_link = self.link_at(self.caret());
+                self.context_requested = true;
+            }
+            Command::OpenLink => {
+                if let Some(destination) = self.menu_link.clone() {
+                    self.follow_link(destination);
+                }
+            }
+            Command::CopyLinkAddress => {
+                if let Some(destination) = &self.menu_link {
+                    let address = match destination {
+                        crate::links::Destination::Away(url) => url.clone(),
+                        crate::links::Destination::Here(name) => format!("#{name}"),
+                    };
+                    clipboard_set(&address, &address, "");
+                }
+            }
             Command::Find => self.open_finder(false),
             Command::Replace => self.open_finder(true),
             Command::FindNext => self.jump_match(true),
@@ -3469,9 +3507,14 @@ impl Scriva {
                 // place a paste can land.
                 egui::Event::Copy => self.run(Command::Copy),
                 egui::Event::Cut => self.run(Command::Cut),
+                // With Shift held it is Ctrl+Shift+V, which pastes the text
+                // alone: the platform makes the same event of both.
                 egui::Event::Paste(text) => {
                     self.picked = None;
-                    self.paste_matching(&text);
+                    match ui.input(|i| i.modifiers.shift) {
+                        true => self.paste_text(&text),
+                        false => self.paste_matching(&text),
+                    }
                 }
                 // Ctrl+V reaches an application as `Event::Paste`, and egui
                 // builds that event by reading the board's *text*. A screen

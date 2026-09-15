@@ -76,6 +76,12 @@ pub const TABLE: &[Entry] = &[
     entry("Cut", "Ctrl+X", None, Command::Cut),
     entry("Copy", "Ctrl+C", None, Command::Copy),
     entry("Paste", "Ctrl+V", None, Command::Paste),
+    entry(
+        "Paste Unformatted",
+        "Ctrl+Shift+V",
+        None,
+        Command::PasteUnformatted,
+    ),
     entry("Find", "Ctrl+F", Some((CTRL, Key::F)), Command::Find),
     entry("Replace", "Ctrl+H", Some((CTRL, Key::H)), Command::Replace),
     entry("Find Next", "F3", Some((NONE, Key::F3)), Command::FindNext),
@@ -285,6 +291,14 @@ pub const TABLE: &[Entry] = &[
     ),
     entry("Navigation Pane", "", None, Command::Navigator),
     entry(
+        "Context Menu",
+        "Shift+F10",
+        Some((Modifiers::SHIFT, Key::F10)),
+        Command::ContextMenu,
+    ),
+    entry("Open Hyperlink", "", None, Command::OpenLink),
+    entry("Copy Link Address", "", None, Command::CopyLinkAddress),
+    entry(
         "Formatting Marks",
         "Ctrl+Shift+8",
         Some((CTRL_SHIFT, Key::Num8)),
@@ -360,13 +374,18 @@ mod tests {
     #[test]
     fn a_shown_key_is_a_pressed_key_or_says_why_not() {
         // Every key the menus print is one the frame reads, except the
-        // three the operating system or egui delivers another way.
+        // few the operating system or egui delivers another way — the
+        // board's three keys arrive as events, Ctrl+Shift+V as the paste
+        // event with Shift held.
         for entry in TABLE {
             if entry.shown.is_empty() || entry.key.is_some() {
                 continue;
             }
             assert!(
-                matches!(entry.shown, "Alt+F4" | "Ctrl+X" | "Ctrl+C" | "Ctrl+V"),
+                matches!(
+                    entry.shown,
+                    "Alt+F4" | "Ctrl+X" | "Ctrl+C" | "Ctrl+V" | "Ctrl+Shift+V"
+                ),
                 "{} prints {} and nothing reads it",
                 entry.name,
                 entry.shown
