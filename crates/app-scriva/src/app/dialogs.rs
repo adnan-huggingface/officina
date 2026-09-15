@@ -838,7 +838,7 @@ impl Scriva {
 
     /// The zoom that fits the paper to the desk — its width, or the whole
     /// first page — leaving a little air for the scrollbar and the edges.
-    pub(super) fn fit_percent(&self, width_only: bool) -> Option<i32> {
+    pub(crate) fn fit_percent(&self, width_only: bool) -> Option<i32> {
         let geometry = &self.view.pages().first()?.geometry;
         // The paper's size on the glass is its points times [`view::SCALE`],
         // so the percent that fits is measured against that.

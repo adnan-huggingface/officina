@@ -149,18 +149,33 @@ impl Marked<'_> {
     /// widget — which is what greys a disabled row out, and what a baked-in
     /// `LayoutJob` would have thrown away.
     fn atoms(&self, underline: bool, into: &mut egui::Atoms<'static>) {
+        self.atoms_in(underline, None, into);
+    }
+
+    /// The same, set in `face` where one is given — a style's row in the
+    /// style's own face, at the menu's size.
+    fn atoms_in(
+        &self,
+        underline: bool,
+        face: Option<&egui::FontFamily>,
+        into: &mut egui::Atoms<'static>,
+    ) {
+        let set = |text: egui::RichText| match face {
+            Some(face) => text.family(face.clone()),
+            None => text,
+        };
         if !self.before.is_empty() {
-            into.push_right(egui::RichText::new(self.before.to_string()));
+            into.push_right(set(egui::RichText::new(self.before.to_string())));
         }
         if let Some(key) = self.key {
             let mut text = egui::RichText::new(key.to_string());
             if underline {
                 text = text.underline();
             }
-            into.push_right(text);
+            into.push_right(set(text));
         }
         if !self.after.is_empty() {
-            into.push_right(egui::RichText::new(self.after.to_string()));
+            into.push_right(set(egui::RichText::new(self.after.to_string())));
         }
     }
 }
@@ -363,15 +378,33 @@ pub fn context_open(response: &egui::Response) -> bool {
 /// because a menu that stays open after its command has run is a menu covering
 /// the thing the command just changed.
 pub fn item(ui: &mut egui::Ui, label: &str, shortcut: &str) -> Item {
-    entry(ui, label, shortcut, None)
+    entry(ui, label, shortcut, None, None)
 }
 
 /// A command that is either on or off, marked with a tick when it is on.
 pub fn check(ui: &mut egui::Ui, label: &str, shortcut: &str, on: bool) -> Item {
-    entry(ui, label, shortcut, Some(on))
+    entry(ui, label, shortcut, Some(on), None)
 }
 
-fn entry(ui: &mut egui::Ui, label: &str, shortcut: &str, checked: Option<bool>) -> Item {
+/// [`check`] with the label set in `face` — the Styles menu's rows, each
+/// in its style's own face at the menu's size, so that a heading reads as
+/// a heading and a 26-point title does not become a wall.
+pub fn check_in_face(
+    ui: &mut egui::Ui,
+    label: &str,
+    on: bool,
+    face: Option<egui::FontFamily>,
+) -> Item {
+    entry(ui, label, "", Some(on), face)
+}
+
+fn entry(
+    ui: &mut egui::Ui,
+    label: &str,
+    shortcut: &str,
+    checked: Option<bool>,
+    face: Option<egui::FontFamily>,
+) -> Item {
     let marked = mark(label);
     let tick = egui::RichText::new(TICK).size(12.0).color(match checked {
         Some(true) => ACCENT,
@@ -381,7 +414,7 @@ fn entry(ui: &mut egui::Ui, label: &str, shortcut: &str, checked: Option<bool>) 
     });
     let mut atoms = egui::Atoms::new(tick);
     atoms.push_right("".atom_size(egui::vec2(GUTTER, 0.0)));
-    marked.atoms(showing_marks(ui.ctx()), &mut atoms);
+    marked.atoms_in(showing_marks(ui.ctx()), face.as_ref(), &mut atoms);
     let hot = hot_row(ui);
     if !shortcut.is_empty() {
         // The least a label and its key may stand apart: a row whose label
@@ -976,7 +1009,7 @@ mod tests {
         for marks in [false, true] {
             let shapes = painted_with_marks(marks, |ui| {
                 in_a_menu(ui, |ui| {
-                    entry(ui, "Save &As…", "Ctrl+Shift+S", None);
+                    entry(ui, "Save &As…", "Ctrl+Shift+S", None, None);
                 });
             });
             let mut said = String::new();
@@ -999,7 +1032,7 @@ mod tests {
         fn underlined(marks: bool) -> bool {
             let shapes = painted_with_marks(marks, |ui| {
                 in_a_menu(ui, |ui| {
-                    entry(ui, "&New", "Ctrl+N", None);
+                    entry(ui, "&New", "Ctrl+N", None, None);
                 });
             });
             shapes.iter().any(|shape| match shape {
@@ -1058,7 +1091,7 @@ mod tests {
         fn label_x(checked: Option<bool>) -> f32 {
             let shapes = painted(|ui| {
                 in_a_menu(ui, |ui| {
-                    entry(ui, "Freeze Panes", "", checked);
+                    entry(ui, "Freeze Panes", "", checked, None);
                 });
             });
             let text: Vec<_> = shapes

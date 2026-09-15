@@ -990,7 +990,7 @@ fn spacing_rows(ui: &mut egui::Ui, state: &State) -> Option<Command> {
 /// of the pointer lit, and the size they make in words above them. A click
 /// inserts that table; the row under the grid opens the dialog for numbers
 /// the grid does not reach.
-fn table_rows(ui: &mut egui::Ui) -> Option<Command> {
+pub(crate) fn table_rows(ui: &mut egui::Ui) -> Option<Command> {
     const SIDE: f32 = 18.0;
     const CELLS: usize = 8;
     let mut chosen = None;

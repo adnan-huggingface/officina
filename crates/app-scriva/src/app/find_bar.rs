@@ -1,12 +1,22 @@
-//! The find bar: one bar for Find and Replace, which holds the keyboard
-//! while it is open and hands it back to the document when it closes.
+//! The find bar: one bar for Find and Replace, under the toolbar, which
+//! holds the keyboard while it is open and hands it back to the document
+//! when it closes.
+//!
+//! Row one is the search: a glass, the field, how many and which, the two
+//! arrows, the two switches — match case and whole word — and, at the far
+//! end, the way into row two and the way out. Row two, when Replace is open,
+//! is the replacement and its two buttons. Enter is the next match and
+//! Shift+Enter the one before, as F3 and Shift+F3 are; Tab goes between the
+//! fields; Escape gives the keyboard back to the document and leaves the bar
+//! open, and the document's own Escape then closes it.
 
 use super::*;
 
 use crate::app::Keyboard;
+use crate::icons::{self, Icon};
+use ui_kit::theme;
 
 impl Scriva {
-    /// The find bar across the top of the document.
     /// The find bar, and whether it held the keyboard at any point this frame.
     ///
     /// *At any point*, not at the end: a key that moves the focus out of the
@@ -28,7 +38,8 @@ impl Scriva {
         };
         let mut query = finder.query.clone();
         let mut replacement = finder.replacement.clone();
-        let with_replace = finder.with_replace;
+        let mut options = finder.options;
+        let mut with_replace = finder.with_replace;
         let take_focus = finder.focus;
         let note = finder.note.clone();
         let bar_focused = self.finder_focused;
@@ -46,9 +57,14 @@ impl Scriva {
         let mut replace_every = false;
         let mut tab = false;
 
-        let panel = egui::Panel::top("scriva-find").show(ui, |ui| {
-            // Read before the fields are drawn: a TextEdit consumes the Escape
-            // and the Enter it is given, and by then the answer is gone.
+        // A frame, and not a nested panel: a panel put inside the toolbar's
+        // content-sized panel is given no height, and clips everything in it
+        // to nothing — the bar answered every key and was never on the
+        // screen (LEARNINGS.md).
+        let panel = egui::Frame::new().fill(theme::CHROME).show(ui, |ui| {
+            // Read before the fields are drawn: a TextEdit consumes the
+            // Escape and the Enter it is given, and by then the answer is
+            // gone.
             if bar_focused {
                 let (escape, enter, f3, shift) = ui.input(|i| {
                     (
@@ -69,53 +85,39 @@ impl Scriva {
                     }
                 }
             }
-            // Tab goes between the two fields, as it goes between a dialog's.
-            // egui would hand the keyboard to the next widget along — an arrow
-            // button — so its move is called off, and the key is taken so that
-            // nothing after the bar sees it.
+            // Tab goes between the two fields, as it goes between a
+            // dialog's. egui would hand the keyboard to the next widget
+            // along — an arrow button — so its move is called off, and the
+            // key is taken so that nothing after the bar sees it.
             if in_query || in_replacement {
                 tab = ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Tab));
                 if tab {
                     ui.memory_mut(|m| m.move_focus(egui::FocusDirection::None));
                 }
             }
-            ui.add_space(6.0);
+            ui.add_space(5.0);
             ui.horizontal(|ui| {
-                ui.label("Find");
+                ui.spacing_mut().item_spacing.x = 6.0;
+                ui.add_space(8.0);
+                let (glass, _) = ui.allocate_exact_size(
+                    egui::vec2(theme::ICON, theme::TARGET.y),
+                    egui::Sense::hover(),
+                );
+                icons::draw(ui.painter(), Icon::Find, glass.center(), theme::INK_SOFT);
                 let field = ui.add(
                     egui::TextEdit::singleline(&mut query)
                         .id(query_id)
                         .desired_width(220.0)
-                        .hint_text("Find in document"),
+                        .hint_text("Find"),
                 );
-                // Enter steps to the next match and leaves the keyboard in the
-                // field it was pressed in; a single-line field gives it up on
-                // Enter, so it is asked for back.
+                // Enter steps to the next match and leaves the keyboard in
+                // the field it was pressed in; a single-line field gives it
+                // up on Enter, so it is asked for back.
                 if take_focus
                     || ((forward || back) && in_query)
                     || (tab && (in_replacement || !with_replace))
                 {
                     field.request_focus();
-                }
-                if crate::icons::button(
-                    ui,
-                    crate::icons::Icon::ChevronUp,
-                    false,
-                    "Previous match (Shift+F3)",
-                )
-                .clicked()
-                {
-                    back = true;
-                }
-                if crate::icons::button(
-                    ui,
-                    crate::icons::Icon::ChevronDown,
-                    false,
-                    "Next match (F3)",
-                )
-                .clicked()
-                {
-                    forward = true;
                 }
                 let standing = match &note {
                     Some(note) => note.clone(),
@@ -127,59 +129,86 @@ impl Scriva {
                         (None, n) => format!("{n} matches"),
                     },
                 };
-                // A slot of its own width. The count's words change with every
-                // step — "3 matches", "1 of 3", "Replaced 3" — and when the
-                // slot followed them, every control after it moved along the
-                // bar under a pointer that had not: a click aimed at Replace
-                // All pressed Replace, whose first press only finds, and the
-                // shorter count it left slid Replace All under the pointer to
-                // look as though it had been pressed and done nothing.
-                let height = ui.spacing().interact_size.y;
+                // A slot of its own width. The count's words change with
+                // every step — "3 matches", "1 of 3", "Replaced 3" — and
+                // when the slot followed them, every control after it
+                // moved along the bar under a pointer that had not.
                 ui.allocate_ui_with_layout(
-                    egui::vec2(COUNT_WIDTH, height),
+                    egui::vec2(COUNT_WIDTH, theme::TARGET.y),
                     egui::Layout::left_to_right(egui::Align::Center),
                     |ui| {
                         ui.set_min_width(COUNT_WIDTH);
-                        ui.add(egui::Label::new(egui::RichText::new(standing).weak()).truncate());
+                        ui.add(
+                            egui::Label::new(egui::RichText::new(standing).color(theme::INK_SOFT))
+                                .truncate(),
+                        );
                     },
                 );
-                if with_replace {
-                    ui.separator();
-                    ui.label("Replace with");
+                if icons::button(ui, Icon::ChevronUp, false, "Previous match  Shift+F3").clicked() {
+                    back = true;
+                }
+                if icons::button(ui, Icon::ChevronDown, false, "Next match  F3").clicked() {
+                    forward = true;
+                }
+                if switch(ui, "Aa", options.match_case, "Match case").clicked() {
+                    options.match_case = !options.match_case;
+                }
+                if switch(ui, "ab", options.whole_word, "Whole words only").clicked() {
+                    options.whole_word = !options.whole_word;
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    ui.add_space(8.0);
+                    if switch(ui, "\u{00d7}", false, "Close  Esc").clicked() {
+                        close = true;
+                    }
+                    if switch(ui, "Replace", with_replace, "Replace  Ctrl+H").clicked() {
+                        with_replace = !with_replace;
+                    }
+                });
+            });
+            if with_replace {
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    ui.add_space(8.0 + theme::ICON + 6.0);
                     let field = ui.add(
                         egui::TextEdit::singleline(&mut replacement)
                             .id(replacement_id)
-                            .desired_width(180.0),
+                            .desired_width(220.0)
+                            .hint_text("Replace with"),
                     );
                     if ((forward || back) && in_replacement) || (tab && in_query) {
                         field.request_focus();
                     }
-                    if ui.button("Replace").clicked() {
+                    if switch(ui, "Replace", false, "Replace this match and find the next")
+                        .clicked()
+                    {
                         replace_one = true;
                     }
-                    if ui.button("Replace All").clicked() {
+                    if switch(ui, "Replace All", false, "Replace every match").clicked() {
                         replace_every = true;
                     }
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.small_button("×").on_hover_text("Close (Esc)").clicked() {
-                        close = true;
-                    }
                 });
-            });
-            ui.add_space(6.0);
-            // Measured from inside: a panel nested in the toolbar's panel
-            // reports a rectangle of no height, and a bar of no height
-            // holds nothing — its Enter went to the document.
-            ui.min_rect()
+            }
+            ui.add_space(5.0);
+            let bar = ui.min_rect();
+            ui.painter().hline(
+                bar.x_range(),
+                bar.bottom() + 1.5,
+                egui::Stroke::new(1.0, theme::CHROME_RULE),
+            );
+            bar
         });
 
         if let Some(finder) = &mut self.finder {
-            if finder.query != query {
+            if finder.query != query || finder.options != options {
                 finder.note = None;
             }
             finder.query = query;
             finder.replacement = replacement;
+            finder.options = options;
+            finder.with_replace = with_replace;
             finder.focus = false;
         }
         // Anything in the bar holding the keyboard is the bar holding it: a
@@ -226,4 +255,24 @@ impl Scriva {
         }
         held
     }
+}
+
+/// A small flat toggle with a word on it — `Aa`, `ab`, `Replace` — lit when
+/// on, as the toolbar's toggles are.
+fn switch(ui: &mut egui::Ui, label: &str, on: bool, tip: &str) -> egui::Response {
+    let galley = ui.painter().layout_no_wrap(
+        label.to_owned(),
+        egui::FontId::proportional(theme::TEXT),
+        theme::INK,
+    );
+    let width = (galley.size().x + 14.0).max(theme::TARGET.x);
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(width, theme::TARGET.y), egui::Sense::click());
+    icons::paint_state(ui, rect, &response, on);
+    let at = egui::pos2(
+        rect.center().x - galley.size().x / 2.0,
+        rect.center().y - galley.size().y / 2.0,
+    );
+    ui.painter().galley(at, galley, theme::INK);
+    response.on_hover_text(tip)
 }

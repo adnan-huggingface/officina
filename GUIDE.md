@@ -111,12 +111,22 @@ away everything that is not words.
 | `Ctrl+S` | Save |
 | `Ctrl+Shift+S` | Save As |
 | `Ctrl+W` | Close the document, keeping the window |
+| `Ctrl+P` | Print |
+| `Alt+F4` | Exit |
 
 ### Editing
 
 Typing, selection, `Ctrl+Arrow` by word, `Home` and `End`, `Ctrl+Home` and
-`Ctrl+End` — all as expected. Undo is `Ctrl+Z` and redo is `Ctrl+Y`; a run of
-typing collapses into one undo at word boundaries, as Word does.
+`Ctrl+End` — all as expected. A run of typing collapses into one undo at word
+boundaries, as Word does.
+
+| | |
+|---|---|
+| `Ctrl+Z` / `Ctrl+Y` / `Ctrl+Shift+Z` | Undo, redo |
+| `Ctrl+X` / `Ctrl+C` / `Ctrl+V` | Cut, copy, paste — with formatting, when the board still holds what Scriva copied |
+| `Ctrl+A` | Select all |
+| `Ctrl+F` / `Ctrl+H` | The find bar; with the replace row. `Aa` matches case, `ab` whole words only. `Enter` and `F3` find the next match, `Shift+Enter` and `Shift+F3` the previous, `Tab` goes between the fields |
+| `Ctrl+Enter` | Page break |
 
 ### Formatting
 
@@ -137,6 +147,7 @@ in five tints, a hex field, three sliders and the last six chosen.
 | `Ctrl+L` / `Ctrl+E` / `Ctrl+R` / `Ctrl+J` | Left, centre, right, justify |
 | `Ctrl+1` / `Ctrl+5` / `Ctrl+2` | Single, 1.5, double line spacing |
 | `Ctrl+M` / `Ctrl+Shift+M` | Increase, decrease indent |
+| `Ctrl+Shift+L` | Bullets |
 | `Ctrl+D` | The Font box: family, style, size, colour, highlight and effects, with a preview; applied as one undo |
 
 Styles are in the Styles menu, and applying one is what a heading *is* — Scriva

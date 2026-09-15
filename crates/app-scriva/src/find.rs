@@ -26,6 +26,8 @@ pub type Found = (Scope, Selection);
 pub struct Finder {
     pub query: String,
     pub replacement: String,
+    /// The two switches on the bar.
+    pub options: Options,
     /// Whether the bar shows the replace controls too.
     pub with_replace: bool,
     /// Ask the bar to focus the query field on the next frame.
@@ -44,9 +46,17 @@ impl Finder {
     }
 }
 
+/// How a query is matched: as typed or in any case, and anywhere or only as
+/// a whole word — Word's two checkboxes, as two booleans.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Options {
+    pub match_case: bool,
+    pub whole_word: bool,
+}
+
 /// Every match in the document — the text first, then each header and footer
 /// — in the order Find Next walks them.
-pub fn matches(document: &Document, query: &str) -> Vec<Found> {
+pub fn matches(document: &Document, query: &str, options: Options) -> Vec<Found> {
     let mut out = Vec::new();
     if query.is_empty() {
         return out;
@@ -54,7 +64,7 @@ pub fn matches(document: &Document, query: &str) -> Vec<Found> {
     for scope in document.flows() {
         for (index, paragraph) in document.paragraphs_in(scope).iter().enumerate() {
             let text = paragraph.text();
-            for range in find_in(&text, query) {
+            for range in find_in(&text, query, options) {
                 out.push((
                     scope,
                     Selection {
@@ -99,20 +109,21 @@ pub fn before(matches: &[Found], scope: Scope, from: Caret) -> Option<Found> {
         .or_else(|| matches.last().copied())
 }
 
-/// Whether `text` is exactly the query, ignoring case — what decides if the
+/// Whether `text` is exactly the query under `options` — what decides if the
 /// selection is a match that Replace may replace.
-pub fn equals(text: &str, query: &str) -> bool {
-    match_len(text, query) == Some(text.len())
+pub fn equals(text: &str, query: &str, options: Options) -> bool {
+    match_len(text, query, options.match_case) == Some(text.len())
 }
 
-/// The byte ranges where `query` occurs in `text`, ignoring case.
-/// Non-overlapping, like Word: "aa" occurs once in "aaa".
-fn find_in(text: &str, query: &str) -> Vec<std::ops::Range<usize>> {
+/// The byte ranges where `query` occurs in `text` under `options`.
+/// Non-overlapping, like Word: "aa" occurs once in "aaa". A whole word is
+/// one with no letter or digit on either side of it.
+fn find_in(text: &str, query: &str, options: Options) -> Vec<std::ops::Range<usize>> {
     let mut out = Vec::new();
     let mut at = 0;
     while at < text.len() {
-        match match_len(&text[at..], query) {
-            Some(len) if len > 0 => {
+        match match_len(&text[at..], query, options.match_case) {
+            Some(len) if len > 0 && (!options.whole_word || whole(text, at, at + len)) => {
                 out.push(at..at + len);
                 at += len;
             }
@@ -124,8 +135,16 @@ fn find_in(text: &str, query: &str) -> Vec<std::ops::Range<usize>> {
     out
 }
 
-/// How many bytes at the start of `text` the query matches, ignoring case.
-fn match_len(text: &str, query: &str) -> Option<usize> {
+/// Whether `text[start..end]` stands as a word of its own.
+fn whole(text: &str, start: usize, end: usize) -> bool {
+    let before = text[..start].chars().next_back();
+    let after = text[end..].chars().next();
+    !before.is_some_and(char::is_alphanumeric) && !after.is_some_and(char::is_alphanumeric)
+}
+
+/// How many bytes at the start of `text` the query matches — as typed when
+/// `match_case`, in any case otherwise.
+fn match_len(text: &str, query: &str, match_case: bool) -> Option<usize> {
     let mut hay = text.char_indices();
     let mut needle = query.chars();
     loop {
@@ -133,7 +152,11 @@ fn match_len(text: &str, query: &str) -> Option<usize> {
             return Some(hay.next().map(|(i, _)| i).unwrap_or(text.len()));
         };
         let (_, have) = hay.next()?;
-        if !have.to_lowercase().eq(want.to_lowercase()) {
+        let same = match match_case {
+            true => have == want,
+            false => have.to_lowercase().eq(want.to_lowercase()),
+        };
+        if !same {
             return None;
         }
     }
@@ -157,7 +180,7 @@ mod tests {
     #[test]
     fn a_search_ignores_case_and_finds_every_occurrence() {
         let document = document(&["The engineer engineered.", "No match here", "Engineer!"]);
-        let found = matches(&document, "engineer");
+        let found = matches(&document, "engineer", Options::default());
         assert_eq!(found.len(), 3);
         assert_eq!(found[0].1.ordered().0.paragraph, 0);
         assert_eq!(found[0].1.ordered().0.offset, 4);
@@ -167,20 +190,20 @@ mod tests {
 
     #[test]
     fn matches_do_not_overlap() {
-        assert_eq!(find_in("aaa", "aa"), vec![0..2]);
+        assert_eq!(find_in("aaa", "aa", Options::default()), vec![0..2]);
     }
 
     #[test]
     fn an_empty_query_matches_nothing() {
         let document = document(&["anything"]);
-        assert!(matches(&document, "").is_empty());
-        assert!(!equals("anything", ""));
+        assert!(matches(&document, "", Options::default()).is_empty());
+        assert!(!equals("anything", "", Options::default()));
     }
 
     #[test]
     fn next_and_previous_wrap_around() {
         let document = document(&["one two one"]);
-        let found = matches(&document, "one");
+        let found = matches(&document, "one", Options::default());
         assert_eq!(found.len(), 2);
         let start = Caret {
             paragraph: 0,
@@ -206,9 +229,91 @@ mod tests {
         // 'İ' lowercases to two code points; byte offsets must still name the
         // original text.
         let document = document(&["İstanbul istanbul"]);
-        let found = matches(&document, "İstanbul");
+        let found = matches(&document, "İstanbul", Options::default());
         assert_eq!(found.len(), 1, "the plain 'i' does not round-trip to İ");
         assert_eq!(found[0].1.ordered().0.offset, 0);
-        assert!(equals("İstanbul", "İSTANBUL"));
+        assert!(equals("İstanbul", "İSTANBUL", Options::default()));
+    }
+}
+
+#[cfg(test)]
+mod option_tests {
+    use super::*;
+    use wp_model::doc::{Block, Paragraph};
+
+    fn document(text: &str) -> Document {
+        Document {
+            body: vec![Block::Paragraph(Paragraph::of(text))],
+            ..Document::new()
+        }
+    }
+
+    fn texts(document: &Document, found: &[Found]) -> Vec<String> {
+        let paragraph = &document.paragraphs()[0];
+        found
+            .iter()
+            .map(|f| {
+                let (start, end) = f.1.ordered();
+                paragraph.text()[start.offset..end.offset].to_owned()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn match_case_finds_the_capital_and_not_the_lower() {
+        let document = document("The cat saw the other cat. THE end.");
+        let any = matches(&document, "the", Options::default());
+        assert_eq!(texts(&document, &any), ["The", "the", "the", "THE"]);
+        let exact = matches(
+            &document,
+            "The",
+            Options {
+                match_case: true,
+                whole_word: false,
+            },
+        );
+        assert_eq!(
+            texts(&document, &exact),
+            ["The"],
+            "the capital, and not the lower"
+        );
+        assert!(equals(
+            "The",
+            "The",
+            Options {
+                match_case: true,
+                whole_word: false
+            }
+        ));
+        assert!(!equals(
+            "the",
+            "The",
+            Options {
+                match_case: true,
+                whole_word: false
+            }
+        ));
+    }
+
+    #[test]
+    fn whole_word_finds_the_and_not_then() {
+        let document = document("the then other the. lathe the");
+        let any = matches(&document, "the", Options::default());
+        assert_eq!(any.len(), 6, "every 'the' in every word");
+        let whole = matches(
+            &document,
+            "the",
+            Options {
+                match_case: false,
+                whole_word: true,
+            },
+        );
+        assert_eq!(
+            texts(&document, &whole),
+            ["the", "the", "the"],
+            "the words alone: not then, not other, not lathe"
+        );
+        let starts: Vec<usize> = whole.iter().map(|f| f.1.ordered().0.offset).collect();
+        assert_eq!(starts, [0, 15, 26]);
     }
 }

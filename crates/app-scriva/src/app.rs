@@ -529,7 +529,7 @@ pub struct Scriva {
     find_matches: Vec<find::Found>,
     /// What `find_matches` was computed from, so it is not recomputed while
     /// neither the document nor the query has changed.
-    matches_for: (u64, String),
+    matches_for: (u64, String, find::Options),
     /// The page surface's widget id, for giving the keyboard back to it.
     surface_id: Option<egui::Id>,
     /// The visible desk, in screen points. Height is the size of a Page Down;
@@ -700,7 +700,7 @@ impl Scriva {
             finder: None,
             finder_focused: false,
             find_matches: Vec::new(),
-            matches_for: (u64::MAX, String::new()),
+            matches_for: (u64::MAX, String::new(), find::Options::default()),
             surface_id: None,
             viewport: egui::Vec2::ZERO,
             zoom_draft: None,
@@ -1037,6 +1037,36 @@ impl Scriva {
             }
         }
         size
+    }
+
+    /// Whether a picture or chart is picked, for the menus.
+    pub(crate) fn has_picked(&self) -> bool {
+        self.picked.is_some()
+    }
+
+    /// The face each quick style's paragraphs are set in, where this machine
+    /// has it — for a menu that shows a style in its own face.
+    pub(crate) fn style_faces(&self) -> Vec<(wp_model::StyleId, String, Option<egui::FontFamily>)> {
+        self.quick_styles()
+            .into_iter()
+            .map(|(id, name)| {
+                let props = wp_model::ParaProps {
+                    style: Some(id),
+                    ..wp_model::ParaProps::default()
+                };
+                let run = self.document.styles.resolve_paragraph(&props, None).run;
+                let family = wp_layout::resolve::family(
+                    &run,
+                    &self.document.theme,
+                    wp_model::prop::Script::Ascii,
+                    "Calibri",
+                );
+                let bold = run.toggles.is_on(wp_model::prop::Toggle::Bold);
+                let italic = run.toggles.is_on(wp_model::prop::Toggle::Italic);
+                let face = ui_kit::fonts::named_face(&family, bold, italic);
+                (id, name, face)
+            })
+            .collect()
     }
 
     /// The colour the selection is set in where every run agrees.
@@ -3449,16 +3479,16 @@ impl Scriva {
 
     /// Recomputes the matches when the document or the query has changed.
     fn refresh_matches(&mut self) {
-        let query = self
+        let (query, options) = self
             .finder
             .as_ref()
-            .map(|finder| finder.query.clone())
+            .map(|finder| (finder.query.clone(), finder.options))
             .unwrap_or_default();
-        if self.matches_for == (self.stamp, query.clone()) {
+        if self.matches_for == (self.stamp, query.clone(), options) {
             return;
         }
-        self.find_matches = find::matches(&self.document, &query);
-        self.matches_for = (self.stamp, query);
+        self.find_matches = find::matches(&self.document, &query, options);
+        self.matches_for = (self.stamp, query, options);
     }
 
     /// Selects the next or previous match and scrolls to it, opening the
@@ -3514,9 +3544,10 @@ impl Scriva {
             return;
         }
         let (query, replacement) = (finder.query.clone(), finder.replacement.clone());
+        let options = finder.options;
         let selection_matches = self
             .selected_text()
-            .is_some_and(|text| find::equals(&text, &query));
+            .is_some_and(|text| find::equals(&text, &query, options));
         if selection_matches {
             self.replace_selection(&replacement);
         }

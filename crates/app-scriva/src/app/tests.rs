@@ -241,6 +241,8 @@ fn insert_table_by_menu_letters_and_enter_puts_a_table_in_the_document() {
     let mut app = app_with(&["before"]);
     drive.settle(&mut app);
     drive.menu(&mut app, 'I', 'T');
+    drive.press(&mut app, "I");
+    drive.settle(&mut app);
     assert!(app.table_draft.is_some(), "Alt+I, T opened Insert Table");
     drive.press(&mut app, "Enter");
     drive.settle(&mut app);
@@ -568,6 +570,10 @@ fn numbers_typed_into_boxes_by_menu_letters_reach_the_document() {
     drive.settle(&mut app);
 
     drive.menu(&mut app, 'I', 'T');
+
+    drive.press(&mut app, "I");
+
+    drive.settle(&mut app);
     drive.type_text(&mut app, "3");
     drive.press(&mut app, "Tab");
     drive.type_text(&mut app, "4");
@@ -742,6 +748,8 @@ fn a_menu_does_not_open_behind_an_open_box() {
     let mut app = app_with(&["text"]);
     drive.settle(&mut app);
     drive.menu(&mut app, 'I', 'T');
+    drive.press(&mut app, "I");
+    drive.settle(&mut app);
     assert!(app.table_draft.is_some(), "Insert Table is up");
     drive.menu(&mut app, 'E', 'A');
     assert!(
@@ -770,7 +778,7 @@ fn no_two_rows_of_a_menu_share_a_letter() {
     app.recent
         .remember(SCRIVA, Path::new("/nowhere/walked.docx"));
     drive.settle(&mut app);
-    let menus = drive.every_menu(&mut app, "FEVOPLRIASH");
+    let menus = drive.every_menu(&mut app, "FEVIOPLARSH");
     for (path, rows) in &menus {
         eprintln!(
             "MENU {path}: {}",
@@ -4350,6 +4358,8 @@ fn cells_filled_with_tab_straight_after_insert_table_at_any_pace() {
         let mut app = app_with(&["before"]);
         drive.settle(&mut app);
         drive.menu(&mut app, 'I', 'T');
+        drive.press(&mut app, "I");
+        drive.settle(&mut app);
         drive.press(&mut app, "Enter");
         for text in ["one", "two", "three"] {
             for _ in 0..idle {
@@ -5712,4 +5722,158 @@ fn ctrl_g_five_enter_puts_the_caret_on_page_five() {
         .map(|(index, _)| index + 1)
         .expect("still on a page");
     assert_eq!(page, 3, "-2 from five is three");
+}
+
+/// The guide's key tables and the command table say the same keys: every
+/// key the table reads is in the guide's Scriva section, and every
+/// modifier key the guide names for Scriva is one the table reads — the
+/// editing keys egui delivers itself, and the menu mnemonics, aside.
+#[test]
+fn the_guides_key_tables_are_the_command_tables() {
+    let guide =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../GUIDE.md"))
+            .expect("GUIDE.md is at the top of the tree");
+    let start = guide.find("## Scriva").expect("a Scriva section");
+    let end = guide[start + 1..]
+        .find("\n## ")
+        .map(|at| start + 1 + at)
+        .unwrap_or(guide.len());
+    let section = &guide[start..end];
+    let mut in_guide: Vec<String> = Vec::new();
+    for line in section.lines() {
+        for (index, piece) in line.split('`').enumerate() {
+            // Odd pieces are inside backticks.
+            if index % 2 == 1 && !piece.contains(' ') {
+                in_guide.push(piece.to_owned());
+            }
+        }
+    }
+    let in_table: Vec<&str> = crate::commands::TABLE
+        .iter()
+        .map(|entry| entry.shown)
+        .filter(|shown| !shown.is_empty())
+        .collect();
+    let missing: Vec<&str> = in_table
+        .iter()
+        .copied()
+        .filter(|key| !in_guide.iter().any(|g| g == key))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "keys the table reads and the guide does not name: {missing:?}"
+    );
+    // Keys the guide names that are not commands: the editor's own movement
+    // and structure keys, which egui or the surface handle, and the one
+    // menu mnemonic the guide points at.
+    const NOT_COMMANDS: &[&str] = &[
+        "Ctrl+Arrow",
+        "Ctrl+Home",
+        "Ctrl+End",
+        "Ctrl+Tab",
+        "Shift+Tab",
+        "Alt+A",
+        "F6",
+        "Shift+F6",
+        "Ctrl+click",
+    ];
+    let unread: Vec<&String> = in_guide
+        .iter()
+        .filter(|key| {
+            (key.contains("Ctrl+")
+                || key.contains("Alt+")
+                || key.starts_with('F') && key[1..].chars().all(|c| c.is_ascii_digit())
+                || key.starts_with("Shift+F"))
+                && !in_table.contains(&key.as_str())
+                && !NOT_COMMANDS.contains(&key.as_str())
+        })
+        .collect();
+    assert!(
+        unread.is_empty(),
+        "keys the guide names and nothing reads: {unread:?}"
+    );
+}
+
+/// Alt+H opens the Help menu, whose rows are the two boxes and the guide;
+/// K opens Keyboard Shortcuts, which lists the table's keys.
+#[test]
+fn the_help_menu_opens_by_its_letter_and_lists_the_shortcuts() {
+    let drive = ui_kit::drive::Driver::new();
+    let mut app = app_with(&["text"]);
+    drive.settle(&mut app);
+    drive.press(&mut app, "alt+H");
+    drive.settle(&mut app);
+    drive.settle(&mut app);
+    let (rows, _) = ui_kit::menu::innermost_rows(drive.ctx());
+    let labels: Vec<&str> = rows.iter().map(|row| row.label.as_str()).collect();
+    assert_eq!(
+        labels,
+        ["Keyboard Shortcuts…", "User Guide", "About Scriva"],
+        "the Help menu's rows"
+    );
+    drive.press(&mut app, "K");
+    drive.settle(&mut app);
+    assert!(app.shortcuts_up, "K opened Keyboard Shortcuts");
+    drive.press(&mut app, "Escape");
+    drive.settle(&mut app);
+    assert!(!app.shortcuts_up, "and Escape closed it");
+    assert_eq!(
+        app.document.paragraphs()[0].text(),
+        "text",
+        "nothing was typed"
+    );
+}
+
+/// The find bar is painted where it can be seen: its `Aa` switch reaches
+/// the screen inside a clip rectangle with height. It was not — a panel
+/// nested in the toolbar's panel was given no height and clipped the whole
+/// bar to nothing, while every key still reached its field, so no test
+/// that typed into it could tell.
+#[test]
+fn the_find_bar_is_drawn_where_it_can_be_seen() {
+    let drive = ui_kit::drive::Driver::new();
+    let mut app = app_with(&["the cat"]);
+    drive.settle(&mut app);
+    app.run(Command::Replace);
+    drive.settle(&mut app);
+    drive.settle(&mut app);
+    let shapes = drive.frame_at(&mut app, Vec::new(), None);
+    let mut seen = Vec::new();
+    for clipped in &shapes {
+        fn texts(
+            shape: &egui::Shape,
+            clip: egui::Rect,
+            into: &mut Vec<(String, egui::Rect, egui::Rect)>,
+        ) {
+            match shape {
+                egui::Shape::Vec(many) => {
+                    for one in many {
+                        texts(one, clip, into);
+                    }
+                }
+                egui::Shape::Text(text) => into.push((
+                    text.galley.text().to_owned(),
+                    egui::Rect::from_min_size(text.pos, text.galley.size()),
+                    clip,
+                )),
+                _ => {}
+            }
+        }
+        texts(&clipped.shape, clipped.clip_rect, &mut seen);
+    }
+    for label in ["Aa", "ab", "Replace All"] {
+        let (_, rect, clip) = seen
+            .iter()
+            .find(|(text, _, _)| text == label)
+            .unwrap_or_else(|| {
+                panic!(
+                    "{label} is painted; painted: {:?}",
+                    seen.iter().map(|s| &s.0).collect::<Vec<_>>()
+                )
+            });
+        let shown = clip.intersect(*rect);
+        assert!(
+            shown.height() > 8.0 && shown.width() > 8.0,
+            "{label} at {rect:?} is visible inside its clip {clip:?}"
+        );
+    }
 }

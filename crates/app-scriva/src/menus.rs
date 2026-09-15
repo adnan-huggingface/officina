@@ -64,7 +64,7 @@ impl Scriva {
         let revisions = self.showing_revisions();
         let comments = self.showing_comments();
         let zoom = self.zoom();
-        let styles = self.quick_styles();
+        let style = self.style_at();
         let navigator = self.showing_navigator();
         let (tracking, reviewer) = self.reviewing();
         let (orientation, paper, margins) = self.page_setup();
@@ -75,6 +75,10 @@ impl Scriva {
         let table = self.table_at_caret();
         let colour = self.colour_at();
         let highlight = self.highlight_at();
+        let spacing = self.line_spacing_at();
+        let picked = self.has_picked();
+        let fits = (self.fit_percent(true), self.fit_percent(false));
+        let style_faces = self.style_faces();
 
         menu::bar(ui, |ui| {
             let mut chosen = None;
@@ -87,12 +91,24 @@ impl Scriva {
                     chosen = Some(Command::Open);
                 }
                 menu::sub(ui, "&Recent", |ui| {
-                    for (index, path) in recent.iter().enumerate().take(9) {
+                    // Ten, with the folder after the name in the soft
+                    // column, which is how two files of one name are told
+                    // apart; the tenth's letter is its 0.
+                    for (index, path) in recent.iter().enumerate().take(10) {
                         let name = path
                             .file_name()
                             .map(|n| n.to_string_lossy().into_owned())
                             .unwrap_or_else(|| path.display().to_string());
-                        if menu::item(ui, &format!("&{} {name}", index + 1), "").clicked() {
+                        let folder = path
+                            .parent()
+                            .and_then(|dir| dir.file_name())
+                            .map(|dir| dir.to_string_lossy().into_owned())
+                            .unwrap_or_default();
+                        let label = match index {
+                            9 => format!("1&0 {name}"),
+                            _ => format!("&{} {name}", index + 1),
+                        };
+                        if menu::item(ui, &label, &folder).clicked() {
                             chosen = Some(Command::Reopen(path.clone()));
                         }
                     }
@@ -151,6 +167,15 @@ impl Scriva {
                 if menu::item(ui, "&Paste", shortcut(&Command::Paste)).clicked() {
                     chosen = Some(Command::Paste);
                 }
+                if menu::item(
+                    ui,
+                    "Paste U&nformatted",
+                    shortcut(&Command::PasteUnformatted),
+                )
+                .clicked()
+                {
+                    chosen = Some(Command::PasteUnformatted);
+                }
                 menu::sep(ui);
                 if menu::item(ui, "&Find…", shortcut(&Command::Find)).clicked() {
                     chosen = Some(Command::Find);
@@ -182,6 +207,18 @@ impl Scriva {
                     ] {
                         let on = (zoom * 100.0).round() as i32 == percent;
                         if menu::check(ui, label, "", on).clicked() {
+                            chosen = Some(Command::Zoom(percent as f64 / 100.0));
+                        }
+                    }
+                    menu::sep(ui);
+                    // The two fits the Zoom box offers, for the keyboard.
+                    if let Some(percent) = fits.0 {
+                        if menu::item(ui, "Page &Width", "").clicked() {
+                            chosen = Some(Command::Zoom(percent as f64 / 100.0));
+                        }
+                    }
+                    if let Some(percent) = fits.1 {
+                        if menu::item(ui, "W&hole Page", "").clicked() {
                             chosen = Some(Command::Zoom(percent as f64 / 100.0));
                         }
                     }
@@ -218,6 +255,78 @@ impl Scriva {
                 if menu::check(ui, "&Navigation Pane", "", navigator).clicked() {
                     chosen = Some(Command::Navigator);
                 }
+                // A view, so it lives here and not under Review.
+                if menu::check(
+                    ui,
+                    "Re&viewing Pane",
+                    shortcut(&Command::Reviewer),
+                    reviewer,
+                )
+                .clicked()
+                {
+                    chosen = Some(Command::Reviewer);
+                }
+            });
+
+            menu::top(ui, "&Insert", |ui| {
+                if menu::item(ui, "&Picture…", "").clicked() {
+                    chosen = Some(Command::InsertPicture);
+                }
+                // The grid picker first, as the toolbar's, and the box with
+                // numbers under it for a table bigger than eight by eight.
+                menu::sub(ui, "&Table", |ui| {
+                    if let Some(command) = crate::toolbar::table_rows(ui) {
+                        chosen = Some(command);
+                    }
+                });
+                // Inserted, so it is here rather than under Layout.
+                if menu::item(ui, "Page &Break", shortcut(&Command::PageBreak)).clicked() {
+                    chosen = Some(Command::PageBreak);
+                }
+                menu::sub(ui, "Page &Number", |ui| {
+                    if menu::item(ui, "&Plain Number", "").clicked() {
+                        chosen = Some(Command::InsertPageNumber { of_pages: false });
+                    }
+                    if menu::item(ui, "Page &X of Y", "").clicked() {
+                        chosen = Some(Command::InsertPageNumber { of_pages: true });
+                    }
+                });
+                // Edit makes the band if the document has none and puts the
+                // caret in it. There is nothing to fill in first: what goes in
+                // a header is typed into the header.
+                menu::sub(ui, "&Header", |ui| {
+                    if menu::item(ui, "&Edit Header", "").clicked() {
+                        chosen = Some(Command::EditHeader);
+                    }
+                    ui.add_enabled_ui(has_header, |ui| {
+                        if menu::item(ui, "&Remove Header", "").clicked() {
+                            chosen = Some(Command::RemoveChrome { footer: false });
+                        }
+                    });
+                });
+                menu::sub(ui, "&Footer", |ui| {
+                    if menu::item(ui, "&Edit Footer", "").clicked() {
+                        chosen = Some(Command::EditFooter);
+                    }
+                    ui.add_enabled_ui(has_footer, |ui| {
+                        if menu::item(ui, "&Remove Footer", "").clicked() {
+                            chosen = Some(Command::RemoveChrome { footer: true });
+                        }
+                    });
+                });
+                menu::sep(ui);
+                if menu::item(ui, "&Comment", shortcut(&Command::AddComment)).clicked() {
+                    chosen = Some(Command::AddComment);
+                }
+                if menu::item(
+                    ui,
+                    "&Update Table of Contents",
+                    shortcut(&Command::UpdateToc),
+                )
+                .clicked()
+                {
+                    chosen = Some(Command::UpdateToc);
+                }
             });
 
             menu::top(ui, "F&ormat", |ui| {
@@ -237,55 +346,11 @@ impl Scriva {
                 if menu::item(ui, "Strike&through", "").clicked() {
                     chosen = Some(Command::Strike);
                 }
-                // Word's menu bar had this at Format ▸ Background ▸ Printed
-                // Watermark; there is no background submenu here to hang it
-                // under, and a watermark is a thing the page is formatted
-                // with rather than a thing inserted into the text.
-                menu::sep(ui);
-                if menu::item(ui, "&Watermark…", "").clicked() {
-                    chosen = Some(Command::Watermark);
-                }
-                menu::sep(ui);
                 if menu::item(ui, "Su&perscript", shortcut(&Command::Superscript)).clicked() {
                     chosen = Some(Command::Superscript);
                 }
                 if menu::item(ui, "Subsc&ript", shortcut(&Command::Subscript)).clicked() {
                     chosen = Some(Command::Subscript);
-                }
-                menu::sep(ui);
-                menu::sub(ui, "&Font", |ui| {
-                    // Twenty-seven faces do not fit a laptop's window, and a
-                    // popup taller than the screen loses its tail — Verdana
-                    // was unreachable until this scrolled.
-                    egui::ScrollArea::vertical()
-                        .max_height(340.0)
-                        .show(ui, |ui| {
-                            for name in FAMILIES {
-                                let on = face.as_deref() == Some(name);
-                                if menu::check(ui, name, "", on).clicked() {
-                                    chosen = Some(Command::Font(name.to_owned()));
-                                }
-                            }
-                        });
-                });
-                menu::sub(ui, "&Size", |ui| {
-                    for half in SIZES {
-                        let label = if half % 2 == 0 {
-                            format!("{}", half / 2)
-                        } else {
-                            format!("{}.5", half / 2)
-                        };
-                        let on = size == Some(HalfPoint(half));
-                        if menu::check(ui, &label, "", on).clicked() {
-                            chosen = Some(Command::Size(HalfPoint(half)));
-                        }
-                    }
-                });
-                if menu::item(ui, "&Grow", shortcut(&Command::Grow)).clicked() {
-                    chosen = Some(Command::Grow);
-                }
-                if menu::item(ui, "S&hrink", shortcut(&Command::Shrink)).clicked() {
-                    chosen = Some(Command::Shrink);
                 }
                 menu::sep(ui);
                 menu::sub(ui, "Text C&olour", |ui| {
@@ -338,21 +403,69 @@ impl Scriva {
                     }
                 });
                 menu::sep(ui);
+                menu::sub(ui, "&Font", |ui| {
+                    // Twenty-seven faces do not fit a laptop's window, and a
+                    // popup taller than the screen loses its tail — Verdana
+                    // was unreachable until this scrolled.
+                    egui::ScrollArea::vertical()
+                        .max_height(340.0)
+                        .show(ui, |ui| {
+                            for name in FAMILIES {
+                                let on = face.as_deref() == Some(name);
+                                if menu::check(ui, name, "", on).clicked() {
+                                    chosen = Some(Command::Font(name.to_owned()));
+                                }
+                            }
+                        });
+                });
+                menu::sub(ui, "&Size", |ui| {
+                    for half in SIZES {
+                        let label = if half % 2 == 0 {
+                            format!("{}", half / 2)
+                        } else {
+                            format!("{}.5", half / 2)
+                        };
+                        let on = size == Some(HalfPoint(half));
+                        if menu::check(ui, &label, "", on).clicked() {
+                            chosen = Some(Command::Size(HalfPoint(half)));
+                        }
+                    }
+                });
+                if menu::item(ui, "&Grow", shortcut(&Command::Grow)).clicked() {
+                    chosen = Some(Command::Grow);
+                }
+                if menu::item(ui, "S&hrink", shortcut(&Command::Shrink)).clicked() {
+                    chosen = Some(Command::Shrink);
+                }
+                menu::sep(ui);
                 if menu::item(ui, "&Clear Formatting", shortcut(&Command::ClearFormatting))
                     .clicked()
                 {
                     chosen = Some(Command::ClearFormatting);
                 }
                 menu::sep(ui);
-                // For the selected picture or chart. Dragging a handle is the
-                // fast way; this is the one with numbers in it.
-                if menu::item(ui, "Picture Si&ze…", "").clicked() {
-                    chosen = Some(Command::PictureSize);
+                // Word's menu bar had this at Format ▸ Background ▸ Printed
+                // Watermark; there is no background submenu here to hang it
+                // under, and a watermark is a thing the page is formatted
+                // with rather than a thing inserted into the text.
+                if menu::item(ui, "&Watermark…", "").clicked() {
+                    chosen = Some(Command::Watermark);
                 }
+                // For the picked picture or chart. Dragging a handle is the
+                // fast way; this is the one with numbers in it, and it is
+                // disabled until there is a picture for it to be about.
+                ui.add_enabled_ui(picked, |ui| {
+                    if menu::item(ui, "Picture Si&ze…", "")
+                        .on_disabled_hover_text("Click a picture first")
+                        .clicked()
+                    {
+                        chosen = Some(Command::PictureSize);
+                    }
+                });
             });
 
             menu::top(ui, "&Paragraph", |ui| {
-                if menu::item(ui, "&Bullets", "").clicked() {
+                if menu::item(ui, "&Bullets", shortcut(&Command::Bullets)).clicked() {
                     chosen = Some(Command::Bullets);
                 }
                 if menu::item(ui, "&Numbering", "").clicked() {
@@ -376,32 +489,17 @@ impl Scriva {
                 }
                 menu::sep(ui);
                 menu::sub(ui, "Line &Spacing", |ui| {
-                    if menu::item(
-                        ui,
-                        "&Single",
-                        shortcut(&Command::LineSpacing(Line240::SINGLE)),
-                    )
-                    .clicked()
-                    {
-                        chosen = Some(Command::LineSpacing(Line240::SINGLE));
-                    }
-                    if menu::item(
-                        ui,
-                        "&1.5 Lines",
-                        shortcut(&Command::LineSpacing(Line240::ONE_AND_A_HALF)),
-                    )
-                    .clicked()
-                    {
-                        chosen = Some(Command::LineSpacing(Line240::ONE_AND_A_HALF));
-                    }
-                    if menu::item(
-                        ui,
-                        "&Double",
-                        shortcut(&Command::LineSpacing(Line240::DOUBLE)),
-                    )
-                    .clicked()
-                    {
-                        chosen = Some(Command::LineSpacing(Line240::DOUBLE));
+                    for (label, value) in [
+                        ("&Single", Line240::SINGLE),
+                        ("&1.5 Lines", Line240::ONE_AND_A_HALF),
+                        ("&Double", Line240::DOUBLE),
+                    ] {
+                        let command = Command::LineSpacing(value);
+                        if menu::check(ui, label, shortcut(&command), spacing == Some(value))
+                            .clicked()
+                        {
+                            chosen = Some(command);
+                        }
                     }
                 });
                 menu::sep(ui);
@@ -467,117 +565,6 @@ impl Scriva {
                         if menu::check(ui, name, "", ticked).clicked() {
                             chosen = Some(Command::Paper(Twips(width), Twips(height)));
                         }
-                    }
-                });
-                menu::sep(ui);
-                if menu::item(ui, "Page &Break", shortcut(&Command::PageBreak)).clicked() {
-                    chosen = Some(Command::PageBreak);
-                }
-            });
-
-            menu::top(ui, "&Review", |ui| {
-                if menu::check(
-                    ui,
-                    "&Track Changes",
-                    shortcut(&Command::TrackChanges),
-                    tracking,
-                )
-                .clicked()
-                {
-                    chosen = Some(Command::TrackChanges);
-                }
-                menu::sep(ui);
-                if menu::item(ui, "&Accept", shortcut(&Command::AcceptOne)).clicked() {
-                    chosen = Some(Command::AcceptOne);
-                }
-                if menu::item(ui, "&Reject", shortcut(&Command::RejectOne)).clicked() {
-                    chosen = Some(Command::RejectOne);
-                }
-                if menu::item(ui, "Accept A&ll", shortcut(&Command::AcceptAll)).clicked() {
-                    chosen = Some(Command::AcceptAll);
-                }
-                if menu::item(ui, "Re&ject All", shortcut(&Command::RejectAll)).clicked() {
-                    chosen = Some(Command::RejectAll);
-                }
-                if menu::item(ui, "&Next Change", shortcut(&Command::NextChange)).clicked() {
-                    chosen = Some(Command::NextChange);
-                }
-                if menu::item(ui, "&Previous Change", shortcut(&Command::PreviousChange)).clicked()
-                {
-                    chosen = Some(Command::PreviousChange);
-                }
-                menu::sep(ui);
-                if menu::item(ui, "New &Comment", shortcut(&Command::AddComment)).clicked() {
-                    chosen = Some(Command::AddComment);
-                }
-                if menu::item(ui, "Repl&y to Comment", shortcut(&Command::ReplyHere)).clicked() {
-                    chosen = Some(Command::ReplyHere);
-                }
-                if menu::item(ui, "Re&solve Comment", shortcut(&Command::ResolveHere)).clicked() {
-                    chosen = Some(Command::ResolveHere);
-                }
-                if menu::item(ui, "&Delete Comment", shortcut(&Command::DeleteComment)).clicked() {
-                    chosen = Some(Command::DeleteComment);
-                }
-                menu::sep(ui);
-                if menu::check(
-                    ui,
-                    "Re&viewing Pane",
-                    shortcut(&Command::Reviewer),
-                    reviewer,
-                )
-                .clicked()
-                {
-                    chosen = Some(Command::Reviewer);
-                }
-            });
-
-            menu::top(ui, "&Insert", |ui| {
-                if menu::item(ui, "&Picture…", "").clicked() {
-                    chosen = Some(Command::InsertPicture);
-                }
-                if menu::item(ui, "&Table…", "").clicked() {
-                    chosen = Some(Command::InsertTable);
-                }
-                if menu::item(
-                    ui,
-                    "&Update Table of Contents",
-                    shortcut(&Command::UpdateToc),
-                )
-                .clicked()
-                {
-                    chosen = Some(Command::UpdateToc);
-                }
-                menu::sep(ui);
-                // Edit makes the band if the document has none and puts the
-                // caret in it. There is nothing to fill in first: what goes in
-                // a header is typed into the header.
-                menu::sub(ui, "&Header", |ui| {
-                    if menu::item(ui, "&Edit Header", "").clicked() {
-                        chosen = Some(Command::EditHeader);
-                    }
-                    ui.add_enabled_ui(has_header, |ui| {
-                        if menu::item(ui, "&Remove Header", "").clicked() {
-                            chosen = Some(Command::RemoveChrome { footer: false });
-                        }
-                    });
-                });
-                menu::sub(ui, "&Footer", |ui| {
-                    if menu::item(ui, "&Edit Footer", "").clicked() {
-                        chosen = Some(Command::EditFooter);
-                    }
-                    ui.add_enabled_ui(has_footer, |ui| {
-                        if menu::item(ui, "&Remove Footer", "").clicked() {
-                            chosen = Some(Command::RemoveChrome { footer: true });
-                        }
-                    });
-                });
-                menu::sub(ui, "Page &Number", |ui| {
-                    if menu::item(ui, "&Plain Number", "").clicked() {
-                        chosen = Some(Command::InsertPageNumber { of_pages: false });
-                    }
-                    if menu::item(ui, "Page &X of Y", "").clicked() {
-                        chosen = Some(Command::InsertPageNumber { of_pages: true });
                     }
                 });
             });
@@ -677,13 +664,62 @@ impl Scriva {
                 });
             });
 
+            menu::top(ui, "&Review", |ui| {
+                if menu::check(
+                    ui,
+                    "&Track Changes",
+                    shortcut(&Command::TrackChanges),
+                    tracking,
+                )
+                .clicked()
+                {
+                    chosen = Some(Command::TrackChanges);
+                }
+                menu::sep(ui);
+                if menu::item(ui, "&Accept", shortcut(&Command::AcceptOne)).clicked() {
+                    chosen = Some(Command::AcceptOne);
+                }
+                if menu::item(ui, "&Reject", shortcut(&Command::RejectOne)).clicked() {
+                    chosen = Some(Command::RejectOne);
+                }
+                if menu::item(ui, "Accept A&ll", shortcut(&Command::AcceptAll)).clicked() {
+                    chosen = Some(Command::AcceptAll);
+                }
+                if menu::item(ui, "Re&ject All", shortcut(&Command::RejectAll)).clicked() {
+                    chosen = Some(Command::RejectAll);
+                }
+                if menu::item(ui, "&Next Change", shortcut(&Command::NextChange)).clicked() {
+                    chosen = Some(Command::NextChange);
+                }
+                if menu::item(ui, "&Previous Change", shortcut(&Command::PreviousChange)).clicked()
+                {
+                    chosen = Some(Command::PreviousChange);
+                }
+                menu::sep(ui);
+                if menu::item(ui, "New &Comment", shortcut(&Command::AddComment)).clicked() {
+                    chosen = Some(Command::AddComment);
+                }
+                if menu::item(ui, "Repl&y to Comment", shortcut(&Command::ReplyHere)).clicked() {
+                    chosen = Some(Command::ReplyHere);
+                }
+                if menu::item(ui, "Re&solve Comment", shortcut(&Command::ResolveHere)).clicked() {
+                    chosen = Some(Command::ResolveHere);
+                }
+                if menu::item(ui, "&Delete Comment", shortcut(&Command::DeleteComment)).clicked() {
+                    chosen = Some(Command::DeleteComment);
+                }
+            });
+
+            // Each row in its style's own face where the machine has it, at
+            // the menu's size — the face and not the size: a 26-point title
+            // row in a menu is a wall. The style the caret is in is ticked.
             menu::top(ui, "&Styles", |ui| {
-                for (id, name) in &styles {
-                    if menu::item(ui, name, "").clicked() {
+                for (id, name, face) in &style_faces {
+                    if menu::check_in_face(ui, name, style == Some(*id), face.clone()).clicked() {
                         chosen = Some(Command::Style(*id));
                     }
                 }
-                if styles.is_empty() {
+                if style_faces.is_empty() {
                     ui.add_enabled(false, egui::Button::new("No styles in this document"));
                 }
             });

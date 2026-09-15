@@ -160,7 +160,12 @@ pub const TABLE: &[Entry] = &[
         Command::AlignPicture(wp_model::doc::Alignment::Right),
     ),
     entry("Delete Picture", "", None, Command::DeletePicture),
-    entry("Bullets", "", None, Command::Bullets),
+    entry(
+        "Bullets",
+        "Ctrl+Shift+L",
+        Some((CTRL_SHIFT, Key::L)),
+        Command::Bullets,
+    ),
     entry("Numbering", "", None, Command::Numbers),
     entry(
         "Align Left",

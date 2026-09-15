@@ -5668,3 +5668,47 @@ first field on opening, and the existing test holds Page Setup, Font,
 Paragraph and Text Colour to it beside the old four. Two things egui
 taught on the way are in LEARNINGS.md.
 
+## The find bar has its two switches, and the menu bar is Word's (2026-09-15)
+
+Phase 9 of the redesign. `find::Options` carries match case and whole
+word — two booleans the finder's `matches` and `equals` take, a whole word
+being one with no letter or digit on either side — with two tests, and
+the match cache keys on them. The bar is D9's: a glass, the field with
+its hint, the count in the soft ink in a slot of its own width, the two
+arrows, `Aa` and `ab` as flat toggles lit when on, and at the far end
+`Replace` — a toggle that opens the second row, where the replacement
+field and its two buttons are — and the close. Enter and Shift+Enter step
+as F3 and Shift+F3 do, Tab goes between the fields, and Escape hands the
+keyboard back to the document and leaves the bar open, as phase 5 decided.
+
+The menu bar is in Word's order — File Edit View Insert Format Paragraph
+Layout Table Review Styles Help — with the mnemonics F E V I O P L A R S
+H, and every row D2 adds: Recent shows ten with the folder in the soft
+column; Edit has Go To and Paste Unformatted; View's Zoom has Page Width
+and Whole Page and the Reviewing Pane moved here from Review, being a
+view; Insert has the eight-by-eight picker as the first row of its Table
+submenu, with the box under it, and Page Break, which is inserted, moved
+here from Layout, and Comment; Format starts with Font…, runs the six
+emphases together, has the swatch submenus, the ticked Font and Size
+submenus, Grow and Shrink, Clear Formatting, Watermark and a Picture Size
+that is disabled with its reason until a picture is picked; Paragraph's
+Bullets has Ctrl+Shift+L and its Line Spacing ticks the current value;
+Styles sets each row in its style's own face at the menu's size, through
+`menu::check_in_face`, with the caret's style ticked. The letter-clash
+test walks the new order, and a test compares the guide's Scriva key
+tables with the command table both ways — every key the table reads is
+named in the guide, and every modifier key the guide names is one the
+table reads, the editor's own movement keys aside — so the two cannot
+drift; the guide gained the rows it was missing.
+
+Touring the bar on the rig found that it had never been on the screen: a
+`Panel::top` nested in the shell's content-sized top panel is handed no
+height and clips its contents to nothing, while its field still takes
+every key — which is why every driver test that typed into it passed
+since phase 2. The bar is a `Frame` now, and
+`the_find_bar_is_drawn_where_it_can_be_seen` reads the painted shapes
+back through `Driver::frame_at` and holds the bar's switches to a clip
+rectangle with height; it fails against the old panel. The rule is in
+LEARNINGS.md, and the story's `bugs/find-bar-never-drawn.md` has the
+account.
+

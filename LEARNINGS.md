@@ -2062,3 +2062,15 @@ focused" can never be true on the frame Enter arrives. Read `lost_focus()`
 with the key, or — where the field is the only thing in the box — take
 Enter from the input regardless, which is what the Zoom box already did.
 
+**A panel nested inside a content-sized panel is given no height, and clips
+its whole contents to nothing.** The find bar was an `egui::Panel::top`
+inside the shell's top panel from phase 2 on: its field took every key, its
+matches lit up on the page, every driver test that typed into it passed —
+and it was never on the screen, because the outer panel is sized by what it
+holds and hands a nested panel an empty rectangle to clip to, while the
+widgets inside still register their true rectangles for the pointer and
+the keyboard. Only the rig showed it. A bar inside a panel is a `Frame`,
+and a test now reads the painted shapes back and asks that the bar's
+switches lie inside a clip rectangle with height — the only kind of test
+that can see a thing the keyboard can reach and the eye cannot.
+
