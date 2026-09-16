@@ -5813,6 +5813,26 @@ is unchanged. Test
 document's three equal columns, and fails against the old tie-break with
 the caret in the second cell.
 
+## A drag up out of the text takes the first line to its start (2026-09-15)
+
+The user pressed at the end of the first line, pulled the pointer up
+into the top margin, and nothing was selected. Three things stood in the
+way, each found by the same driver test. `view::caret_at` gave a point in
+the margin to the nearest line at the same x — which was the press — so
+the sweep had nowhere to go; a point above every line on the page is now
+before the first of them and a point below every line after the last,
+which is where Word puts a pointer in either margin. `click_lands_here`
+refused the top margin while the body was being edited, right for a
+click (a double-click there opens the header) and wrong mid-sweep, whose
+press had already chosen the flow; a sweep now lands anywhere on the
+page. And `sweeping` was set from `dragged()` *after* the caret had been
+placed, so the first frame of every drag set the caret without extending
+and the anchor moved to wherever the pointer had got to — a few pixels
+off the press for a slow hand, the whole way for a quick one; it is
+decided before the caret block now. Test
+`dragging_out_of_the_text_above_or_below_takes_the_line_to_its_edge`
+presses, moves, releases through the driver in both directions.
+
 ## What driving the redesign found (2026-09-15)
 
 The ten phases were each driven on the rig as they landed — the real

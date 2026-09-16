@@ -4681,6 +4681,84 @@ fn the_desk_stays_put_whatever_the_row_under_the_toolbar_says() {
     assert_eq!(looked(&mut app).0, top, "nor when it was dismissed");
 }
 
+/// A press at the end of the first line and a drag up into the top margin
+/// selects the line back to its start, and a press at the start of the last
+/// line dragged down into the bottom margin selects it to its end — where
+/// Word puts a pointer above the first line or below the last. They
+/// selected nothing: the point in the margin was given to the nearest line
+/// at the same x, which was where the press already was.
+#[test]
+fn dragging_out_of_the_text_above_or_below_takes_the_line_to_its_edge() {
+    let drive = ui_kit::drive::Driver::new();
+    let first = "Quarterly report";
+    let last = "The first quarter went well.";
+    let mut app = app_with(&[first, last]);
+    drive.settle(&mut app);
+    let shapes = drive.frame_at(&mut app, Vec::new(), None);
+    let paper = painted_rects(&shapes)
+        .into_iter()
+        .find(|(rect, fill, _)| *fill == egui::Color32::WHITE && rect.width() > 500.0)
+        .expect("a page is painted")
+        .0;
+    let scale = (app.view.zoom * view::SCALE) as f32;
+    let on_screen = |app: &Scriva, caret: Caret| {
+        let (page, rect) =
+            view::caret_rect(&app.view, wp_model::Scope::Body, caret).expect("drawn");
+        assert_eq!(page, 0);
+        paper.min + egui::vec2(rect.min.x * scale, rect.center().y * scale)
+    };
+    let button = |at: egui::Pos2, pressed: bool| egui::Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    let sweep = |app: &mut Scriva, from: egui::Pos2, to: egui::Pos2| {
+        drive.frame(
+            app,
+            vec![egui::Event::PointerMoved(from), button(from, true)],
+        );
+        drive.frame(app, vec![egui::Event::PointerMoved(to)]);
+        drive.frame(app, vec![egui::Event::PointerMoved(to)]);
+        drive.frame(app, vec![button(to, false)]);
+        drive.settle(app);
+    };
+
+    // Up from the end of the first line, into the top margin.
+    let end = on_screen(
+        &app,
+        Caret {
+            paragraph: 0,
+            offset: first.len(),
+        },
+    );
+    sweep(&mut app, end, egui::pos2(end.x, paper.min.y + 12.0));
+    assert_eq!(
+        app.selected_text().as_deref(),
+        Some(first),
+        "the first line, back to its start; caret {:?}",
+        app.selection
+    );
+
+    // Down from the start of the last line, into the bottom margin.
+    let start = on_screen(
+        &app,
+        Caret {
+            paragraph: 1,
+            offset: 0,
+        },
+    );
+    // The page runs off the bottom of the window; the desk's foot is
+    // still far below the last line.
+    sweep(&mut app, start, egui::pos2(start.x, 940.0));
+    assert_eq!(
+        app.selected_text().as_deref(),
+        Some(last),
+        "the last line, on to its end; caret {:?}",
+        app.selection
+    );
+}
+
 #[test]
 fn a_page_sits_on_the_light_desk_with_a_shadow_and_no_fade() {
     let drive = ui_kit::drive::Driver::new();

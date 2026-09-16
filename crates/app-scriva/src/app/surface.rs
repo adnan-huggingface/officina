@@ -233,6 +233,15 @@ impl Scriva {
                     }
                 }
                 if self.picked.is_none() && over_marker.is_none() {
+                    // Decided here, before the caret is placed, and not
+                    // after: on the first frame of a drag the flag was still
+                    // off, the caret was set without extending, and the
+                    // anchor moved to wherever the pointer had reached by
+                    // then — a few pixels off the press for a slow hand, the
+                    // whole way for a quick one, and nothing selected.
+                    if response.dragged() {
+                        self.sweeping = true;
+                    }
                     if let Some(pointer) = response.interact_pointer_pos() {
                         if let Some(spot) = self.spot_at(pointer, origin, zoom) {
                             // A click on the part of the page that is *not*
@@ -240,8 +249,12 @@ impl Scriva {
                             // While a header is open the text is showing and
                             // not editable — which is what the wash over it
                             // says — and dragging the caret out from under the
-                            // keyboard would make a liar of it.
-                            if self.click_lands_here(spot) {
+                            // keyboard would make a liar of it. A sweep is
+                            // another matter: its press chose the flow, and a
+                            // pull up into the top margin takes the first
+                            // line back to its start rather than stopping at
+                            // the margin's edge.
+                            if self.sweeping || self.click_lands_here(spot) {
                                 if let Some(caret) = view::caret_at(&self.view, self.scope, spot) {
                                     let extend = ui.input(|i| i.modifiers.shift) || self.sweeping;
                                     self.set_caret(caret, extend);

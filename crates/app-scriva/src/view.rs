@@ -233,6 +233,14 @@ pub struct Spot {
 pub fn caret_at(view: &View, scope: Scope, spot: Spot) -> Option<Caret> {
     let page = view.pages.get(spot.page)?;
     let mut best: Option<((f64, f64, f64), &Placement, usize)> = None;
+    // The text's top and bottom on this page: a point above every line is
+    // before the first of them, and a point below every line is after the
+    // last — where Word puts a pointer in the top or bottom margin, and
+    // what lets a drag up out of the text take the first line back to its
+    // start. Given to the nearest line at the same x, such a point was the
+    // place the press had been, and the drag selected nothing.
+    let mut text_top = f64::INFINITY;
+    let mut text_bottom = f64::NEG_INFINITY;
     for placement in page.placements(scope) {
         let Placed::Line {
             line,
@@ -249,6 +257,8 @@ pub fn caret_at(view: &View, scope: Scope, spot: Spot) -> Option<Caret> {
         // left-hand cell whose line shares the same y; distance to the text
         // alone sent a click in the empty right half of a wide cell to the
         // next cell, whose word was nearer than this cell's own.
+        text_top = text_top.min(placement.y);
+        text_bottom = text_bottom.max(placement.y + placement.height);
         let score = (
             distance_to(spot.y, placement.y, placement.height),
             distance_to(spot.x, placement.x - line.x, *box_width),
@@ -262,7 +272,14 @@ pub fn caret_at(view: &View, scope: Scope, spot: Spot) -> Option<Caret> {
     let Placed::Line { line, .. } = &placement.kind else {
         return None;
     };
-    Some(caret_in(view, scope, line, paragraph, spot.x - placement.x))
+    let x = if spot.y < text_top {
+        f64::NEG_INFINITY
+    } else if spot.y > text_bottom {
+        f64::INFINITY
+    } else {
+        spot.x - placement.x
+    };
+    Some(caret_in(view, scope, line, paragraph, x))
 }
 
 /// Where along `line` a caret goes for a point `x` measured from the line's
