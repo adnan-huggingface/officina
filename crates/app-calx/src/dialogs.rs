@@ -541,9 +541,10 @@ impl Calx {
                     .collect();
                 modal(ctx, "Move or copy sheet", |ui| {
                     ui.label("Before sheet:");
-                    egui::ScrollArea::vertical()
-                        .max_height(180.0)
-                        .show(ui, |ui| {
+                    ui_kit::scroll::show(
+                        ui,
+                        egui::ScrollArea::vertical().max_height(180.0),
+                        |ui| {
                             for (i, name) in names.iter().enumerate() {
                                 if ui.selectable_label(*before == i, name).clicked() {
                                     *before = i;
@@ -555,7 +556,8 @@ impl Calx {
                             {
                                 *before = names.len();
                             }
-                        });
+                        },
+                    );
                     ui.checkbox(copy, "Create a copy");
                     match dialog::submit(ui, "OK") {
                         Some(true) => go = true,
@@ -717,9 +719,10 @@ impl Calx {
                 let before = *editing;
                 modal(ctx, "Names", |ui| {
                     ui.set_min_width(560.0);
-                    egui::ScrollArea::vertical()
-                        .max_height(300.0)
-                        .show(ui, |ui| {
+                    ui_kit::scroll::show(
+                        ui,
+                        egui::ScrollArea::vertical().max_height(300.0),
+                        |ui| {
                             egui::Grid::new("calx-names")
                                 .num_columns(5)
                                 .spacing([8.0, 6.0])
@@ -806,7 +809,8 @@ impl Calx {
                                         ui.end_row();
                                     }
                                 });
-                        });
+                        },
+                    );
                     if names.is_empty() {
                         ui.label(
                             egui::RichText::new("This workbook has no names yet")
@@ -890,16 +894,18 @@ impl Calx {
                         }
                     });
                     ui.separator();
-                    egui::ScrollArea::vertical()
-                        .max_height(320.0)
-                        .show(ui, |ui| match tab {
+                    ui_kit::scroll::show(
+                        ui,
+                        egui::ScrollArea::vertical().max_height(320.0),
+                        |ui| match tab {
                             FormatTab::Number => number_tab(ui, look),
                             FormatTab::Alignment => alignment_tab(ui, look),
                             FormatTab::Font => font_tab(ui, &theme, look),
                             FormatTab::Border => border_tab(ui, &theme, look),
                             FormatTab::Fill => fill_tab(ui, &theme, look),
                             FormatTab::Protection => protection_tab(ui, look),
-                        });
+                        },
+                    );
                     match dialog::submit(ui, "OK") {
                         Some(true) => apply = true,
                         Some(false) => keep = false,
@@ -1039,13 +1045,15 @@ impl Calx {
                             }
                         }
                     });
-                    egui::ScrollArea::vertical()
-                        .max_height(280.0)
-                        .show(ui, |ui| {
+                    ui_kit::scroll::show(
+                        ui,
+                        egui::ScrollArea::vertical().max_height(280.0),
+                        |ui| {
                             for (col, on) in columns.iter_mut() {
                                 ui.checkbox(on, ss_model::column_name(*col));
                             }
-                        });
+                        },
+                    );
                     match dialog::submit(ui, "Remove") {
                         Some(true) => go = true,
                         Some(false) => keep = false,
@@ -1070,13 +1078,15 @@ impl Calx {
                     ui.set_width(340.0);
                     ui.label("Allow everyone who uses this sheet to:");
                     ui.add_space(4.0);
-                    egui::ScrollArea::vertical()
-                        .max_height(360.0)
-                        .show(ui, |ui| {
+                    ui_kit::scroll::show(
+                        ui,
+                        egui::ScrollArea::vertical().max_height(360.0),
+                        |ui| {
                             for (label, field) in protection_fields(allow) {
                                 ui.checkbox(field, label);
                             }
-                        });
+                        },
+                    );
                     ui.add_space(6.0);
                     // Broken by hand and laid out left to right explicitly: a
                     // modal stretches its children and centres what is in them,
@@ -1381,9 +1391,10 @@ impl Calx {
                     });
                     ui.separator();
 
-                    egui::ScrollArea::vertical()
-                        .max_height(260.0)
-                        .show(ui, |ui| {
+                    ui_kit::scroll::show(
+                        ui,
+                        egui::ScrollArea::vertical().max_height(260.0),
+                        |ui| {
                             for value in visible {
                                 let mut on = ticked.contains(value);
                                 if ui.checkbox(&mut on, value).changed() {
@@ -1397,7 +1408,8 @@ impl Calx {
                             if has_blanks && needle.is_empty() {
                                 ui.checkbox(blanks, "(Blanks)");
                             }
-                        });
+                        },
+                    );
                     dialog::row(ui, |ui| {
                         keep &= !dialog::button(ui, "Cancel", false).clicked();
                         go = dialog::button(ui, "OK", true).clicked();

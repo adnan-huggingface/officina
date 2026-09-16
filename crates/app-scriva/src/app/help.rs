@@ -18,9 +18,10 @@ impl Scriva {
                         egui::RichText::new("Keyboard Shortcuts").font(dialog::heading_font(16.0)),
                     );
                     ui.add_space(8.0);
-                    egui::ScrollArea::vertical()
-                        .max_height(420.0)
-                        .show(ui, |ui| {
+                    ui_kit::scroll::show(
+                        ui,
+                        egui::ScrollArea::vertical().max_height(420.0),
+                        |ui| {
                             egui::Grid::new("scriva-shortcuts-grid")
                                 .num_columns(2)
                                 .spacing([24.0, 4.0])
@@ -38,7 +39,8 @@ impl Scriva {
                                         ui.end_row();
                                     }
                                 });
-                        });
+                        },
+                    );
                     ui.add_space(4.0);
                     ui.label(
                         egui::RichText::new(

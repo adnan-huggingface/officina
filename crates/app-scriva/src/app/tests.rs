@@ -4818,6 +4818,65 @@ fn up_on_the_first_line_goes_to_its_start_and_down_on_the_last_to_its_end() {
     );
 }
 
+/// The desk's scroll bar is painted in the chrome's palette — a soft grey
+/// handle on a chrome track at the desk's right edge — and nothing dark
+/// stands there. egui's own bar floated over the desk in the widget
+/// foreground colour, which under this theme is the ink: a black stripe.
+#[test]
+fn the_desks_scroll_bar_is_grey_on_chrome_and_not_black() {
+    let drive = ui_kit::drive::Driver::new();
+    let mut app = app_with(&["one", "two", "three", "four", "five", "six"]);
+    drive.settle(&mut app);
+    for paragraph in (1..6).rev() {
+        app.selection = Selection::at(Caret {
+            paragraph,
+            offset: 0,
+        });
+        app.run(Command::PageBreak);
+    }
+    drive.settle(&mut app);
+    drive.settle(&mut app);
+    assert!(app.view.pages().len() >= 6, "enough pages to scroll");
+    // With the pointer on the desk, so that a bar that only shows itself
+    // while hovered would be showing.
+    let shapes = drive.frame_at(
+        &mut app,
+        vec![egui::Event::PointerMoved(egui::pos2(800.0, 500.0))],
+        None,
+    );
+    let at_edge: Vec<(egui::Rect, egui::Color32, f32)> = painted_rects(&shapes)
+        .into_iter()
+        .filter(|(rect, _, _)| rect.right() > 1580.0 && rect.width() < 20.0 && rect.height() > 20.0)
+        .collect();
+    assert!(
+        at_edge
+            .iter()
+            .any(|(_, fill, _)| *fill == ui_kit::theme::INK_FAINT),
+        "a grey handle at the edge: {at_edge:?}"
+    );
+    assert!(
+        at_edge
+            .iter()
+            .any(|(rect, fill, _)| *fill == ui_kit::theme::CHROME && rect.height() > 400.0),
+        "on a chrome track: {at_edge:?}"
+    );
+    let dark = |c: &egui::Color32| c.r() < 0x70 && c.g() < 0x70 && c.b() < 0x70 && c.a() > 0;
+    assert!(
+        !at_edge.iter().any(|(_, fill, _)| dark(fill)),
+        "and nothing black there: {at_edge:?}"
+    );
+    // And no bar along the foot: the page fits the desk's width, and the
+    // vertical bar's own width must not put the desk over by that much.
+    let along_foot: Vec<egui::Rect> = painted_rects(&shapes)
+        .into_iter()
+        .filter(|(rect, fill, _)| {
+            *fill == ui_kit::theme::CHROME && rect.height() <= 12.0 && rect.width() > 500.0
+        })
+        .map(|(rect, _, _)| rect)
+        .collect();
+    assert!(along_foot.is_empty(), "no horizontal bar: {along_foot:?}");
+}
+
 #[test]
 fn a_page_sits_on_the_light_desk_with_a_shadow_and_no_fade() {
     let drive = ui_kit::drive::Driver::new();

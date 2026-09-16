@@ -407,16 +407,18 @@ impl Scriva {
                     // Twenty-seven faces do not fit a laptop's window, and a
                     // popup taller than the screen loses its tail — Verdana
                     // was unreachable until this scrolled.
-                    egui::ScrollArea::vertical()
-                        .max_height(340.0)
-                        .show(ui, |ui| {
+                    ui_kit::scroll::show(
+                        ui,
+                        egui::ScrollArea::vertical().max_height(340.0),
+                        |ui| {
                             for name in FAMILIES {
                                 let on = face.as_deref() == Some(name);
                                 if menu::check(ui, name, "", on).clicked() {
                                     chosen = Some(Command::Font(name.to_owned()));
                                 }
                             }
-                        });
+                        },
+                    );
                 });
                 menu::sub(ui, "&Size", |ui| {
                     for half in SIZES {

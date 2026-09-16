@@ -5848,6 +5848,32 @@ into a table row is judged as a click there is. Test
 `up_on_the_first_line_goes_to_its_start_and_down_on_the_last_to_its_end`,
 all four keys.
 
+## The scroll bars are grey on chrome, not black (2026-09-15)
+
+The user said Scriva's scroll bars were black, and they were: egui's
+default bar floats over the content and is painted in the widget's
+*foreground* colour, which under this theme is the ink — a black stripe
+down the desk's edge after every wheel, and another along its foot. The
+colours a bar is painted with are the same visuals a checkbox and a text
+field take (`bg_fill`, `extreme_bg_color`), so they cannot be set once
+for the window without filling every unticked box grey. `ui_kit::scroll`
+is the answer: `bars` is the style — solid, ten points wide, a chrome
+track, a soft grey handle (`INK_FAINT`) that darkens under the pointer —
+and `show(ui, area, add)` draws the area with the bars in that style on
+a scope of its own and hands the content back the style it came in with.
+Every scroll area in both apps goes through it: the desk, the Navigate
+and Review panes, the menus' and combos' long lists, Help, the font and
+watermark boxes, Calx's inspector, its dialogs and its sheet tabs.
+A solid bar takes its width from the content beside it, and a desk sized
+to the whole of the window was then wider than the window by the bar,
+so a horizontal bar came up for ten points nobody could see: the desk
+now sizes itself, and the page-width fit, to what is left beside the bar
+(`ui_kit::scroll::takes`).
+`the_desks_scroll_bar_is_grey_on_chrome_and_not_black` reads the painted
+rectangles at the desk's edge back with the pointer on the desk: a grey
+handle, a chrome track, nothing dark, and no bar along the foot; with the
+style left off it fails at the first.
+
 ## What driving the redesign found (2026-09-15)
 
 The ten phases were each driven on the rig as they landed — the real

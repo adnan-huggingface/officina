@@ -13,12 +13,21 @@ impl Scriva {
         let zoom = (self.view.zoom * view::SCALE) as f32;
         let (extent_w, extent_h) = self.view.extent();
         let outer = ui.available_rect_before_wrap();
-        self.viewport = outer.size();
         ui.painter().rect_filled(outer, 0.0, view::desk());
+        // The vertical bar stands beside the desk whenever the pages run
+        // past the window, which is nearly always, and takes its width from
+        // what is left for them. A desk sized to the whole of the window
+        // was wider than that by the bar, and a horizontal bar came up for
+        // the ten points nobody could see.
+        let bar = match extent_h as f32 * zoom > outer.height() {
+            true => ui_kit::scroll::takes(),
+            false => 0.0,
+        };
+        self.viewport = egui::vec2(outer.width() - bar, outer.height());
         // At least as wide as the window, so a page narrower than the desk is
         // centred on it rather than pinned to the left edge.
         let desired = egui::vec2(
-            (extent_w as f32 * zoom).max(outer.width() - 2.0),
+            (extent_w as f32 * zoom).max(outer.width() - bar - 2.0),
             extent_h as f32 * zoom,
         );
 
@@ -29,9 +38,10 @@ impl Scriva {
                 .iter()
                 .any(|event| matches!(event, egui::Event::MouseWheel { .. }))
         });
-        let scroll = egui::ScrollArea::both()
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
+        let scroll = ui_kit::scroll::show(
+            ui,
+            egui::ScrollArea::both().auto_shrink([false, false]),
+            |ui| {
                 let (rect, response) =
                     ui.allocate_exact_size(desired, egui::Sense::click_and_drag());
                 self.surface_id = Some(response.id);
@@ -466,7 +476,8 @@ impl Scriva {
                     }
                 }
                 response
-            });
+            },
+        );
         // The page badge: a pill at the right of the desk saying which page
         // is in view, while the desk is being scrolled and for a moment after
         // — and not when the caret moved the desk, since the status bar says

@@ -2108,3 +2108,15 @@ to the text and chose the wrong cell — after passing a test whose columns
 were unequal. Store widths and offsets *relative to the placement* in a
 variant, derive edges from `placement.x` at the point of use, and write
 the test in the shape the bug was seen in.
+
+
+**egui paints a scroll bar in the widget visuals a checkbox and a text
+field share.** The floating default takes the handle from
+`fg_stroke.color`, the solid style from `bg_fill`, and the track from
+`extreme_bg_color` — so under a theme whose ink is near black the floating
+bar is a black stripe, and the obvious fix, a grey `bg_fill` in the
+window's style, fills every unticked box grey and a chrome
+`extreme_bg_color` tints every field. The bar is painted with the *outer*
+ui's visuals and the content with its own child's, so the style can be
+set on a scope around the area and reset inside it: `ui_kit::scroll::show`.
+

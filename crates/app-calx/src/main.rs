@@ -4204,10 +4204,12 @@ impl Calx {
             .count();
 
         let mut tab_rects: Vec<(usize, egui::Rect)> = Vec::new();
-        egui::ScrollArea::horizontal()
-            .id_salt("calx-tabs")
-            .max_height(26.0)
-            .show(ui, |ui| {
+        ui_kit::scroll::show(
+            ui,
+            egui::ScrollArea::horizontal()
+                .id_salt("calx-tabs")
+                .max_height(26.0),
+            |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 1.0;
                     let theme = self.doc.workbook.styles.theme();
@@ -4303,7 +4305,8 @@ impl Calx {
                         ui.weak(format!("({hidden_count} hidden)"));
                     }
                 });
-            });
+            },
+        );
 
         // A tab in flight: a closed hand for the pointer, a drop line where
         // it would land, and the reorder itself when the button comes up.

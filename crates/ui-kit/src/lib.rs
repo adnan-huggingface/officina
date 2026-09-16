@@ -18,6 +18,7 @@ pub mod keys;
 pub mod menu;
 pub mod paths;
 pub mod recent;
+pub mod scroll;
 pub mod shell;
 pub mod theme;
 

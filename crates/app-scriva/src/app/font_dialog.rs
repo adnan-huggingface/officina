@@ -88,9 +88,10 @@ impl Scriva {
                             .selected_text(shown)
                             .width(220.0)
                             .show_ui(ui, |ui| {
-                                egui::ScrollArea::vertical()
-                                    .max_height(300.0)
-                                    .show(ui, |ui| {
+                                ui_kit::scroll::show(
+                                    ui,
+                                    egui::ScrollArea::vertical().max_height(300.0),
+                                    |ui| {
                                         let families = ui_kit::catalogue::families();
                                         for name in document_faces.iter().chain(
                                             families.iter().filter(|f| !document_faces.contains(f)),
@@ -102,7 +103,8 @@ impl Scriva {
                                                 draft.family = name.clone();
                                             }
                                         }
-                                    });
+                                    },
+                                );
                             });
                     });
                     dialog::labelled(ui, "Style:", |ui| {

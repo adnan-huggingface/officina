@@ -53,9 +53,10 @@ impl Scriva {
                             .selected_text(shown)
                             .width(200.0)
                             .show_ui(ui, |ui| {
-                                egui::ScrollArea::vertical()
-                                    .max_height(300.0)
-                                    .show(ui, |ui| {
+                                ui_kit::scroll::show(
+                                    ui,
+                                    egui::ScrollArea::vertical().max_height(300.0),
+                                    |ui| {
                                         if ui
                                             .selectable_label(
                                                 draft.font.trim().is_empty(),
@@ -73,7 +74,8 @@ impl Scriva {
                                                 draft.font = name.clone();
                                             }
                                         }
-                                    });
+                                    },
+                                );
                             });
                     });
                     dialog::labelled(ui, "Colour:", |ui| {

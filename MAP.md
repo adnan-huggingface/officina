@@ -36,7 +36,7 @@ Every source file, its size, and the first sentence of its module doc.
 ### `calx`
 
 - `crates/app-calx/src/clock.rs` (31) The wall clock, read in the user's own time zone.
-- `crates/app-calx/src/dialogs.rs` (1909) Calx's boxes: every dialog the grid can put up, drawn from the draft in `Calx::dialog`, and the tabs of Format Cells.
+- `crates/app-calx/src/dialogs.rs` (1921) Calx's boxes: every dialog the grid can put up, drawn from the draft in `Calx::dialog`, and the tabs of Format Cells.
 - `crates/app-calx/src/grid/axis.rs` (533) Where rows and columns sit, and which of them a viewport can see.
 - `crates/app-calx/src/grid/chart.rs` (248) Where a chart sits on the grid, and what numbers it plots.
 - `crates/app-calx/src/grid/editor.rs` (468) The cell editor: what is being typed, and how it is coloured.
@@ -47,7 +47,7 @@ Every source file, its size, and the first sentence of its module doc.
 - `crates/app-calx/src/icons.rs` (590) Toolbar icons, drawn rather than typed.
 - `crates/app-calx/src/inspector.rs` (803) The chart inspector: a panel beside the grid for as long as a chart is selected.
 - `crates/app-calx/src/lib.rs` (11) Calx — the spreadsheet application.
-- `crates/app-calx/src/main.rs` (5711) Calx — spreadsheet.
+- `crates/app-calx/src/main.rs` (5714) Calx — spreadsheet.
 - `crates/app-calx/src/tests.rs` (1058) 
 
 ### `scriva`
@@ -56,16 +56,16 @@ Every source file, its size, and the first sentence of its module doc.
 - `crates/app-scriva/src/app/context.rs` (208) The page's right-click menu: what a click or Shift+F10 on the document offers, drawn on the same card as every other menu.
 - `crates/app-scriva/src/app/dialogs.rs` (912) Scriva's boxes: Insert Table, colour, paragraph, column width, picture size, fonts and zoom.
 - `crates/app-scriva/src/app/find_bar.rs` (278) The find bar: one bar for Find and Replace, on the row under the toolbar, which holds the keyboard while it is open and hands it back to the document when it closes.
-- `crates/app-scriva/src/app/font_dialog.rs` (397) Format ▸ Font… (Ctrl+D): family, style, size, colour, highlight and the effects the model writes, with a line of preview, applied to the selection as one undo step.
-- `crates/app-scriva/src/app/goto.rs` (168) Edit ▸ Go To… (Ctrl+G): a small popover on the status bar's page count.
-- `crates/app-scriva/src/app/help.rs` (145) The Help menu's boxes: every key the application answers to, generated from the command table so that it cannot drift; the user guide, opened beside the executable; and About.
+- `crates/app-scriva/src/app/font_dialog.rs` (399) Format ▸ Font… (Ctrl+D): family, style, size, colour, highlight and the effects the model writes, with a line of preview, applied to the selection as one undo step.
+- `crates/app-scriva/src/app/goto.rs` (170) Edit ▸ Go To… (Ctrl+G): a small popover on the status bar's page count.
+- `crates/app-scriva/src/app/help.rs` (147) The Help menu's boxes: every key the application answers to, generated from the command table so that it cannot drift; the user guide, opened beside the executable; and About.
 - `crates/app-scriva/src/app/notices.rs` (151) The three tiers of telling the user something, and the two lighter ones drawn here: a status notice, which is a sentence at the left of the status bar for four seconds, and a notice, which takes the row under the tool…
 - `crates/app-scriva/src/app/page_setup.rs` (319) Layout ▸ Page Setup…: paper, orientation, margins and the bands' distance from the edge in one box, with the page drawn from the numbers as they are typed.
 - `crates/app-scriva/src/app/strips.rs` (283) The row under the toolbar, and the mode strips drawn on it.
-- `crates/app-scriva/src/app/surface.rs` (903) The page surface: the scrolling desk the pages sit on, what the pointer does there — carets, selections, a picture picked, dragged and resized — and where on a page a point lands.
+- `crates/app-scriva/src/app/surface.rs` (914) The page surface: the scrolling desk the pages sit on, what the pointer does there — carets, selections, a picture picked, dragged and resized — and where on a page a point lands.
 - `crates/app-scriva/src/app/tables.rs` (486) Editing a table: Tab from cell to cell, the edit every table command goes through, cell margins, column widths, and Insert Table itself.
-- `crates/app-scriva/src/app/tests.rs` (6376) 
-- `crates/app-scriva/src/app/watermark.rs` (422) The watermark: the box that asks for one, and the shape it becomes in a header, written the way Word writes its own so that Word finds it again.
+- `crates/app-scriva/src/app/tests.rs` (6435) 
+- `crates/app-scriva/src/app/watermark.rs` (424) The watermark: the box that asks for one, and the shape it becomes in a header, written the way Word writes its own so that Word finds it again.
 - `crates/app-scriva/src/app/word_count.rs` (158) The Word Count box, from the status bar's count: pages, words, characters with and without spaces, paragraphs and lines — and, with a selection, the selection beside the document.
 - `crates/app-scriva/src/app.rs` (5368) The application: the window, the commands, and the keys.
 - `crates/app-scriva/src/author.rs` (339) A document written by the application itself, from a script of its own commands.
@@ -78,16 +78,16 @@ Every source file, its size, and the first sentence of its module doc.
 - `crates/app-scriva/src/lib.rs` (26) Scriva — the word processor.
 - `crates/app-scriva/src/links.rs` (117) Following a hyperlink out of the document, or to somewhere inside it.
 - `crates/app-scriva/src/main.rs` (31) Scriva — word processor.
-- `crates/app-scriva/src/menus.rs` (743) The menu bar and the formatting row.
+- `crates/app-scriva/src/menus.rs` (745) The menu bar and the formatting row.
 - `crates/app-scriva/src/panes/mod.rs` (12) The panes beside the page: Review on the right, and — from phase 5 of the redesign — Navigate on the left.
-- `crates/app-scriva/src/panes/navigate.rs` (507) The Navigate pane: the document's headings as a tree, and its bookmarks.
-- `crates/app-scriva/src/panes/review.rs` (779) The Review pane: every tracked change and comment as a card, in document order, with what can be done about each on the card itself.
+- `crates/app-scriva/src/panes/navigate.rs` (509) The Navigate pane: the document's headings as a tree, and its bookmarks.
+- `crates/app-scriva/src/panes/review.rs` (781) The Review pane: every tracked change and comment as a card, in document order, with what can be done about each on the card itself.
 - `crates/app-scriva/src/pictures.rs` (364) Decoding the drawings a document carries, and holding them for the painter.
 - `crates/app-scriva/src/publish.rs` (199) What leaves the editor: the fonts and pictures a page renderer needs.
 - `crates/app-scriva/src/revise.rs` (1503) Accepting and rejecting tracked changes, and recording new ones.
 - `crates/app-scriva/src/shaper.rs` (873) Measuring text with the faces the application actually has.
 - `crates/app-scriva/src/text.rs` (781) Editing the text of a paragraph.
-- `crates/app-scriva/src/toolbar.rs` (1087) The toolbar: one row, on which the caret's state can be read at a glance.
+- `crates/app-scriva/src/toolbar.rs` (1091) The toolbar: one row, on which the caret's state can be read at a glance.
 - `crates/app-scriva/src/view.rs` (3107) The document surface: pages on a desk, a caret, and a selection.
 
 ### `brand`
@@ -245,10 +245,11 @@ Every source file, its size, and the first sentence of its module doc.
 - `crates/ui-kit/src/fonts.rs` (1380) Real type faces, loaded from the system at startup.
 - `crates/ui-kit/src/headless.rs` (54) An application running without a person in front of it: under a test.
 - `crates/ui-kit/src/keys.rs` (105) Keyboard shortcuts, matched on every modifier.
-- `crates/ui-kit/src/lib.rs` (45) Shared application shell for Calx and Scriva.
+- `crates/ui-kit/src/lib.rs` (46) Shared application shell for Calx and Scriva.
 - `crates/ui-kit/src/menu.rs` (1141) A menu bar, and menus that look like menus.
 - `crates/ui-kit/src/paths.rs` (99) Config and state directory resolution.
 - `crates/ui-kit/src/recent.rs` (205) The files that have been opened, most recent first.
+- `crates/ui-kit/src/scroll.rs` (65) Scroll bars in the suite's palette.
 - `crates/ui-kit/src/shell.rs` (650) The window shell both apps boot into.
 - `crates/ui-kit/src/theme.rs` (187) The design language, as named numbers.
 
@@ -374,7 +375,7 @@ Every comment that says an application was *measured* — the rules this code ke
 - `crates/app-scriva/src/app/bands.rs:224` `content` is what goes in it: nothing for a band being made from scratch, and a copy of the inherited one for a section being unlinked — which is what Word does, measured: unlink a section's header and the words stay …
 - `crates/app-scriva/src/app/bands.rs:349` **Breaking it copies rather than empties.** Word's own answer, measured over COM: unlink a second section's header and the words are still there, while the first section keeps a copy of its own — so the two can then b…
 - `crates/app-scriva/src/app/tables.rs:460` Measured: a cell that states none is laid to its *content* by Word, whatever the grid says — a 468pt table came back 28pt wide, its second column as wide as "B1", and an empty column under a point.
-- `crates/app-scriva/src/app/watermark.rs:270` measured against a watermark Word wrote itself, which put the shape in the default header and left the other two parts empty.
+- `crates/app-scriva/src/app/watermark.rs:272` measured against a watermark Word wrote itself, which put the shape in the default header and left the other two parts empty.
 - `crates/app-scriva/src/app.rs:457` Word's own Page Setup keeps those last two on the same sheet, under "From edge", and they belong with the margins because they are measured against the same four edges.
 - `crates/app-scriva/src/app.rs:4581` 96 pixels to the inch: what a screen snippet is measured in, and what Word assumes of an image that does not say otherwise.
 - `crates/app-scriva/src/app.rs:4715` What a new document is in Word today, measured on the reference machine (Word 16.0.20326, 2026-09-13): twelve points, eight points after every paragraph, and a line of 278 to 240 — the document defaults Word writes in…

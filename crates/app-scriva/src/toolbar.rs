@@ -492,11 +492,13 @@ fn overflow_menu(ui: &mut egui::Ui, folded: &[Control], state: &State) -> Option
             }
             Control::Font => {
                 menu::sub(ui, "Font", |ui| {
-                    egui::ScrollArea::vertical()
-                        .max_height(340.0)
-                        .show(ui, |ui| {
+                    ui_kit::scroll::show(
+                        ui,
+                        egui::ScrollArea::vertical().max_height(340.0),
+                        |ui| {
                             chosen = chosen.take().or(font_rows(ui, state, ""));
-                        });
+                        },
+                    );
                 });
             }
             Control::Size => {
@@ -589,11 +591,13 @@ fn draw(
                     held = field.has_focus();
                     menu::sep(ui);
                     let mut chosen = None;
-                    egui::ScrollArea::vertical()
-                        .max_height(340.0)
-                        .show(ui, |ui| {
+                    ui_kit::scroll::show(
+                        ui,
+                        egui::ScrollArea::vertical().max_height(340.0),
+                        |ui| {
                             chosen = font_rows(ui, state, &filter_now);
-                        });
+                        },
+                    );
                     chosen
                 },
             );

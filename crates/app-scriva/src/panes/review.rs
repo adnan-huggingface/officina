@@ -332,9 +332,10 @@ impl Scriva {
                         });
                     });
 
-                egui::ScrollArea::vertical()
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
+                ui_kit::scroll::show(
+                    ui,
+                    egui::ScrollArea::vertical().auto_shrink([false, false]),
+                    |ui| {
                         ui.add_space(6.0);
                         ui.spacing_mut().item_spacing.y = 6.0;
                         let mut drafted = false;
@@ -415,7 +416,8 @@ impl Scriva {
                                 }
                             }
                         }
-                    });
+                    },
+                );
             });
 
         self.review_filter = filter;

@@ -39,9 +39,10 @@ impl Scriva {
                                 ui.add_enabled(!headings.is_empty(), egui::Button::new("Heading…"));
                             if let Some(Some(index)) = menu::under(&list, |ui| {
                                 let mut picked = None;
-                                egui::ScrollArea::vertical()
-                                    .max_height(320.0)
-                                    .show(ui, |ui| {
+                                ui_kit::scroll::show(
+                                    ui,
+                                    egui::ScrollArea::vertical().max_height(320.0),
+                                    |ui| {
                                         for (index, heading) in headings.iter().enumerate() {
                                             let label = format!(
                                                 "{}{}",
@@ -54,7 +55,8 @@ impl Scriva {
                                                 picked = Some(index);
                                             }
                                         }
-                                    });
+                                    },
+                                );
                                 picked
                             }) {
                                 heading = Some(index);

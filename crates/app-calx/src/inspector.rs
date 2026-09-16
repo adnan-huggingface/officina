@@ -154,11 +154,11 @@ impl Calx {
                     });
                 });
                 ui.add_space(2.0);
-                egui::ScrollArea::vertical()
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        dialog::form(ui, |ui| self.chart_controls(ui, sheet, index))
-                    });
+                ui_kit::scroll::show(
+                    ui,
+                    egui::ScrollArea::vertical().auto_shrink([false, false]),
+                    |ui| dialog::form(ui, |ui| self.chart_controls(ui, sheet, index)),
+                );
             });
 
         // The gesture ends when nothing is being dragged, typed into, or

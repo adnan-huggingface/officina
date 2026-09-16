@@ -266,9 +266,10 @@ impl Scriva {
                     egui::Stroke::new(1.0, theme::CHROME_RULE),
                 );
 
-                egui::ScrollArea::vertical()
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
+                ui_kit::scroll::show(
+                    ui,
+                    egui::ScrollArea::vertical().auto_shrink([false, false]),
+                    |ui| {
                         ui.add_space(4.0);
                         if headings.is_empty() && filter.trim().is_empty() {
                             ui.add_space(8.0);
@@ -431,7 +432,8 @@ impl Scriva {
                             }
                         }
                         ui.add_space(6.0);
-                    });
+                    },
+                );
             });
 
         self.nav_filter = filter;
