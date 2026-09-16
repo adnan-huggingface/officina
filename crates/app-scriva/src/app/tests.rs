@@ -5152,6 +5152,44 @@ fn a_sweep_paints_the_selection_up_to_the_pointer_in_the_same_frame() {
     );
 }
 
+/// Scrolled to the end, the last page stands a gap above the desk's foot,
+/// with its bottom edge and its shadow in view. The desk was one gap
+/// short: a gap above the first page and one after each page counted a
+/// gap fewer than the stack needs, so the last page's foot lay on the
+/// desk's very end and its border was cut off.
+#[test]
+fn the_last_page_has_a_gap_under_it_at_the_end_of_the_desk() {
+    let drive = ui_kit::drive::Driver::new();
+    let mut app = six_pages(&drive);
+    app.run(Command::Zoom(1.0));
+    drive.settle(&mut app);
+    // To the end, and past it: the desk stops at its foot.
+    drive.press(&mut app, "ctrl+End");
+    drive.settle(&mut app);
+    for _ in 0..4 {
+        drive.press(&mut app, "PageDown");
+        drive.settle(&mut app);
+    }
+    let shapes = drive.frame_at(&mut app, Vec::new(), None);
+    let rects = painted_rects(&shapes);
+    let desk = rects
+        .iter()
+        .find(|(rect, fill, _)| *fill == ui_kit::theme::DESK && rect.width() > 1000.0)
+        .expect("the desk")
+        .0;
+    let last = rects
+        .iter()
+        .filter(|(rect, fill, _)| *fill == egui::Color32::WHITE && rect.width() > 500.0)
+        .map(|(rect, _, _)| rect.bottom())
+        .fold(f32::MIN, f32::max);
+    let gap = view::GAP * (app.view.zoom * view::SCALE) as f32;
+    assert!(
+        last <= desk.bottom() - gap + 1.0,
+        "the last page's foot is a gap above the desk's: {last} against {} (gap {gap})",
+        desk.bottom()
+    );
+}
+
 #[test]
 fn a_page_sits_on_the_light_desk_with_a_shadow_and_no_fade() {
     let drive = ui_kit::drive::Driver::new();

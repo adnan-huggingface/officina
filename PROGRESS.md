@@ -5970,6 +5970,17 @@ line: it stopped at the second. `Driver::frame_wants_repaint` reads
 egui's answer to "is another frame wanted", for the next question of
 this kind.
 
+## The last page has a gap under it (2026-09-16)
+
+The user could not see the bottom border of a document's last page. The
+stack's height counted a gap after every page, and the first page stands
+a gap down, so the sum was one gap short: the last page's foot lay on
+the desk's very end, and its border and shadow were clipped. `extent`
+adds the gap under the last page. Test
+`the_last_page_has_a_gap_under_it_at_the_end_of_the_desk` scrolls to
+the end and reads the last painted page's foot against the desk's: 977
+against 977 before.
+
 ## What driving the redesign found (2026-09-15)
 
 The ten phases were each driven on the rig as they landed — the real

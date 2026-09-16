@@ -64,7 +64,7 @@ Every source file, its size, and the first sentence of its module doc.
 - `crates/app-scriva/src/app/strips.rs` (283) The row under the toolbar, and the mode strips drawn on it.
 - `crates/app-scriva/src/app/surface.rs` (935) The page surface: the scrolling desk the pages sit on, what the pointer does there — carets, selections, a picture picked, dragged and resized — and where on a page a point lands.
 - `crates/app-scriva/src/app/tables.rs` (486) Editing a table: Tab from cell to cell, the edit every table command goes through, cell margins, column widths, and Insert Table itself.
-- `crates/app-scriva/src/app/tests.rs` (6778) 
+- `crates/app-scriva/src/app/tests.rs` (6816) 
 - `crates/app-scriva/src/app/watermark.rs` (424) The watermark: the box that asks for one, and the shape it becomes in a header, written the way Word writes its own so that Word finds it again.
 - `crates/app-scriva/src/app/word_count.rs` (158) The Word Count box, from the status bar's count: pages, words, characters with and without spaces, paragraphs and lines — and, with a selection, the selection beside the document.
 - `crates/app-scriva/src/app.rs` (5440) The application: the window, the commands, and the keys.
@@ -88,7 +88,7 @@ Every source file, its size, and the first sentence of its module doc.
 - `crates/app-scriva/src/shaper.rs` (873) Measuring text with the faces the application actually has.
 - `crates/app-scriva/src/text.rs` (781) Editing the text of a paragraph.
 - `crates/app-scriva/src/toolbar.rs` (1091) The toolbar: one row, on which the caret's state can be read at a glance.
-- `crates/app-scriva/src/view.rs` (3144) The document surface: pages on a desk, a caret, and a selection.
+- `crates/app-scriva/src/view.rs` (3149) The document surface: pages on a desk, a caret, and a selection.
 
 ### `brand`
 

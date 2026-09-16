@@ -186,7 +186,11 @@ impl View {
         self.memo.forget();
     }
 
-    /// The size of the whole stack of pages, in points before zoom.
+    /// The size of the whole stack of pages, in points before zoom: a gap
+    /// above the first, a gap after every page — the last one is the room
+    /// under the last page for its bottom edge and its shadow, and without
+    /// it the last page's foot lay on the desk's very end and its border
+    /// was cut off.
     pub fn extent(&self) -> (f64, f64) {
         let width = self
             .pages
@@ -197,7 +201,8 @@ impl View {
             .pages
             .iter()
             .map(|page| page.geometry.height + GAP as f64)
-            .sum();
+            .sum::<f64>()
+            + GAP as f64;
         (width, height)
     }
 
