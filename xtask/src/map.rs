@@ -132,7 +132,7 @@ fn menus(root: &Path) -> Result<String, String> {
         // `--exact` wants the test's full path, which differs by where each
         // application keeps its tests.
         let path = match app {
-            "scriva" => "app::tests::no_two_rows_of_a_menu_share_a_letter",
+            "scriva" => "app::tests::menus::no_two_rows_of_a_menu_share_a_letter",
             _ => "tests::no_two_rows_of_a_menu_share_a_letter",
         };
         let mut args = vec!["test", "-q", "-p", app, target];

@@ -75,6 +75,7 @@ impl Scriva {
             // width the desk has goes half to each side.
             let slack = ((rect.width() - extent_w as f32 * zoom) / 2.0).max(0.0);
             let origin = rect.min + egui::vec2(slack, 0.0);
+            self.pages_at = Some((origin, zoom));
             let painter = ui.painter_at(rect);
             // Over the paper the pointer is a text cursor, which is how a
             // window says "this is a place where clicking means something".
@@ -443,12 +444,7 @@ impl Scriva {
                 let caret = self.caret();
                 let at = view::caret_rect_on(&self.view, self.scope, caret, None)
                     .map(|(page, rect)| {
-                        let (page_x, page_y) = self.view.page_origin(page);
-                        origin
-                            + egui::vec2(
-                                (page_x as f32 + rect.min.x) * zoom,
-                                (page_y as f32 + rect.max.y) * zoom,
-                            )
+                        self.on_glass(origin, zoom, page, egui::pos2(rect.min.x, rect.max.y))
                     })
                     .unwrap_or(response.rect.min);
                 menu::open_context(ui.ctx(), &response, at);
@@ -509,12 +505,7 @@ impl Scriva {
                 if let Some((page, rect)) =
                     view::caret_rect_on(&self.view, self.scope, caret, prefer)
                 {
-                    let (page_x, page_y) = self.view.page_origin(page);
-                    let min = origin
-                        + egui::vec2(
-                            (page_x as f32 + rect.min.x) * zoom,
-                            (page_y as f32 + rect.min.y) * zoom,
-                        );
+                    let min = self.on_glass(origin, zoom, page, rect.min);
                     let target =
                         egui::Rect::from_min_size(min, egui::vec2(2.0, rect.height() * zoom))
                             .expand2(egui::vec2(0.0, 24.0));
@@ -926,6 +917,24 @@ impl Scriva {
             }
         }
         washes
+    }
+
+    /// A point on a page, in the window: `origin` is where the desk put the
+    /// pages, and `zoom` the scale it painted them at.
+    fn on_glass(&self, origin: egui::Pos2, zoom: f32, page: usize, at: egui::Pos2) -> egui::Pos2 {
+        let (page_x, page_y) = self.view.page_origin(page);
+        origin + egui::vec2((page_x as f32 + at.x) * zoom, (page_y as f32 + at.y) * zoom)
+    }
+
+    /// Where `caret` stands in the window, as the desk was last painted: the
+    /// left edge of its stroke, half-way down its line, on whichever page
+    /// holds it. `None` before the desk has been painted, or for a caret on
+    /// no laid line. What a test points at, rather than working the page's
+    /// corner and the zoom out by hand.
+    pub fn on_screen(&self, caret: Caret) -> Option<egui::Pos2> {
+        let (origin, zoom) = self.pages_at?;
+        let (page, rect) = view::caret_rect_on(&self.view, self.scope, caret, None)?;
+        Some(self.on_glass(origin, zoom, page, egui::pos2(rect.min.x, rect.center().y)))
     }
 
     /// Turns a window point into a point on a page.

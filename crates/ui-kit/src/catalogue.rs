@@ -27,7 +27,16 @@ pub type FaceKey = (String, bool, bool);
 static CATALOGUE: OnceLock<BTreeMap<FaceKey, PathBuf>> = OnceLock::new();
 
 /// Every installed face, indexed by the name a document would name it.
+///
+/// None, in a process under test. A document opened in a test asks for its
+/// faces here, and a test that found Calibri on one machine and a stand-in on
+/// the next would pass or fail by where it ran; the faces a test sees are the
+/// ones it registered itself.
 pub fn installed() -> &'static BTreeMap<FaceKey, PathBuf> {
+    static NONE: BTreeMap<FaceKey, PathBuf> = BTreeMap::new();
+    if crate::headless::active() {
+        return &NONE;
+    }
     CATALOGUE.get_or_init(|| build(&crate::fonts::font_directories()))
 }
 
@@ -462,14 +471,34 @@ mod tests {
         // Nothing is asserted about *which* faces exist — a build machine may
         // have almost none. What is asserted is that looking is safe, that
         // what it finds is really there, and that the name folds case.
-        for ((family, _, _), path) in installed().iter().take(50) {
+        // The machine's folders are read directly: `installed` answers
+        // nothing once a test in this process has gone headless.
+        let found = build(&crate::fonts::machine_font_directories());
+        for ((family, _, _), path) in found.iter().take(50) {
             assert!(!family.is_empty(), "a face with no name was indexed");
             assert!(path.exists(), "{} was indexed but is gone", path.display());
         }
-        if has_family("arial") {
-            assert!(file("Arial", false, false).is_some(), "found but no file");
-            assert!(file("ARIAL", true, false).is_some(), "the name folds case");
-            assert!(!has_family("arial "), "the name is not trimmed for callers");
+        if found.keys().any(|(family, _, _)| family == "arial") {
+            assert!(
+                found.contains_key(&("arial".to_owned(), true, false)),
+                "the name folds case"
+            );
+            assert!(
+                !found.keys().any(|(family, _, _)| family == "arial "),
+                "the name is not trimmed"
+            );
         }
+    }
+
+    /// A process under test sees no installed face, so a document opened in
+    /// a test is laid in the same type on every machine.
+    #[test]
+    fn a_headless_process_sees_no_installed_fonts() {
+        crate::headless::enter();
+        assert!(installed().is_empty(), "the catalogue is empty under test");
+        assert!(file("Arial", false, false).is_none());
+        assert!(!has_family("DejaVu Sans"));
+        assert!(families().is_empty());
+        assert!(crate::fonts::cloud_faces().is_empty());
     }
 }

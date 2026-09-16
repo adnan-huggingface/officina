@@ -18,6 +18,11 @@
 //! has to be renewed by Word before the gate goes green.
 //!
 //! One command a line; `#` starts a comment. The words are the menus' own.
+//!
+//! The script also says what it meant, with `expect` lines, and the document
+//! in the corpus is held to them as well as to its bytes. The bytes alone
+//! passed for months with a bold space and a plain "bold": they were what the
+//! application wrote, and nobody had said what it should have written.
 
 use std::path::Path;
 
@@ -41,6 +46,23 @@ pub enum Step {
     Style(String),
     /// A menu command that needs nothing else said.
     Run(Command),
+    /// What the document should hold once written: nothing is done with it
+    /// while authoring, and [`unmet`] holds a document to it.
+    Expect(Expectation),
+}
+
+/// A property the text of an `expect` line has, in the document as written.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Expectation {
+    /// Every letter of the text is bold.
+    Bold(String),
+    Italic(String),
+    Underlined(String),
+    /// Every character of the text, blanks included, is neither bold, italic
+    /// nor underlined.
+    Plain(String),
+    /// The paragraph holding the text is in this style, by its id.
+    Style(String, String),
 }
 
 /// The script, one step per line that says something.
@@ -143,8 +165,119 @@ fn step(word: &str, rest: &str) -> Result<Step, String> {
         "page-number" => bare(Command::InsertPageNumber { of_pages: false })?,
         "page-of-pages" => bare(Command::InsertPageNumber { of_pages: true })?,
         "update-toc" => bare(Command::UpdateToc)?,
+        "expect" => Step::Expect(expectation(rest)?),
         other => return Err(format!("`{other}` is not a command this script knows")),
     })
+}
+
+/// `bold "text"`, `plain "text"`, `style Heading1 "text"`.
+fn expectation(rest: &str) -> Result<Expectation, String> {
+    let (what, text) = rest
+        .split_once(char::is_whitespace)
+        .ok_or_else(|| format!("`expect` wants a property and a text, not `{rest}`"))?;
+    let text = text.trim_start();
+    let quoted_text = |text: &str| -> Result<String, String> {
+        let inner = quoted(text);
+        match inner.is_empty() || inner == text {
+            true => Err(format!(
+                "`expect` wants its text in double quotes, not `{text}`"
+            )),
+            false => Ok(inner),
+        }
+    };
+    Ok(match what {
+        "bold" => Expectation::Bold(quoted_text(text)?),
+        "italic" => Expectation::Italic(quoted_text(text)?),
+        "underlined" => Expectation::Underlined(quoted_text(text)?),
+        "plain" => Expectation::Plain(quoted_text(text)?),
+        "style" => {
+            let (id, text) = text
+                .split_once(char::is_whitespace)
+                .ok_or_else(|| format!("`expect style` wants an id and a text, not `{text}`"))?;
+            Expectation::Style(id.to_owned(), quoted_text(text.trim_start())?)
+        }
+        other => {
+            return Err(format!(
+                "`expect` knows bold, italic, underlined, plain and style, not `{other}`"
+            ))
+        }
+    })
+}
+
+/// Every expectation the script states that `document` does not meet, each
+/// said with the script's line. The text is looked for in the body's
+/// paragraphs, first occurrence first, and each of its characters is
+/// resolved through the style chain as Word would read it.
+pub fn unmet(script: &str, document: &wp_model::Document) -> Result<Vec<String>, String> {
+    use wp_model::prop::{Toggle, UnderlineKind};
+    let mut failures = Vec::new();
+    for (line, step) in parse(script)? {
+        let Step::Expect(expectation) = step else {
+            continue;
+        };
+        let text = match &expectation {
+            Expectation::Bold(text)
+            | Expectation::Italic(text)
+            | Expectation::Underlined(text)
+            | Expectation::Plain(text)
+            | Expectation::Style(_, text) => text,
+        };
+        let found = document.paragraphs().into_iter().find_map(|paragraph| {
+            let layers = document.styles.resolve_paragraph(&paragraph.props, None);
+            let mut letters = Vec::new();
+            for run in paragraph.runs() {
+                let props = document.styles.resolve_run(&layers, &run.props);
+                letters.extend(run.text().chars().map(|c| (c, props.clone())));
+            }
+            let chars: Vec<char> = letters.iter().map(|(c, _)| *c).collect();
+            let wanted: Vec<char> = text.chars().collect();
+            let start = chars.windows(wanted.len()).position(|w| w == wanted)?;
+            Some((paragraph, letters[start..start + wanted.len()].to_vec()))
+        });
+        let Some((paragraph, letters)) = found else {
+            failures.push(format!("line {line}: \"{text}\" is not in the document"));
+            continue;
+        };
+        let bold = |p: &wp_model::prop::RunProps| p.toggles.is_on(Toggle::Bold);
+        let italic = |p: &wp_model::prop::RunProps| p.toggles.is_on(Toggle::Italic);
+        let underlined = |p: &wp_model::prop::RunProps| {
+            p.underline
+                .as_ref()
+                .is_some_and(|u| u.kind != UnderlineKind::None)
+        };
+        let wrong: Vec<char> = letters
+            .iter()
+            .filter(|(c, props)| match &expectation {
+                Expectation::Bold(_) => !c.is_whitespace() && !bold(props),
+                Expectation::Italic(_) => !c.is_whitespace() && !italic(props),
+                Expectation::Underlined(_) => !c.is_whitespace() && !underlined(props),
+                Expectation::Plain(_) => bold(props) || italic(props) || underlined(props),
+                Expectation::Style(..) => false,
+            })
+            .map(|(c, _)| *c)
+            .collect();
+        if !wrong.is_empty() {
+            failures.push(format!(
+                "line {line}: in \"{text}\", {:?} is not {}",
+                wrong.iter().collect::<String>(),
+                match &expectation {
+                    Expectation::Bold(_) => "bold",
+                    Expectation::Italic(_) => "italic",
+                    Expectation::Underlined(_) => "underlined",
+                    _ => "plain",
+                }
+            ));
+        }
+        if let Expectation::Style(id, _) = &expectation {
+            let wanted = document.styles.lookup(id);
+            if wanted.is_none() || paragraph.props.style != wanted {
+                failures.push(format!(
+                    "line {line}: the paragraph holding \"{text}\" is not in {id}"
+                ));
+            }
+        }
+    }
+    Ok(failures)
 }
 
 /// The text of a `type` line: verbatim, or between double quotes where the
@@ -179,6 +312,7 @@ pub fn author(text: &str) -> Result<Scriva, String> {
                 app.run(Command::Style(style));
             }
             Step::Run(command) => app.run(command),
+            Step::Expect(_) => continue,
         }
         if let Some((title, why)) = app.message.take() {
             return Err(format!(
@@ -258,6 +392,69 @@ mod tests {
             was.len(),
             now.len()
         );
+    }
+
+    /// The document in the corpus is held to what its script says it
+    /// meant, read back from the file: the heading is a heading, the bold
+    /// word bold, the words around it plain to their spaces.
+    #[test]
+    fn the_authored_document_carries_what_its_script_meant() {
+        let root = repo_root();
+        let script = std::fs::read_to_string(root.join("corpus").join("scriva-authored.txt"))
+            .expect("the script");
+        let stated = parse(&script)
+            .expect("the script parses")
+            .into_iter()
+            .filter(|(_, step)| matches!(step, Step::Expect(_)))
+            .count();
+        assert!(stated >= 8, "the script says what it means: {stated} lines");
+        let (document, _) = wp_docx::open(
+            root.join("corpus")
+                .join("docx")
+                .join("scriva-authored.docx"),
+        )
+        .expect("the corpus document opens");
+        let unmet = unmet(&script, &document).expect("the script parses");
+        assert!(
+            unmet.is_empty(),
+            "corpus/docx/scriva-authored.docx is not what its script meant:\n{}",
+            unmet.join("\n")
+        );
+    }
+
+    /// A document with the fault the corpus document had — a bold space
+    /// before a word that is not bold — fails its expectations, and says
+    /// which line and which letters; so does a text that is not there.
+    #[test]
+    fn an_expectation_the_document_breaks_is_reported() {
+        let dir = scratch("expect");
+        let script = "type Some\nbold\ntype \" bold\"\nbold\ntype \" after\"\n\
+                      expect plain \"Some \"\n\
+                      expect bold \"bold\"\n\
+                      expect plain \" after\"\n\
+                      expect italic \"bold\"\n\
+                      expect style Heading1 \"Some\"\n\
+                      expect bold \"missing\"\n";
+        let path = dir.join("s.txt");
+        std::fs::write(&path, script).unwrap();
+        let out = dir.join("broken.docx");
+        write(&path, &out).expect("authored, the expectations aside");
+        let (document, _) = wp_docx::open(&out).expect("it opens");
+        let unmet = unmet(script, &document).unwrap();
+        assert_eq!(unmet.len(), 4, "{unmet:#?}");
+        assert!(
+            unmet[0].starts_with("line 6:") && unmet[0].contains("\" \""),
+            "the bold space: {}",
+            unmet[0]
+        );
+        assert!(unmet[1].starts_with("line 9:") && unmet[1].contains("italic"));
+        assert!(unmet[2].starts_with("line 10:") && unmet[2].contains("Heading1"));
+        assert!(unmet[3].starts_with("line 11:") && unmet[3].contains("not in the document"));
+        assert!(
+            parse("expect bold unquoted").is_err(),
+            "a text without quotes is refused"
+        );
+        assert!(parse("expect shiny \"x\"").is_err());
     }
 
     /// Two runs of one script are one file. Nothing else here holds unless

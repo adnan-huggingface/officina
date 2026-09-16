@@ -21,6 +21,11 @@
 #   page-break  bullets  numbers  select-all  undo  redo  merge-cells
 #   edit-header  edit-footer  close-chrome  page-number  page-of-pages
 #   update-toc
+#   expect bold|italic|underlined|plain "<text>"
+#   expect style <id> "<text>"
+#                            what the written document holds: authoring
+#                            passes over these, and a test reads the document
+#                            back and holds it to them, blanks included
 #
 # A change here changes the document, and `cargo xtask author` is how it is
 # written again; the reading is renewed with it, and LAYOUT.md re-recorded.
@@ -82,3 +87,14 @@ key Enter
 key Enter
 type The last paragraph, justified, is long enough to be set on more than one line so that the justification has something to spread: it goes on until it wraps, and a little further than that.
 align both
+
+# What the lines above meant, held against the document as written.
+expect style Heading1 "An authored document"
+expect plain "Some "
+expect bold "bold"
+expect plain ", some "
+expect italic "italic"
+expect plain " and some "
+expect underlined "underlined"
+expect plain " words share this paragraph"
+expect plain "The first item of a bulleted list."

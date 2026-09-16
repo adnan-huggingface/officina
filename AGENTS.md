@@ -44,6 +44,20 @@ between keys that the driver does not. `Driver::every_menu` walks every menu
 by keyboard; `ui_kit::menu::clashes` reports two rows of one menu sharing a
 letter.
 
+What the window *shows* is asked of `Driver::paint`, which returns a
+`Painted`: rectangles by fill, texts with the colour each letter was painted
+in, rules. Never walk the shapes by hand. The pointer is driven with
+`press_at`, `move_to`, `drag` and `hold`, at points from
+`Scriva::on_screen(caret)`, not from a page corner and a zoom worked out by
+hand. `Driver::opening()` opens small and grows, as the real window does.
+The driver's clock moves a frame's time each frame; `wait(seconds)` sees an
+animation out. A headless process reads no font folder, so tests lay type the
+same on every machine. `Driver::in_hack()` sets the sans face in Hack, the
+second face egui carries, for a check that must not depend on egui's default
+metrics. No other face may be used in a test: nothing is bundled, and a test
+that uses a machine's copy when there is one passes without checking
+anything where there is none.
+
 After meaningful UI work, recreate a real document through the running app —
 menus and keystrokes, New through Save As. adr/0002 records why: one afternoon
 of it found a crash and two silent data losses a green suite never touched,

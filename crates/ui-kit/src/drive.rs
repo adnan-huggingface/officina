@@ -27,9 +27,14 @@
 //! every pace that could matter, with [`Driver::settle`] between the keys,
 //! and believe the window only for the slowest.
 
+use std::cell::Cell;
+
 use eframe::egui;
 
 use crate::shell::{self, DocumentApp};
+
+mod painted;
+pub use painted::{Painted, PaintedRect, PaintedText};
 
 /// The window a driven application is given. Wide enough for every toolbar
 /// to fit without folding and tall enough for a page, since a frame that
@@ -40,7 +45,12 @@ pub const WINDOW: egui::Vec2 = egui::vec2(1600.0, 1000.0);
 /// would give the application, and a way to run frames through it.
 pub struct Driver {
     ctx: egui::Context,
-    window: egui::Vec2,
+    window: Cell<egui::Vec2>,
+    /// The size the window grows to, and how many frames it has still to be
+    /// drawn at its opening size first.
+    growing: Cell<Option<(egui::Vec2, u32)>>,
+    /// The time the next frame is drawn at, in seconds.
+    clock: Cell<f64>,
 }
 
 impl Default for Driver {
@@ -49,39 +59,135 @@ impl Default for Driver {
     }
 }
 
+/// How long a frame lasts: a sixtieth of a second, the pace egui assumes
+/// when nobody says otherwise, and the step its animations take per frame.
+pub const FRAME: f64 = 1.0 / 60.0;
+
+/// How many frames an [`Driver::opening`] window is drawn at the shell's
+/// first size before it is maximized. The real window takes a few frames to
+/// be placed before the maximize can land; three is enough to be seen.
+pub const OPENING_FRAMES: u32 = 3;
+
 impl Driver {
     /// A fresh context, with no system font loaded: the layout in a test is
     /// measured in whatever egui ships, which is the same on every machine,
     /// where a machine's own fonts are not.
     pub fn new() -> Driver {
+        Driver::with_faces(&[])
+    }
+
+    /// The same, with the generic face of each shape given here set in
+    /// place of egui's own — see [`crate::fonts::register_with`].
+    pub fn with_faces(faces: &[(crate::fonts::Family, Vec<u8>)]) -> Driver {
         crate::headless::enter();
         let ctx = egui::Context::default();
-        crate::fonts::register(&ctx, &[]);
+        crate::fonts::register_with(&ctx, &[], faces);
         shell::theme(&ctx);
         Driver {
             ctx,
-            window: WINDOW,
+            window: Cell::new(WINDOW),
+            growing: Cell::new(None),
+            clock: Cell::new(0.0),
         }
+    }
+
+    /// A driver whose sans-serif type is Hack, the monospaced face egui
+    /// carries: taller in its descent than egui's proportional face and a
+    /// good deal wider, so code that silently assumed egui's default metrics
+    /// fails in it. Free to carry, being egui's own.
+    pub fn in_hack() -> Driver {
+        let hack = egui::FontDefinitions::default()
+            .font_data
+            .get("Hack")
+            .map(|data| data.font.to_vec())
+            .expect("egui carries Hack");
+        Driver::with_faces(&[(crate::fonts::Family::Sans, hack)])
     }
 
     /// The same, in a window of another size — for what a toolbar does when
     /// it does not fit.
     pub fn sized(window: egui::Vec2) -> Driver {
-        Driver {
-            window,
-            ..Driver::new()
-        }
+        let driver = Driver::new();
+        driver.window.set(window);
+        driver
+    }
+
+    /// A window that opens the way the shell's does on a first run: at
+    /// [`shell::FIRST_SIZE`] for [`OPENING_FRAMES`] frames, and then at the
+    /// full [`WINDOW`], as the maximize lands. A fit or a layout taken on the
+    /// first frames and never again is seen here and nowhere else.
+    pub fn opening() -> Driver {
+        let driver = Driver::sized(shell::FIRST_SIZE);
+        driver.growing.set(Some((WINDOW, OPENING_FRAMES)));
+        driver
     }
 
     /// The window at another size from the next frame on — what the
     /// desktop does when it maximizes the window a few frames after it
     /// opened, or the user pulls its corner.
     pub fn resize(&mut self, window: egui::Vec2) {
-        self.window = window;
+        self.growing.set(None);
+        self.window.set(window);
+    }
+
+    /// The size the next frame is drawn at.
+    pub fn window(&self) -> egui::Vec2 {
+        self.window.get()
     }
 
     pub fn ctx(&self) -> &egui::Context {
         &self.ctx
+    }
+
+    /// The time the next frame will be drawn at, in seconds.
+    pub fn now(&self) -> f64 {
+        self.clock.get()
+    }
+
+    /// Idle frames, a [`FRAME`] apart, until `seconds` have passed — the
+    /// only way to see the end of what egui moves by a frame's time per
+    /// frame however far the clock jumps: an animated value, and a scroll
+    /// area's glide.
+    pub fn wait<A: DocumentApp>(&self, app: &mut A, seconds: f64) {
+        let frames = (seconds / FRAME).ceil().max(1.0) as usize;
+        for _ in 0..frames {
+            self.settle(app);
+        }
+    }
+
+    /// The input a frame starts from: the window as it is now, the clock,
+    /// and the step a frame takes. The window grows here, and the clock
+    /// moves on, so that every frame the driver runs keeps the same time.
+    fn input(&self, time: Option<f64>) -> egui::RawInput {
+        if let Some(time) = time {
+            self.clock.set(time);
+        }
+        if let Some((to, left)) = self.growing.get() {
+            match left {
+                0 => {
+                    self.window.set(to);
+                    self.growing.set(None);
+                }
+                _ => self.growing.set(Some((to, left - 1))),
+            }
+        }
+        let now = self.clock.get();
+        self.clock.set(now + FRAME);
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                self.window.get(),
+            )),
+            time: Some(now),
+            predicted_dt: FRAME as f32,
+            ..Default::default()
+        }
+    }
+
+    fn run<A: DocumentApp>(&self, app: &mut A, input: egui::RawInput) -> egui::FullOutput {
+        let mut out = self.ctx.run_ui(input, |ui| shell::frame(app, ui));
+        out.textures_delta.clear();
+        out
     }
 
     /// One whole frame, with `events` as everything the keyboard did in it.
@@ -91,12 +197,12 @@ impl Driver {
 
     /// A frame with its clock set, and everything it painted.
     ///
-    /// The clock is what a caret's blink and a notice's fading read, and a
-    /// frame without one is a sixtieth of a second after the last — which is
-    /// the right pace for typing and no way to ask what the screen shows
-    /// four seconds on. The shapes come back for the same reason a test
-    /// reads the model back: what was painted is the only evidence that a
-    /// caret, a shadow or a strike is on the screen at all.
+    /// The clock is what a caret's blink and a notice's fading read. A frame
+    /// without one is drawn a [`FRAME`] after the last; with one, the clock
+    /// is set to it, and the frames after go on from there. The shapes come
+    /// back for the same reason a test reads the model back: what was
+    /// painted is the only evidence that a caret, a shadow or a strike is on
+    /// the screen at all. [`Driver::paint`] reads them.
     pub fn frame_at<A: DocumentApp>(
         &self,
         app: &mut A,
@@ -104,14 +210,21 @@ impl Driver {
         time: Option<f64>,
     ) -> Vec<egui::epaint::ClippedShape> {
         let input = egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, self.window)),
             events,
-            time,
-            ..Default::default()
+            ..self.input(time)
         };
-        let mut out = self.ctx.run_ui(input, |ui| shell::frame(app, ui));
-        out.textures_delta.clear();
-        out.shapes
+        self.run(app, input).shapes
+    }
+
+    /// One frame, and what it painted, ready to be asked about.
+    pub fn paint<A: DocumentApp>(&self, app: &mut A, events: Vec<egui::Event>) -> Painted {
+        Painted::new(&self.frame_at(app, events, None))
+    }
+
+    /// An idle frame with its clock set, and what it painted — how a test
+    /// looks at the screen a blink or a fade later.
+    pub fn paint_at<A: DocumentApp>(&self, app: &mut A, time: Option<f64>) -> Painted {
+        Painted::new(&self.frame_at(app, Vec::new(), time))
     }
 
     /// One frame, and whether it asked for the next one at once — what a
@@ -123,13 +236,11 @@ impl Driver {
         events: Vec<egui::Event>,
     ) -> bool {
         let input = egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, self.window)),
             events,
-            ..Default::default()
+            ..self.input(None)
         };
-        let mut out = self.ctx.run_ui(input, |ui| shell::frame(app, ui));
-        out.textures_delta.clear();
-        out.viewport_output
+        self.run(app, input)
+            .viewport_output
             .get(&egui::ViewportId::ROOT)
             .is_some_and(|viewport| viewport.repaint_delay.is_zero())
     }
@@ -138,7 +249,6 @@ impl Driver {
     /// desktop sends when a document is dragged out of a file manager.
     pub fn drop_files<A: DocumentApp>(&self, app: &mut A, paths: &[std::path::PathBuf]) {
         let input = egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, self.window)),
             dropped_files: paths
                 .iter()
                 .map(|path| {
@@ -146,10 +256,9 @@ impl Driver {
                     file
                 })
                 .collect(),
-            ..Default::default()
+            ..self.input(None)
         };
-        let mut out = self.ctx.run_ui(input, |ui| shell::frame(app, ui));
-        out.textures_delta.clear();
+        self.run(app, input);
     }
 
     /// A frame in which nothing is pressed — what a window does between keys,
@@ -170,18 +279,60 @@ impl Driver {
         self.key(app, key, modifiers);
     }
 
+    /// The primary button goes down at `at`, the pointer having moved there
+    /// in the same frame.
+    pub fn press_at<A: DocumentApp>(&self, app: &mut A, at: egui::Pos2) {
+        self.frame(app, vec![egui::Event::PointerMoved(at), button(at, true)]);
+    }
+
+    /// The pointer moves to `at`, whatever the button is doing, in a frame
+    /// of its own.
+    pub fn move_to<A: DocumentApp>(&self, app: &mut A, at: egui::Pos2) {
+        self.frame(app, vec![egui::Event::PointerMoved(at)]);
+    }
+
+    /// The primary button comes up at `at`.
+    pub fn release_at<A: DocumentApp>(&self, app: &mut A, at: egui::Pos2) {
+        self.frame(app, vec![egui::Event::PointerMoved(at), button(at, false)]);
+    }
+
     /// A click of the pointer at a place in the window: the press in one
     /// frame and the release in the next, which is the least a click is.
     pub fn click<A: DocumentApp>(&self, app: &mut A, at: egui::Pos2) {
-        let button = |pressed: bool| egui::Event::PointerButton {
-            pos: at,
-            button: egui::PointerButton::Primary,
-            pressed,
-            modifiers: egui::Modifiers::NONE,
-        };
-        self.frame(app, vec![egui::Event::PointerMoved(at), button(true)]);
-        self.frame(app, vec![button(false)]);
+        self.press_at(app, at);
+        self.frame(app, vec![button(at, false)]);
         self.settle(app);
+    }
+
+    /// A drag from `from` to `to`: pressed, moved there twice — egui calls a
+    /// press a drag only once the pointer has moved in a frame after it —
+    /// released, and a frame for what the release did.
+    pub fn drag<A: DocumentApp>(&self, app: &mut A, from: egui::Pos2, to: egui::Pos2) {
+        self.drag_via(app, &[from, to]);
+    }
+
+    /// A drag that passes through every point of `path` in turn, a frame
+    /// at each, and is released at the last.
+    pub fn drag_via<A: DocumentApp>(&self, app: &mut A, path: &[egui::Pos2]) {
+        let (Some(&first), Some(&last)) = (path.first(), path.last()) else {
+            panic!("a drag wants at least a point to start from");
+        };
+        self.press_at(app, first);
+        for &at in &path[1..] {
+            self.move_to(app, at);
+        }
+        self.move_to(app, last);
+        self.release_at(app, last);
+        self.settle(app);
+    }
+
+    /// The button held and the pointer resting at `at` for `frames` frames —
+    /// what a sweep does at the edge of a view that scrolls under it. The
+    /// button stays down; [`Driver::release_at`] ends it.
+    pub fn hold<A: DocumentApp>(&self, app: &mut A, at: egui::Pos2, frames: usize) {
+        for _ in 0..frames {
+            self.move_to(app, at);
+        }
     }
 
     /// Text, as typed: one frame carrying it, the way a paste or a burst of
@@ -202,6 +353,16 @@ impl Driver {
         self.settle(app);
         self.key(app, letter(item), egui::Modifiers::NONE);
         self.settle(app);
+    }
+}
+
+/// The primary button, going down or coming up at a point.
+fn button(at: egui::Pos2, pressed: bool) -> egui::Event {
+    egui::Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
     }
 }
 
@@ -579,5 +740,349 @@ mod tests {
         );
         assert_eq!(key_events(egui::Key::T, egui::Modifiers::ALT).len(), 1);
         assert_eq!(key_events(egui::Key::T, egui::Modifiers::NONE).len(), 2);
+    }
+
+    /// An application that paints one of everything a test asks about.
+    struct Painter;
+
+    const RED: egui::Color32 = egui::Color32::from_rgb(200, 0, 0);
+    const BLUE: egui::Color32 = egui::Color32::from_rgb(0, 0, 200);
+    const GREEN: egui::Color32 = egui::Color32::from_rgb(0, 150, 0);
+    const GOLD: egui::Color32 = egui::Color32::from_rgb(200, 160, 0);
+
+    impl DocumentApp for Painter {
+        fn id(&self) -> crate::AppId {
+            crate::SCRIVA
+        }
+        fn toolbar(&mut self, _ui: &mut egui::Ui) {}
+        fn ui(&mut self, ui: &mut egui::Ui) {
+            let painter = ui.painter().clone();
+            painter.rect_filled(
+                egui::Rect::from_min_size(egui::pos2(10.0, 10.0), egui::vec2(300.0, 200.0)),
+                0.0,
+                GOLD,
+            );
+            painter.rect_filled(
+                egui::Rect::from_min_size(egui::pos2(20.0, 20.0), egui::vec2(30.0, 20.0)),
+                0.0,
+                GOLD,
+            );
+            painter.hline(40.0..=90.0, 300.0, egui::Stroke::new(1.0, GREEN));
+            painter.line_segment(
+                [egui::pos2(5.0, 5.0), egui::pos2(50.0, 60.0)],
+                egui::Stroke::new(1.0, GREEN),
+            );
+            let font = egui::FontId::proportional(14.0);
+            painter.text(
+                egui::pos2(400.0, 20.0),
+                egui::Align2::LEFT_TOP,
+                "all red",
+                font.clone(),
+                RED,
+            );
+            // Two runs of one line, painted as two shapes, the way a page
+            // paints its runs.
+            painter.text(
+                egui::pos2(400.0, 60.0),
+                egui::Align2::LEFT_TOP,
+                "plain ",
+                font.clone(),
+                ui.visuals().text_color(),
+            );
+            painter.text(
+                egui::pos2(440.0, 60.0),
+                egui::Align2::LEFT_TOP,
+                "blue",
+                font.clone(),
+                BLUE,
+            );
+            // A colour left to the shape's fallback, and one overridden.
+            let job = egui::text::LayoutJob::simple_singleline(
+                "fallen back".into(),
+                font.clone(),
+                egui::Color32::PLACEHOLDER,
+            );
+            painter.galley(egui::pos2(400.0, 100.0), painter.layout_job(job), GREEN);
+            let galley = painter.layout_no_wrap("overridden".into(), font, RED);
+            painter.add(
+                egui::epaint::TextShape::new(egui::pos2(400.0, 140.0), galley, RED)
+                    .with_override_text_color(BLUE),
+            );
+        }
+    }
+
+    #[test]
+    fn painted_reads_rects_texts_and_the_colour_each_letter_is_painted_in() {
+        let drive = Driver::new();
+        let mut app = Painter;
+        drive.settle(&mut app);
+        let painted = drive.paint(&mut app, Vec::new());
+        assert_eq!(painted.filled(GOLD).len(), 2);
+        assert_eq!(
+            painted.largest(GOLD),
+            Some(egui::Rect::from_min_size(
+                egui::pos2(10.0, 10.0),
+                egui::vec2(300.0, 200.0)
+            )),
+            "the larger of the two, whatever the order"
+        );
+        assert_eq!(
+            painted.hlines(GREEN),
+            vec![(300.0, 40.0, 90.0)],
+            "the slanted line is not a rule"
+        );
+        let red = painted.text("all red").expect("the text is painted");
+        assert!(red.rect.min.x >= 400.0 && red.rect.min.y >= 20.0);
+        assert_eq!(
+            red.letters.iter().filter(|(_, c)| c.is_none()).count(),
+            1,
+            "the blank has no colour"
+        );
+        assert_eq!(painted.colour_of("red"), Some(RED));
+        assert_eq!(painted.colour_of("blue"), Some(BLUE));
+        let across = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            painted.colour_of("plain blue")
+        }));
+        assert!(
+            across.is_err(),
+            "a word across two colours is not answered quietly: {across:?}"
+        );
+        assert_eq!(painted.colour_of("fallen"), Some(GREEN), "the fallback");
+        assert_eq!(painted.colour_of("overridden"), Some(BLUE), "the override");
+        assert_eq!(painted.colour_of("nowhere"), None);
+        assert_eq!(painted.strings_starting("all"), vec!["all red".to_owned()]);
+    }
+
+    /// An application that records what the pointer did to one area.
+    #[derive(Default)]
+    struct Pointer {
+        started: Option<egui::Pos2>,
+        stopped: Option<egui::Pos2>,
+        seen: Vec<egui::Pos2>,
+        held_frames: usize,
+        clicks: usize,
+    }
+
+    impl DocumentApp for Pointer {
+        fn id(&self) -> crate::AppId {
+            crate::SCRIVA
+        }
+        fn toolbar(&mut self, _ui: &mut egui::Ui) {}
+        fn ui(&mut self, ui: &mut egui::Ui) {
+            let (_, response) =
+                ui.allocate_exact_size(ui.available_size(), egui::Sense::click_and_drag());
+            if response.drag_started() {
+                self.started = ui.input(|i| i.pointer.press_origin());
+            }
+            if response.dragged() {
+                if let Some(at) = response.interact_pointer_pos() {
+                    self.seen.push(at);
+                }
+            }
+            if response.drag_stopped() {
+                self.stopped = response.interact_pointer_pos();
+            }
+            if response.clicked() {
+                self.clicks += 1;
+            }
+            if ui.input(|i| i.pointer.primary_down()) {
+                self.held_frames += 1;
+            }
+        }
+    }
+
+    #[test]
+    fn a_drag_is_a_press_moves_and_a_release_and_a_hold_keeps_the_button_down() {
+        let drive = Driver::new();
+        let mut app = Pointer::default();
+        drive.settle(&mut app);
+        let (from, via, to) = (
+            egui::pos2(200.0, 300.0),
+            egui::pos2(260.0, 320.0),
+            egui::pos2(400.0, 500.0),
+        );
+        drive.drag_via(&mut app, &[from, via, to]);
+        assert_eq!(
+            app.started,
+            Some(from),
+            "the drag began where it was pressed"
+        );
+        assert!(
+            app.seen.contains(&via),
+            "and passed through {via:?}: {:?}",
+            app.seen
+        );
+        assert_eq!(app.stopped, Some(to), "and ended where it was let go");
+        assert_eq!(app.clicks, 0, "a drag is not a click");
+
+        let mut app = Pointer::default();
+        drive.press_at(&mut app, from);
+        drive.hold(&mut app, to, 30);
+        assert!(
+            app.held_frames >= 30,
+            "the button stayed down: {}",
+            app.held_frames
+        );
+        drive.release_at(&mut app, to);
+        drive.settle(&mut app);
+        let held = app.held_frames;
+        drive.settle(&mut app);
+        assert_eq!(app.held_frames, held, "and came up at the release");
+        assert_eq!(app.stopped, Some(to));
+
+        let mut app = Pointer::default();
+        drive.click(&mut app, from);
+        assert_eq!(app.clicks, 1);
+        assert_eq!(app.started, None);
+    }
+
+    /// An application that writes down the size of every frame.
+    #[derive(Default)]
+    struct Sizes(Vec<egui::Vec2>);
+
+    impl DocumentApp for Sizes {
+        fn id(&self) -> crate::AppId {
+            crate::SCRIVA
+        }
+        fn toolbar(&mut self, _ui: &mut egui::Ui) {}
+        fn ui(&mut self, ui: &mut egui::Ui) {
+            self.0.push(ui.ctx().viewport_rect().size());
+        }
+    }
+
+    #[test]
+    fn an_opening_window_grows_to_its_full_size_a_few_frames_in() {
+        let drive = Driver::opening();
+        let mut app = Sizes::default();
+        for _ in 0..OPENING_FRAMES + 2 {
+            drive.settle(&mut app);
+        }
+        let opening = OPENING_FRAMES as usize;
+        assert!(
+            app.0[..opening]
+                .iter()
+                .all(|size| *size == shell::FIRST_SIZE),
+            "the first frames at the first-run size: {:?}",
+            app.0
+        );
+        assert!(
+            app.0[opening..].iter().all(|size| *size == WINDOW),
+            "and the rest at the full window: {:?}",
+            app.0
+        );
+        assert_eq!(drive.window(), WINDOW);
+
+        // A resize is the test's own, and stops a growth under way.
+        let mut drive = Driver::opening();
+        let mut app = Sizes::default();
+        drive.resize(egui::vec2(900.0, 600.0));
+        for _ in 0..OPENING_FRAMES + 2 {
+            drive.settle(&mut app);
+        }
+        assert!(app.0.iter().all(|size| *size == egui::vec2(900.0, 600.0)));
+    }
+
+    /// An application that animates one value towards one, once it is
+    /// told to: egui starts an animation seen for the first time at its end.
+    #[derive(Default)]
+    struct Fading {
+        on: bool,
+        value: f32,
+    }
+
+    impl DocumentApp for Fading {
+        fn id(&self) -> crate::AppId {
+            crate::SCRIVA
+        }
+        fn toolbar(&mut self, _ui: &mut egui::Ui) {}
+        fn ui(&mut self, ui: &mut egui::Ui) {
+            // A value, not a switch: egui moves a value by at most a frame's
+            // time per frame, as it moves a scroll area, where a switch is
+            // timed from the moment it was thrown.
+            let target = if self.on { 1.0 } else { 0.0 };
+            self.value = ui
+                .ctx()
+                .animate_value_with_time(egui::Id::new("fade"), target, 0.5);
+        }
+    }
+
+    #[test]
+    fn waiting_runs_frames_until_an_animation_has_finished() {
+        let drive = Driver::new();
+        let mut app = Fading::default();
+        assert_eq!(drive.now(), 0.0);
+        drive.settle(&mut app);
+        assert!((drive.now() - FRAME).abs() < 1e-9, "a frame's time passed");
+        app.on = true;
+        drive.wait(&mut app, 0.25);
+        assert!(
+            app.value > 0.2 && app.value < 0.8,
+            "half way there after a quarter of a second: {}",
+            app.value
+        );
+        drive.wait(&mut app, 0.5);
+        assert_eq!(app.value, 1.0, "and there once the time has passed");
+
+        // One frame whose clock leaps a second does not finish it: egui
+        // steps a value by a frame's time, which is why `wait` runs every
+        // frame in between.
+        let drive = Driver::new();
+        let mut app = Fading::default();
+        drive.settle(&mut app);
+        app.on = true;
+        drive.frame_at(&mut app, Vec::new(), Some(1.0));
+        assert!(app.value < 0.2, "a leap is a step: {}", app.value);
+        assert!(
+            (drive.now() - (1.0 + FRAME)).abs() < 1e-9,
+            "and the clock goes on from where it was set"
+        );
+    }
+
+    /// An application that measures a line of type in the generic sans face.
+    #[derive(Default)]
+    struct Measure(Option<(f32, f32, f32)>);
+
+    impl DocumentApp for Measure {
+        fn id(&self) -> crate::AppId {
+            crate::SCRIVA
+        }
+        fn toolbar(&mut self, _ui: &mut egui::Ui) {}
+        fn ui(&mut self, ui: &mut egui::Ui) {
+            let font = egui::FontId::new(
+                20.0,
+                crate::fonts::face(crate::fonts::Family::Sans, false, false),
+            );
+            let width = |text: &str| {
+                ui.painter()
+                    .layout_no_wrap(text.into(), font.clone(), egui::Color32::BLACK)
+                    .size()
+                    .x
+            };
+            let height = ui.fonts_mut(|fonts| fonts.row_height(&font));
+            self.0 = Some((width("iiii"), width("mmmm"), height));
+        }
+    }
+
+    #[test]
+    fn a_generic_face_given_in_memory_is_the_one_text_is_set_in() {
+        let measure = |drive: Driver| {
+            let mut app = Measure::default();
+            drive.settle(&mut app);
+            app.0.expect("measured")
+        };
+        let (narrow, wide, egui_height) = measure(Driver::new());
+        assert!(
+            wide > narrow * 1.5,
+            "egui's own face is proportional: {narrow} and {wide}"
+        );
+        let (narrow, wide, hack_height) = measure(Driver::in_hack());
+        assert!(
+            (wide - narrow).abs() < 0.01,
+            "Hack is monospaced, so the sans face is Hack: {narrow} and {wide}"
+        );
+        assert!(
+            (hack_height - egui_height).abs() > 0.1,
+            "and its line is another height: {hack_height} against {egui_height}"
+        );
     }
 }

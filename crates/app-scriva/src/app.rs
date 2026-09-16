@@ -555,6 +555,10 @@ pub struct Scriva {
     matches_for: (u64, String, find::Options),
     /// The page surface's widget id, for giving the keyboard back to it.
     surface_id: Option<egui::Id>,
+    /// Where the pages started in the window on the last frame the desk was
+    /// painted, and the scale they were painted at — what turns a place on
+    /// a page into a place on the glass after the frame is over.
+    pages_at: Option<(egui::Pos2, f32)>,
     /// The visible desk, in screen points. Height is the size of a Page Down;
     /// width is what "Page width" zoom fits the paper to.
     viewport: egui::Vec2,
@@ -738,6 +742,7 @@ impl Scriva {
             find_matches: Vec::new(),
             matches_for: (u64::MAX, String::new(), find::Options::default()),
             surface_id: None,
+            pages_at: None,
             viewport: egui::Vec2::ZERO,
             zoom_draft: None,
             zoom_fresh: false,

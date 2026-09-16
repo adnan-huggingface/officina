@@ -136,6 +136,10 @@ pub fn run(app: impl DocumentApp + 'static) -> eframe::Result<()> {
     )
 }
 
+/// The size a window opens at on its first run, before the maximize lands —
+/// and the size it returns to when the user un-maximizes it.
+pub const FIRST_SIZE: egui::Vec2 = egui::vec2(1280.0, 800.0);
+
 /// Where the window was when it was last closed.
 ///
 /// Kept by the shell because eframe's own window persistence is part of a
@@ -161,7 +165,7 @@ impl Default for Placement {
     fn default() -> Self {
         Placement {
             maximized: true,
-            size: [1280.0, 800.0],
+            size: [FIRST_SIZE.x, FIRST_SIZE.y],
             pos: None,
         }
     }

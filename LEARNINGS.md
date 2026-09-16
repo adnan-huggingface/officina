@@ -2125,8 +2125,9 @@ set on a scope around the area and reset inside it: `ui_kit::scroll::show`.
 asked for it.** `Ui::scroll_to_rect` runs over `style.scroll_animation`'s
 frames; an explicit `vertical_scroll_offset` set on a later frame is
 applied and then pulled back toward the animation's target on every frame
-until it ends. In a driver test, whose clock does not advance, that is
-forever. The theme sets `scroll_animation` to `none()`: the desk follows
+until it ends. In a driver test whose clock did not advance, that was
+forever; the driver's clock now moves a frame's time each frame, and
+`Driver::wait` runs frames until an animation has had its time. The theme sets `scroll_animation` to `none()`: the desk follows
 the caret at once, and what sets the offset holds it.
 
 
@@ -2153,4 +2154,34 @@ typed. It also silently broke the authored corpus document: `bold`
 after "Some " bolded the space and the second `bold` un-bolded the word.
 A script that authors a document is a test of the editor's rules, and it
 had been passing with the wrong document.
+
+
+**egui times a switch and steps a value.** `animate_bool` measures from
+the moment the switch was thrown, so one frame whose clock leaps a second
+finishes it; `animate_value` and a scroll area's glide move by at most
+`stable_dt` per frame, so the same leap moves them one frame's worth. A
+test that wants to see the end of either runs the frames in between
+(`Driver::wait`). And an animation egui sees for the first time starts at
+its end: a test that wants to watch one move has to change its target
+after a frame.
+
+
+**The colour of painted text is in the vertices, not the galley.** epaint
+invalidates a glyph's `section_index` once the galley is laid out, so the
+`TextFormat` a letter was laid with cannot be found from the shape. The
+glyph's `first_vertex` can: the vertex colour, with the shape's
+`override_text_color` applied to glyph vertices and `fallback_color` to
+`Color32::PLACEHOLDER`, is what the tessellator will paint.
+`ui_kit::drive::Painted::colour_of` reads it that way.
+
+
+**Process-wide font state makes tests machine-dependent in ways nobody
+sees.** Tests registered no font folders, and still a test opening a
+document naming Calibri drew it in the machine's Calibri: the catalogue
+behind `embed_document` read the font folders on its own, as did Office's
+cloud cache on Windows. And the definitions a document's faces are laid
+over were the *first* registration in the process, so a context given
+other faces would have lost them to the next document opened anywhere in
+the suite. A headless process now reads no font folder at all, and each
+context keeps the definitions it was registered with in its own data.
 

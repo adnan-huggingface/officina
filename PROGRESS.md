@@ -6037,6 +6037,65 @@ does. One `Change::Range` of the same count undoes it. Test
 `deleting_a_selection_across_cells_clears_every_cell_it_covers`,
 Delete and Backspace and the undo.
 
+## The harness sees what the user sees (2026-09-16)
+
+Fifteen fixes in one session paid for the same missing tools each time;
+`PLAN.md` is this work's plan, one item per tool. None of it touches a
+reader or a writer.
+
+- **`ui_kit::drive::Painted`** is one view over a frame's shapes:
+  rectangles by fill (`filled`, `largest`), texts with their screen rect,
+  clip and the colour each letter was painted in (`colour_of`), and
+  horizontal rules. Eight hand-written walkers in Scriva's tests are gone.
+  The colour is read from the glyph vertices (LEARNINGS).
+- **Gestures**: `press_at`, `move_to`, `release_at`, `drag`, `drag_via`,
+  `hold`; `click` is built on them. **`Scriva::on_screen(caret)`** is the
+  window point of a caret on any page as the desk was last painted. The
+  pages' origin is kept from the frame, and Shift+F10's menu and the
+  reveal now share the arithmetic with it.
+- **`Driver::opening()`** opens at `shell::FIRST_SIZE` (now a constant
+  `Placement::default` uses) and grows to the full window after
+  `OPENING_FRAMES`, as the real window does when the maximize lands.
+- **A clock**: every frame is `FRAME` after the last, `frame_at` with a
+  time sets it, and `now()` and `wait(seconds)` are new.
+- **The authored document says what it means**: `expect bold|italic|
+  underlined|plain|style` lines in `corpus/scriva-authored.txt`, which
+  authoring passes over (the document's bytes do not change), and
+  `author::unmet` reads the committed `.docx` back and holds it to them.
+  Run against the document as it stood before `8a27326`, it names the
+  bold spaces and the plain "bold", "italic" and "underlined".
+- **Real fonts, as far as they can go here.** No Office face may be
+  committed, and a test that uses a machine's copy when there is one
+  passes, unchecked, where there is none, so the handoff's
+  "feature-gated run with the Office fonts" was not built. Instead
+  `fonts::register_with` takes a generic face from memory, and
+  `Driver::in_hack()` sets the sans face in Hack, which egui carries under
+  the MIT and Bitstream Vera licences. The caret's height, its place
+  after a typed letter and a click between each pair of letters are
+  tested in it.
+  On the way: **a headless process now reads no font folder** (the
+  catalogue and Office's cloud cache had been read in tests; Scriva's
+  suite ran in 0.75 s and now 0.32 s), and **a context keeps its own
+  registered definitions**, which `embed_document` lays a document's
+  faces over, where it used the process's first registration.
+- **`app/tests.rs` is `app/tests/`**, eight files by area and `mod.rs` for
+  what they share, split by script with the test list compared before and
+  after (186 tests, same names). `six_pages` is used where its copies
+  were.
+
+Tests: `painted_reads_rects_texts_and_the_colour_each_letter_is_painted_in`,
+`a_drag_is_a_press_moves_and_a_release_and_a_hold_keeps_the_button_down`,
+`an_opening_window_grows_to_its_full_size_a_few_frames_in`,
+`waiting_runs_frames_until_an_animation_has_finished`,
+`a_generic_face_given_in_memory_is_the_one_text_is_set_in`,
+`a_headless_process_sees_no_installed_fonts` (ui-kit);
+`the_colour_chosen_for_typing_is_the_colour_painted`,
+`a_caret_is_found_on_screen_on_any_page_however_far_the_desk_has_scrolled`,
+`a_window_that_opens_small_and_grows_shows_the_whole_page_at_its_full_size`,
+`in_a_face_other_than_eguis_own_the_caret_and_the_click_follow_the_face`,
+`the_authored_document_carries_what_its_script_meant`,
+`an_expectation_the_document_breaks_is_reported` (scriva).
+
 ## What driving the redesign found (2026-09-15)
 
 The ten phases were each driven on the rig as they landed — the real

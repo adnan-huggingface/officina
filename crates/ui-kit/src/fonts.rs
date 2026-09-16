@@ -670,7 +670,12 @@ fn candidates(family: Family, bold: bool, italic: bool) -> Vec<&'static str> {
 /// the file, because the number tells nothing.
 ///
 /// Returns `(lowercase family, bold, italic, path)`.
-fn cloud_faces() -> Vec<(String, bool, bool, PathBuf)> {
+pub(crate) fn cloud_faces() -> Vec<(String, bool, bool, PathBuf)> {
+    // A test registers the faces it means to see, and a machine's download
+    // cache is not one of them.
+    if crate::headless::active() {
+        return Vec::new();
+    }
     let Some(local) = std::env::var_os("LOCALAPPDATA") else {
         return Vec::new();
     };
@@ -722,6 +727,16 @@ fn mac_style(bytes: &[u8]) -> Option<(bool, bool)> {
 
 /// Where to look for a bare font file name.
 pub(crate) fn font_directories() -> Vec<PathBuf> {
+    // A process under test reads no font folder: what a test sees has to be
+    // what the next machine's test sees, and the faces it wants it registers.
+    if crate::headless::active() {
+        return Vec::new();
+    }
+    machine_font_directories()
+}
+
+/// The folders themselves, headless or not.
+pub(crate) fn machine_font_directories() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     if let Some(windir) = std::env::var_os("SystemRoot") {
         dirs.push(PathBuf::from(windir).join("Fonts"));
@@ -796,6 +811,19 @@ pub fn install(ctx: &egui::Context) -> Loaded {
 /// hundred megabytes of type off the disk: the names are what the grid asks
 /// for, and epaint refuses to substitute for a family it has never heard of.
 pub fn register(ctx: &egui::Context, dirs: &[PathBuf]) -> Loaded {
+    register_with(ctx, dirs, &[])
+}
+
+/// The same, with the generic face of a shape given as bytes rather than
+/// found on the disk, in all four of its styles.
+///
+/// For a test that must see type other than egui's own: a machine's fonts
+/// are not the same on the next machine, and no face that is not free to
+/// share can be carried in the repository, but egui itself carries faces
+/// under licences that allow it, and one of them whose metrics differ is
+/// enough to catch code that silently assumed the other's. The families are
+/// the context's own, so nothing leaks into another test's context.
+pub fn register_with(ctx: &egui::Context, dirs: &[PathBuf], given: &[(Family, Vec<u8>)]) -> Loaded {
     let mut definitions = egui::FontDefinitions::default();
     let mut loaded = Loaded::default();
     let mut generic_files = BTreeMap::new();
@@ -817,7 +845,14 @@ pub fn register(ctx: &egui::Context, dirs: &[PathBuf]) -> Loaded {
                 .cloned()
                 .unwrap_or_default();
 
-            if let Some((path, bytes)) = load(family, bold, italic, dirs) {
+            if let Some((_, bytes)) = given.iter().find(|(shape, _)| *shape == family) {
+                definitions.font_data.insert(
+                    key.clone(),
+                    Arc::new(egui::FontData::from_owned(bytes.clone())),
+                );
+                chain.insert(0, key);
+                loaded.faces.insert((family, bold, italic), true);
+            } else if let Some((path, bytes)) = load(family, bold, italic, dirs) {
                 definitions
                     .font_data
                     .insert(key.clone(), Arc::new(egui::FontData::from_owned(bytes)));
@@ -929,13 +964,25 @@ pub fn register(ctx: &egui::Context, dirs: &[PathBuf]) -> Loaded {
     }
     // A second registration keeps the first process-wide answer — which is
     // fine, because it is also the set of families epaint was actually given.
-    let _ = NAMED_FACES.set(named);
-    let _ = TWINNED.set(twinned);
-    let _ = GENERIC_FILES.set(generic_files);
-    let _ = SYSTEM.set(definitions.clone());
+    // A registration with faces of its own is a test's, and says nothing
+    // about the machine.
+    if given.is_empty() {
+        let _ = NAMED_FACES.set(named);
+        let _ = TWINNED.set(twinned);
+        let _ = GENERIC_FILES.set(generic_files);
+        let _ = SYSTEM.set(definitions.clone());
+    }
 
+    // The context keeps its own copy of what it was given, and a document's
+    // faces are laid over that, not over whichever context registered first.
+    ctx.data_mut(|data| data.insert_temp(base_id(), Arc::new(definitions.clone())));
     ctx.set_fonts(definitions);
     loaded
+}
+
+/// Where a context keeps the definitions [`register_with`] gave it.
+fn base_id() -> egui::Id {
+    egui::Id::new("ui_kit::fonts::registered")
 }
 
 /// Lays the faces a document carries over the machine's own, and drops
@@ -1043,7 +1090,11 @@ pub fn embed_document(
     }
     let faces = &wanted;
 
-    let mut definitions = SYSTEM.get().cloned().unwrap_or_default();
+    let mut definitions = ctx
+        .data(|data| data.get_temp::<Arc<egui::FontDefinitions>>(base_id()))
+        .map(|base| (*base).clone())
+        .or_else(|| SYSTEM.get().cloned())
+        .unwrap_or_default();
     let mut registered = BTreeMap::new();
     for (index, (name, bold, italic, bytes)) in faces.iter().enumerate() {
         // Two embeddings of one face would otherwise collide on the key; the
