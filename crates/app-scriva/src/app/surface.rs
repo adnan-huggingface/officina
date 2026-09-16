@@ -173,12 +173,36 @@ impl Scriva {
             // after, the highlight trailed the mouse by a frame however
             // fast the frames came.
             if self.sweeping && self.picked.is_none() && response.dragged() {
-                if let Some(caret) = response
-                    .interact_pointer_pos()
-                    .and_then(|pointer| self.spot_at(pointer, origin, zoom))
-                    .and_then(|spot| view::caret_at(&self.view, self.scope, spot))
-                {
-                    self.set_caret(caret, true);
+                if let Some(pointer) = response.interact_pointer_pos() {
+                    // Past the desk's top or foot the desk scrolls on, a
+                    // step a frame and a longer one the farther out the
+                    // pointer is, and the selection reaches to the edge —
+                    // Word's autoscroll, and the only way a mouse selects
+                    // more than a screen. The step is asked for now and
+                    // taken next frame, and a frame is asked for so that it
+                    // keeps coming while the mouse rests.
+                    let past = if pointer.y < outer.top() {
+                        pointer.y - outer.top()
+                    } else if pointer.y > outer.bottom() {
+                        pointer.y - outer.bottom()
+                    } else {
+                        0.0
+                    };
+                    if past != 0.0 {
+                        let step = (past.abs() / 4.0).clamp(4.0, 40.0);
+                        self.scroll_by = Some(step.copysign(past));
+                        ui.ctx().request_repaint();
+                    }
+                    let held = egui::pos2(
+                        pointer.x,
+                        pointer.y.clamp(outer.top() + 1.0, outer.bottom() - 1.0),
+                    );
+                    if let Some(caret) = self
+                        .spot_at(held, origin, zoom)
+                        .and_then(|spot| view::caret_at(&self.view, self.scope, spot))
+                    {
+                        self.set_caret(caret, true);
+                    }
                 }
             }
             let markers = view::paint(

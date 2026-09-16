@@ -62,9 +62,9 @@ Every source file, its size, and the first sentence of its module doc.
 - `crates/app-scriva/src/app/notices.rs` (151) The three tiers of telling the user something, and the two lighter ones drawn here: a status notice, which is a sentence at the left of the status bar for four seconds, and a notice, which takes the row under the tool…
 - `crates/app-scriva/src/app/page_setup.rs` (319) Layout ▸ Page Setup…: paper, orientation, margins and the bands' distance from the edge in one box, with the page drawn from the numbers as they are typed.
 - `crates/app-scriva/src/app/strips.rs` (283) The row under the toolbar, and the mode strips drawn on it.
-- `crates/app-scriva/src/app/surface.rs` (935) The page surface: the scrolling desk the pages sit on, what the pointer does there — carets, selections, a picture picked, dragged and resized — and where on a page a point lands.
+- `crates/app-scriva/src/app/surface.rs` (959) The page surface: the scrolling desk the pages sit on, what the pointer does there — carets, selections, a picture picked, dragged and resized — and where on a page a point lands.
 - `crates/app-scriva/src/app/tables.rs` (486) Editing a table: Tab from cell to cell, the edit every table command goes through, cell margins, column widths, and Insert Table itself.
-- `crates/app-scriva/src/app/tests.rs` (6899) 
+- `crates/app-scriva/src/app/tests.rs` (6977) 
 - `crates/app-scriva/src/app/watermark.rs` (424) The watermark: the box that asks for one, and the shape it becomes in a header, written the way Word writes its own so that Word finds it again.
 - `crates/app-scriva/src/app/word_count.rs` (158) The Word Count box, from the status bar's count: pages, words, characters with and without spaces, paragraphs and lines — and, with a selection, the selection beside the document.
 - `crates/app-scriva/src/app.rs` (5496) The application: the window, the commands, and the keys.

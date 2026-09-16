@@ -5273,6 +5273,84 @@ fn the_last_page_has_a_gap_under_it_at_the_end_of_the_desk() {
     );
 }
 
+/// A sweep pulled past the desk's foot scrolls the desk on, a step a
+/// frame, and the selection grows to what comes into view — Word's
+/// autoscroll, and the only way a mouse selects more than a screen. It
+/// stopped at the edge: the desk stood still and the selection with it.
+#[test]
+fn a_sweep_past_the_desks_edge_scrolls_the_desk_and_grows_the_selection() {
+    let drive = ui_kit::drive::Driver::new();
+    let mut app = six_pages(&drive);
+    app.run(Command::Zoom(1.0));
+    drive.settle(&mut app);
+    let shapes = drive.frame_at(&mut app, Vec::new(), None);
+    let rects = painted_rects(&shapes);
+    let desk = rects
+        .iter()
+        .find(|(rect, fill, _)| *fill == ui_kit::theme::DESK && rect.width() > 1000.0)
+        .expect("the desk")
+        .0;
+    let paper = rects
+        .iter()
+        .find(|(rect, fill, _)| *fill == egui::Color32::WHITE && rect.width() > 500.0)
+        .expect("the page")
+        .0;
+    let scale = (app.view.zoom * view::SCALE) as f32;
+    let (_, first) = view::caret_rect(
+        &app.view,
+        wp_model::Scope::Body,
+        Caret {
+            paragraph: 0,
+            offset: 0,
+        },
+    )
+    .unwrap();
+    let start = paper.min + egui::vec2(first.min.x * scale + 4.0, first.center().y * scale);
+    let press = egui::Event::PointerButton {
+        pos: start,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: egui::Modifiers::NONE,
+    };
+    drive.frame(&mut app, vec![egui::Event::PointerMoved(start), press]);
+    // Down past the desk's foot, into the status bar, and held there.
+    let below = egui::pos2(start.x, desk.bottom() + 20.0);
+    drive.frame(&mut app, vec![egui::Event::PointerMoved(below)]);
+    let before = app.scroll;
+    for _ in 0..30 {
+        drive.frame(&mut app, vec![egui::Event::PointerMoved(below)]);
+    }
+    assert!(
+        app.scroll > before + 100.0,
+        "the desk scrolled on while the pointer rested past its foot: {} from {before}",
+        app.scroll
+    );
+    let (anchor, head) = (app.selection.anchor, app.selection.head);
+    assert_eq!(
+        anchor,
+        Caret {
+            paragraph: 0,
+            offset: 0
+        },
+        "the anchor stayed"
+    );
+    assert!(
+        head.paragraph > 0,
+        "and the selection grew into what came into view: {head:?}"
+    );
+    // And back up past the top: the desk comes back.
+    let above = egui::pos2(start.x, desk.top() - 20.0);
+    let scrolled = app.scroll;
+    for _ in 0..30 {
+        drive.frame(&mut app, vec![egui::Event::PointerMoved(above)]);
+    }
+    assert!(
+        app.scroll < scrolled - 100.0,
+        "and back up again: {} from {scrolled}",
+        app.scroll
+    );
+}
+
 #[test]
 fn a_page_sits_on_the_light_desk_with_a_shadow_and_no_fade() {
     let drive = ui_kit::drive::Driver::new();

@@ -6008,6 +6008,20 @@ renewed Word's reading through the service; `compare --check` is
 within LAYOUT.md's tolerance, so LAYOUT.md is not re-recorded. Test
 `a_format_chosen_at_a_words_edge_is_for_the_typing_that_follows`.
 
+## A sweep past the desk's edge scrolls the desk (2026-09-16)
+
+The user asked for autoscroll: a selection dragged past the desk's top
+or foot scrolls the desk on and keeps growing, as Word's does, and it is
+the only way a mouse selects more than a screen. In the sweep read
+before the paint (`surface.rs`), a pointer past the edge asks the desk
+for a step next frame — `scroll_by`, four to forty points by how far out
+the pointer is — and for a frame, so that it keeps coming while the
+mouse rests; the selection reaches to the edge, and what scrolls into
+view under it is taken. Test
+`a_sweep_past_the_desks_edge_scrolls_the_desk_and_grows_the_selection`
+holds the pointer past the foot for thirty frames and then past the
+top.
+
 ## What driving the redesign found (2026-09-15)
 
 The ten phases were each driven on the rig as they landed — the real
