@@ -491,9 +491,23 @@ pub fn record_insertion(
     author: &Author,
     id: u32,
 ) -> Option<usize> {
+    record_insertion_with(paragraph, offset, input, author, id, None)
+}
+
+/// The same, in `with` rather than the formatting a caret there would
+/// have — the formatting chosen at the caret with nothing selected, which
+/// is for the typing that follows.
+pub fn record_insertion_with(
+    paragraph: &mut Paragraph,
+    offset: usize,
+    input: &str,
+    author: &Author,
+    id: u32,
+    with: Option<wp_model::RunProps>,
+) -> Option<usize> {
     let at = top_level_split(paragraph, offset)?;
     let mut run = Run::of(input);
-    run.props = crate::text::props_at(paragraph, offset);
+    run.props = with.unwrap_or_else(|| crate::text::props_at(paragraph, offset));
     paragraph
         .content
         .insert(at, as_insertion_with(author, id, run));
@@ -581,7 +595,7 @@ fn strike(inline: Inline) -> Inline {
 /// `None` when the offset lands inside something that is not a plain run at the
 /// top level. Recording a change inside a hyperlink or a content control means
 /// wrapping part of that container, which is a different and much larger job.
-fn top_level_split(paragraph: &mut Paragraph, offset: usize) -> Option<usize> {
+pub(crate) fn top_level_split(paragraph: &mut Paragraph, offset: usize) -> Option<usize> {
     let mut seen = 0usize;
     for index in 0..paragraph.content.len() {
         let width = {

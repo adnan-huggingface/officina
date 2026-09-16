@@ -3,7 +3,7 @@
 # but the comparison. In points, one mark to a line, of two kinds:
 #   word  page  x  baseline  text
 #   mark  page  x0  y0  x1  y1
-# document eda6fae0  export 67d00bda  reading bcd125f9
+# document ad1cf91d  export 67d00bda  reading bcd125f9
 # Stale? `cargo xtask compare --refresh` renews it, and needs Word for that
 # one document. Everything else goes on working without it.
 word	1	72.024	87.260	An
@@ -50,20 +50,20 @@ word	1	166.620	147.980	a
 word	1	175.008	147.980	first
 word	1	196.944	147.980	afternoon.
 word	1	72.024	172.940	Some
-word	1	102.140	172.940	bold,
-word	1	129.584	172.940	some
-word	1	158.900	172.940	italic
-word	1	184.688	172.940	and
-word	1	205.772	172.940	some
-word	1	235.010	172.940	underlined
-word	1	290.882	172.940	words
-word	1	323.726	172.940	share
-word	1	353.342	172.940	this
-word	1	373.730	172.940	paragraph,
-word	1	429.494	172.940	so
-word	1	443.282	172.940	that
-word	1	466.058	172.940	a
-word	1	474.566	172.940	run
+word	1	102.260	172.940	bold,
+word	1	130.208	172.940	some
+word	1	159.500	172.940	italic
+word	1	185.660	172.940	and
+word	1	206.744	172.940	some
+word	1	235.970	172.940	underlined
+word	1	291.890	172.940	words
+word	1	324.734	172.940	share
+word	1	354.350	172.940	this
+word	1	374.738	172.940	paragraph,
+word	1	430.502	172.940	so
+word	1	444.290	172.940	that
+word	1	467.066	172.940	a
+word	1	475.574	172.940	run
 word	1	72.024	189.860	boundary
 word	1	121.680	189.860	falls
 word	1	144.096	189.860	inside
@@ -140,7 +140,7 @@ word	1	189.864	359.450	ends
 word	1	215.880	359.450	the
 word	1	234.936	359.450	first
 word	1	256.884	359.450	page.
-mark	1	232.370	174.260	235.010	175.100
+mark	1	235.970	174.260	289.130	175.100
 mark	1	72.024	296.690	72.504	297.170
 mark	1	72.024	296.690	72.504	297.170
 mark	1	72.504	296.690	227.924	297.170

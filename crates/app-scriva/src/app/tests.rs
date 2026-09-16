@@ -2744,6 +2744,89 @@ fn select_all_reaches_the_end_of_the_last_paragraph() {
     );
 }
 
+/// A formatting change with nothing selected and the caret at the end of
+/// a word — or its start — is for what is typed next, not for the word:
+/// "Hello" typed in red, Automatic chosen at its end, stays red, and the
+/// letters typed after it are black. It recoloured the word, taking a
+/// caret at a word's edge to be in the word — Word's rule only for a caret
+/// between a word's letters. The choice holds while the caret stays; a
+/// caret that moves before typing lets it go.
+#[test]
+fn a_format_chosen_at_a_words_edge_is_for_the_typing_that_follows() {
+    use wp_model::Color;
+    let red = Color::Rgb([0xFF, 0x00, 0x00]);
+    let mut app = app_with(&["Hello"]);
+    app.selection = Selection {
+        anchor: Caret {
+            paragraph: 0,
+            offset: 0,
+        },
+        head: Caret {
+            paragraph: 0,
+            offset: 5,
+        },
+    };
+    app.run(Command::Color(red));
+    app.selection = Selection::at(Caret {
+        paragraph: 0,
+        offset: 5,
+    });
+    app.run(Command::Color(Color::Auto));
+    {
+        let paragraphs = app.document.paragraphs();
+        let runs = paragraphs[0].runs();
+        assert!(
+            runs.iter().all(|run| run.props.color == Some(red)),
+            "the word keeps its red: {:?}",
+            runs.iter().map(|r| r.props.color).collect::<Vec<_>>()
+        );
+    }
+    app.type_text(" world");
+    {
+        let paragraphs = app.document.paragraphs();
+        let runs = paragraphs[0].runs();
+        assert_eq!(paragraphs[0].text(), "Hello world");
+        assert_eq!(runs.len(), 2, "{:?}", runs);
+        assert_eq!(runs[0].props.color, Some(red), "the word is still red");
+        assert_eq!(
+            runs[1].props.color,
+            Some(Color::Auto),
+            "and the typing is automatic"
+        );
+    }
+    // Bold chosen at the end, shown on the toolbar before a letter is
+    // typed, and the letter is bold.
+    app.run(Command::Bold);
+    assert!(app.emphasis().0, "the button is lit for the typing to come");
+    assert!(
+        !app.document.paragraphs()[0].runs()[1].props.bold(),
+        "and \"world\" is not bold"
+    );
+    app.type_text("s");
+    {
+        let paragraphs = app.document.paragraphs();
+        let runs = paragraphs[0].runs();
+        assert_eq!(paragraphs[0].text(), "Hello worlds");
+        assert!(
+            runs.last().unwrap().props.bold(),
+            "the s is bold: {:?}",
+            runs
+        );
+        assert!(!runs[1].props.bold(), "\"world\" is not");
+    }
+    // Chosen, then the caret moved: let go.
+    app.run(Command::Italic);
+    app.key(egui::Key::ArrowLeft, egui::Modifiers::NONE);
+    app.type_text("!");
+    let paragraphs = app.document.paragraphs();
+    assert_eq!(paragraphs[0].text(), "Hello world!s");
+    assert!(
+        !paragraphs[0].runs().iter().any(|run| run.props.italic()),
+        "nothing is italic: {:?}",
+        paragraphs[0].runs()
+    );
+}
+
 #[test]
 fn bold_with_no_selection_applies_to_the_word_the_caret_is_in() {
     // Otherwise Ctrl+B with the caret in a word appears to do nothing at all.

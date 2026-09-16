@@ -577,6 +577,14 @@ pub struct Scriva {
     pub(crate) field_held: bool,
     /// The same for the find bar, which the toolbar draws last.
     find_held: bool,
+    /// Formatting chosen with nothing selected and the caret at the edge of
+    /// a word — or in a paragraph with no word — for the typing that
+    /// follows, as Word keeps it: bold pressed after the last letter of a
+    /// word, a colour picked there. Held with the caret it was chosen at,
+    /// and only good while the caret is still there; the first text typed
+    /// takes it and carries it on. A caret *between* the letters of a word
+    /// formats the word instead, which is also Word's rule.
+    next_props: Option<(Caret, wp_model::RunProps)>,
     /// Every comment's range, for the washes, and the document revision it
     /// was worked out for.
     comment_ranges: Vec<crate::revise::CommentRange>,
@@ -739,6 +747,7 @@ impl Scriva {
             size_text: None,
             field_held: false,
             find_held: false,
+            next_props: None,
             comment_ranges: Vec::new(),
             washes_for: u64::MAX,
             clipboard: None,
@@ -957,6 +966,17 @@ impl Scriva {
 
     /// Whether the selection is bold, italic and underlined, for the toolbar.
     pub(crate) fn emphasis(&self) -> (bool, bool, bool) {
+        // Formatting chosen for the typing to come shows on the toolbar as
+        // Word shows it: the button lit before a letter is typed.
+        if let Some((at, props)) = &self.next_props {
+            if *at == self.caret() && self.selection.is_empty() {
+                return (
+                    props.toggles.is_on(Toggle::Bold),
+                    props.toggles.is_on(Toggle::Italic),
+                    props.underline.is_some_and(|u| u.kind.draws()),
+                );
+            }
+        }
         let range = self.formatting_range();
         (
             edit::all_runs(&self.document, self.scope, range, |props| {
@@ -2834,12 +2854,9 @@ impl Scriva {
     /// underline on, never off again.
     fn probe_runs(&self, f: impl Fn(&wp_model::RunProps) -> bool) -> bool {
         if self.selection.is_empty() {
-            let caret = self.caret();
-            let paragraphs = self.document.paragraphs_in(self.scope);
-            let Some(paragraph) = paragraphs.get(caret.paragraph) else {
-                return false;
-            };
-            f(&text::props_at(paragraph, caret.offset))
+            // The typing's formatting: what was chosen at the caret, if
+            // anything was, so that a second press takes it off again.
+            f(&self.typing_props())
         } else {
             edit::all_runs(&self.document, self.scope, self.selection, f)
         }
@@ -2885,6 +2902,18 @@ impl Scriva {
             let caret = self.caret();
             let content = self.paragraph_text(caret.paragraph);
             let word = text::word_at(&content, caret.offset);
+            // After a word's last letter the change is for what is typed
+            // next, not for the word — Word's rule, and the one a hand
+            // meets most: a word typed in red and Automatic chosen at its
+            // end stays red, and the next letters are black. It recoloured
+            // the word, taking a caret at its end to be in it. Before a
+            // word's first letter the word takes it, as Word does too.
+            if !content.is_empty() && (word.is_empty() || caret.offset >= word.end) {
+                let mut props = self.typing_props();
+                change(&mut props);
+                self.next_props = Some((caret, props));
+                return;
+            }
             if word.is_empty() {
                 // No word to take it: the paragraph mark does, which is where
                 // Word keeps an empty paragraph's formatting and what a caret
@@ -2937,6 +2966,31 @@ impl Scriva {
             );
         }
         self.changed();
+    }
+
+    /// The formatting the next typed text takes: what was chosen at the
+    /// caret, if the caret is still where it was chosen, else the run's.
+    pub(crate) fn typing_props(&self) -> wp_model::RunProps {
+        let caret = self.caret();
+        if let Some((at, props)) = &self.next_props {
+            if *at == caret && self.selection.is_empty() {
+                return props.clone();
+            }
+        }
+        edit::paragraph_at(&self.document, self.scope, caret.paragraph)
+            .map(|paragraph| text::props_at(&paragraph, caret.offset))
+            .unwrap_or_default()
+    }
+
+    /// The chosen formatting, taken for the typing at hand: only while the
+    /// caret is where it was chosen, and taken once — the text typed
+    /// carries it on.
+    fn take_next_props(&mut self) -> Option<wp_model::RunProps> {
+        let caret = self.caret();
+        match self.next_props.take() {
+            Some((at, props)) if at == caret && self.selection.is_empty() => Some(props),
+            _ => None,
+        }
     }
 
     fn format_paragraphs(&mut self, change: impl Fn(&mut wp_model::ParaProps) + Copy) {
@@ -3974,13 +4028,15 @@ impl Scriva {
 
     /// Types text, recording it as a tracked insertion when tracking is on.
     pub(crate) fn type_text(&mut self, input: &str) {
+        let with = self.take_next_props();
         if !self.document.settings.track_changes {
-            let caret = edit::type_text(
+            let caret = edit::type_text_with(
                 &mut self.document,
                 self.scope,
                 &mut self.history,
                 self.selection,
                 input,
+                with,
             );
             self.selection = Selection::at(caret);
             self.changed();
@@ -4008,7 +4064,7 @@ impl Scriva {
         let Some(target) = paragraphs.get_mut(start.paragraph) else {
             return;
         };
-        match crate::revise::record_insertion(target, start.offset, input, &author, id) {
+        match crate::revise::record_insertion_with(target, start.offset, input, &author, id, with) {
             Some(after) => {
                 drop(paragraphs);
                 self.selection = Selection::at(Caret {

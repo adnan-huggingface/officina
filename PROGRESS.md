@@ -5981,6 +5981,33 @@ adds the gap under the last page. Test
 the end and reads the last painted page's foot against the desk's: 977
 against 977 before.
 
+## Formatting chosen at the end of a word is for the typing that follows (2026-09-16)
+
+The user typed "Hello" in red, and with the caret after the o chose
+Automatic: the word turned black. Word's rule is that a caret *between*
+the letters of a word formats the word, and a caret after its last
+letter formats the insertion point — what is typed next — and Scriva
+took a caret at the end of a word to be in it. `format_runs` with
+nothing selected now keeps a change made after a word's last letter, or
+after a space, as `next_props`: the caret it was chosen at and the
+formatting the typing there will take. The first text typed takes it —
+`edit::type_text_with` and `revise::record_insertion_with` put the text
+in as a run of its own, cut into the caret's run — and carries it on;
+a caret that moves before typing lets it go. `probe_runs` and
+`emphasis` read it, so a second press takes it off again and the
+toolbar shows the button lit before a letter is typed. Before a word's
+first letter the word still takes the change, as in Word.
+
+The authored corpus document changed with it, and for the better: its
+script types "Some ", presses Bold, types "bold" and presses Bold
+again. The old rule bolded the *space* and then un-bolded the word, so
+the document that measured "what Scriva writes" had a bold space and a
+plain "bold" — and the same for italic and underlined. Now the three
+words carry what the script meant. `cargo xtask author` rewrote it and
+renewed Word's reading through the service; `compare --check` is
+within LAYOUT.md's tolerance, so LAYOUT.md is not re-recorded. Test
+`a_format_chosen_at_a_words_edge_is_for_the_typing_that_follows`.
+
 ## What driving the redesign found (2026-09-15)
 
 The ten phases were each driven on the rig as they landed — the real

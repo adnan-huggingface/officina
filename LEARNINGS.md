@@ -2141,3 +2141,16 @@ that moves the picture before painting the picture, where the picture is
 not needed to read it; and measure before guessing — `OFFICINA_FRAME_LOG`
 on the real binary, `Driver::frame_wants_repaint` in a test.
 
+
+**Word formats the word only from between its letters.** With nothing
+selected, Ctrl+B or a colour with the caret inside a word formats the
+word; with the caret after the word's last letter — or after a space —
+it formats the insertion point, and the next text typed takes it. A
+caret at the end of a word is where a hand that has just typed the word
+always is, so "type a word, choose a colour, type on" is the common
+case, and treating that caret as in the word recoloured what was already
+typed. It also silently broke the authored corpus document: `bold`
+after "Some " bolded the space and the second `bold` un-bolded the word.
+A script that authors a document is a test of the editor's rules, and it
+had been passing with the wrong document.
+

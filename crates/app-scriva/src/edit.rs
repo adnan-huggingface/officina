@@ -832,6 +832,22 @@ pub fn type_text(
     selection: Selection,
     input: &str,
 ) -> Caret {
+    type_text_with(document, scope, history, selection, input, None)
+}
+
+/// The same, with the typed text in `with` rather than the formatting a
+/// caret there would have: the formatting chosen at the caret with nothing
+/// selected — bold pressed at the end of a word, a colour picked there —
+/// which Word keeps for the typing that follows. The text goes in as a run
+/// of its own, cut into whatever run the caret was in.
+pub fn type_text_with(
+    document: &mut Document,
+    scope: Scope,
+    history: &mut History,
+    selection: Selection,
+    input: &str,
+    with: Option<wp_model::RunProps>,
+) -> Caret {
     let caret = delete_selection(document, scope, history, selection);
     let Some(before) = paragraph_at(document, scope, caret.paragraph) else {
         return caret;
@@ -855,7 +871,19 @@ pub fn type_text(
     let Some(target) = paragraphs.get_mut(caret.paragraph) else {
         return caret;
     };
-    let after = text::insert(target, caret.offset, input);
+    let placed = with.and_then(|props| {
+        let at = crate::revise::top_level_split(target, caret.offset)?;
+        target.content.insert(
+            at,
+            wp_model::doc::Inline::Run(wp_model::doc::Run {
+                props,
+                content: vec![wp_model::doc::Piece::Text(input.into())],
+                prop_change: None,
+            }),
+        );
+        Some(caret.offset + input.len())
+    });
+    let after = placed.unwrap_or_else(|| text::insert(target, caret.offset, input));
     Caret {
         paragraph: caret.paragraph,
         offset: after,
