@@ -4041,7 +4041,23 @@ impl Scriva {
             return caret;
         };
         let step = rect.height().max(1.0) as f64 * if down { 1.0 } else { -1.0 };
-        view::step_from(&self.view, self.scope, caret, step).unwrap_or(caret)
+        // No line to step to means this is the first line of the flow, or
+        // the last: Up goes to its start and Down to its end, as Word's
+        // do — so that Shift+Up at the end of the first line selects it.
+        // The step was refused and the caret stayed, and nothing was
+        // selected.
+        view::step_from(&self.view, self.scope, caret, step).unwrap_or_else(|| {
+            let offset = match (view::line_span(&self.view, self.scope, caret), down) {
+                (Some((start, _)), false) => start,
+                (Some((_, end)), true) => end,
+                (None, false) => 0,
+                (None, true) => self.paragraph_text(caret.paragraph).len(),
+            };
+            Caret {
+                paragraph: caret.paragraph,
+                offset,
+            }
+        })
     }
 
     /// One screenful up or down — Page Up and Page Down.

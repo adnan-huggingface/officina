@@ -225,6 +225,10 @@ pub struct Spot {
     pub y: f64,
 }
 
+/// How far a point is from a line, judged in order: vertically, then to
+/// the box the line was laid in, then to its text. Smaller is nearer.
+type Fit = (f64, f64, f64);
+
 /// Turns a click into a position in the text.
 ///
 /// The line nearest the click vertically, then the character nearest it
@@ -232,7 +236,7 @@ pub struct Spot {
 /// line has to land at the end of the line rather than nowhere.
 pub fn caret_at(view: &View, scope: Scope, spot: Spot) -> Option<Caret> {
     let page = view.pages.get(spot.page)?;
-    let mut best: Option<((f64, f64, f64), &Placement, usize)> = None;
+    let mut best: Option<(Fit, &Placement, usize)> = None;
     // The text's top and bottom on this page: a point above every line is
     // before the first of them, and a point below every line is after the
     // last — where Word puts a pointer in the top or bottom margin, and
@@ -608,11 +612,16 @@ pub fn step_from(view: &View, scope: Scope, caret: Caret, dy: f64) -> Option<Car
     let from = page_y + rect.center().y as f64;
     let want = from + dy;
     let down = dy > 0.0;
-    let mut best: Option<((f64, f64), &Placement, usize, f64)> = None;
+    let mut best: Option<(Fit, &Placement, usize, f64)> = None;
     for (index, page) in view.pages.iter().enumerate() {
         let (origin_x, origin_y) = view.page_origin(index);
         for placement in page.placements(scope) {
-            let Placed::Line { paragraph, .. } = &placement.kind else {
+            let Placed::Line {
+                line,
+                paragraph,
+                box_width,
+            } = &placement.kind
+            else {
                 continue;
             };
             let top = origin_y + placement.y;
@@ -624,10 +633,12 @@ pub fn step_from(view: &View, scope: Scope, caret: Caret, dy: f64) -> Option<Car
             if (middle - from).abs() < 0.5 || down != (middle > from) {
                 continue;
             }
-            // Vertically first, then horizontally — the same ordering a click
-            // is judged by, and for the same reason.
+            // Vertically first, then horizontally, the box before the text
+            // — the same ordering a click is judged by, and for the same
+            // reason.
             let score = (
                 distance_to(want, top, placement.height),
+                distance_to(x, origin_x + placement.x - line.x, *box_width),
                 distance_to(x, origin_x + placement.x, placement.width),
             );
             if best.as_ref().is_none_or(|(best, ..)| score < *best) {

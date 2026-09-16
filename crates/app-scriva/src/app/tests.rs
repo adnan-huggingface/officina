@@ -4759,6 +4759,65 @@ fn dragging_out_of_the_text_above_or_below_takes_the_line_to_its_edge() {
     );
 }
 
+/// Shift+Up at the end of the first line selects it back to its start, and
+/// Shift+Down at the start of the last line selects it on to its end: Up on
+/// the first line of the document goes to its start and Down on the last
+/// to its end, as Word's do. They went nowhere — there was no line above
+/// or below to step to, so the step was refused and nothing was selected.
+#[test]
+fn up_on_the_first_line_goes_to_its_start_and_down_on_the_last_to_its_end() {
+    let drive = ui_kit::drive::Driver::new();
+    let first = "Quarterly report";
+    let last = "The first quarter went well.";
+    let mut app = app_with(&[first, last]);
+    drive.settle(&mut app);
+    app.selection = Selection::at(Caret {
+        paragraph: 0,
+        offset: first.len(),
+    });
+    drive.press(&mut app, "shift+Up");
+    drive.settle(&mut app);
+    assert_eq!(
+        app.selected_text().as_deref(),
+        Some(first),
+        "Shift+Up on the first line: {:?}",
+        app.selection
+    );
+    drive.press(&mut app, "Up");
+    drive.settle(&mut app);
+    assert_eq!(
+        app.caret(),
+        Caret {
+            paragraph: 0,
+            offset: 0
+        },
+        "Up alone goes to the start and drops the selection"
+    );
+
+    app.selection = Selection::at(Caret {
+        paragraph: 1,
+        offset: 0,
+    });
+    drive.press(&mut app, "shift+Down");
+    drive.settle(&mut app);
+    assert_eq!(
+        app.selected_text().as_deref(),
+        Some(last),
+        "Shift+Down on the last line: {:?}",
+        app.selection
+    );
+    drive.press(&mut app, "Down");
+    drive.settle(&mut app);
+    assert_eq!(
+        app.caret(),
+        Caret {
+            paragraph: 1,
+            offset: last.len()
+        },
+        "Down alone goes to the end"
+    );
+}
+
 #[test]
 fn a_page_sits_on_the_light_desk_with_a_shadow_and_no_fade() {
     let drive = ui_kit::drive::Driver::new();

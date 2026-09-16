@@ -5833,6 +5833,21 @@ decided before the caret block now. Test
 `dragging_out_of_the_text_above_or_below_takes_the_line_to_its_edge`
 presses, moves, releases through the driver in both directions.
 
+## Up on the first line goes to its start, and Down on the last to its end (2026-09-15)
+
+The user pressed Shift+Up at the end of the first line and nothing was
+selected. `view::step_from` weighs only the lines past the caret's in
+the direction of travel — rightly, so that a half-empty page does not
+trap the caret — and on the first line of the flow there are none, so
+the step was refused and the caret stayed. `line_step` now falls back
+to the caret's own line: Up goes to its start and Down to its end, as
+Word's do, so Shift+Up at the end of the first line selects it and
+Shift+Down at the start of the last line selects that. `step_from` also
+takes the box-before-text tie-break `caret_at` gained today, so an arrow
+into a table row is judged as a click there is. Test
+`up_on_the_first_line_goes_to_its_start_and_down_on_the_last_to_its_end`,
+all four keys.
+
 ## What driving the redesign found (2026-09-15)
 
 The ten phases were each driven on the rig as they landed — the real
