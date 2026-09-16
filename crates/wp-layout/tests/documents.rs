@@ -128,7 +128,10 @@ fn drawn_by_paragraph(pages: &[block::Page], count: usize) -> Vec<String> {
     let mut out = vec![String::new(); count];
     for page in pages {
         for placement in &page.content {
-            if let Placed::Line { line, paragraph } = &placement.kind {
+            if let Placed::Line {
+                line, paragraph, ..
+            } = &placement.kind
+            {
                 let Some(into) = out.get_mut(*paragraph) else {
                     continue;
                 };

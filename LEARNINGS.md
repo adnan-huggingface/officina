@@ -2096,3 +2096,15 @@ every test read the model. Chrome above a document has one height: a mode
 that has something to say gets a row that is always there, and the row
 says one thing at a time. A test now reads the painted desk's top edge
 back and asks that it never moves.
+
+
+**A placement's `x` is shifted on its way to the page; nothing inside its
+`kind` is.** A cell's parts are laid in the cell's own coordinates and
+copied into the column with a new `x`, then into the page's margins with
+another; the `Placed` inside is cloned as it was. A box's absolute left
+edge stored in `Placed::Line` therefore read the same for every cell of
+an equal-columned table, and a click's tie-break that trusted it fell back
+to the text and chose the wrong cell — after passing a test whose columns
+were unequal. Store widths and offsets *relative to the placement* in a
+variant, derive edges from `placement.x` at the point of use, and write
+the test in the shape the bug was seen in.

@@ -232,17 +232,26 @@ pub struct Spot {
 /// line has to land at the end of the line rather than nowhere.
 pub fn caret_at(view: &View, scope: Scope, spot: Spot) -> Option<Caret> {
     let page = view.pages.get(spot.page)?;
-    let mut best: Option<((f64, f64), &Placement, usize)> = None;
+    let mut best: Option<((f64, f64, f64), &Placement, usize)> = None;
     for placement in page.placements(scope) {
-        let Placed::Line { paragraph, .. } = &placement.kind else {
+        let Placed::Line {
+            line,
+            paragraph,
+            box_width,
+        } = &placement.kind
+        else {
             continue;
         };
         // Vertically first, then horizontally: the row the click is level
-        // with decides, and the cell under the pointer breaks the tie.
-        // Vertical distance alone sent a click in a right-hand table cell to
-        // the left-hand cell whose line shares the same y.
+        // with decides, and the cell under the pointer breaks the tie —
+        // by the box the line was laid in before the text on it. Vertical
+        // distance alone sent a click in a right-hand table cell to the
+        // left-hand cell whose line shares the same y; distance to the text
+        // alone sent a click in the empty right half of a wide cell to the
+        // next cell, whose word was nearer than this cell's own.
         let score = (
             distance_to(spot.y, placement.y, placement.height),
+            distance_to(spot.x, placement.x - line.x, *box_width),
             distance_to(spot.x, placement.x, placement.width),
         );
         if best.as_ref().is_none_or(|(best, _, _)| score < *best) {
@@ -296,7 +305,10 @@ pub fn character_over(view: &View, scope: Scope, spot: Spot) -> Option<Caret> {
             && (placement.x..=placement.x + placement.width).contains(&spot.x)
             && (placement.y..=placement.y + placement.height).contains(&spot.y)
     })?;
-    let Placed::Line { line, paragraph } = &found.kind else {
+    let Placed::Line {
+        line, paragraph, ..
+    } = &found.kind
+    else {
         return None;
     };
     Some(Caret {
@@ -338,7 +350,7 @@ fn character_in(line: &wp_layout::inline::Line, x: f64) -> usize {
 fn wraps_after(view: &View, scope: Scope, paragraph: usize, end: usize) -> bool {
     view.pages.iter().any(|page| {
         page.placements(scope).iter().any(|placement| {
-            matches!(&placement.kind, Placed::Line { line, paragraph: p }
+            matches!(&placement.kind, Placed::Line { line, paragraph: p, .. }
                 if *p == paragraph && line_range(line) != (end, end) && line_range(line).0 == end)
         })
     })
@@ -453,7 +465,10 @@ fn line_holding_on(
     let mut at_end: Option<(usize, &Placement)> = None;
     for (index, page) in view.pages.iter().enumerate() {
         for placement in page.placements(scope) {
-            let Placed::Line { line, paragraph } = &placement.kind else {
+            let Placed::Line {
+                line, paragraph, ..
+            } = &placement.kind
+            else {
                 continue;
             };
             if *paragraph != caret.paragraph {
@@ -477,7 +492,10 @@ fn line_on(view: &View, scope: Scope, caret: Caret, index: usize) -> Option<(usi
     let page = view.pages.get(index)?;
     let mut at_end: Option<(usize, &Placement)> = None;
     for placement in page.placements(scope) {
-        let Placed::Line { line, paragraph } = &placement.kind else {
+        let Placed::Line {
+            line, paragraph, ..
+        } = &placement.kind
+        else {
             continue;
         };
         if *paragraph != caret.paragraph {
@@ -1068,7 +1086,9 @@ fn pickable(view: &View, scope: Scope, page: usize) -> Vec<Pickable> {
                     behind_text: anchor.as_ref().is_some_and(|drawing| drawing.behind_text),
                 });
             }
-            Placed::Line { line, paragraph } => {
+            Placed::Line {
+                line, paragraph, ..
+            } => {
                 for fragment in &line.fragments {
                     // A picture bullet is an object with no `nth`: it is drawn
                     // like a drawing but it is not one of the paragraph's, so
@@ -1495,7 +1515,9 @@ fn paint_placement(
             };
             painter.line_segment([line.0, line.1], egui::Stroke::new(width.max(0.5), color));
         }
-        Placed::Line { line, paragraph } => {
+        Placed::Line {
+            line, paragraph, ..
+        } => {
             paint_line(
                 painter, placement, line, *paragraph, page, zoom, shaper, selection, flow,
                 highlights, washes, revisions, pictures,
@@ -2287,7 +2309,10 @@ mod tests {
         view.refresh(&document, &wp_layout::FieldValues::new(), 1, &mut shaper);
         let mut lines = Vec::new();
         for placement in &view.pages()[0].content {
-            if let Placed::Line { line, paragraph } = &placement.kind {
+            if let Placed::Line {
+                line, paragraph, ..
+            } = &placement.kind
+            {
                 if *paragraph == 0 {
                     let (start, end) = line_range(line);
                     lines.push((start, end, placement.y));
@@ -2406,6 +2431,64 @@ mod tests {
             .expect("a caret");
             assert_eq!(caret.paragraph, want, "the click landed in the other cell");
         }
+    }
+
+    /// A click in the empty part of a cell, to the right of its text, lands
+    /// at the end of that cell's line — not in the next cell, whose text
+    /// was nearer. It did: the tie-break measured the pointer's distance to
+    /// the *text* of each line, so the right-hand half of a wide cell with
+    /// a short word belonged to its neighbour, and clicking there from the
+    /// neighbour looked as if nothing had happened.
+    #[test]
+    fn a_click_past_a_cells_text_lands_in_that_cell_and_not_the_next() {
+        use wp_model::table::{Cell, CellProps, Row, Table};
+        use wp_model::Twips;
+        // Three equal columns, as the document it was seen in had: every
+        // cell's box is the same width, so a box measured in the cell's own
+        // coordinates rather than the page's tells the cells apart not at
+        // all, and only the text decides — which is the bug again.
+        let cell = |text: &str| Cell {
+            props: CellProps::new(),
+            content: vec![Block::Paragraph(Paragraph::of(text))],
+        };
+        let table = Table {
+            grid: vec![Twips(3120), Twips(3120), Twips(3120)],
+            rows: vec![Row {
+                cells: vec![cell("Region"), cell("Sales"), cell("North")],
+                ..Row::new()
+            }],
+            ..Table::new()
+        };
+        let ctx = context();
+        let mut shaper = Egui::new(&ctx);
+        let mut view = View::default();
+        let mut document = document(&[]);
+        document.body = vec![Block::Table(table)];
+        view.refresh(&document, &wp_layout::FieldValues::new(), 1, &mut shaper);
+        let lines: Vec<&Placement> = view.pages()[0]
+            .content
+            .iter()
+            .filter(|p| matches!(p.kind, Placed::Line { .. }))
+            .collect();
+        let (region, sales) = (lines[0], lines[1]);
+        assert!(
+            region.x + region.width < sales.x - 60.0,
+            "the first cell has room after its word"
+        );
+        // Twenty points left of the second cell's text: in the first cell,
+        // and nearer the second cell's word than the first's.
+        let caret = caret_at(
+            &view,
+            Scope::Body,
+            Spot {
+                page: 0,
+                x: sales.x - 20.0,
+                y: region.y + region.height / 2.0,
+            },
+        )
+        .expect("a caret");
+        assert_eq!(caret.paragraph, 0, "the click landed in the next cell");
+        assert_eq!(caret.offset, "Region".len(), "at the end of the word");
     }
 
     #[test]

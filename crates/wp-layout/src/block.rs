@@ -66,7 +66,21 @@ pub enum Placed {
     /// item and from the item onto a page, and copying it at each step is what
     /// a long document spends its afternoon on. A renderer that needs to change
     /// one takes its own copy — see [`crate::inline::LaidParagraph`].
-    Line { line: Arc<Line>, paragraph: usize },
+    ///
+    /// `box_width` is the width of the box the line was laid in — the
+    /// paragraph's text width, or the cell's — where the placement's own
+    /// `width` is the line's used extent. The box's left edge is the
+    /// placement's `x` less the line's own `x`, so it travels with the
+    /// placement as a cell's parts are shifted into their column and a
+    /// page's into its margins; an absolute left edge kept here would not.
+    /// A click past the end of a short word in a wide cell is in that
+    /// cell's box and nowhere near its text; a hit test that only knew the
+    /// text gave such a click to the neighbouring cell.
+    Line {
+        line: Arc<Line>,
+        paragraph: usize,
+        box_width: f64,
+    },
     /// A filled rectangle: cell or paragraph shading.
     Fill([u8; 3]),
     /// One edge of a border.
@@ -2079,6 +2093,7 @@ fn push_paragraph(
             kind: Placed::Line {
                 line,
                 paragraph: paragraph_index,
+                box_width: width,
             },
         });
         if is_last {
@@ -4522,7 +4537,10 @@ mod tests {
         let mut seen = 0;
         for page in pages(&document) {
             for placement in &page.content {
-                let Placed::Line { line, paragraph } = &placement.kind else {
+                let Placed::Line {
+                    line, paragraph, ..
+                } = &placement.kind
+                else {
                     continue;
                 };
                 let text: String = line

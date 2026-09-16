@@ -5789,6 +5789,30 @@ focused: Ctrl+H opens Replace and puts the keyboard in its field, Ctrl+F
 goes back to the find field. `ctrl_h_in_the_find_bar_opens_replace` pins
 it, and fails against the old bar at its first assertion.
 
+## A click in the empty part of a cell lands in that cell (2026-09-15)
+
+The user clicked in a table's `Sales` cell and then in the empty right
+part of the `Region` cell beside it, and the caret stayed in `Sales`.
+`view::caret_at` picks the line nearest the click vertically and breaks
+the tie horizontally — by the distance to each line's *text*, which for a
+short word in a wide cell is a small patch at the cell's left; the right
+half of the cell was nearer the next cell's word than its own. The
+placement of a line now carries the width of the box it was laid in —
+`Placed::Line` gains `box_width`, the paragraph's or the cell's text
+width, set where `push_paragraph` already knew it; the box's left edge
+is the placement's `x` less the line's own `x`, and is not stored,
+because a cell's parts are laid in the cell's own coordinates and shifted
+into the column afterwards, and an absolute left edge kept in the variant
+stayed behind (the first cut stored one, passed its test with unequal
+columns, and failed on the rig with three equal ones, where every cell's
+unshifted box read the same). The tie-break measures the box before the
+text, so a click anywhere in a cell is that cell's, at the end of its
+line, which is where Word puts it. Nothing laid moves: `compare --check`
+is unchanged. Test
+`a_click_past_a_cells_text_lands_in_that_cell_and_not_the_next` uses the
+document's three equal columns, and fails against the old tie-break with
+the caret in the second cell.
+
 ## What driving the redesign found (2026-09-15)
 
 The ten phases were each driven on the rig as they landed — the real

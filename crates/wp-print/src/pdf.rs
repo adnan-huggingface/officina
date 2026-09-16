@@ -867,6 +867,7 @@ mod tests {
                         ended_by: None,
                     }),
                     paragraph: 0,
+                    box_width: 500.0,
                 },
             }],
             header: Vec::new(),
