@@ -5084,6 +5084,74 @@ fn page_down_at_whole_page_zoom_shows_the_next_page_whole() {
     assert_eq!(app.caret().offset, "six".len(), "at its end");
 }
 
+/// The frame a pointer move arrives in, mid-sweep, paints the selection
+/// up to that move — not up to the move before it. The desk painted
+/// first and read the pointer after, so the highlight trailed the mouse
+/// by a frame however fast the frames came, and on a display that shows
+/// each frame a little late that read as a laggy selection.
+#[test]
+fn a_sweep_paints_the_selection_up_to_the_pointer_in_the_same_frame() {
+    let drive = ui_kit::drive::Driver::new();
+    let mut app = app_with(&["one two three", "four five six", "seven eight nine"]);
+    drive.settle(&mut app);
+    app.run(Command::Zoom(1.0));
+    drive.settle(&mut app);
+    let shapes = drive.frame_at(&mut app, Vec::new(), None);
+    let paper = painted_rects(&shapes)
+        .into_iter()
+        .find(|(rect, fill, _)| *fill == egui::Color32::WHITE && rect.width() > 500.0)
+        .expect("a page is painted")
+        .0;
+    let scale = (app.view.zoom * view::SCALE) as f32;
+    let on_screen = |app: &Scriva, caret: Caret| {
+        let (_, rect) = view::caret_rect(&app.view, wp_model::Scope::Body, caret).expect("drawn");
+        paper.min + egui::vec2(rect.min.x * scale, rect.center().y * scale)
+    };
+    let first = on_screen(
+        &app,
+        Caret {
+            paragraph: 0,
+            offset: 0,
+        },
+    );
+    let second = on_screen(
+        &app,
+        Caret {
+            paragraph: 1,
+            offset: 4,
+        },
+    );
+    let third = on_screen(
+        &app,
+        Caret {
+            paragraph: 2,
+            offset: 10,
+        },
+    );
+    let press = egui::Event::PointerButton {
+        pos: first,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: egui::Modifiers::NONE,
+    };
+    drive.frame(&mut app, vec![egui::Event::PointerMoved(first), press]);
+    drive.frame(&mut app, vec![egui::Event::PointerMoved(second)]);
+    drive.frame(&mut app, vec![egui::Event::PointerMoved(second)]);
+    // The move to the third line, and what that very frame painted.
+    let shapes = drive.frame_at(&mut app, vec![egui::Event::PointerMoved(third)], None);
+    let highlight: Vec<egui::Rect> = painted_rects(&shapes)
+        .into_iter()
+        .filter(|(_, fill, _)| *fill == ui_kit::theme::SELECTION)
+        .map(|(rect, _, _)| rect)
+        .collect();
+    let reach = highlight.iter().map(|r| r.bottom()).fold(0.0f32, f32::max);
+    assert!(
+        reach >= third.y,
+        "the highlight reaches the third line in the frame the pointer got there: {reach} against {}; {highlight:?}",
+        third.y
+    );
+}
+
 #[test]
 fn a_page_sits_on_the_light_desk_with_a_shadow_and_no_fade() {
     let drive = ui_kit::drive::Driver::new();

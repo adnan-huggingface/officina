@@ -2129,3 +2129,15 @@ until it ends. In a driver test, whose clock does not advance, that is
 forever. The theme sets `scroll_animation` to `none()`: the desk follows
 the caret at once, and what sets the offset holds it.
 
+
+**What a frame changes after it has painted is seen a frame late.**
+Immediate mode paints as it goes: a widget that reads its input after
+it has drawn itself shows the input's effect on the next frame, and only
+if a next frame comes. The desk read the pointer after painting the
+page, and a sweep's highlight trailed the mouse by a frame for as long
+as the mouse moved — which, on a display that presents late, reads as
+lag though no frame costs more than four milliseconds. Read the input
+that moves the picture before painting the picture, where the picture is
+not needed to read it; and measure before guessing — `OFFICINA_FRAME_LOG`
+on the real binary, `Driver::frame_wants_repaint` in a test.
+

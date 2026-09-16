@@ -165,6 +165,22 @@ impl Scriva {
                 view::chart_rels(&self.view).into_iter(),
             );
             let washes = self.comment_washes();
+            // A sweep already under way is read *before* the page is
+            // painted, so that the frame a pointer move arrives in paints
+            // the selection up to that move. The press, and the first frame
+            // of a drag, wait for the paint: a press on a comment marker —
+            // which the paint finds — must not move the caret. Read only
+            // after, the highlight trailed the mouse by a frame however
+            // fast the frames came.
+            if self.sweeping && self.picked.is_none() && response.dragged() {
+                if let Some(caret) = response
+                    .interact_pointer_pos()
+                    .and_then(|pointer| self.spot_at(pointer, origin, zoom))
+                    .and_then(|spot| view::caret_at(&self.view, self.scope, spot))
+                {
+                    self.set_caret(caret, true);
+                }
+            }
             let markers = view::paint(
                 &painter,
                 &self.view,

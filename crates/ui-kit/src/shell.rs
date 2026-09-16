@@ -127,6 +127,7 @@ pub fn run(app: impl DocumentApp + 'static) -> eframe::Result<()> {
                 // is not being helpful, it is overruling a decision the user
                 // already made.
                 maximize_for: if placement.maximized { 60 } else { 0 },
+                frame_log: std::env::var_os("OFFICINA_FRAME_LOG").is_some(),
                 id,
                 placement,
                 title: id.display.to_string(),
@@ -374,6 +375,11 @@ struct Host<A: DocumentApp> {
     /// than returned, and sending the same one every frame would ask the window
     /// manager to relabel the window sixty times a second.
     title: String,
+    /// Whether every frame's cost is written to stderr — `OFFICINA_FRAME_LOG`
+    /// set in the environment. A stopwatch for "it feels slow": the driver
+    /// measures a frame without fonts or a screen, and a frame that costs
+    /// nothing there can cost plenty on a real display.
+    frame_log: bool,
 }
 
 impl<A: DocumentApp> eframe::App for Host<A> {
@@ -391,8 +397,13 @@ impl<A: DocumentApp> eframe::App for Host<A> {
 
     // eframe 0.36 hands the app a `Ui` covering the whole window rather than a
     // `Context` to open panels on, so the panels are opened *inside* that `Ui`.
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, host: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        if self.frame_log {
+            if let Some(seconds) = host.info().cpu_usage {
+                eprintln!("frame {:.1} ms", seconds * 1000.0);
+            }
+        }
         if self.maximize_for > 0 {
             self.maximize_for -= 1;
             if ctx.input(|i| i.viewport().maximized) == Some(true) {

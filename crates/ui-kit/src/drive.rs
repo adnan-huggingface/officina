@@ -114,6 +114,26 @@ impl Driver {
         out.shapes
     }
 
+    /// One frame, and whether it asked for the next one at once — what a
+    /// frame that changed something on the screen after painting it must
+    /// do, or the change waits for the next event or the caret's blink.
+    pub fn frame_wants_repaint<A: DocumentApp>(
+        &self,
+        app: &mut A,
+        events: Vec<egui::Event>,
+    ) -> bool {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, self.window)),
+            events,
+            ..Default::default()
+        };
+        let mut out = self.ctx.run_ui(input, |ui| shell::frame(app, ui));
+        out.textures_delta.clear();
+        out.viewport_output
+            .get(&egui::ViewportId::ROOT)
+            .is_some_and(|viewport| viewport.repaint_delay.is_zero())
+    }
+
     /// Files dropped on the window, in a frame of their own — what the
     /// desktop sends when a document is dragged out of a file manager.
     pub fn drop_files<A: DocumentApp>(&self, app: &mut A, paths: &[std::path::PathBuf]) {

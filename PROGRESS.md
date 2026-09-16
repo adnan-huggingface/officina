@@ -5948,6 +5948,28 @@ frame earlier as well. Test
 reads the painted caret in the key frame: 481 against 503 before the
 fix, the line's left edge.
 
+## A sweep's highlight keeps up with the pointer (2026-09-16)
+
+The user found selecting many lines with the mouse laggy. Measured
+first: the driver's frames cost a fifth of a millisecond, sweeping or
+not; the real binary on the rig, with `OFFICINA_FRAME_LOG` set — new,
+a stopwatch that writes each frame's CPU cost to stderr, for exactly
+"it feels slow" — costs four milliseconds a frame median, and egui asks
+for a frame on every pointer move while a button is down. So nothing
+was slow; the highlight was *late*. The desk painted the page first
+and read the pointer after, so the frame a move arrived in painted the
+selection up to the move before it, and the highlight trailed the mouse
+by a frame however fast the frames came — on a display that shows each
+frame a little late, a laggy selection. A sweep already under way is
+read before the paint now; the press and the first frame of a drag
+still wait for it, because a press on a comment marker, which the paint
+finds, must not move the caret. Test
+`a_sweep_paints_the_selection_up_to_the_pointer_in_the_same_frame`
+reads the highlight painted in the frame the pointer reaches a third
+line: it stopped at the second. `Driver::frame_wants_repaint` reads
+egui's answer to "is another frame wanted", for the next question of
+this kind.
+
 ## What driving the redesign found (2026-09-15)
 
 The ten phases were each driven on the rig as they landed — the real
