@@ -4932,6 +4932,26 @@ fn a_document_opens_at_whole_page_zoom() {
         "and the zoom followed the desk when the window grew: {} against {fit}",
         app.view.zoom
     );
+    // Whole means whole: the page's foot is on the desk, with room under
+    // it, and its head too. It was not: the fit took the paper alone, and
+    // at a zoom past 100% the gap above the page grew and pushed its foot
+    // under the status bar.
+    let shapes = drive.frame_at(&mut app, Vec::new(), None);
+    let rects = painted_rects(&shapes);
+    let desk = rects
+        .iter()
+        .find(|(rect, fill, _)| *fill == ui_kit::theme::DESK && rect.width() > 1000.0)
+        .expect("the desk")
+        .0;
+    let paper = rects
+        .iter()
+        .find(|(rect, fill, _)| *fill == egui::Color32::WHITE && rect.width() > 400.0)
+        .expect("the page")
+        .0;
+    assert!(
+        paper.top() > desk.top() + 8.0 && paper.bottom() < desk.bottom() - 8.0,
+        "the whole page is on the desk: page {paper:?} on desk {desk:?}"
+    );
     // A zoom chosen holds, whatever the window does after.
     app.run(Command::Zoom(1.0));
     drive.resize(egui::vec2(1200.0, 800.0));
@@ -5121,6 +5141,40 @@ fn caret_in(shapes: &[egui::epaint::ClippedShape]) -> Option<egui::Rect> {
         .into_iter()
         .find(|(rect, fill, _)| *fill == view::CARET && rect.width() == view::CARET_WIDTH)
         .map(|(rect, _, _)| rect)
+}
+
+/// The caret is the height of the type on its line, as Word's is, and not
+/// the line's whole pitch: a 12-point line spaced at 1.15 wears a 12-point
+/// caret. It wore the pitch, half again too tall for its word.
+#[test]
+fn the_caret_is_the_height_of_the_type_and_not_the_line() {
+    let drive = ui_kit::drive::Driver::new();
+    let mut app = app_with(&["fds"]);
+    drive.settle(&mut app);
+    app.run(Command::Zoom(1.0));
+    drive.frame_at(&mut app, vec![egui::Event::Text("x".into())], Some(10.0));
+    let shapes = drive.frame_at(&mut app, Vec::new(), Some(10.0));
+    let caret = caret_in(&shapes).expect("the caret is painted");
+    let (line, pitch) = app.view.pages()[0]
+        .content
+        .iter()
+        .find_map(|p| match &p.kind {
+            wp_layout::block::Placed::Line { line, .. } => Some((line.clone(), p.height)),
+            _ => None,
+        })
+        .expect("the line");
+    let glass = (app.view.zoom * view::SCALE) as f32;
+    let type_height = (line.ascent + line.descent) as f32 * glass;
+    assert!(
+        (caret.height() - type_height).abs() < 1.0,
+        "the caret is the type's height: {} against {type_height}",
+        caret.height()
+    );
+    assert!(
+        caret.height() < pitch as f32 * glass - 1.0,
+        "and shorter than the line's pitch {}",
+        pitch as f32 * glass
+    );
 }
 
 #[test]

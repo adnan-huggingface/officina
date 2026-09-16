@@ -537,6 +537,43 @@ pub fn caret_rect(view: &View, scope: Scope, caret: Caret) -> Option<(usize, egu
     caret_rect_on(view, scope, caret, None)
 }
 
+/// The caret as it is drawn: the height of the type on its line — from
+/// the tallest ascent to the deepest descent, about the baseline — and not
+/// the line's whole pitch, which [`caret_rect`] gives for the things that
+/// step by lines and scroll to them. Word's caret is the type's height:
+/// a 12-point line spaced at 1.15 wears a 12-point caret, and one that
+/// reached the next line's top was half again too tall for its word.
+pub fn caret_stroke(view: &View, scope: Scope, caret: Caret) -> Option<(usize, egui::Rect)> {
+    let (page, rect) = caret_rect(view, scope, caret)?;
+    let (_, placement) = line_holding(view, scope, caret).or_else(|| {
+        view.pages
+            .get(page)?
+            .placements(scope)
+            .iter()
+            .find_map(|placement| match &placement.kind {
+                Placed::Line { paragraph, .. } if *paragraph == caret.paragraph => {
+                    Some((page, placement))
+                }
+                _ => None,
+            })
+    })?;
+    let Placed::Line { line, .. } = &placement.kind else {
+        return Some((page, rect));
+    };
+    let height = line.ascent + line.descent;
+    if height <= 0.0 || height >= placement.height {
+        return Some((page, rect));
+    }
+    let top = placement.y + line.baseline - line.ascent;
+    Some((
+        page,
+        egui::Rect::from_min_size(
+            egui::pos2(rect.min.x, top as f32),
+            egui::vec2(1.0, height as f32),
+        ),
+    ))
+}
+
 /// The same, preferring one page — see [`line_holding_on`].
 pub fn caret_rect_on(
     view: &View,
@@ -1479,7 +1516,7 @@ pub fn paint(
     // blinking in text the arrow keys are no longer moving through.
     if focused && picked.is_none() {
         if let Some(caret) = caret {
-            if let Some((page, rect)) = caret_rect(view, scope, caret) {
+            if let Some((page, rect)) = caret_stroke(view, scope, caret) {
                 let (page_x, page_y) = view.page_origin(page);
                 let top_left = origin + egui::vec2(page_x as f32 * zoom, page_y as f32 * zoom);
                 let stroke = egui::Rect::from_min_size(

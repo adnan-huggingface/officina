@@ -838,10 +838,16 @@ impl Scriva {
         // The paper's size on the glass is its points times [`view::SCALE`],
         // so the percent that fits is measured against that.
         let fit_w = (self.viewport.x as f64 - 32.0).max(60.0) / (geometry.width * view::SCALE);
+        // A whole page is the paper with the desk's gap above it and the
+        // same below, so that its foot and its shadow are on the screen. A
+        // fit that took the paper alone, less a fixed slack, put the foot
+        // under the status bar as soon as the zoom was more than 100%,
+        // the gap scaling with it.
         let percent = if width_only {
             fit_w
         } else {
-            fit_w.min((self.viewport.y as f64 - 24.0).max(60.0) / (geometry.height * view::SCALE))
+            let whole = (geometry.height + 2.0 * view::GAP as f64) * view::SCALE;
+            fit_w.min((self.viewport.y as f64).max(60.0) / whole)
         };
         Some(((percent * 100.0).floor() as i32).clamp(10, 500))
     }

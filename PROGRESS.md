@@ -5916,6 +5916,23 @@ corner pulled, is answered. `Driver::resize` grows the test's window
 between frames, and `a_document_opens_at_whole_page_zoom` asks that the
 zoom followed it, and that a chosen zoom did not.
 
+## The whole page is whole, and the caret is the type's height (2026-09-16)
+
+Two more from the user's screen. At the whole-page fit the page's foot
+was under the status bar: the fit took the paper alone, less a fixed
+slack, and the desk's gap above the page scales with the zoom, so past
+100% the gap grew and pushed the foot off. `fit_percent` fits the paper
+with a gap above and below — the page's foot and its shadow are on the
+desk at any fit, and a one-page document has no scroll bar. And the
+caret was half again too tall for its word: it was drawn the line's
+whole pitch, spacing rule included, where Word's is the type's height.
+`view::caret_stroke` is the caret as drawn — from the tallest ascent to
+the deepest descent about the baseline — and `caret_rect` stays the
+line's box for the things that step by lines and scroll to them. Tests:
+the opening-zoom test reads the painted page back and asks that its
+head and foot are on the desk; `the_caret_is_the_height_of_the_type_and_not_the_line`
+reads the painted caret against the line's ascent and descent.
+
 ## What driving the redesign found (2026-09-15)
 
 The ten phases were each driven on the rig as they landed — the real
