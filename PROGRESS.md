@@ -5933,6 +5933,21 @@ the opening-zoom test reads the painted page back and asks that its
 head and foot are on the desk; `the_caret_is_the_height_of_the_type_and_not_the_line`
 reads the painted caret against the line's ascent and descent.
 
+## The frame a letter is typed in shows the letter, and the caret after it (2026-09-16)
+
+The user saw the caret flash at the start of the line on every keystroke.
+The frame laid the page out, then read the keys and the typing, then
+painted the desk — from the layout made before the letter arrived, with
+a caret whose offset no line of that page reached, so the caret fell
+back to the line's left edge for that one frame. `lay_out` runs once
+before the keys, as before, and once more after the typing and before
+the desk: the view's own check makes the second a no-op on a frame that
+changed nothing. A typed letter and its caret are now on the screen a
+frame earlier as well. Test
+`a_typed_letter_is_painted_with_its_caret_after_it_in_the_same_frame`
+reads the painted caret in the key frame: 481 against 503 before the
+fix, the line's left edge.
+
 ## What driving the redesign found (2026-09-15)
 
 The ten phases were each driven on the rig as they landed — the real

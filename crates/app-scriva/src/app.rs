@@ -4102,6 +4102,22 @@ impl Scriva {
         })
     }
 
+    /// Lays the document out if it has changed since it last was — the
+    /// view's own check, which also watches the field values. Nothing is
+    /// laid out in the frame the fonts changed in: measuring now would
+    /// measure the type the document replaced, and the page would be thrown
+    /// away and done again a frame later regardless.
+    fn lay_out(&mut self) {
+        if self.fonts_settling {
+            return;
+        }
+        let stamp = self.stamp;
+        let fields = self.fields.clone();
+        if let Some(shaper) = &mut self.shaper {
+            self.view.refresh(&self.document, &fields, stamp, shaper);
+        }
+    }
+
     /// How far Page Up and Page Down move the desk, in points on the glass:
     /// a page and its gap where those fit the desk — so that at the
     /// whole-page zoom each press shows the next page whole, as Word's
@@ -5227,14 +5243,7 @@ impl DocumentApp for Scriva {
         if self.shaper.is_none() {
             self.shaper = Some(Egui::new(ui.ctx()));
         }
-        let stamp = self.stamp;
-        let fields = self.fields.clone();
-        // Nothing is laid out in the frame the fonts changed in. Measuring now
-        // would measure the type the document replaced, and the page would be
-        // thrown away and done again a frame later regardless.
-        if let (false, Some(shaper)) = (self.fonts_settling, &mut self.shaper) {
-            self.view.refresh(&self.document, &fields, stamp, shaper);
-        }
+        self.lay_out();
         self.pane_held = false;
         self.cycle_keyboard(ui);
         if self.navigator {
@@ -5312,6 +5321,14 @@ impl DocumentApp for Scriva {
             }
             self.typing(ui);
         }
+        // What the keys and the typing changed is laid out before the desk
+        // is painted, so that the frame a letter is typed in shows the
+        // letter and the caret after it. The page was laid out once, above,
+        // before the keys were read: the desk then painted the page as it
+        // was, with a caret whose offset no line of that page reached, and
+        // the caret fell back to the line's left edge for the frame — a
+        // flash at the start of the line on every keystroke.
+        self.lay_out();
 
         self.surface(ui);
         // Nothing holding the keyboard is the document holding it. Left to

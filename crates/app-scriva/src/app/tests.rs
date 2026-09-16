@@ -5177,6 +5177,38 @@ fn the_caret_is_the_height_of_the_type_and_not_the_line() {
     );
 }
 
+/// The frame a letter is typed in paints the letter and the caret after
+/// it. It painted the page laid out before the letter, with a caret whose
+/// offset no line of that page reached — so the caret fell back to the
+/// line's left edge for one frame, a flash at the start of the line on
+/// every keystroke.
+#[test]
+fn a_typed_letter_is_painted_with_its_caret_after_it_in_the_same_frame() {
+    let drive = ui_kit::drive::Driver::new();
+    let mut app = app_with(&["fds"]);
+    app.selection = Selection::at(Caret {
+        paragraph: 0,
+        offset: 3,
+    });
+    drive.settle(&mut app);
+    app.run(Command::Zoom(1.0));
+    drive.frame_at(&mut app, Vec::new(), Some(10.0));
+    let before = caret_in(&drive.frame_at(&mut app, Vec::new(), Some(10.0)))
+        .expect("the caret is painted")
+        .min
+        .x;
+    let shapes = drive.frame_at(&mut app, vec![egui::Event::Text("x".into())], Some(10.0));
+    let after = caret_in(&shapes).expect("the caret is painted").min.x;
+    assert!(
+        after > before + 4.0,
+        "the caret stands after the new letter in the frame it was typed: {after} was {before}"
+    );
+    assert!(
+        painted_texts(&shapes).iter().any(|t| t == "fdsx"),
+        "and the letter is on the page in that frame"
+    );
+}
+
 #[test]
 fn the_caret_blinks_and_stands_solid_after_a_key() {
     let drive = ui_kit::drive::Driver::new();
