@@ -928,6 +928,40 @@ pub fn delete_selection(
             .map(|p| (*p).clone())
             .collect()
     };
+    // Across cells — the two ends in different cells, or one in a cell and
+    // one out — nothing is joined: cells are not paragraphs, and Word clears
+    // what the selection covers in each and leaves the cells standing. The
+    // first keeps its head and the last its tail as before; what lies
+    // between is emptied. Joined and written over the first cell alone, the
+    // middle cell kept its text and the last its whole.
+    if table_cell_at(document, scope, start) != table_cell_at(document, scope, end) {
+        history.push(
+            scope,
+            Change::Range {
+                first: start.paragraph,
+                before: before.clone(),
+                now: before.len(),
+            },
+        );
+        let last = before.len() - 1;
+        let cleared: Vec<Paragraph> = before
+            .iter()
+            .enumerate()
+            .map(|(index, paragraph)| {
+                let mut paragraph = paragraph.clone();
+                let len = text::len(&paragraph);
+                let (from, to) = match index {
+                    0 => (start.offset.min(len), len),
+                    i if i == last => (0, end.offset.min(len)),
+                    _ => (0, len),
+                };
+                text::remove(&mut paragraph, from..to);
+                paragraph
+            })
+            .collect();
+        replace_range(document, scope, start.paragraph..end.paragraph + 1, cleared);
+        return start;
+    }
     history.push(
         scope,
         Change::Range {

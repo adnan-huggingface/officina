@@ -64,7 +64,7 @@ Every source file, its size, and the first sentence of its module doc.
 - `crates/app-scriva/src/app/strips.rs` (283) The row under the toolbar, and the mode strips drawn on it.
 - `crates/app-scriva/src/app/surface.rs` (959) The page surface: the scrolling desk the pages sit on, what the pointer does there — carets, selections, a picture picked, dragged and resized — and where on a page a point lands.
 - `crates/app-scriva/src/app/tables.rs` (486) Editing a table: Tab from cell to cell, the edit every table command goes through, cell margins, column widths, and Insert Table itself.
-- `crates/app-scriva/src/app/tests.rs` (6977) 
+- `crates/app-scriva/src/app/tests.rs` (7055) 
 - `crates/app-scriva/src/app/watermark.rs` (424) The watermark: the box that asks for one, and the shape it becomes in a header, written the way Word writes its own so that Word finds it again.
 - `crates/app-scriva/src/app/word_count.rs` (158) The Word Count box, from the status bar's count: pages, words, characters with and without spaces, paragraphs and lines — and, with a selection, the selection beside the document.
 - `crates/app-scriva/src/app.rs` (5496) The application: the window, the commands, and the keys.
@@ -72,7 +72,7 @@ Every source file, its size, and the first sentence of its module doc.
 - `crates/app-scriva/src/clip.rs` (955) The formatted halves of a copy: CF_HTML and Rich Text Format.
 - `crates/app-scriva/src/commands.rs` (407) Every command with a name and a key, in one table.
 - `crates/app-scriva/src/drawings.rs` (353) A picture as an object: selected, moved, resized, deleted.
-- `crates/app-scriva/src/edit.rs` (2130) Editing a document, and taking it back.
+- `crates/app-scriva/src/edit.rs` (2164) Editing a document, and taking it back.
 - `crates/app-scriva/src/find.rs` (319) Finding text in the document, and putting something else in its place.
 - `crates/app-scriva/src/icons.rs` (445) Toolbar icons, drawn from lines rather than typed.
 - `crates/app-scriva/src/lib.rs` (26) Scriva — the word processor.
@@ -381,7 +381,7 @@ Every comment that says an application was *measured* — the rules this code ke
 - `crates/app-scriva/src/app.rs:4840` What a new document is in Word today, measured on the reference machine (Word 16.0.20326, 2026-09-13): twelve points, eight points after every paragraph, and a line of 278 to 240 — the document defaults Word writes in…
 - `crates/app-scriva/src/author.rs:5` Nothing measured what it *writes* — and the faults that cost a week of afternoons were all there: a new document that stated no defaults and came back from Word a third taller, an inserted table whose cells stated no …
 - `crates/app-scriva/src/edit.rs:677` Measured on Word, not designed: a page break *inside* a cell is nothing to Word's layout, wherever in the cell it is, and the layout here ignores one too.
-- `crates/app-scriva/src/edit.rs:1992` Measured on Word 16 (`bugs/page-break-in-table-cell.md` in the story):
+- `crates/app-scriva/src/edit.rs:2026` Measured on Word 16 (`bugs/page-break-in-table-cell.md` in the story):
 - `crates/app-scriva/src/shaper.rs:454` A face this machine does not have, whose line Word was measured to lay: its ideal, and the base every face without a measured base gets — the ideal to a twenty-fourth of a point.
 - `crates/app-scriva/src/shaper.rs:565` Word's laid line pitch, measured rather than derived.
 - `crates/app-scriva/src/shaper.rs:576` **Aptos is measured and deliberately absent.** Word's default face since 2024 fits the same law with a base of exactly 1.2 times the size and a correction of *six* tenths of a point — `tools/probe` writes the probes a…

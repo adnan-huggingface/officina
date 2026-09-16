@@ -5351,6 +5351,84 @@ fn a_sweep_past_the_desks_edge_scrolls_the_desk_and_grows_the_selection() {
     );
 }
 
+/// Text selected across the cells of a row and deleted is deleted from
+/// every cell, and the cells stay: Word clears what the selection covers
+/// in each cell and never joins cells. Across paragraphs the deletion
+/// joined the first and the last into one and wrote that over the first
+/// cell alone, so the middle cell kept its text and the last its whole.
+#[test]
+fn deleting_a_selection_across_cells_clears_every_cell_it_covers() {
+    let mut app = app_with(&["after"]);
+    app.insert_table(1, 3);
+    app.type_text("A1");
+    app.key(egui::Key::Tab, egui::Modifiers::NONE);
+    app.type_text("B1");
+    app.key(egui::Key::Tab, egui::Modifiers::NONE);
+    app.type_text("C1");
+    let texts = |app: &Scriva| -> Vec<String> {
+        app.document
+            .paragraphs()
+            .iter()
+            .take(3)
+            .map(|p| p.text())
+            .collect()
+    };
+    assert_eq!(texts(&app), ["A1", "B1", "C1"]);
+    // From inside the first cell to inside the last.
+    app.selection = Selection {
+        anchor: Caret {
+            paragraph: 0,
+            offset: 1,
+        },
+        head: Caret {
+            paragraph: 2,
+            offset: 1,
+        },
+    };
+    app.key(egui::Key::Delete, egui::Modifiers::NONE);
+    assert_eq!(
+        texts(&app),
+        ["A", "", "1"],
+        "the covered text of every cell is gone and the cells stay"
+    );
+    let table = app
+        .document
+        .body
+        .iter()
+        .find_map(|block| match block {
+            Block::Table(table) => Some(table),
+            _ => None,
+        })
+        .expect("the table is still there");
+    assert_eq!(table.rows.len(), 1);
+    assert_eq!(table.rows[0].cells.len(), 3, "three cells still");
+    assert_eq!(
+        app.caret(),
+        Caret {
+            paragraph: 0,
+            offset: 1
+        },
+        "the caret is where the selection began"
+    );
+    // The whole row's text, from the start of the first cell to the end of
+    // the last.
+    app.selection = Selection {
+        anchor: Caret {
+            paragraph: 0,
+            offset: 0,
+        },
+        head: Caret {
+            paragraph: 2,
+            offset: 1,
+        },
+    };
+    app.key(egui::Key::Backspace, egui::Modifiers::NONE);
+    assert_eq!(texts(&app), ["", "", ""], "every cell is empty");
+    // And undo brings it all back.
+    app.run(Command::Undo);
+    assert_eq!(texts(&app), ["A", "", "1"], "undo restores the cells' text");
+}
+
 #[test]
 fn a_page_sits_on_the_light_desk_with_a_shadow_and_no_fade() {
     let drive = ui_kit::drive::Driver::new();

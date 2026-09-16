@@ -6022,6 +6022,21 @@ view under it is taken. Test
 holds the pointer past the foot for thirty frames and then past the
 top.
 
+## A deletion across cells clears every cell it covers (2026-09-16)
+
+The user selected text across the cells of a row and pressed Delete,
+and not all of it went. `delete_selection` across paragraphs joins the
+first's head and the last's tail into one paragraph and writes it over
+the range; across cells the range cannot be spliced — cells are not
+paragraphs — so the joined paragraph was written over the first cell
+alone, and the middle cell kept its text and the last its whole. When
+the two ends are in different cells, or one in a cell and one out,
+nothing is joined now: the first keeps its head and the last its tail,
+what lies between is emptied, and the cells stand, which is what Word
+does. One `Change::Range` of the same count undoes it. Test
+`deleting_a_selection_across_cells_clears_every_cell_it_covers`,
+Delete and Backspace and the undo.
+
 ## What driving the redesign found (2026-09-15)
 
 The ten phases were each driven on the rig as they landed — the real
