@@ -5777,6 +5777,18 @@ Against the old chrome it fails at the table, 108 against 71. Driven on
 the rig with the user's document before and after
 (`bugs/evidence/rig/shots/{before,after}_*.png` in the story).
 
+## Ctrl+H reaches Replace from inside the find bar (2026-09-15)
+
+Found driving the row fix on the rig: Ctrl+F, then Ctrl+H, and the bar
+stayed without Replace. While the bar holds the keyboard the document's
+shortcut route is blocked — so that a search for "bug" does not type
+"bug" into the page — and Ctrl+H is a document shortcut, so from the one
+place Replace is most wanted its key was dead; Ctrl+F in the bar the same.
+`find_bar.rs` takes both through `ui_kit::keys::take` while the bar is
+focused: Ctrl+H opens Replace and puts the keyboard in its field, Ctrl+F
+goes back to the find field. `ctrl_h_in_the_find_bar_opens_replace` pins
+it, and fails against the old bar at its first assertion.
+
 ## What driving the redesign found (2026-09-15)
 
 The ten phases were each driven on the rig as they landed — the real

@@ -5324,6 +5324,44 @@ fn enter_on_a_heading_moves_the_caret_and_returns_the_keyboard_to_the_document()
     );
 }
 
+/// Ctrl+H pressed in the find bar opens Replace and puts the keyboard in
+/// its field, and Ctrl+F there goes back to the find field. The keyboard
+/// was the bar's, so the document's Ctrl+H never ran and the key did
+/// nothing — the one place Replace is most wanted was the one place its
+/// key was dead.
+#[test]
+fn ctrl_h_in_the_find_bar_opens_replace() {
+    let drive = ui_kit::drive::Driver::new();
+    let mut app = app_with(&["some text"]);
+    drive.settle(&mut app);
+    drive.press(&mut app, "ctrl+F");
+    drive.settle(&mut app);
+    let finder = app.finder.as_ref().expect("the bar is open");
+    assert!(!finder.with_replace, "without Replace");
+    drive.press(&mut app, "ctrl+H");
+    drive.settle(&mut app);
+    let finder = app.finder.as_ref().expect("still open");
+    assert!(finder.with_replace, "Ctrl+H in the bar opened Replace");
+    let focused = drive.ctx().memory(|m| m.focused());
+    assert_eq!(
+        focused,
+        Some(egui::Id::new("scriva-find-replacement")),
+        "with the keyboard in its field"
+    );
+    drive.press(&mut app, "ctrl+F");
+    drive.settle(&mut app);
+    let focused = drive.ctx().memory(|m| m.focused());
+    assert_eq!(
+        focused,
+        Some(egui::Id::new("scriva-find-query")),
+        "and Ctrl+F there goes back to the find field"
+    );
+    assert!(
+        app.finder.as_ref().is_some_and(|f| f.with_replace),
+        "leaving Replace open"
+    );
+}
+
 #[test]
 fn escape_closes_the_band_first_and_the_find_bar_second() {
     use crate::app::Keyboard;

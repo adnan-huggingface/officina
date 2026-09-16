@@ -58,6 +58,8 @@ impl Scriva {
         let mut replace_one = false;
         let mut replace_every = false;
         let mut tab = false;
+        let mut to_replace = false;
+        let mut to_query = false;
 
         // Drawn straight onto the row under the toolbar, which is a frame's
         // child and not a nested panel: a panel put inside the toolbar's
@@ -85,6 +87,17 @@ impl Scriva {
                 } else {
                     forward = true;
                 }
+            }
+            // The document's Ctrl+H and Ctrl+F are the bar's while it holds
+            // the keyboard, so they are read here: Ctrl+H opens Replace and
+            // goes to its field, Ctrl+F goes back to the find field. They
+            // used to do nothing at all from inside the bar.
+            to_replace =
+                ui.input_mut(|i| ui_kit::keys::take(i, egui::Modifiers::COMMAND, egui::Key::H));
+            to_query =
+                ui.input_mut(|i| ui_kit::keys::take(i, egui::Modifiers::COMMAND, egui::Key::F));
+            if to_replace {
+                with_replace = true;
             }
         }
         // Tab goes between the two fields, as it goes between a dialog's.
@@ -114,6 +127,7 @@ impl Scriva {
         // field it was pressed in; a single-line field gives it up on
         // Enter, so it is asked for back.
         if take_focus
+            || to_query
             || ((forward || back) && in_query)
             || (tab && (in_replacement || !with_replace))
         {
@@ -167,7 +181,7 @@ impl Scriva {
                     .desired_width(220.0)
                     .hint_text("Replace with"),
             );
-            if ((forward || back) && in_replacement) || (tab && in_query) {
+            if to_replace || ((forward || back) && in_replacement) || (tab && in_query) {
                 field.request_focus();
             }
             if switch(ui, "Replace", false, "Replace this match and find the next").clicked() {
