@@ -306,6 +306,12 @@ fn paint_style(style: &mut egui::Style) {
     // anybody knew what painted it. A page that runs off the bottom of the
     // window is its own hint.
     style.spacing.scroll.fade.strength = 0.0;
+    // A scroll to a rectangle — the desk following the caret — lands at
+    // once, as Word's does. egui animates it over the frames after, and
+    // the animation kept running under whatever moved the desk next: a
+    // Page Down that set the desk a page on watched it slide back to where
+    // the last reveal had been heading.
+    style.scroll_animation = egui::style::ScrollAnimation::none();
 
     let r = egui::CornerRadius::same(theme::RADIUS_CONTROL);
     for w in [

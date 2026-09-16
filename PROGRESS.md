@@ -5874,6 +5874,34 @@ rectangles at the desk's edge back with the pointer on the desk: a grey
 handle, a chrome track, nothing dark, and no bar along the foot; with the
 style left off it fails at the first.
 
+## Page Down turns a page, a document opens a whole page at a time (2026-09-16)
+
+The user asked whether Page Up and Page Down should move the view a full
+page, as Word's do at a zoom that shows one whole. They moved the caret a
+screen and then scrolled only as far as showed it — half a screen, the
+caret pinned to the desk's edge — and with less than a screen left did
+nothing, the same refused step Up and Down had on the document's first
+and last lines. Now the *view* leaps: by a page and its gap where those
+fit the desk, so that at the whole-page zoom every press shows the next
+page whole, and by a screen otherwise; the caret goes the same distance
+and keeps its place on the screen, and where the leap runs off the
+document it goes to the first line or the last. The leap is a
+`vertical_scroll_offset` on the desk's scroll area (`scroll_by`), not a
+reveal, and the key's reveal is skipped for it. And a document opens at
+the whole-page zoom, as does a new one and the one the window starts
+with (`fit_on_open`, consumed by the desk once it knows its size and the
+document its pages) — the user's note that Word starts a document that
+way "and it is nice".
+
+egui animates a scroll to a rectangle over the frames after, and the
+animation kept running under the leap: the desk set a page on slid back
+to where the last reveal had been heading. `style.scroll_animation` is
+`none()` now, for both apps — the desk follows the caret at once, as
+Word's does. Tests `a_document_opens_at_whole_page_zoom` and
+`page_down_at_whole_page_zoom_shows_the_next_page_whole`, the latter
+also at 100% and off the end. The desk test that measured the gap above
+the first page assumed 100% and now reads the zoom.
+
 ## What driving the redesign found (2026-09-15)
 
 The ten phases were each driven on the rig as they landed — the real

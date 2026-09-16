@@ -2120,3 +2120,12 @@ window's style, fills every unticked box grey and a chrome
 ui's visuals and the content with its own child's, so the style can be
 set on a scope around the area and reset inside it: `ui_kit::scroll::show`.
 
+
+**A `scroll_to_rect` is an animation, and it outlives the frame that
+asked for it.** `Ui::scroll_to_rect` runs over `style.scroll_animation`'s
+frames; an explicit `vertical_scroll_offset` set on a later frame is
+applied and then pulled back toward the animation's target on every frame
+until it ends. In a driver test, whose clock does not advance, that is
+forever. The theme sets `scroll_animation` to `none()`: the desk follows
+the caret at once, and what sets the offset holds it.
+

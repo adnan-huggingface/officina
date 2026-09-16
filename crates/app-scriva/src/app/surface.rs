@@ -8,12 +8,22 @@ use ui_kit::menu;
 impl Scriva {
     /// The page surface: a scrolling desk with the pages on it.
     pub(super) fn surface(&mut self, ui: &mut egui::Ui) {
-        // The percent, taken to the glass: 100% is Word's — a document inch
-        // on 96 logical pixels — not a point per point.
-        let zoom = (self.view.zoom * view::SCALE) as f32;
         let (extent_w, extent_h) = self.view.extent();
         let outer = ui.available_rect_before_wrap();
         ui.painter().rect_filled(outer, 0.0, view::desk());
+        // A document just opened is shown a whole page at a time, once the
+        // desk knows its size and the document its pages: the fit is
+        // measured against the desk of the frame before, which is the same
+        // desk on every frame but the first.
+        if self.fit_on_open && self.viewport.y > 0.0 {
+            if let Some(percent) = self.fit_percent(false) {
+                self.view.zoom = percent as f64 / 100.0;
+                self.fit_on_open = false;
+            }
+        }
+        // The percent, taken to the glass: 100% is Word's — a document inch
+        // on 96 logical pixels — not a point per point.
+        let zoom = (self.view.zoom * view::SCALE) as f32;
         // The vertical bar stands beside the desk whenever the pages run
         // past the window, which is nearly always, and takes its width from
         // what is left for them. A desk sized to the whole of the window
@@ -38,446 +48,442 @@ impl Scriva {
                 .iter()
                 .any(|event| matches!(event, egui::Event::MouseWheel { .. }))
         });
-        let scroll = ui_kit::scroll::show(
-            ui,
-            egui::ScrollArea::both().auto_shrink([false, false]),
-            |ui| {
-                let (rect, response) =
-                    ui.allocate_exact_size(desired, egui::Sense::click_and_drag());
-                self.surface_id = Some(response.id);
-                // The surface is an editor, not a button. Without this filter
-                // egui reads a bare arrow key as "move keyboard focus to the
-                // neighbouring widget" — Up walked the focus onto the toolbar,
-                // and the caret vanished with it.
-                ui.ctx().memory_mut(|m| {
-                    m.set_focus_lock_filter(
-                        response.id,
-                        egui::EventFilter {
-                            tab: true,
-                            horizontal_arrows: true,
-                            vertical_arrows: true,
-                            escape: true,
-                        },
-                    );
-                });
-                // The pages are laid out against their own width; the extra
-                // width the desk has goes half to each side.
-                let slack = ((rect.width() - extent_w as f32 * zoom) / 2.0).max(0.0);
-                let origin = rect.min + egui::vec2(slack, 0.0);
-                let painter = ui.painter_at(rect);
-                // Over the paper the pointer is a text cursor, which is how a
-                // window says "this is a place where clicking means something".
-                // Over a picture it says a different thing, and over one of a
-                // selected picture's handles it says which way that handle
-                // pulls — the only way a user finds out a picture can be
-                // resized at all is the pointer changing shape over it.
-                // A handle is a fixed-size target on the glass however far
-                // the page is zoomed out; reach is that target measured on
-                // the page.
-                let reach = crate::drawings::GRIP / zoom.max(0.05) as f64;
-                if response.hovered() || self.dragging.is_some() {
-                    let over = ui
-                        .ctx()
-                        .pointer_hover_pos()
-                        .and_then(|pointer| self.spot_at(pointer, origin, zoom));
-                    // A link is announced the two ways Word announces one: a
-                    // tooltip saying where it goes and how to go there, and,
-                    // while the key that follows it is held, the hand. Without
-                    // either, a link is text that happens to be blue and the
-                    // only way to find out it can be followed is to guess.
-                    let link = over
-                        .and_then(|spot| view::character_over(&self.view, self.scope, spot))
-                        .and_then(|caret| self.link_at(caret));
-                    match (&link, ui.input(|i| i.modifiers.command)) {
-                        (Some(_), true) => ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand),
-                        _ => ui.ctx().set_cursor_icon(self.pointer_icon(over, reach)),
-                    }
-                    // Not while the right-click menu is up: the menu is the
-                    // answer to the same question and the tooltip only sits
-                    // under it repeating itself.
-                    let menu_up = egui::Popup::is_any_open(ui.ctx());
-                    if let Some(destination) = link.as_ref().filter(|_| !menu_up) {
-                        let where_to = match destination {
-                            crate::links::Destination::Away(url) => url.clone(),
-                            crate::links::Destination::Here(name) => {
-                                format!("{name} (in this document)")
-                            }
-                        };
-                        egui::Tooltip::always_open(
-                            ui.ctx().clone(),
-                            ui.layer_id(),
-                            egui::Id::new("scriva-link"),
-                            egui::PopupAnchor::Pointer,
-                        )
-                        .show(|ui| {
-                            ui.label(where_to);
-                            ui.label("Ctrl+click to follow link");
-                        });
-                    }
-                }
-
-                // A click on the desk gives keyboard focus to the surface itself
-                // (below), so that typing goes somewhere. The caret must stay
-                // visible when the surface holds its own focus — only some other
-                // widget (a dialog's text field) holding it should hide the caret.
-                self.focused = ui
-                    .ctx()
-                    .memory(|m| m.focused().is_none_or(|id| id == response.id));
-                // The caret blinks — on for a beat, off for a beat — and stands
-                // solid from every key or click, so that it is always showing
-                // where the next letter goes at the moment that matters. Never
-                // while a selection shows: the selection says where the caret
-                // is, and a caret blinking at the end of it is noise. A frame
-                // is asked for at the next change of phase and not before;
-                // the window sleeps between.
-                let caret_shown = if self.focused && self.selection.is_empty() {
-                    let since = ui.input(|i| i.time) - self.blink_from;
-                    let beats = (since / ui_kit::theme::BLINK).max(0.0);
-                    let remaining = ui_kit::theme::BLINK * (1.0 - beats.fract());
-                    ui.ctx()
-                        .request_repaint_after(std::time::Duration::from_secs_f64(remaining));
-                    (beats as u64).is_multiple_of(2)
-                } else {
-                    true
-                };
-                // Decode before painting: the painter borrows the pages, and the
-                // cache cannot be borrowed mutably at the same time.
-                self.pictures.prepare(
-                    ui.ctx(),
-                    self.package.as_ref(),
-                    self.parts.as_ref(),
-                    view::image_rels(&self.view).into_iter(),
-                );
-                self.pictures.prepare_charts(
-                    self.package.as_ref(),
-                    self.parts.as_ref(),
-                    view::chart_rels(&self.view).into_iter(),
-                );
-                let washes = self.comment_washes();
-                let markers = view::paint(
-                    &painter,
-                    &self.view,
-                    self.scope,
-                    self.selection,
-                    if self.finder.is_some() {
-                        &self.find_matches
-                    } else {
-                        &[]
+        let mut area = egui::ScrollArea::both().auto_shrink([false, false]);
+        // A leap — Page Up or Page Down — moves the desk by exactly that,
+        // from where it stood last frame.
+        if let Some(by) = self.scroll_by.take() {
+            area = area.vertical_scroll_offset((self.scroll + by).max(0.0));
+        }
+        let scroll = ui_kit::scroll::show(ui, area, |ui| {
+            let (rect, response) = ui.allocate_exact_size(desired, egui::Sense::click_and_drag());
+            self.surface_id = Some(response.id);
+            // The surface is an editor, not a button. Without this filter
+            // egui reads a bare arrow key as "move keyboard focus to the
+            // neighbouring widget" — Up walked the focus onto the toolbar,
+            // and the caret vanished with it.
+            ui.ctx().memory_mut(|m| {
+                m.set_focus_lock_filter(
+                    response.id,
+                    egui::EventFilter {
+                        tab: true,
+                        horizontal_arrows: true,
+                        vertical_arrows: true,
+                        escape: true,
                     },
-                    &washes,
-                    caret_shown.then_some(self.caret()),
-                    self.focused,
-                    zoom,
-                    origin,
-                    self.shaper.as_mut().expect("a shaper by now"),
-                    &self.pictures,
-                    self.picked,
                 );
-
-                // A comment's marker: hovered, it says who and what; clicked,
-                // it selects the words the comment is about.
-                let over_marker = ui
+            });
+            // The pages are laid out against their own width; the extra
+            // width the desk has goes half to each side.
+            let slack = ((rect.width() - extent_w as f32 * zoom) / 2.0).max(0.0);
+            let origin = rect.min + egui::vec2(slack, 0.0);
+            let painter = ui.painter_at(rect);
+            // Over the paper the pointer is a text cursor, which is how a
+            // window says "this is a place where clicking means something".
+            // Over a picture it says a different thing, and over one of a
+            // selected picture's handles it says which way that handle
+            // pulls — the only way a user finds out a picture can be
+            // resized at all is the pointer changing shape over it.
+            // A handle is a fixed-size target on the glass however far
+            // the page is zoomed out; reach is that target measured on
+            // the page.
+            let reach = crate::drawings::GRIP / zoom.max(0.05) as f64;
+            if response.hovered() || self.dragging.is_some() {
+                let over = ui
                     .ctx()
-                    .pointer_latest_pos()
-                    .and_then(|pointer| markers.iter().find(|m| m.rect.contains(pointer)))
-                    .copied();
-                if let Some(marker) = over_marker {
-                    if let Some(comment) = self.document.comment(marker.comment) {
-                        let first = comment.text().lines().next().unwrap_or("").to_owned();
-                        egui::Tooltip::always_open(
-                            ui.ctx().clone(),
-                            ui.layer_id(),
-                            egui::Id::new("scriva-comment-marker"),
-                            egui::PopupAnchor::Pointer,
-                        )
-                        .show(|ui| {
-                            ui.label(egui::RichText::new(comment.author.to_string()).strong());
-                            ui.label(first);
-                        });
-                    }
-                    if response.clicked() {
-                        if let Some(wash) = washes.iter().find(|w| w.comment == marker.comment) {
-                            self.scope = wash.scope;
-                            self.selection = wash.range;
-                            self.picked = None;
-                        }
-                    }
+                    .pointer_hover_pos()
+                    .and_then(|pointer| self.spot_at(pointer, origin, zoom));
+                // A link is announced the two ways Word announces one: a
+                // tooltip saying where it goes and how to go there, and,
+                // while the key that follows it is held, the hand. Without
+                // either, a link is text that happens to be blue and the
+                // only way to find out it can be followed is to guess.
+                let link = over
+                    .and_then(|spot| view::character_over(&self.view, self.scope, spot))
+                    .and_then(|caret| self.link_at(caret));
+                match (&link, ui.input(|i| i.modifiers.command)) {
+                    (Some(_), true) => ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand),
+                    _ => ui.ctx().set_cursor_icon(self.pointer_icon(over, reach)),
                 }
+                // Not while the right-click menu is up: the menu is the
+                // answer to the same question and the tooltip only sits
+                // under it repeating itself.
+                let menu_up = egui::Popup::is_any_open(ui.ctx());
+                if let Some(destination) = link.as_ref().filter(|_| !menu_up) {
+                    let where_to = match destination {
+                        crate::links::Destination::Away(url) => url.clone(),
+                        crate::links::Destination::Here(name) => {
+                            format!("{name} (in this document)")
+                        }
+                    };
+                    egui::Tooltip::always_open(
+                        ui.ctx().clone(),
+                        ui.layer_id(),
+                        egui::Id::new("scriva-link"),
+                        egui::PopupAnchor::Pointer,
+                    )
+                    .show(|ui| {
+                        ui.label(where_to);
+                        ui.label("Ctrl+click to follow link");
+                    });
+                }
+            }
 
-                // A click on the page is the keyboard coming home, whichever
-                // pane or field had it.
-                if response.clicked() || response.drag_started() {
-                    self.keyboard = crate::app::Keyboard::Document;
+            // A click on the desk gives keyboard focus to the surface itself
+            // (below), so that typing goes somewhere. The caret must stay
+            // visible when the surface holds its own focus — only some other
+            // widget (a dialog's text field) holding it should hide the caret.
+            self.focused = ui
+                .ctx()
+                .memory(|m| m.focused().is_none_or(|id| id == response.id));
+            // The caret blinks — on for a beat, off for a beat — and stands
+            // solid from every key or click, so that it is always showing
+            // where the next letter goes at the moment that matters. Never
+            // while a selection shows: the selection says where the caret
+            // is, and a caret blinking at the end of it is noise. A frame
+            // is asked for at the next change of phase and not before;
+            // the window sleeps between.
+            let caret_shown = if self.focused && self.selection.is_empty() {
+                let since = ui.input(|i| i.time) - self.blink_from;
+                let beats = (since / ui_kit::theme::BLINK).max(0.0);
+                let remaining = ui_kit::theme::BLINK * (1.0 - beats.fract());
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_secs_f64(remaining));
+                (beats as u64).is_multiple_of(2)
+            } else {
+                true
+            };
+            // Decode before painting: the painter borrows the pages, and the
+            // cache cannot be borrowed mutably at the same time.
+            self.pictures.prepare(
+                ui.ctx(),
+                self.package.as_ref(),
+                self.parts.as_ref(),
+                view::image_rels(&self.view).into_iter(),
+            );
+            self.pictures.prepare_charts(
+                self.package.as_ref(),
+                self.parts.as_ref(),
+                view::chart_rels(&self.view).into_iter(),
+            );
+            let washes = self.comment_washes();
+            let markers = view::paint(
+                &painter,
+                &self.view,
+                self.scope,
+                self.selection,
+                if self.finder.is_some() {
+                    &self.find_matches
+                } else {
+                    &[]
+                },
+                &washes,
+                caret_shown.then_some(self.caret()),
+                self.focused,
+                zoom,
+                origin,
+                self.shaper.as_mut().expect("a shaper by now"),
+                &self.pictures,
+                self.picked,
+            );
+
+            // A comment's marker: hovered, it says who and what; clicked,
+            // it selects the words the comment is about.
+            let over_marker = ui
+                .ctx()
+                .pointer_latest_pos()
+                .and_then(|pointer| markers.iter().find(|m| m.rect.contains(pointer)))
+                .copied();
+            if let Some(marker) = over_marker {
+                if let Some(comment) = self.document.comment(marker.comment) {
+                    let first = comment.text().lines().next().unwrap_or("").to_owned();
+                    egui::Tooltip::always_open(
+                        ui.ctx().clone(),
+                        ui.layer_id(),
+                        egui::Id::new("scriva-comment-marker"),
+                        egui::PopupAnchor::Pointer,
+                    )
+                    .show(|ui| {
+                        ui.label(egui::RichText::new(comment.author.to_string()).strong());
+                        ui.label(first);
+                    });
                 }
-                // A press decides what the drag is: a picture under the pointer
-                // is dragged as an object, and anything else sweeps a selection.
-                if over_marker.is_none() && (response.drag_started() || response.clicked()) {
-                    // The grip is chosen by where the press landed, not where
-                    // the pointer is now: a drag is only reported once it has
-                    // moved a few pixels, and a quick pull would already be
-                    // off the handle it took hold of.
-                    let spot = ui
-                        .input(|i| i.pointer.press_origin())
-                        .or_else(|| response.interact_pointer_pos())
-                        .and_then(|pointer| self.spot_at(pointer, origin, zoom));
-                    self.dragging = None;
-                    match spot.and_then(|spot| {
-                        view::drawing_at(&self.view, self.scope, spot, reach)
-                            .map(|found| (spot, found))
-                    }) {
-                        Some((spot, (picked, rect))) => {
-                            let already = self.picked == Some(picked);
-                            self.picked = Some(picked);
-                            // A handle can only be pulled once it is on the
-                            // screen to aim at: the first press on a picture
-                            // selects it and drags it about, and the press
-                            // after that can take hold of a corner.
-                            self.dragging = match already {
-                                true => crate::drawings::grip_at(rect, spot.x, spot.y, reach),
-                                false => Some(crate::drawings::Grip::Body),
-                            };
-                            self.drag_from = Some((spot.x, spot.y));
-                            ui.ctx().memory_mut(|m| m.request_focus(response.id));
-                        }
-                        None => self.picked = None,
+                if response.clicked() {
+                    if let Some(wash) = washes.iter().find(|w| w.comment == marker.comment) {
+                        self.scope = wash.scope;
+                        self.selection = wash.range;
+                        self.picked = None;
                     }
                 }
-                if self.picked.is_none() && over_marker.is_none() {
-                    // Decided here, before the caret is placed, and not
-                    // after: on the first frame of a drag the flag was still
-                    // off, the caret was set without extending, and the
-                    // anchor moved to wherever the pointer had reached by
-                    // then — a few pixels off the press for a slow hand, the
-                    // whole way for a quick one, and nothing selected.
-                    if response.dragged() {
-                        self.sweeping = true;
-                    }
-                    if let Some(pointer) = response.interact_pointer_pos() {
-                        if let Some(spot) = self.spot_at(pointer, origin, zoom) {
-                            // A click on the part of the page that is *not*
-                            // being edited is not a place to put the caret.
-                            // While a header is open the text is showing and
-                            // not editable — which is what the wash over it
-                            // says — and dragging the caret out from under the
-                            // keyboard would make a liar of it. A sweep is
-                            // another matter: its press chose the flow, and a
-                            // pull up into the top margin takes the first
-                            // line back to its start rather than stopping at
-                            // the margin's edge.
-                            if self.sweeping || self.click_lands_here(spot) {
-                                if let Some(caret) = view::caret_at(&self.view, self.scope, spot) {
-                                    let extend = ui.input(|i| i.modifiers.shift) || self.sweeping;
-                                    self.set_caret(caret, extend);
-                                }
-                            }
-                        }
-                    }
-                    // Ctrl+click follows the link under the pointer, which is
-                    // Word's gesture and Word's reason for it: the letters of
-                    // a link are still text to put a caret in and edit, so a
-                    // bare click cannot mean "go there".
-                    if response.clicked() && ui.input(|i| i.modifiers.command) {
-                        if let Some(destination) = response
-                            .interact_pointer_pos()
-                            .and_then(|pointer| self.spot_at(pointer, origin, zoom))
-                            .and_then(|spot| view::character_over(&self.view, self.scope, spot))
-                            .and_then(|caret| self.link_at(caret))
-                        {
-                            self.follow_link(destination);
-                        }
-                    }
-                    // A second click takes the word and a third takes the
-                    // paragraph, the way every word processor since has —
-                    // except in the margins. There a double-click opens the
-                    // band drawn there, and once one is open a double-click on
-                    // the page closes it again and puts the caret where it
-                    // landed. Both gestures are Word's, and they are the only
-                    // way most people ever reach a header.
-                    if response.double_clicked() {
-                        let spot = response
-                            .interact_pointer_pos()
-                            .and_then(|pointer| self.spot_at(pointer, origin, zoom));
-                        let band = spot.and_then(|spot| self.band_at(spot));
-                        // A margin that is not the band already open — the
-                        // footer while the header is up, or either of them
-                        // from the text — opens the one drawn there. A margin
-                        // that *is* the open band is ordinary text, and a
-                        // double-click in it takes a word like anywhere else.
-                        let elsewhere = band.is_some_and(|footer| {
-                            !self.editing_band() || footer != self.in_footer()
-                        });
-                        match (elsewhere, self.scope, band) {
-                            (true, _, Some(footer)) => {
-                                if let Some(spot) = spot {
-                                    self.enter_band(spot.page, footer);
-                                }
-                            }
-                            (_, wp_model::Scope::Chrome(_), None) => {
-                                self.close_band();
-                                if let Some(caret) = spot
-                                    .and_then(|spot| view::caret_at(&self.view, self.scope, spot))
-                                {
-                                    self.set_caret(caret, false);
-                                }
-                            }
-                            _ => {
-                                let caret = self.caret();
-                                let content = self.paragraph_text(caret.paragraph);
-                                let word = text::word_at(&content, caret.offset);
-                                self.selection = Selection {
-                                    anchor: Caret {
-                                        paragraph: caret.paragraph,
-                                        offset: word.start,
-                                    },
-                                    head: Caret {
-                                        paragraph: caret.paragraph,
-                                        offset: word.end,
-                                    },
-                                };
-                            }
-                        }
-                    }
-                    if response.triple_clicked() {
-                        let caret = self.caret();
-                        let length = self.paragraph_text(caret.paragraph).len();
-                        self.selection = Selection {
-                            anchor: Caret {
-                                paragraph: caret.paragraph,
-                                offset: 0,
-                            },
-                            head: Caret {
-                                paragraph: caret.paragraph,
-                                offset: length,
-                            },
+            }
+
+            // A click on the page is the keyboard coming home, whichever
+            // pane or field had it.
+            if response.clicked() || response.drag_started() {
+                self.keyboard = crate::app::Keyboard::Document;
+            }
+            // A press decides what the drag is: a picture under the pointer
+            // is dragged as an object, and anything else sweeps a selection.
+            if over_marker.is_none() && (response.drag_started() || response.clicked()) {
+                // The grip is chosen by where the press landed, not where
+                // the pointer is now: a drag is only reported once it has
+                // moved a few pixels, and a quick pull would already be
+                // off the handle it took hold of.
+                let spot = ui
+                    .input(|i| i.pointer.press_origin())
+                    .or_else(|| response.interact_pointer_pos())
+                    .and_then(|pointer| self.spot_at(pointer, origin, zoom));
+                self.dragging = None;
+                match spot.and_then(|spot| {
+                    view::drawing_at(&self.view, self.scope, spot, reach).map(|found| (spot, found))
+                }) {
+                    Some((spot, (picked, rect))) => {
+                        let already = self.picked == Some(picked);
+                        self.picked = Some(picked);
+                        // A handle can only be pulled once it is on the
+                        // screen to aim at: the first press on a picture
+                        // selects it and drags it about, and the press
+                        // after that can take hold of a corner.
+                        self.dragging = match already {
+                            true => crate::drawings::grip_at(rect, spot.x, spot.y, reach),
+                            false => Some(crate::drawings::Grip::Body),
                         };
+                        self.drag_from = Some((spot.x, spot.y));
+                        ui.ctx().memory_mut(|m| m.request_focus(response.id));
                     }
-                    // A right-click outside the selection moves the caret
-                    // there first, so the menu acts on what was clicked.
-                    if response.secondary_clicked() {
-                        if let Some(caret) = response
-                            .interact_pointer_pos()
-                            .and_then(|pointer| self.spot_at(pointer, origin, zoom))
-                            .and_then(|spot| view::caret_at(&self.view, self.scope, spot))
-                        {
-                            let (start, end) = self.selection.ordered();
-                            let inside =
-                                !self.selection.is_empty() && caret >= start && caret <= end;
-                            if !inside {
+                    None => self.picked = None,
+                }
+            }
+            if self.picked.is_none() && over_marker.is_none() {
+                // Decided here, before the caret is placed, and not
+                // after: on the first frame of a drag the flag was still
+                // off, the caret was set without extending, and the
+                // anchor moved to wherever the pointer had reached by
+                // then — a few pixels off the press for a slow hand, the
+                // whole way for a quick one, and nothing selected.
+                if response.dragged() {
+                    self.sweeping = true;
+                }
+                if let Some(pointer) = response.interact_pointer_pos() {
+                    if let Some(spot) = self.spot_at(pointer, origin, zoom) {
+                        // A click on the part of the page that is *not*
+                        // being edited is not a place to put the caret.
+                        // While a header is open the text is showing and
+                        // not editable — which is what the wash over it
+                        // says — and dragging the caret out from under the
+                        // keyboard would make a liar of it. A sweep is
+                        // another matter: its press chose the flow, and a
+                        // pull up into the top margin takes the first
+                        // line back to its start rather than stopping at
+                        // the margin's edge.
+                        if self.sweeping || self.click_lands_here(spot) {
+                            if let Some(caret) = view::caret_at(&self.view, self.scope, spot) {
+                                let extend = ui.input(|i| i.modifiers.shift) || self.sweeping;
+                                self.set_caret(caret, extend);
+                            }
+                        }
+                    }
+                }
+                // Ctrl+click follows the link under the pointer, which is
+                // Word's gesture and Word's reason for it: the letters of
+                // a link are still text to put a caret in and edit, so a
+                // bare click cannot mean "go there".
+                if response.clicked() && ui.input(|i| i.modifiers.command) {
+                    if let Some(destination) = response
+                        .interact_pointer_pos()
+                        .and_then(|pointer| self.spot_at(pointer, origin, zoom))
+                        .and_then(|spot| view::character_over(&self.view, self.scope, spot))
+                        .and_then(|caret| self.link_at(caret))
+                    {
+                        self.follow_link(destination);
+                    }
+                }
+                // A second click takes the word and a third takes the
+                // paragraph, the way every word processor since has —
+                // except in the margins. There a double-click opens the
+                // band drawn there, and once one is open a double-click on
+                // the page closes it again and puts the caret where it
+                // landed. Both gestures are Word's, and they are the only
+                // way most people ever reach a header.
+                if response.double_clicked() {
+                    let spot = response
+                        .interact_pointer_pos()
+                        .and_then(|pointer| self.spot_at(pointer, origin, zoom));
+                    let band = spot.and_then(|spot| self.band_at(spot));
+                    // A margin that is not the band already open — the
+                    // footer while the header is up, or either of them
+                    // from the text — opens the one drawn there. A margin
+                    // that *is* the open band is ordinary text, and a
+                    // double-click in it takes a word like anywhere else.
+                    let elsewhere = band
+                        .is_some_and(|footer| !self.editing_band() || footer != self.in_footer());
+                    match (elsewhere, self.scope, band) {
+                        (true, _, Some(footer)) => {
+                            if let Some(spot) = spot {
+                                self.enter_band(spot.page, footer);
+                            }
+                        }
+                        (_, wp_model::Scope::Chrome(_), None) => {
+                            self.close_band();
+                            if let Some(caret) =
+                                spot.and_then(|spot| view::caret_at(&self.view, self.scope, spot))
+                            {
                                 self.set_caret(caret, false);
                             }
                         }
-                        ui.ctx().memory_mut(|m| m.request_focus(response.id));
-                    }
-                }
-                // A right-click on a picture selects it, the same as a left one:
-                // the menu that comes up is about what was clicked.
-                if response.secondary_clicked() {
-                    if let Some(found) = response
-                        .interact_pointer_pos()
-                        .and_then(|pointer| self.spot_at(pointer, origin, zoom))
-                        .and_then(|spot| view::drawing_at(&self.view, self.scope, spot, reach))
-                    {
-                        self.picked = Some(found.0);
-                    }
-                    // The menu outlives the click that opened it, so what was
-                    // under that click has to be remembered rather than asked
-                    // for again when the menu is drawn.
-                    let clicked = response
-                        .interact_pointer_pos()
-                        .and_then(|pointer| self.spot_at(pointer, origin, zoom))
-                        .and_then(|spot| view::character_over(&self.view, self.scope, spot))
-                        .and_then(|caret| self.link_at(caret));
-                    self.menu_link = clicked;
-                }
-                // Shift+F10: the same menu, at the caret. The popup is
-                // opened here, where the response it hangs from exists.
-                if std::mem::take(&mut self.context_requested) {
-                    let caret = self.caret();
-                    let at = view::caret_rect_on(&self.view, self.scope, caret, None)
-                        .map(|(page, rect)| {
-                            let (page_x, page_y) = self.view.page_origin(page);
-                            origin
-                                + egui::vec2(
-                                    (page_x as f32 + rect.min.x) * zoom,
-                                    (page_y as f32 + rect.max.y) * zoom,
-                                )
-                        })
-                        .unwrap_or(response.rect.min);
-                    menu::open_context(ui.ctx(), &response, at);
-                }
-                // Read on the frame the menu opens — the right-click has
-                // moved the caret by now — and on every frame it is up.
-                let state = match response.secondary_clicked() || menu::context_open(&response) {
-                    true => Some(self.context_state()),
-                    false => None,
-                };
-                let chosen = state
-                    .as_ref()
-                    .and_then(|state| {
-                        menu::context(&response, |ui| context::context_rows(ui, state))
-                    })
-                    .flatten();
-                if let Some(command) = chosen {
-                    self.run(command);
-                }
-                if response.drag_started() {
-                    self.sweeping = false;
-                }
-                if response.dragged() {
-                    self.sweeping = self.picked.is_none();
-                    // The drag is applied a step at a time, from where the
-                    // pointer was last frame, so the model always says what is
-                    // on the screen and an undo puts back one whole drag.
-                    if let (Some(grip), Some(from), Some(pointer)) = (
-                        self.dragging,
-                        self.drag_from,
-                        response.interact_pointer_pos(),
-                    ) {
-                        if let Some(spot) = self.spot_at(pointer, origin, zoom) {
-                            // Shift breaks a corner's hold on the aspect
-                            // ratio, for the user who means to stretch.
-                            let keep = !ui.input(|i| i.modifiers.shift);
-                            self.drag_drawing(grip, spot.x - from.0, spot.y - from.1, keep);
-                            self.drag_from = Some((spot.x, spot.y));
+                        _ => {
+                            let caret = self.caret();
+                            let content = self.paragraph_text(caret.paragraph);
+                            let word = text::word_at(&content, caret.offset);
+                            self.selection = Selection {
+                                anchor: Caret {
+                                    paragraph: caret.paragraph,
+                                    offset: word.start,
+                                },
+                                head: Caret {
+                                    paragraph: caret.paragraph,
+                                    offset: word.end,
+                                },
+                            };
                         }
                     }
                 }
-                if response.drag_stopped() || response.clicked() {
-                    self.sweeping = false;
-                    self.dragging = None;
-                    self.drag_from = None;
-                    self.dragged = false;
+                if response.triple_clicked() {
+                    let caret = self.caret();
+                    let length = self.paragraph_text(caret.paragraph).len();
+                    self.selection = Selection {
+                        anchor: Caret {
+                            paragraph: caret.paragraph,
+                            offset: 0,
+                        },
+                        head: Caret {
+                            paragraph: caret.paragraph,
+                            offset: length,
+                        },
+                    };
                 }
-                // A click anywhere on the desk puts the caret in the document,
-                // which is what makes typing go somewhere.
-                if response.clicked() && self.picked.is_none() {
+                // A right-click outside the selection moves the caret
+                // there first, so the menu acts on what was clicked.
+                if response.secondary_clicked() {
+                    if let Some(caret) = response
+                        .interact_pointer_pos()
+                        .and_then(|pointer| self.spot_at(pointer, origin, zoom))
+                        .and_then(|spot| view::caret_at(&self.view, self.scope, spot))
+                    {
+                        let (start, end) = self.selection.ordered();
+                        let inside = !self.selection.is_empty() && caret >= start && caret <= end;
+                        if !inside {
+                            self.set_caret(caret, false);
+                        }
+                    }
                     ui.ctx().memory_mut(|m| m.request_focus(response.id));
                 }
-                // Scroll to wherever asked for, once the layout is current —
-                // a caret has no place on the page until the page exists.
-                if self.reveal.is_some() && self.view.is_stale(self.stamp) {
-                    ui.ctx().request_repaint();
-                } else if let Some(caret) = self.reveal.take() {
-                    revealed = true;
-                    let prefer = self.reveal_on.take();
-                    if let Some((page, rect)) =
-                        view::caret_rect_on(&self.view, self.scope, caret, prefer)
-                    {
+            }
+            // A right-click on a picture selects it, the same as a left one:
+            // the menu that comes up is about what was clicked.
+            if response.secondary_clicked() {
+                if let Some(found) = response
+                    .interact_pointer_pos()
+                    .and_then(|pointer| self.spot_at(pointer, origin, zoom))
+                    .and_then(|spot| view::drawing_at(&self.view, self.scope, spot, reach))
+                {
+                    self.picked = Some(found.0);
+                }
+                // The menu outlives the click that opened it, so what was
+                // under that click has to be remembered rather than asked
+                // for again when the menu is drawn.
+                let clicked = response
+                    .interact_pointer_pos()
+                    .and_then(|pointer| self.spot_at(pointer, origin, zoom))
+                    .and_then(|spot| view::character_over(&self.view, self.scope, spot))
+                    .and_then(|caret| self.link_at(caret));
+                self.menu_link = clicked;
+            }
+            // Shift+F10: the same menu, at the caret. The popup is
+            // opened here, where the response it hangs from exists.
+            if std::mem::take(&mut self.context_requested) {
+                let caret = self.caret();
+                let at = view::caret_rect_on(&self.view, self.scope, caret, None)
+                    .map(|(page, rect)| {
                         let (page_x, page_y) = self.view.page_origin(page);
-                        let min = origin
+                        origin
                             + egui::vec2(
                                 (page_x as f32 + rect.min.x) * zoom,
-                                (page_y as f32 + rect.min.y) * zoom,
-                            );
-                        let target =
-                            egui::Rect::from_min_size(min, egui::vec2(2.0, rect.height() * zoom))
-                                .expand2(egui::vec2(0.0, 24.0));
-                        ui.scroll_to_rect(target, None);
+                                (page_y as f32 + rect.max.y) * zoom,
+                            )
+                    })
+                    .unwrap_or(response.rect.min);
+                menu::open_context(ui.ctx(), &response, at);
+            }
+            // Read on the frame the menu opens — the right-click has
+            // moved the caret by now — and on every frame it is up.
+            let state = match response.secondary_clicked() || menu::context_open(&response) {
+                true => Some(self.context_state()),
+                false => None,
+            };
+            let chosen = state
+                .as_ref()
+                .and_then(|state| menu::context(&response, |ui| context::context_rows(ui, state)))
+                .flatten();
+            if let Some(command) = chosen {
+                self.run(command);
+            }
+            if response.drag_started() {
+                self.sweeping = false;
+            }
+            if response.dragged() {
+                self.sweeping = self.picked.is_none();
+                // The drag is applied a step at a time, from where the
+                // pointer was last frame, so the model always says what is
+                // on the screen and an undo puts back one whole drag.
+                if let (Some(grip), Some(from), Some(pointer)) = (
+                    self.dragging,
+                    self.drag_from,
+                    response.interact_pointer_pos(),
+                ) {
+                    if let Some(spot) = self.spot_at(pointer, origin, zoom) {
+                        // Shift breaks a corner's hold on the aspect
+                        // ratio, for the user who means to stretch.
+                        let keep = !ui.input(|i| i.modifiers.shift);
+                        self.drag_drawing(grip, spot.x - from.0, spot.y - from.1, keep);
+                        self.drag_from = Some((spot.x, spot.y));
                     }
                 }
-                response
-            },
-        );
+            }
+            if response.drag_stopped() || response.clicked() {
+                self.sweeping = false;
+                self.dragging = None;
+                self.drag_from = None;
+                self.dragged = false;
+            }
+            // A click anywhere on the desk puts the caret in the document,
+            // which is what makes typing go somewhere.
+            if response.clicked() && self.picked.is_none() {
+                ui.ctx().memory_mut(|m| m.request_focus(response.id));
+            }
+            // Scroll to wherever asked for, once the layout is current —
+            // a caret has no place on the page until the page exists.
+            if self.reveal.is_some() && self.view.is_stale(self.stamp) {
+                ui.ctx().request_repaint();
+            } else if let Some(caret) = self.reveal.take() {
+                revealed = true;
+                let prefer = self.reveal_on.take();
+                if let Some((page, rect)) =
+                    view::caret_rect_on(&self.view, self.scope, caret, prefer)
+                {
+                    let (page_x, page_y) = self.view.page_origin(page);
+                    let min = origin
+                        + egui::vec2(
+                            (page_x as f32 + rect.min.x) * zoom,
+                            (page_y as f32 + rect.min.y) * zoom,
+                        );
+                    let target =
+                        egui::Rect::from_min_size(min, egui::vec2(2.0, rect.height() * zoom))
+                            .expand2(egui::vec2(0.0, 24.0));
+                    ui.scroll_to_rect(target, None);
+                }
+            }
+            response
+        });
         // The page badge: a pill at the right of the desk saying which page
         // is in view, while the desk is being scrolled and for a moment after
         // — and not when the caret moved the desk, since the status bar says

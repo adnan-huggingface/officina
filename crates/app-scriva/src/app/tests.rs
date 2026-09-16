@@ -4877,6 +4877,169 @@ fn the_desks_scroll_bar_is_grey_on_chrome_and_not_black() {
     assert!(along_foot.is_empty(), "no horizontal bar: {along_foot:?}");
 }
 
+/// Six pages, each with a word on it, laid out and settled.
+fn six_pages(drive: &ui_kit::drive::Driver) -> Scriva {
+    let mut app = app_with(&["one", "two", "three", "four", "five", "six"]);
+    drive.settle(&mut app);
+    for paragraph in (1..6).rev() {
+        app.selection = Selection::at(Caret {
+            paragraph,
+            offset: 0,
+        });
+        app.run(Command::PageBreak);
+    }
+    app.selection = Selection::at(Caret {
+        paragraph: 0,
+        offset: 0,
+    });
+    drive.settle(&mut app);
+    drive.settle(&mut app);
+    assert!(app.view.pages().len() >= 6, "six pages");
+    app
+}
+
+/// A document opens at the zoom that shows a whole page, as Word opens one;
+/// so does a new document, and the one the window starts with.
+#[test]
+fn a_document_opens_at_whole_page_zoom() {
+    let drive = ui_kit::drive::Driver::new();
+    let mut app = Scriva::new();
+    drive.settle(&mut app);
+    drive.settle(&mut app);
+    let fit = app.fit_percent(false).expect("a page to fit") as f64 / 100.0;
+    assert!(
+        fit < 0.95,
+        "whole page in a 1000-tall window is under 100%: {fit}"
+    );
+    assert!(
+        (app.view.zoom - fit).abs() < 0.001,
+        "the window starts at the whole-page zoom: {} against {fit}",
+        app.view.zoom
+    );
+    app.run(Command::Zoom(1.5));
+    drive.settle(&mut app);
+    app.open_path(&corpus_docx("comments.docx"));
+    drive.settle(&mut app);
+    drive.settle(&mut app);
+    let fit = app.fit_percent(false).expect("a page to fit") as f64 / 100.0;
+    assert!(
+        (app.view.zoom - fit).abs() < 0.001,
+        "an opened document is shown whole: {} against {fit}",
+        app.view.zoom
+    );
+    app.run(Command::Zoom(1.5));
+    drive.settle(&mut app);
+    app.dirty = false;
+    app.run(Command::New);
+    drive.settle(&mut app);
+    drive.settle(&mut app);
+    let fit = app.fit_percent(false).expect("a page to fit") as f64 / 100.0;
+    assert!(
+        (app.view.zoom - fit).abs() < 0.001,
+        "and so is a new one: {} against {fit}",
+        app.view.zoom
+    );
+}
+
+/// At a zoom that shows a whole page, Page Down shows the next page whole
+/// and Page Up the one before, with the caret on the page shown; at a
+/// zoom where a page is taller than the desk, each moves the desk by one
+/// screen. The caret keeps its place on the screen either way — Word's
+/// Page Down moves the view, not the caret to the view's edge. It moved
+/// the caret a screen and scrolled only as far as showed it, so the view
+/// went half a screen and the caret sat at its edge; and with less than a
+/// screen left there was no line a screen away, so the key did nothing.
+#[test]
+fn page_down_at_whole_page_zoom_shows_the_next_page_whole() {
+    let drive = ui_kit::drive::Driver::new();
+    let mut app = six_pages(&drive);
+    let fit = app.fit_percent(false).expect("a fit") as f64 / 100.0;
+    app.run(Command::Zoom(fit));
+    drive.settle(&mut app);
+    drive.settle(&mut app);
+    let zoom = (app.view.zoom * view::SCALE) as f32;
+    let pitch = (app.view.pages()[0].geometry.height + view::GAP as f64) as f32 * zoom;
+    assert!(pitch <= app.viewport.y, "a page and its gap fit the desk");
+    let caret_page = |app: &Scriva| {
+        view::caret_rect(&app.view, wp_model::Scope::Body, app.caret())
+            .map(|(page, _)| page)
+            .expect("a caret")
+    };
+    let start = app.scroll;
+    drive.press(&mut app, "PageDown");
+    drive.settle(&mut app);
+    assert!(
+        (app.scroll - start - pitch).abs() < 1.0,
+        "the desk moved one page: {} from {start} against {pitch}",
+        app.scroll
+    );
+    assert_eq!(caret_page(&app), 1, "and the caret is on the page shown");
+    drive.press(&mut app, "PageDown");
+    drive.settle(&mut app);
+    assert!(
+        (app.scroll - start - 2.0 * pitch).abs() < 1.0,
+        "two pages: {}",
+        app.scroll
+    );
+    assert_eq!(caret_page(&app), 2);
+    drive.press(&mut app, "PageUp");
+    drive.settle(&mut app);
+    assert!(
+        (app.scroll - start - pitch).abs() < 1.0,
+        "back one: {}",
+        app.scroll
+    );
+    assert_eq!(caret_page(&app), 1);
+
+    // At 100% a page is taller than the desk: one screen at a time, and the
+    // caret keeps its place on the screen.
+    app.run(Command::Zoom(1.0));
+    drive.settle(&mut app);
+    app.selection = Selection::at(Caret {
+        paragraph: 0,
+        offset: 0,
+    });
+    app.reveal = Some(app.caret());
+    drive.settle(&mut app);
+    drive.settle(&mut app);
+    let before = app.scroll;
+    let screen = app.viewport.y;
+    let zoom = (app.view.zoom * view::SCALE) as f32;
+    let on_screen = |app: &Scriva| {
+        let (page, rect) = view::caret_rect(&app.view, wp_model::Scope::Body, app.caret()).unwrap();
+        (app.view.page_origin(page).1 as f32 + rect.min.y) * zoom - app.scroll
+    };
+    let was = on_screen(&app);
+    drive.press(&mut app, "PageDown");
+    drive.settle(&mut app);
+    assert!(
+        (app.scroll - before - screen).abs() < 1.0,
+        "one screen down: {} from {before}, screen {screen}",
+        app.scroll
+    );
+    // On the screen still — on the nearest line to where it was, which in
+    // a document of one word a page is that page's only line.
+    let now = on_screen(&app);
+    assert!(
+        (0.0..screen).contains(&now),
+        "the caret is on the screen shown: {now} (was {was}, screen {screen})"
+    );
+
+    // With less than a screen left, Page Down goes to the end and the last
+    // screen, rather than nowhere.
+    for _ in 0..12 {
+        drive.press(&mut app, "PageDown");
+        drive.settle(&mut app);
+    }
+    let last = app.document.paragraphs().len() - 1;
+    assert_eq!(
+        app.caret().paragraph,
+        last,
+        "the caret reached the last paragraph"
+    );
+    assert_eq!(app.caret().offset, "six".len(), "at its end");
+}
+
 #[test]
 fn a_page_sits_on_the_light_desk_with_a_shadow_and_no_fade() {
     let drive = ui_kit::drive::Driver::new();
@@ -4902,8 +5065,10 @@ fn a_page_sits_on_the_light_desk_with_a_shadow_and_no_fade() {
         desk < shadow && shadow < paper,
         "desk, then shadow, then paper"
     );
+    // At whatever zoom the window opened at — the whole-page fit.
+    let glass = (app.view.zoom * view::SCALE) as f32;
     assert!(
-        (rects[paper].0.top() - rects[desk].0.top() - view::GAP * view::SCALE as f32).abs() < 1.0,
+        (rects[paper].0.top() - rects[desk].0.top() - view::GAP * glass).abs() < 1.0,
         "the first page stands one gap below the toolbar"
     );
 

@@ -416,6 +416,15 @@ pub struct Scriva {
     asking: Option<ui_kit::chooser::Asking<Chosen>>,
     /// Where the pages are scrolled to, in screen points.
     scroll: f32,
+    /// How far the desk is to move this frame, in points on the glass,
+    /// set by Page Up and Page Down: the view moves by a page or a screen
+    /// and the caret keeps its place on it, which a reveal — as little as
+    /// shows the caret — would not do.
+    scroll_by: Option<f32>,
+    /// Set when a document is opened or a new one begun, and consumed by
+    /// the desk once it knows its size: the document is shown a whole page
+    /// at a time, as Word first shows one.
+    fit_on_open: bool,
     focused: bool,
     /// Set while the pointer is sweeping out a selection.
     sweeping: bool,
@@ -658,6 +667,8 @@ impl Scriva {
             pending: None,
             asking: None,
             scroll: 0.0,
+            scroll_by: None,
+            fit_on_open: true,
             focused: true,
             sweeping: false,
             fields: wp_layout::FieldValues::new(),
@@ -1201,6 +1212,7 @@ impl Scriva {
             Format::Odt => self.open_odt(path),
             other => self.open_text(path, other),
         }
+        self.fit_on_open = true;
     }
 
     /// Opens a `.txt` or a `.md`.
@@ -1995,6 +2007,7 @@ impl Scriva {
     }
 
     fn close_document(&mut self) {
+        self.fit_on_open = true;
         self.document = blank();
         self.package = None;
         self.container = None;
@@ -3746,8 +3759,29 @@ impl Scriva {
                 self.set_caret(next, extend);
             }
             Key::PageUp | Key::PageDown => {
-                let next = self.page_step(caret, key == Key::PageDown);
+                // The view moves — by a whole page where one fits the desk,
+                // else by a screen — and the caret keeps its place on it,
+                // as Word's does. Where the leap runs off the document the
+                // caret goes to its first line or its last, rather than
+                // nowhere.
+                let down = key == Key::PageDown;
+                let leap = self.page_leap() * if down { 1.0 } else { -1.0 };
+                let step = leap as f64 / (self.view.zoom * view::SCALE).max(0.01);
+                let next =
+                    view::step_from(&self.view, self.scope, caret, step).unwrap_or_else(|| {
+                        match down {
+                            false => Caret {
+                                paragraph: 0,
+                                offset: 0,
+                            },
+                            true => Caret {
+                                paragraph: last,
+                                offset: self.paragraph_text(last).len(),
+                            },
+                        }
+                    });
                 self.set_caret(next, extend);
+                self.scroll_by = Some(leap);
             }
             Key::Home => {
                 // The *visual* line's start — in a paragraph that wraps, Home
@@ -3925,7 +3959,8 @@ impl Scriva {
         }
         // Wherever the keyboard put the caret, the view follows it — otherwise
         // arrowing or typing below the window edge walks the caret out of sight.
-        if (self.selection, self.stamp) != was {
+        // Not after a leap: the view has moved, the caret with it.
+        if (self.selection, self.stamp) != was && self.scroll_by.is_none() {
             self.reveal = Some(self.caret());
         }
     }
@@ -4060,11 +4095,22 @@ impl Scriva {
         })
     }
 
-    /// One screenful up or down — Page Up and Page Down.
-    fn page_step(&self, caret: Caret, down: bool) -> Caret {
-        let screen = (self.viewport.y.max(60.0) as f64) / (self.view.zoom * view::SCALE).max(0.01);
-        let step = screen * if down { 1.0 } else { -1.0 };
-        view::step_from(&self.view, self.scope, caret, step).unwrap_or(caret)
+    /// How far Page Up and Page Down move the desk, in points on the glass:
+    /// a page and its gap where those fit the desk — so that at the
+    /// whole-page zoom each press shows the next page whole, as Word's
+    /// does — and a screen otherwise.
+    fn page_leap(&self) -> f32 {
+        let screen = self.viewport.y.max(60.0);
+        let zoom = (self.view.zoom * view::SCALE) as f32;
+        let pitch = self
+            .view
+            .pages()
+            .first()
+            .map(|page| (page.geometry.height + view::GAP as f64) as f32 * zoom);
+        match pitch {
+            Some(pitch) if pitch <= screen + 1.0 => pitch,
+            _ => screen,
+        }
     }
 }
 
