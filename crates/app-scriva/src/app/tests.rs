@@ -4899,23 +4899,47 @@ fn six_pages(drive: &ui_kit::drive::Driver) -> Scriva {
 }
 
 /// A document opens at the zoom that shows a whole page, as Word opens one;
-/// so does a new document, and the one the window starts with.
+/// so does a new document, and the one the window starts with — and the
+/// fit follows the desk until a zoom is chosen, because the window opens
+/// at its modest size and is maximized a few frames later, and a fit
+/// taken on the first frames was a page a third of the screen.
 #[test]
 fn a_document_opens_at_whole_page_zoom() {
-    let drive = ui_kit::drive::Driver::new();
+    let mut drive = ui_kit::drive::Driver::sized(egui::vec2(1000.0, 700.0));
     let mut app = Scriva::new();
     drive.settle(&mut app);
     drive.settle(&mut app);
+    let small = app.fit_percent(false).expect("a page to fit") as f64 / 100.0;
+    assert!(
+        (app.view.zoom - small).abs() < 0.001,
+        "the window starts at the whole-page zoom: {} against {small}",
+        app.view.zoom
+    );
+    drive.resize(egui::vec2(1600.0, 1000.0));
+    drive.settle(&mut app);
+    drive.settle(&mut app);
     let fit = app.fit_percent(false).expect("a page to fit") as f64 / 100.0;
+    assert!(
+        fit > small + 0.1,
+        "a taller desk fits a bigger page: {fit} over {small}"
+    );
     assert!(
         fit < 0.95,
         "whole page in a 1000-tall window is under 100%: {fit}"
     );
     assert!(
         (app.view.zoom - fit).abs() < 0.001,
-        "the window starts at the whole-page zoom: {} against {fit}",
+        "and the zoom followed the desk when the window grew: {} against {fit}",
         app.view.zoom
     );
+    // A zoom chosen holds, whatever the window does after.
+    app.run(Command::Zoom(1.0));
+    drive.resize(egui::vec2(1200.0, 800.0));
+    drive.settle(&mut app);
+    drive.settle(&mut app);
+    assert_eq!(app.view.zoom, 1.0, "a chosen zoom is kept through a resize");
+    drive.resize(egui::vec2(1600.0, 1000.0));
+    drive.settle(&mut app);
     app.run(Command::Zoom(1.5));
     drive.settle(&mut app);
     app.open_path(&corpus_docx("comments.docx"));

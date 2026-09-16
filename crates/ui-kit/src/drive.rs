@@ -73,6 +73,13 @@ impl Driver {
         }
     }
 
+    /// The window at another size from the next frame on — what the
+    /// desktop does when it maximizes the window a few frames after it
+    /// opened, or the user pulls its corner.
+    pub fn resize(&mut self, window: egui::Vec2) {
+        self.window = window;
+    }
+
     pub fn ctx(&self) -> &egui::Context {
         &self.ctx
     }

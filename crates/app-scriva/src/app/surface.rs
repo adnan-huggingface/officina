@@ -11,14 +11,13 @@ impl Scriva {
         let (extent_w, extent_h) = self.view.extent();
         let outer = ui.available_rect_before_wrap();
         ui.painter().rect_filled(outer, 0.0, view::desk());
-        // A document just opened is shown a whole page at a time, once the
-        // desk knows its size and the document its pages: the fit is
-        // measured against the desk of the frame before, which is the same
-        // desk on every frame but the first.
-        if self.fit_on_open && self.viewport.y > 0.0 {
+        // A document just opened is shown a whole page at a time, on every
+        // frame until a zoom is chosen: the fit is measured against the desk
+        // of the frame before, and the desk of the first frames is the
+        // window's opening size, not the maximized one that follows.
+        if self.zoom_follows_desk && self.viewport.y > 0.0 {
             if let Some(percent) = self.fit_percent(false) {
                 self.view.zoom = percent as f64 / 100.0;
-                self.fit_on_open = false;
             }
         }
         // The percent, taken to the glass: 100% is Word's — a document inch

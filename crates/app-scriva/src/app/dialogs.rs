@@ -823,6 +823,7 @@ impl Scriva {
                 // A percent that does not parse keeps the zoom it had.
                 if let Ok(percent) = draft.trim().trim_end_matches('%').trim().parse::<f64>() {
                     self.view.zoom = percent.clamp(10.0, 500.0) / 100.0;
+                    self.zoom_follows_desk = false;
                 }
             }
             Some(false) => self.zoom_draft = None,

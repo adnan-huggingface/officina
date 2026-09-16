@@ -5902,6 +5902,20 @@ Word's does. Tests `a_document_opens_at_whole_page_zoom` and
 also at 100% and off the end. The desk test that measured the gap above
 the first page assumed 100% and now reads the zoom.
 
+## The whole-page fit follows the desk until a zoom is chosen (2026-09-16)
+
+The user's screenshot after the last entry: a new document at 73%, a
+page a third of the screen. The fit was taken once, on the first frame
+that knew a desk — and the window's first frames are at its modest
+opening size, the maximized one coming up to sixty frames later when the
+shell has insisted on it (`Host::maximize_for`). `fit_on_open` is
+`zoom_follows_desk` now: set on open and on new, cleared wherever a zoom
+is chosen — the menu, the box, the slider, Ctrl+wheel — and while it
+holds the desk re-fits the page on every frame, so the maximize, or a
+corner pulled, is answered. `Driver::resize` grows the test's window
+between frames, and `a_document_opens_at_whole_page_zoom` asks that the
+zoom followed it, and that a chosen zoom did not.
+
 ## What driving the redesign found (2026-09-15)
 
 The ten phases were each driven on the rig as they landed — the real

@@ -421,10 +421,14 @@ pub struct Scriva {
     /// and the caret keeps its place on it, which a reveal — as little as
     /// shows the caret — would not do.
     scroll_by: Option<f32>,
-    /// Set when a document is opened or a new one begun, and consumed by
-    /// the desk once it knows its size: the document is shown a whole page
-    /// at a time, as Word first shows one.
-    fit_on_open: bool,
+    /// Set when a document is opened or a new one begun, and cleared when
+    /// a zoom is chosen: while it holds, the desk shows a whole page at a
+    /// time whatever its size, as Word first shows one. Not consumed on
+    /// the first frame that knows a size, because the window's first frames
+    /// are at its modest opening size and the maximized one comes a few
+    /// frames later; a fit taken once, then, was a page a third of the
+    /// screen.
+    zoom_follows_desk: bool,
     focused: bool,
     /// Set while the pointer is sweeping out a selection.
     sweeping: bool,
@@ -668,7 +672,7 @@ impl Scriva {
             asking: None,
             scroll: 0.0,
             scroll_by: None,
-            fit_on_open: true,
+            zoom_follows_desk: true,
             focused: true,
             sweeping: false,
             fields: wp_layout::FieldValues::new(),
@@ -1212,7 +1216,7 @@ impl Scriva {
             Format::Odt => self.open_odt(path),
             other => self.open_text(path, other),
         }
-        self.fit_on_open = true;
+        self.zoom_follows_desk = true;
     }
 
     /// Opens a `.txt` or a `.md`.
@@ -2007,7 +2011,7 @@ impl Scriva {
     }
 
     fn close_document(&mut self) {
-        self.fit_on_open = true;
+        self.zoom_follows_desk = true;
         self.document = blank();
         self.package = None;
         self.container = None;
@@ -2349,7 +2353,10 @@ impl Scriva {
                     self.set_section(section);
                 }
             }
-            Command::Zoom(zoom) => self.view.zoom = zoom,
+            Command::Zoom(zoom) => {
+                self.view.zoom = zoom;
+                self.zoom_follows_desk = false;
+            }
             Command::ShowMarks => {
                 self.view.show_marks = !self.view.show_marks;
                 self.view.invalidate();
@@ -4988,6 +4995,7 @@ impl DocumentApp for Scriva {
                 let percent = percent.clamp(10.0, 500.0);
                 if percent != shown {
                     self.view.zoom = percent / 100.0;
+                    self.zoom_follows_desk = false;
                 }
                 // Word keeps quiet about a face it had to stand in for, and a
                 // user whose every line breaks somewhere else is left to
@@ -5267,6 +5275,7 @@ impl DocumentApp for Scriva {
         let zoom_delta = ui.input(|i| i.zoom_delta());
         if zoom_delta != 1.0 {
             self.view.zoom = (self.view.zoom * zoom_delta as f64).clamp(0.10, 5.0);
+            self.zoom_follows_desk = false;
         }
 
         // While a dialog or the find bar holds the keyboard, keys belong to it:
