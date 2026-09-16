@@ -4569,6 +4569,118 @@ fn painted_rects(shapes: &[egui::epaint::ClippedShape]) -> Vec<(egui::Rect, egui
         .collect()
 }
 
+/// Every piece of text a frame painted, in the order it was painted.
+fn painted_texts(shapes: &[egui::epaint::ClippedShape]) -> Vec<String> {
+    fn walk(shape: &egui::Shape, into: &mut Vec<String>) {
+        match shape {
+            egui::Shape::Vec(many) => many.iter().for_each(|one| walk(one, into)),
+            egui::Shape::Text(text) => into.push(text.galley.text().to_owned()),
+            _ => {}
+        }
+    }
+    let mut texts = Vec::new();
+    for clipped in shapes {
+        walk(&clipped.shape, &mut texts);
+    }
+    texts
+}
+
+/// Whatever the chrome has to say — the caret is in a table, a header is
+/// being edited, the find bar is open, with or without Replace, there is
+/// news about the document — it says in the one row under the toolbar,
+/// which is always there, and the desk does not move. It did: the strip
+/// stood in the toolbar's panel only while there was one, so a click in a
+/// table pushed the page down a row and a click out of it pulled the page
+/// back up, and Ctrl+F did the same.
+#[test]
+fn the_desk_stays_put_whatever_the_row_under_the_toolbar_says() {
+    let drive = ui_kit::drive::Driver::new();
+    let mut app = app_with(&["before"]);
+    drive.settle(&mut app);
+    let looked = |app: &mut Scriva| -> (f32, Vec<String>) {
+        let shapes = drive.frame_at(app, Vec::new(), None);
+        let desk = painted_rects(&shapes)
+            .into_iter()
+            .find(|(rect, fill, _)| *fill == ui_kit::theme::DESK && rect.width() > 1000.0)
+            .expect("the desk is painted");
+        (desk.0.top(), painted_texts(&shapes))
+    };
+    let (top, texts) = looked(&mut app);
+    assert!(!texts.iter().any(|t| t == "Row above"), "no strip yet");
+
+    // In a table, and out of it again.
+    app.insert_table(2, 2);
+    drive.settle(&mut app);
+    let (now, texts) = looked(&mut app);
+    assert!(
+        texts.iter().any(|t| t == "Row above"),
+        "the table strip is on: {texts:?}"
+    );
+    assert_eq!(
+        now, top,
+        "the desk did not move when the caret entered a table"
+    );
+    // The table went in front of the paragraph; the paragraph is now last.
+    app.selection = Selection::at(Caret {
+        paragraph: app.document.paragraphs().len() - 1,
+        offset: 0,
+    });
+    drive.settle(&mut app);
+    let (now, texts) = looked(&mut app);
+    assert!(
+        !texts.iter().any(|t| t == "Row above"),
+        "the strip is off again"
+    );
+    assert_eq!(now, top, "and the desk did not move when it left");
+
+    // Editing the header.
+    app.run(Command::EditHeader);
+    drive.settle(&mut app);
+    let (now, texts) = looked(&mut app);
+    assert!(
+        texts.iter().any(|t| t == "Different first page"),
+        "the header's row: {texts:?}"
+    );
+    assert_eq!(now, top, "the desk did not move for the header");
+    app.run(Command::CloseChrome);
+    drive.settle(&mut app);
+    assert_eq!(looked(&mut app).0, top, "nor when the header closed");
+
+    // The find bar, then Replace with it.
+    app.run(Command::Find);
+    drive.settle(&mut app);
+    let (now, texts) = looked(&mut app);
+    assert!(texts.iter().any(|t| t == "Aa"), "the find bar: {texts:?}");
+    assert_eq!(now, top, "the desk did not move for the find bar");
+    app.run(Command::Replace);
+    drive.settle(&mut app);
+    let (now, texts) = looked(&mut app);
+    assert!(
+        texts.iter().any(|t| t == "Replace All"),
+        "with Replace: {texts:?}"
+    );
+    assert_eq!(now, top, "nor for Replace");
+    app.finder = None;
+    drive.settle(&mut app);
+    assert_eq!(looked(&mut app).0, top, "nor when it closed");
+
+    // News about the document.
+    app.post_notice(
+        "Something about this document",
+        Some(("Export…", Command::ExportPdf)),
+    );
+    drive.settle(&mut app);
+    let (now, texts) = looked(&mut app);
+    assert!(
+        texts.iter().any(|t| t == "Something about this document"),
+        "the notice: {texts:?}"
+    );
+    assert_eq!(now, top, "the desk did not move for the notice");
+    app.notices.clear();
+    drive.settle(&mut app);
+    assert_eq!(looked(&mut app).0, top, "nor when it was dismissed");
+}
+
 #[test]
 fn a_page_sits_on_the_light_desk_with_a_shadow_and_no_fade() {
     let drive = ui_kit::drive::Driver::new();

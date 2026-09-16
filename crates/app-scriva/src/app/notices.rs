@@ -1,7 +1,7 @@
 //! The three tiers of telling the user something, and the two lighter ones
 //! drawn here: a status notice, which is a sentence at the left of the
-//! status bar for four seconds, and a notice bar, which is a band under the
-//! toolbar for a fact about this document that stays until dismissed.
+//! status bar for four seconds, and a notice, which takes the row under the
+//! toolbar for a fact about this document and stays until dismissed.
 //!
 //! A modal is for a question whose wrong answer loses work and for a
 //! failure that stops an action; everything else was a modal too, and a box
@@ -69,65 +69,58 @@ impl Scriva {
         );
     }
 
-    /// The notice bar: one band per notice, each with its action and its
-    /// way out, under the toolbar.
+    /// The notice, on the row under the toolbar: the oldest one still
+    /// standing, with its action and its way out; the next is behind it.
     pub(super) fn notice_bar(&mut self, ui: &mut egui::Ui) -> Option<Command> {
+        let notice = self.notices.first().cloned()?;
+        let row = ui.max_rect();
+        ui.painter().rect_filled(row, 0.0, theme::NOTICE);
+        ui.painter().hline(
+            row.x_range(),
+            row.bottom() - 0.5,
+            egui::Stroke::new(1.0, theme::NOTICE_RULE),
+        );
         let mut chosen = None;
-        let mut dismissed = None;
-        for (index, notice) in self.notices.iter().enumerate() {
-            egui::Frame::new()
-                .fill(theme::NOTICE)
-                .inner_margin(egui::Margin::symmetric(10, 4))
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 10.0;
-                        ui.set_min_height(theme::TARGET.y);
-                        ui.add(
-                            egui::Label::new(
-                                egui::RichText::new(&notice.text)
-                                    .size(theme::TEXT)
-                                    .color(theme::INK),
-                            )
-                            .truncate(),
-                        );
-                        if let Some((label, command)) = &notice.action {
-                            if ui
-                                .add(egui::Button::new(
-                                    egui::RichText::new(label)
-                                        .size(theme::TEXT)
-                                        .color(theme::ACCENT),
-                                ))
-                                .clicked()
-                            {
-                                chosen = Some(command.clone());
-                            }
-                        }
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let (rect, response) =
-                                ui.allocate_exact_size(theme::TARGET, egui::Sense::click());
-                            crate::icons::paint_state(ui, rect, &response, false);
-                            ui.painter().text(
-                                rect.center(),
-                                egui::Align2::CENTER_CENTER,
-                                "\u{00d7}",
-                                egui::FontId::proportional(theme::TEXT + 2.0),
-                                theme::INK,
-                            );
-                            if response.on_hover_text("Dismiss").clicked() {
-                                dismissed = Some(index);
-                            }
-                        });
-                    });
-                });
-            let rect = ui.min_rect();
-            ui.painter().hline(
-                rect.x_range(),
-                rect.bottom() + 0.5,
-                egui::Stroke::new(1.0, theme::NOTICE_RULE),
-            );
+        let mut dismissed = false;
+        ui.spacing_mut().item_spacing.x = 10.0;
+        ui.add_space(10.0);
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(&notice.text)
+                    .size(theme::TEXT)
+                    .color(theme::INK),
+            )
+            .truncate(),
+        );
+        if let Some((label, command)) = &notice.action {
+            if ui
+                .add(egui::Button::new(
+                    egui::RichText::new(label)
+                        .size(theme::TEXT)
+                        .color(theme::ACCENT),
+                ))
+                .clicked()
+            {
+                chosen = Some(command.clone());
+            }
         }
-        if let Some(index) = dismissed {
-            self.notices.remove(index);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.add_space(4.0);
+            let (rect, response) = ui.allocate_exact_size(theme::TARGET, egui::Sense::click());
+            crate::icons::paint_state(ui, rect, &response, false);
+            ui.painter().text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "\u{00d7}",
+                egui::FontId::proportional(theme::TEXT + 2.0),
+                theme::INK,
+            );
+            if response.on_hover_text("Dismiss").clicked() {
+                dismissed = true;
+            }
+        });
+        if dismissed {
+            self.notices.remove(0);
         }
         chosen
     }

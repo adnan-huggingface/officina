@@ -2083,3 +2083,16 @@ after and never came up; it reads the frame's `MouseWheel` events before
 the scroll area is shown now. The scrolling is also smoothed over the
 frames that follow, so "the offset moved" and "the wheel turned" are not
 the same frame either.
+
+
+**A content-sized panel moves everything under it, and a bar that comes
+and goes moves the page.** The shell's top panel is as tall as what the
+toolbar draws, so a strip that appeared while the caret was in a table
+pushed the desk down a row and pulled it back up when the caret left; the
+find bar did the same, and Replace's second row again. The redesign's
+spec drew those bars "only in that mode" and the layout was exactly as
+drawn — the mistake was the spec's, and no test could see it because
+every test read the model. Chrome above a document has one height: a mode
+that has something to say gets a row that is always there, and the row
+says one thing at a time. A test now reads the painted desk's top edge
+back and asks that it never moves.

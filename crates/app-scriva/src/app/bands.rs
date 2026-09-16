@@ -468,7 +468,8 @@ impl Scriva {
             widgets.hovered.bg_stroke = egui::Stroke::new(1.0, egui::Color32::from_gray(0x5C));
             widgets.active.bg_fill = egui::Color32::WHITE;
         }
-        ui.horizontal(|ui| {
+        // Drawn straight onto the row under the toolbar.
+        {
             ui.add_space(8.0);
             ui.label(
                 egui::RichText::new(match footer {
@@ -524,7 +525,7 @@ impl Scriva {
                     chosen = Some(Command::CustomMargins);
                 }
             });
-        });
+        }
         if (title_page, even_and_odd) != was {
             self.set_band_kinds(title_page, even_and_odd);
         }

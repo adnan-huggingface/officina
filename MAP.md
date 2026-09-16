@@ -52,22 +52,22 @@ Every source file, its size, and the first sentence of its module doc.
 
 ### `scriva`
 
-- `crates/app-scriva/src/app/bands.rs` (589) Headers and footers — the bands above and below the text of a page: which one the caret is in, making one a section does not have yet, first-page and odd/even kinds, linking to the previous section, the band bar, and …
+- `crates/app-scriva/src/app/bands.rs` (590) Headers and footers — the bands above and below the text of a page: which one the caret is in, making one a section does not have yet, first-page and odd/even kinds, linking to the previous section, the band bar, and …
 - `crates/app-scriva/src/app/context.rs` (208) The page's right-click menu: what a click or Shift+F10 on the document offers, drawn on the same card as every other menu.
 - `crates/app-scriva/src/app/dialogs.rs` (912) Scriva's boxes: Insert Table, colour, paragraph, column width, picture size, fonts and zoom.
-- `crates/app-scriva/src/app/find_bar.rs` (278) The find bar: one bar for Find and Replace, under the toolbar, which holds the keyboard while it is open and hands it back to the document when it closes.
+- `crates/app-scriva/src/app/find_bar.rs` (264) The find bar: one bar for Find and Replace, on the row under the toolbar, which holds the keyboard while it is open and hands it back to the document when it closes.
 - `crates/app-scriva/src/app/font_dialog.rs` (397) Format ▸ Font… (Ctrl+D): family, style, size, colour, highlight and the effects the model writes, with a line of preview, applied to the selection as one undo step.
 - `crates/app-scriva/src/app/goto.rs` (168) Edit ▸ Go To… (Ctrl+G): a small popover on the status bar's page count.
 - `crates/app-scriva/src/app/help.rs` (145) The Help menu's boxes: every key the application answers to, generated from the command table so that it cannot drift; the user guide, opened beside the executable; and About.
-- `crates/app-scriva/src/app/notices.rs` (158) The three tiers of telling the user something, and the two lighter ones drawn here: a status notice, which is a sentence at the left of the status bar for four seconds, and a notice bar, which is a band under the tool…
+- `crates/app-scriva/src/app/notices.rs` (151) The three tiers of telling the user something, and the two lighter ones drawn here: a status notice, which is a sentence at the left of the status bar for four seconds, and a notice, which takes the row under the tool…
 - `crates/app-scriva/src/app/page_setup.rs` (319) Layout ▸ Page Setup…: paper, orientation, margins and the bands' distance from the edge in one box, with the page drawn from the numbers as they are typed.
-- `crates/app-scriva/src/app/strips.rs` (230) The mode strips: one row under the toolbar that appears for the thing the caret is in — a table, a picked picture — and goes when it is left.
+- `crates/app-scriva/src/app/strips.rs` (283) The row under the toolbar, and the mode strips drawn on it.
 - `crates/app-scriva/src/app/surface.rs` (890) The page surface: the scrolling desk the pages sit on, what the pointer does there — carets, selections, a picture picked, dragged and resized — and where on a page a point lands.
 - `crates/app-scriva/src/app/tables.rs` (486) Editing a table: Tab from cell to cell, the edit every table command goes through, cell margins, column widths, and Insert Table itself.
-- `crates/app-scriva/src/app/tests.rs` (6089) 
+- `crates/app-scriva/src/app/tests.rs` (6201) 
 - `crates/app-scriva/src/app/watermark.rs` (422) The watermark: the box that asks for one, and the shape it becomes in a header, written the way Word writes its own so that Word finds it again.
 - `crates/app-scriva/src/app/word_count.rs` (158) The Word Count box, from the status bar's count: pages, words, characters with and without spaces, paragraphs and lines — and, with a selection, the selection beside the document.
-- `crates/app-scriva/src/app.rs` (5361) The application: the window, the commands, and the keys.
+- `crates/app-scriva/src/app.rs` (5352) The application: the window, the commands, and the keys.
 - `crates/app-scriva/src/author.rs` (339) A document written by the application itself, from a script of its own commands.
 - `crates/app-scriva/src/clip.rs` (955) The formatted halves of a copy: CF_HTML and Rich Text Format.
 - `crates/app-scriva/src/commands.rs` (407) Every command with a name and a key, in one table.

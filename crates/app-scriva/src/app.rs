@@ -4783,20 +4783,11 @@ impl DocumentApp for Scriva {
         let command = self.menus(ui);
         rule(ui);
         let bar = self.toolbar_row(ui);
-        // The mode strip: one at a time, and the band's first, because the
-        // way out of a band matters more than a table in it.
-        let band = match self.scope {
-            wp_model::Scope::Body => self.strip(ui),
-            wp_model::Scope::Chrome(_) => {
-                rule(ui);
-                self.band_bar(ui)
-            }
-        };
-        // The find bar hangs from the toolbar rather than standing over the
-        // page, so that opening it does not push the page down.
-        self.find_held = self.finder.is_some() && self.find_bar(ui);
-        let noticed = self.notice_bar(ui);
-        if let Some(command) = command.or(bar).or(band).or(noticed) {
+        // The row under the toolbar — find bar, notice, or the strip for
+        // where the caret is — which is always there, so that nothing it
+        // says moves the page.
+        let row = self.context_row(ui);
+        if let Some(command) = command.or(bar).or(row) {
             // The same guard the keyboard route takes: File ▸ New discarding
             // an unsaved document would be a menu doing what Ctrl+N will not.
             match command {

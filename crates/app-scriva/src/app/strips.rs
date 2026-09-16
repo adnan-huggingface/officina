@@ -1,5 +1,13 @@
-//! The mode strips: one row under the toolbar that appears for the thing the
-//! caret is in — a table, a picked picture — and goes when it is left.
+//! The row under the toolbar, and the mode strips drawn on it.
+//!
+//! The row is always there and always the same height. It says one thing
+//! at a time — the find bar while it is open, news about the document
+//! while there is some, else the strip for the thing the caret is in: a
+//! header being edited, a picked picture, a table — and nothing when there
+//! is nothing to say. It used to appear only when it had something to say,
+//! and the page moved down a row every time the caret entered a table and
+//! back up when it left; a chrome that changes height under the pointer is
+//! a page that will not hold still.
 //!
 //! The commands in a strip are the Table menu's and the picture's, in the
 //! same words, so that a strip is a shortcut to a menu the user has already
@@ -18,20 +26,69 @@ use ui_kit::{menu, theme};
 const GAP: f32 = 4.0;
 const PAD: f32 = 8.0;
 
+/// What the row has to say this frame, first wins: the find bar is open
+/// because the user opened it, news outranks a mode because it is new,
+/// and the way out of a band matters more than a table in it.
+enum Says {
+    Find,
+    Notice,
+    Band,
+    Picture(f64, f64),
+    Table(TableAt),
+    Nothing,
+}
+
 impl Scriva {
-    /// The strip for the body's caret: the picked picture's, else the caret
-    /// table's, else none — one at a time, and the picture first because it
-    /// is the thing most recently clicked.
-    pub(super) fn strip(&mut self, ui: &mut egui::Ui) -> Option<Command> {
-        if let Some((width, height)) = self.picked_size() {
-            rule(ui);
-            return picture_strip(ui, width, height);
+    /// The row under the toolbar: one row of `theme::STRIP`, whatever it
+    /// says, so that the desk below never moves. Returns the command a
+    /// control on it chose, and leaves in `find_held` whether the find bar
+    /// held the keyboard.
+    pub(super) fn context_row(&mut self, ui: &mut egui::Ui) -> Option<Command> {
+        let says = if self.finder.is_some() {
+            Says::Find
+        } else if !self.notices.is_empty() {
+            Says::Notice
+        } else if matches!(self.scope, wp_model::Scope::Chrome(_)) {
+            Says::Band
+        } else if let Some((width, height)) = self.picked_size() {
+            Says::Picture(width, height)
+        } else if let Some(table) = self.table_at_caret() {
+            Says::Table(table)
+        } else {
+            Says::Nothing
+        };
+        // The hairline's space is always taken, and the line is drawn only
+        // over a row with something on it: an empty row under a rule reads
+        // as an empty bar, and under none as the toolbar's own margin.
+        let width = ui.available_width();
+        let (line, _) = ui.allocate_exact_size(egui::vec2(width, 5.0), egui::Sense::hover());
+        if !matches!(says, Says::Nothing) {
+            let y = line.center().y.round() + 0.5;
+            ui.painter().hline(
+                line.x_range(),
+                y,
+                egui::Stroke::new(1.0, theme::CHROME_RULE),
+            );
         }
-        if let Some(table) = self.table_at_caret() {
-            rule(ui);
-            return table_strip(ui, table);
-        }
-        None
+        self.find_held = false;
+        let mut chosen = None;
+        ui.allocate_ui_with_layout(
+            egui::vec2(width, theme::STRIP),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                ui.set_min_size(egui::vec2(width, theme::STRIP));
+                ui.spacing_mut().item_spacing.x = GAP;
+                match says {
+                    Says::Find => self.find_held = self.find_bar(ui),
+                    Says::Notice => chosen = self.notice_bar(ui),
+                    Says::Band => chosen = self.band_bar(ui),
+                    Says::Picture(width, height) => chosen = picture_strip(ui, width, height),
+                    Says::Table(table) => chosen = table_strip(ui, table),
+                    Says::Nothing => {}
+                }
+            },
+        );
+        chosen
     }
 }
 
@@ -39,9 +96,7 @@ impl Scriva {
 /// Borders ▾ · Shading ▾ · Width… · Margins….
 fn table_strip(ui: &mut egui::Ui, table: TableAt) -> Option<Command> {
     let mut chosen = None;
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = GAP;
-        ui.set_min_height(theme::TARGET.y);
+    {
         ui.add_space(PAD);
         title(ui, "Table", &format!("{} × {}", table.rows, table.columns));
         divider(ui);
@@ -92,7 +147,7 @@ fn table_strip(ui: &mut egui::Ui, table: TableAt) -> Option<Command> {
         if chip(ui, "Margins…", &tooltip(&Command::CellMargins)).clicked() {
             chosen = Some(Command::CellMargins);
         }
-    });
+    }
     chosen
 }
 
@@ -101,9 +156,7 @@ fn table_strip(ui: &mut egui::Ui, table: TableAt) -> Option<Command> {
 /// offered it would be promising what the page cannot show.
 fn picture_strip(ui: &mut egui::Ui, width: f64, height: f64) -> Option<Command> {
     let mut chosen = None;
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = GAP;
-        ui.set_min_height(theme::TARGET.y);
+    {
         ui.add_space(PAD);
         title(
             ui,
@@ -135,7 +188,7 @@ fn picture_strip(ui: &mut egui::Ui, width: f64, height: f64) -> Option<Command> 
         if chip(ui, "Delete", "Delete Picture  Del").clicked() {
             chosen = Some(Command::DeletePicture);
         }
-    });
+    }
     chosen
 }
 
@@ -171,8 +224,8 @@ fn title(ui: &mut egui::Ui, what: &str, figure: &str) {
     ui.add_space(GAP);
 }
 
-/// A hairline between the strip's groups.
-fn divider(ui: &mut egui::Ui) {
+/// A hairline between the row's groups.
+pub(super) fn divider(ui: &mut egui::Ui) {
     let (rect, _) = ui.allocate_exact_size(
         egui::vec2(PAD * 2.0 + 1.0, theme::TARGET.y),
         egui::Sense::hover(),

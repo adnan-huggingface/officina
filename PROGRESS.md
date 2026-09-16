@@ -5745,6 +5745,38 @@ are drawn on before a menu or a preview sets text in them: the tables
 behind them are process-wide and a context is not, and a test's second
 context panicked on a face the first had registered.
 
+## The row under the toolbar is always there, so the page holds still (2026-09-15)
+
+The user clicked into a table in a document and the page dropped a row;
+clicked out and it jumped back up. The table strip, the picture strip, the
+header bar, the find bar and the notice bar each stood in the toolbar's
+panel only while there was one, and the panel is sized by what it holds,
+so every mode change moved the desk under the pointer — 37 points for a
+strip, 30 for Find, a second row again for Replace. D1 of the redesign's
+spec drew them that way ("only in that mode"); it was wrong about what a
+page that will not hold still costs.
+
+`app/strips.rs` now owns one row of `theme::STRIP` under the toolbar,
+`context_row`, which is always allocated and says one thing at a time,
+first wins: the find bar while it is open, the oldest notice while there
+is one, the header bar, the picked picture's strip, the caret table's
+strip, or nothing. The hairline above it is drawn only when it says
+something, so the empty row reads as the toolbar's margin and not as an
+empty bar. The find bar is one row now — Replace's field and its two
+buttons follow the switches after a divider, instead of opening a second
+row that pushed the page again — and the notice bar shows one notice at a
+time with the next behind it. `band_bar`, `notice_bar` and the two strips
+draw straight onto the row rather than in a horizontal of their own.
+
+The test `the_desk_stays_put_whatever_the_row_under_the_toolbar_says` reads
+the painted desk's top edge back through `Driver::frame_at` and asks that
+it does not move as the caret enters and leaves a table, the header opens
+and closes, Find opens, Replace joins it, both close, a notice is posted
+and dismissed — and that each of those was on the screen while it lasted.
+Against the old chrome it fails at the table, 108 against 71. Driven on
+the rig with the user's document before and after
+(`bugs/evidence/rig/shots/{before,after}_*.png` in the story).
+
 ## What driving the redesign found (2026-09-15)
 
 The ten phases were each driven on the rig as they landed — the real
