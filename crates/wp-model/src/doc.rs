@@ -95,6 +95,10 @@ pub struct Paragraph {
     pub mark_revision: Option<Revision>,
     /// `<w:pPrChange>` — the properties before a tracked formatting change.
     pub prop_change: Option<Box<PropChange>>,
+    /// `<w:rPrChange>` in the mark's `<w:rPr>` — what the paragraph mark's
+    /// own formatting was before a tracked change, which Word records beside
+    /// the runs' when formatting changes across a whole paragraph.
+    pub mark_change: Option<Box<PropChange>>,
     /// `<w:sectPr>` inside `<w:pPr>` — **this paragraph ends a section**, and
     /// these are that section's properties.
     ///

@@ -46,6 +46,8 @@ pub(crate) struct ParaPropsRead {
     pub section: Option<Box<SectionProps>>,
     pub change: Option<Box<PropChange>>,
     pub mark_revision: Option<Revision>,
+    /// The mark's own formatting change.
+    pub mark_change: Option<Box<PropChange>>,
 }
 
 /// A colour attribute set: `w:val` plus the theme trio beside it.
@@ -344,6 +346,7 @@ pub(crate) fn para_props(reader: &mut Reader<&[u8]>, ctx: &mut Ctx<'_>) -> ParaP
                         let read = run_props(reader, ctx);
                         out.props.mark = Some(Box::new(read.props));
                         out.mark_revision = read.mark_revision;
+                        out.mark_change = read.change;
                     }
                     b"sectPr" if !empty => {
                         out.section = Some(Box::new(section_props(reader, e.clone(), ctx)))

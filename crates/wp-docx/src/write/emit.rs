@@ -19,6 +19,7 @@ use wp_model::prop::{
     Border, Justify, LineSpacing, ParaProps, RunProps, Shading, ShadingPattern, TabKind, TabLeader,
     Toggle, UnderlineKind, VertAlign,
 };
+use wp_model::revision::{Mark, PreviousProps, PropChange, Revision};
 use wp_model::style::StyleTable;
 use wp_model::table::{
     Cell, CellMargins, CellProps, CellVAlign, FloatAnchor, Row, RowHeight, RowProps, Table,
@@ -105,25 +106,102 @@ pub(crate) fn paragraph(out: &mut String, paragraph: &Paragraph, styles: &StyleT
 
 fn para_props(out: &mut String, paragraph: &Paragraph, styles: &StyleTable) {
     let props = &paragraph.props;
-    let has_mark = props.mark.as_ref().is_some_and(|mark| !mark.is_empty());
-    if props.is_empty() && paragraph.section.is_none() && !has_mark {
+    let mark = props.mark.as_deref().filter(|mark| !mark.is_empty());
+    let revision = paragraph.mark_revision.as_ref();
+    let mark_change = paragraph
+        .mark_change
+        .as_deref()
+        .filter(|change| matches!(change.previous, PreviousProps::Run(_)));
+    // A change that remembers anything but a paragraph's properties has no
+    // place in `<w:pPrChange>`, and the reader never makes one.
+    let change = paragraph
+        .prop_change
+        .as_deref()
+        .and_then(|change| match &change.previous {
+            PreviousProps::Paragraph(previous) => Some((&change.mark, &**previous)),
+            _ => None,
+        });
+    if props.is_empty()
+        && paragraph.section.is_none()
+        && mark.is_none()
+        && revision.is_none()
+        && mark_change.is_none()
+        && change.is_none()
+    {
         return;
     }
     out.push_str("<w:pPr>");
     for name in PARA_ORDER {
         para_prop(out, name, props, styles);
     }
-    // `<w:rPr>` for the paragraph mark, then `<w:sectPr>`, and in that order:
-    // they are the last two children of the sequence.
-    if let Some(mark) = &props.mark {
-        if !mark.is_empty() {
-            run_props(out, mark, styles);
+    // `<w:rPr>` for the paragraph mark, then `<w:sectPr>`, then
+    // `<w:pPrChange>`, and in that order: they end the sequence. A mark
+    // inserted or deleted is said first inside its `<w:rPr>`, and a change to
+    // its formatting last.
+    if mark.is_some() || revision.is_some() || mark_change.is_some() {
+        out.push_str("<w:rPr>");
+        if let Some(revision) = revision {
+            let (element, mark) = match revision {
+                Revision::Inserted(mark) => ("ins", mark),
+                Revision::Deleted(mark) => ("del", mark),
+                Revision::MovedFrom { mark, .. } => ("moveFrom", mark),
+                Revision::MovedTo { mark, .. } => ("moveTo", mark),
+            };
+            let _ = write!(out, "<w:{element}");
+            mark_attributes(out, mark);
+            out.push_str("/>");
         }
+        run_props_changed_inner(
+            out,
+            mark.unwrap_or(&RunProps::default()),
+            mark_change,
+            styles,
+        );
+        out.push_str("</w:rPr>");
     }
     if let Some(section) = &paragraph.section {
         super::section(out, section);
     }
+    if let Some((mark, previous)) = change {
+        out.push_str("<w:pPrChange");
+        mark_attributes(out, mark);
+        out.push('>');
+        // What it remembers is the paragraph's properties alone, its style
+        // among them: no mark, no section.
+        let mut inner = String::new();
+        for name in PARA_ORDER {
+            para_prop(&mut inner, name, previous, styles);
+        }
+        wrapped(out, "pPr", &inner);
+        out.push_str("</w:pPrChange>");
+    }
     out.push_str("</w:pPr>");
+}
+
+/// A change's `w:id`, `w:author` and, when it has one, `w:date`.
+fn mark_attributes(out: &mut String, mark: &Mark) {
+    let _ = write!(
+        out,
+        r#" w:id="{}" w:author="{}""#,
+        mark.id,
+        escape_attr(&mark.author)
+    );
+    if let Some(date) = &mark.date {
+        let _ = write!(out, r#" w:date="{}""#, escape_attr(date));
+    }
+}
+
+/// `<w:{name}>` round `inner`, or `<w:{name}/>` when there is nothing in it:
+/// the element a change's record must have, empty or not.
+fn wrapped(out: &mut String, name: &str, inner: &str) {
+    match inner.is_empty() {
+        true => {
+            let _ = write!(out, "<w:{name}/>");
+        }
+        false => {
+            let _ = write!(out, "<w:{name}>{inner}</w:{name}>");
+        }
+    }
 }
 
 /// Writes a `<w:pPr>` that is paragraph properties and nothing else — a
@@ -312,10 +390,54 @@ pub(crate) fn run_props(out: &mut String, props: &RunProps, styles: &StyleTable)
         return;
     }
     out.push_str("<w:rPr>");
+    run_props_inner(out, props, styles);
+    out.push_str("</w:rPr>");
+}
+
+/// A run's properties without the element round them.
+fn run_props_inner(out: &mut String, props: &RunProps, styles: &StyleTable) {
     for name in RUN_ORDER.iter().chain(RUN_ORDER_TAIL.iter()) {
         run_prop(out, name, props, styles);
     }
+}
+
+/// A run's properties, and the tracked change to them when there is one,
+/// last inside `<w:rPr>` as the schema has it.
+fn run_props_changed(
+    out: &mut String,
+    props: &RunProps,
+    change: Option<&PropChange>,
+    styles: &StyleTable,
+) {
+    if !change.is_some_and(|change| matches!(change.previous, PreviousProps::Run(_))) {
+        return run_props(out, props, styles);
+    }
+    out.push_str("<w:rPr>");
+    run_props_changed_inner(out, props, change, styles);
     out.push_str("</w:rPr>");
+}
+
+/// The inside of an `<w:rPr>`: the properties, then the change to them.
+fn run_props_changed_inner(
+    out: &mut String,
+    props: &RunProps,
+    change: Option<&PropChange>,
+    styles: &StyleTable,
+) {
+    run_props_inner(out, props, styles);
+    let Some((mark, previous)) = change.and_then(|change| match &change.previous {
+        PreviousProps::Run(previous) => Some((&change.mark, &**previous)),
+        _ => None,
+    }) else {
+        return;
+    };
+    out.push_str("<w:rPrChange");
+    mark_attributes(out, mark);
+    out.push('>');
+    let mut inner = String::new();
+    run_props_inner(&mut inner, previous, styles);
+    wrapped(out, "rPr", &inner);
+    out.push_str("</w:rPrChange>");
 }
 
 fn run_prop(out: &mut String, name: &str, props: &RunProps, styles: &StyleTable) {
@@ -854,15 +976,8 @@ fn row_props(out: &mut String, props: &RowProps) {
             | wp_model::Revision::MovedTo { mark, .. } => (None, mark),
         };
         if let Some(element) = element {
-            let _ = write!(
-                out,
-                r#"<w:{element} w:id="{}" w:author="{}""#,
-                mark.id,
-                escape_attr(&mark.author)
-            );
-            if let Some(date) = &mark.date {
-                let _ = write!(out, r#" w:date="{}""#, escape_attr(date));
-            }
+            let _ = write!(out, "<w:{element}");
+            mark_attributes(out, mark);
             out.push_str("/>");
         }
     }
@@ -999,15 +1114,8 @@ fn inline(out: &mut String, inline: &Inline, styles: &StyleTable) {
                 wp_model::Revision::MovedFrom { mark, name } => ("moveFrom", mark, Some(name)),
                 wp_model::Revision::MovedTo { mark, name } => ("moveTo", mark, Some(name)),
             };
-            let _ = write!(
-                out,
-                r#"<w:{element} w:id="{}" w:author="{}""#,
-                mark.id,
-                escape_attr(&mark.author)
-            );
-            if let Some(date) = &mark.date {
-                let _ = write!(out, r#" w:date="{}""#, escape_attr(date));
-            }
+            let _ = write!(out, "<w:{element}");
+            mark_attributes(out, mark);
             if let Some(name) = name {
                 let _ = write!(out, r#" w:name="{}""#, escape_attr(name));
             }
@@ -1100,7 +1208,7 @@ fn anchor(out: &mut String, anchor: &wp_model::Anchor) {
 
 fn run(out: &mut String, run: &Run, styles: &StyleTable) {
     out.push_str("<w:r>");
-    run_props(out, &run.props, styles);
+    run_props_changed(out, &run.props, run.prop_change.as_deref(), styles);
     for piece in &run.content {
         self::piece(out, piece);
     }

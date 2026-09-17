@@ -2298,3 +2298,13 @@ the heading's style as a `<w:pPrChange>` whose previous properties are the
 old ones. The deleted mark itself is `<w:del>` inside the paragraph's
 `<w:pPr><w:rPr>`, and an inserted one `<w:ins>` there.
 
+**A tracked formatting change is the last child of what it records, and
+always has its record.** `<w:pPrChange>` ends `<w:pPr>`, after `<w:rPr>`
+and `<w:sectPr>`; `<w:rPrChange>` ends a run's `<w:rPr>`; and in a
+paragraph mark's `<w:rPr>` the mark's own `<w:ins>` or `<w:del>` comes
+first and its `<w:rPrChange>` last. The record inside a change is
+required, so a change from nothing is `<w:pPrChange …><w:pPr/></w:pPrChange>`,
+which is how Word writes it. What a `<w:pPrChange>` records is
+`CT_PPrBase`: the style is in it, and the mark's formatting and the section
+are not, so rejecting it leaves those as they are.
+

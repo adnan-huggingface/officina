@@ -170,6 +170,7 @@ fn read_paragraph(
                     paragraph.section = read.section;
                     paragraph.prop_change = read.change;
                     paragraph.mark_revision = read.mark_revision;
+                    paragraph.mark_change = read.mark_change;
                 } else if let Some(inline) = read_inline(reader, ctx, &e, &name, start) {
                     paragraph.content.push(inline);
                 } else {

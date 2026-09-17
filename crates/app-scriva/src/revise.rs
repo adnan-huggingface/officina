@@ -83,6 +83,18 @@ fn tracked_in(document: &Document, scope: Scope, out: &mut Vec<Tracked>) {
         }
         let mut offset = 0usize;
         walk(&paragraph.content, scope, index, &mut offset, out);
+        // The mark's own formatting can change as a run's does, and has no
+        // text either.
+        if let Some(change) = &paragraph.mark_change {
+            out.push(Tracked {
+                scope,
+                paragraph: index,
+                offset,
+                mark: change.mark.clone(),
+                what: "formatting changed",
+                text: String::new(),
+            });
+        }
         // A paragraph *mark* can be inserted or deleted too — that is what a
         // tracked paragraph split or merge is, and it has no text of its own.
         if let Some(revision) = &paragraph.mark_revision {
@@ -342,6 +354,7 @@ fn joined(head: &Paragraph, tail: &Paragraph) -> Paragraph {
     let mut joined = crate::text::merge(head, tail);
     joined.props = tail.props.clone();
     joined.prop_change = tail.prop_change.clone();
+    joined.mark_change = tail.mark_change.clone();
     joined.mark_revision = tail.mark_revision.clone();
     joined
 }
@@ -365,6 +378,16 @@ fn settle_paragraph(paragraph: &Paragraph, how: Resolve, only: Option<&Mark>) ->
                 }
             }
             settled.prop_change = None;
+        }
+    }
+    if let Some(change) = &paragraph.mark_change {
+        if only.is_none_or(|mark| &change.mark == mark) {
+            if how == Resolve::Reject {
+                if let wp_model::revision::PreviousProps::Run(previous) = &change.previous {
+                    settled.props.mark = Some(previous.clone());
+                }
+            }
+            settled.mark_change = None;
         }
     }
     if only.is_none() {
@@ -1659,6 +1682,14 @@ mod tests {
         body.props.mark = Some(Box::new(bold.clone()));
         body.prop_change = restyled(2, None);
         let word = document(vec![Block::Paragraph(title), Block::Paragraph(body)]);
+        // The same, its mark made bold as a tracked change of its own.
+        let mut marked = word.clone();
+        if let Block::Paragraph(body) = &mut marked.body[1] {
+            body.mark_change = Some(Box::new(wp_model::PropChange {
+                mark: by(4),
+                previous: wp_model::revision::PreviousProps::Run(Box::default()),
+            }));
+        }
 
         let listed: Vec<(usize, &str)> = tracked(&word)
             .iter()
@@ -1686,9 +1717,10 @@ mod tests {
             vec![row(Some(HEADING), "Title words"), row(None, "Body words")],
         );
         // The mark accepted on its own takes the heading's change with it,
-        // and leaves the following paragraph's to be settled on its own:
-        // rejected, the joined paragraph is body text again.
-        let mut document = word.clone();
+        // and leaves the following paragraph's changes to be settled on
+        // their own: rejected, the joined paragraph is body text again, and
+        // its mark plain.
+        let mut document = marked.clone();
         let mut history = History::new();
         assert!(resolve_one(
             &mut document,
@@ -1700,14 +1732,17 @@ mod tests {
             .iter()
             .map(|change| change.mark.id)
             .collect();
-        assert_eq!(left, [2, 3]);
-        assert!(resolve_one(
-            &mut document,
-            &mut history,
-            &by(2),
-            Resolve::Reject
-        ));
+        assert_eq!(left, [2, 3, 4]);
+        for id in [2, 4] {
+            assert!(resolve_one(
+                &mut document,
+                &mut history,
+                &by(id),
+                Resolve::Reject
+            ));
+        }
         assert_eq!(shape(&document), [row(None, "Title words")]);
+        assert_eq!(document.paragraphs()[0].props.mark, Some(Box::default()));
 
         for how in [Resolve::Accept, Resolve::Reject] {
             let mut document = word.clone();
@@ -1718,6 +1753,37 @@ mod tests {
                 Some(Some(Box::new(bold.clone()))),
                 "{how:?}: the last mark keeps its own formatting"
             );
+        }
+
+        // A mark's own formatting change is listed where the mark is, and
+        // settled as a run's is: rejected, the mark is plain again.
+        let listed: Vec<(usize, &str, usize)> = tracked(&marked)
+            .iter()
+            .map(|change| (change.paragraph, change.what, change.mark.id as usize))
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                (0, "paragraph formatting changed", 1),
+                (0, "paragraph break deleted", 0),
+                (1, "paragraph formatting changed", 2),
+                (1, "deleted", 3),
+                (1, "formatting changed", 4),
+            ]
+        );
+        settles(
+            &marked,
+            vec![row(Some(HEADING), "Title words")],
+            vec![row(Some(HEADING), "Title words"), row(None, "Body words")],
+        );
+        for (how, mark) in [
+            (Resolve::Accept, Some(Box::new(bold.clone()))),
+            (Resolve::Reject, Some(Box::default())),
+        ] {
+            let mut document = marked.clone();
+            resolve_all(&mut document, &mut History::new(), how);
+            let last = document.paragraphs().last().map(|p| p.props.mark.clone());
+            assert_eq!(last, Some(mark), "{how:?}: the mark's own change");
         }
     }
 

@@ -521,9 +521,109 @@ mod tests {
     const TABLE_BODY: &[u8] = br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:document xmlns:w="x" xmlns:w14="y"><w:body><w:p w14:paraId="760D8500" w:rsidR="002A5EF5"><w:r><w:t>before</w:t></w:r></w:p><w:tbl><w:tblPr><w:tblW w:w="6240" w:type="dxa"/><w:tblLayout w:type="fixed"/></w:tblPr><w:tblGrid><w:gridCol w:w="3120"/><w:gridCol w:w="3120"/></w:tblGrid><w:tr w:rsidR="00B15C10"><w:tc><w:tcPr><w:tcW w:w="3120" w:type="dxa"/></w:tcPr><w:p w14:paraId="11111111"><w:r><w:t>alpha</w:t></w:r></w:p></w:tc><w:tc><w:tcPr><w:tcW w:w="3120" w:type="dxa"/></w:tcPr><w:p w14:paraId="22222222"><w:r><w:t>beta</w:t></w:r></w:p></w:tc></w:tr></w:tbl><w:p w14:paraId="4C057B28"><w:r><w:t>after</w:t></w:r></w:p><w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/><w:cols w:space="720"/></w:sectPr></w:body></w:document>"#;
 
+    /// Word's shape for a deletion from the end of a heading's text to the end
+    /// of the document — the heading's mark deleted, and the paragraph after
+    /// it given the heading's style as a tracked formatting change — with that
+    /// paragraph's words made bold as another, a paragraph whose mark was
+    /// inserted and made italic, both tracked, and one whose mark was deleted
+    /// and nothing else.
+    const TRACKED_BODY: &[u8] = br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="x" xmlns:w14="y"><w:body><w:p w14:paraId="11111111"><w:pPr><w:pStyle w:val="Heading1"/><w:rPr><w:del w:id="0" w:author="Adnan Khan" w:date="2026-09-17T12:36:00Z"/></w:rPr><w:pPrChange w:id="1" w:author="Adnan Khan" w:date="2026-09-17T12:36:00Z"><w:pPr><w:pStyle w:val="Heading1"/></w:pPr></w:pPrChange></w:pPr><w:r><w:t>Title words</w:t></w:r></w:p><w:p w14:paraId="22222222"><w:pPr><w:pStyle w:val="Heading1"/><w:pPrChange w:id="2" w:author="Adnan Khan" w:date="2026-09-17T12:36:00Z"><w:pPr/></w:pPrChange></w:pPr><w:del w:id="3" w:author="Adnan Khan" w:date="2026-09-17T12:36:00Z"><w:r><w:rPr><w:b/><w:rPrChange w:id="4" w:author="Adnan Khan" w:date="2026-09-17T12:36:00Z"><w:rPr/></w:rPrChange></w:rPr><w:delText>Body words</w:delText></w:r></w:del></w:p><w:p w14:paraId="33333333"><w:pPr><w:rPr><w:ins w:id="5" w:author="Adnan Khan"/><w:i/><w:rPrChange w:id="9" w:author="Adnan Khan"><w:rPr/></w:rPrChange></w:rPr></w:pPr><w:r><w:t>Inserted mark</w:t></w:r></w:p><w:p w14:paraId="55555555"><w:pPr><w:rPr><w:del w:id="6" w:author="Adnan Khan"/></w:rPr></w:pPr><w:r><w:t>Deleted mark</w:t></w:r></w:p><w:p w14:paraId="44444444"><w:r><w:t>End</w:t></w:r></w:p><w:sectPr><w:pgSz w:w="12240" w:h="15840"/></w:sectPr></w:body></w:document>"#;
+
     fn read(bytes: &[u8]) -> Document {
         let package = crate::tests_support::package_with(bytes);
         crate::read(&package).expect("it reads")
+    }
+
+    /// A paragraph written afresh keeps what is tracked on it besides its
+    /// text: its mark inserted or deleted, its formatting changed, and its
+    /// runs' formatting changed, each with its mark and what was there
+    /// before, in the places and the order Word writes them. Saving an edited
+    /// paragraph used to settle all three without anyone accepting them.
+    #[test]
+    fn a_paragraph_written_afresh_keeps_its_tracked_mark_and_formatting_changes() {
+        let mut document = read(TRACKED_BODY);
+        let read_back = document.clone();
+        let tracked = |document: &Document| -> Vec<String> {
+            document
+                .paragraphs()
+                .iter()
+                .map(|paragraph| {
+                    let runs: Vec<String> = paragraph
+                        .runs()
+                        .iter()
+                        .map(|run| format!("{:?}", run.prop_change))
+                        .collect();
+                    format!(
+                        "{:?} {:?} {:?} {runs:?}",
+                        paragraph.mark_revision, paragraph.prop_change, paragraph.mark_change
+                    )
+                })
+                .collect()
+        };
+        assert_eq!(
+            tracked(&read_back)
+                .iter()
+                .filter(|line| !line.starts_with("None None None"))
+                .count(),
+            4,
+            "the reader keeps all three: {:?}",
+            tracked(&read_back)
+        );
+        for block in &mut document.body {
+            if let Block::Paragraph(paragraph) = block {
+                paragraph.content.push(Inline::Run(Run::of(" more")));
+            }
+        }
+        // And two paragraphs made in the model, as a proposal makes them: one
+        // whose mark is inserted, and one whose formatting has changed, each
+        // with nothing else to say in its `<w:pPr>`.
+        let mut proposed = Paragraph::of("Proposed");
+        proposed.mark_revision = Some(wp_model::Revision::Inserted(wp_model::Mark::new(
+            7,
+            "Assistant",
+        )));
+        let mut restyled = Paragraph::of("Restyled");
+        restyled.prop_change = Some(Box::new(wp_model::PropChange {
+            mark: wp_model::Mark::new(8, "Assistant"),
+            previous: wp_model::revision::PreviousProps::Paragraph(Box::new(
+                wp_model::prop::ParaProps {
+                    justify: Some(wp_model::prop::Justify::Center),
+                    ..Default::default()
+                },
+            )),
+        }));
+        document.body.push(Block::Paragraph(proposed));
+        document.body.push(Block::Paragraph(restyled));
+        let out = document_out(TRACKED_BODY, &document);
+        let text = String::from_utf8(out.clone()).expect("utf-8");
+        assert_eq!(
+            text.matches(" more</w:t>").count(),
+            5,
+            "each written afresh: {text}"
+        );
+        for shape in [
+            r#"<w:pPr><w:pStyle w:val="Heading1"/><w:rPr><w:del w:id="0" w:author="Adnan Khan" w:date="2026-09-17T12:36:00Z"/></w:rPr><w:pPrChange w:id="1" w:author="Adnan Khan" w:date="2026-09-17T12:36:00Z"><w:pPr><w:pStyle w:val="Heading1"/></w:pPr></w:pPrChange></w:pPr>"#,
+            r#"<w:pPr><w:pStyle w:val="Heading1"/><w:pPrChange w:id="2" w:author="Adnan Khan" w:date="2026-09-17T12:36:00Z"><w:pPr/></w:pPrChange></w:pPr>"#,
+            r#"<w:rPr><w:b/><w:rPrChange w:id="4" w:author="Adnan Khan" w:date="2026-09-17T12:36:00Z"><w:rPr/></w:rPrChange></w:rPr>"#,
+            r#"<w:pPr><w:rPr><w:ins w:id="5" w:author="Adnan Khan"/><w:i/><w:rPrChange w:id="9" w:author="Adnan Khan"><w:rPr/></w:rPrChange></w:rPr></w:pPr>"#,
+            r#"<w:pPr><w:rPr><w:del w:id="6" w:author="Adnan Khan"/></w:rPr></w:pPr>"#,
+            r#"<w:p><w:pPr><w:rPr><w:ins w:id="7" w:author="Assistant"/></w:rPr></w:pPr><w:r><w:t>Proposed</w:t></w:r></w:p>"#,
+            r#"<w:p><w:pPr><w:pPrChange w:id="8" w:author="Assistant"><w:pPr><w:jc w:val="center"/></w:pPr></w:pPrChange></w:pPr><w:r><w:t>Restyled</w:t></w:r></w:p>"#,
+        ] {
+            assert!(text.contains(shape), "{shape}\nis not in\n{text}");
+        }
+        let reopened = read(&out);
+        assert_eq!(tracked(&reopened), tracked(&document));
+        // The reader gives every mark it reads properties, empty or not.
+        for block in &mut document.body {
+            if let Block::Paragraph(paragraph) = block {
+                if paragraph.mark_revision.is_some() {
+                    paragraph.props.mark.get_or_insert_with(Box::default);
+                }
+            }
+        }
+        assert_eq!(reopened.body, document.body, "and nothing else moved");
     }
 
     #[test]

@@ -93,7 +93,7 @@ Every source file, its size, and the first sentence of its module doc.
 - `crates/app-scriva/src/panes/review.rs` (784) The Review pane: every tracked change and comment as a card, in document order, with what can be done about each on the card itself.
 - `crates/app-scriva/src/pictures.rs` (366) Decoding the drawings a document carries, and holding them for the painter.
 - `crates/app-scriva/src/publish.rs` (196) What leaves the editor: the fonts and pictures a page renderer needs.
-- `crates/app-scriva/src/revise.rs` (1916) Accepting and rejecting tracked changes, and recording new ones.
+- `crates/app-scriva/src/revise.rs` (1982) Accepting and rejecting tracked changes, and recording new ones.
 - `crates/app-scriva/src/shaper.rs` (869) Measuring text with the faces the application actually has.
 - `crates/app-scriva/src/text.rs` (781) Editing the text of a paragraph.
 - `crates/app-scriva/src/toolbar.rs` (1091) The toolbar: one row, on which the caret's state can be read at a glance.
@@ -324,7 +324,7 @@ Every source file, its size, and the first sentence of its module doc.
 ### `wp-docx`
 
 - `crates/wp-docx/src/bits.rs` (309) The small parts: `settings.xml`, `theme1.xml`, and `people.xml`.
-- `crates/wp-docx/src/body.rs` (1340) Reading a body of blocks: `<w:body>`, a table cell, a header, a footnote, a comment, or the contents of a content control.
+- `crates/wp-docx/src/body.rs` (1341) Reading a body of blocks: `<w:body>`, a table cell, a header, a footnote, a comment, or the contents of a content control.
 - `crates/wp-docx/src/ctx.rs` (165) What a part reader needs beyond the bytes in front of it.
 - `crates/wp-docx/src/error.rs` (53) What can go wrong reading or writing a `.docx`.
 - `crates/wp-docx/src/fonts.rs` (244) `fontTable.xml` — the faces a document carries with it.
@@ -335,14 +335,14 @@ Every source file, its size, and the first sentence of its module doc.
 - `crates/wp-docx/src/numbering.rs` (467) `numbering.xml` — abstract list definitions and the instances of them.
 - `crates/wp-docx/src/parts.rs` (271) Locating a document's parts through the relationship graph.
 - `crates/wp-docx/src/pict.rs` (469) `<w:pict>`: the VML a watermark is still written as.
-- `crates/wp-docx/src/props.rs` (956) Reading `<w:rPr>`, `<w:pPr>` and `<w:sectPr>`.
+- `crates/wp-docx/src/props.rs` (959) Reading `<w:rPr>`, `<w:pPr>` and `<w:sectPr>`.
 - `crates/wp-docx/src/styles.rs` (350) `styles.xml` — document defaults and every named style.
 - `crates/wp-docx/src/write/blank.rs` (398) Authoring a package for a document that has never been in a file.
 - `crates/wp-docx/src/write/comments_out.rs` (371) `comments.xml` and `commentsExtended.xml`: rewritten when the comments changed, authored when the package has none.
 - `crates/wp-docx/src/write/drawing.rs` (567) Putting a drawing back, with the two things a user can change to it applied.
-- `crates/wp-docx/src/write/emit.rs` (1448) Serializing the model back to WordprocessingML.
+- `crates/wp-docx/src/write/emit.rs` (1556) Serializing the model back to WordprocessingML.
 - `crates/wp-docx/src/write/headers_out.rs` (315) Header and footer parts: rewritten when edited, authored when new.
-- `crates/wp-docx/src/write/mod.rs` (835) Writing a document back to its package.
+- `crates/wp-docx/src/write/mod.rs` (935) Writing a document back to its package.
 - `crates/wp-docx/src/write/notes_out.rs` (294) Footnote and endnote parts, authored for a package that has none.
 - `crates/wp-docx/src/write/numbering_out.rs` (413) The numbering part: new definitions appended, existing bytes untouched.
 - `crates/wp-docx/src/write/splice.rs` (222) Reading a part while keeping the bytes it was read from.
@@ -364,7 +364,7 @@ Every source file, its size, and the first sentence of its module doc.
 
 - `crates/wp-model/src/banding.rs` (355) A table style is a scheme, not a set of properties.
 - `crates/wp-model/src/color.rs` (500) Colours, and the three ways a Word document writes one down.
-- `crates/wp-model/src/doc.rs` (2110) The document tree: body, blocks, paragraphs, runs, and the pieces inside a run.
+- `crates/wp-model/src/doc.rs` (2114) The document tree: body, blocks, paragraphs, runs, and the pieces inside a run.
 - `crates/wp-model/src/field.rs` (246) Field codes: the little programs embedded in a document's text.
 - `crates/wp-model/src/lib.rs` (61) Word document model: paragraph/run tree, styles, sections, numbering, tables.
 - `crates/wp-model/src/numbering.rs` (994) Numbering: bullets, numbered lists, and the nine levels of both.
@@ -427,8 +427,8 @@ Every comment that says an application was *measured* — the rules this code ke
 - `crates/app-scriva/src/author.rs:5` Nothing measured what it *writes* — and the faults that cost a week of afternoons were all there: a new document that stated no defaults and came back from Word a third taller, an inserted table whose cells stated no …
 - `crates/app-scriva/src/edit.rs:677` Measured on Word, not designed: a page break *inside* a cell is nothing to Word's layout, wherever in the cell it is, and the layout here ignores one too.
 - `crates/app-scriva/src/edit.rs:2026` Measured on Word 16 (`bugs/page-break-in-table-cell.md` in the story):
-- `crates/app-scriva/src/revise.rs:335` **The mark that stays is the second paragraph's, and so are the properties** — Word's rule, measured: a heading deleted whole, accepted, leaves the body paragraph after it a body paragraph.
-- `crates/app-scriva/src/revise.rs:1374` Measured on Word 16 through COM: the story workspace's `bugs/evidence/word/paragraph-marks.ps1`, with each case's tracked XML and what Accept All and Reject All made of it.
+- `crates/app-scriva/src/revise.rs:347` **The mark that stays is the second paragraph's, and so are the properties** — Word's rule, measured: a heading deleted whole, accepted, leaves the body paragraph after it a body paragraph.
+- `crates/app-scriva/src/revise.rs:1397` Measured on Word 16 through COM: the story workspace's `bugs/evidence/word/paragraph-marks.ps1`, with each case's tracked XML and what Accept All and Reject All made of it.
 - `crates/app-scriva/src/shaper.rs:454` A face this machine does not have, whose line Word was measured to lay: its ideal, and the base every face without a measured base gets — the ideal to a twenty-fourth of a point.
 - `crates/app-scriva/src/shaper.rs:565` Word's laid line pitch, measured rather than derived.
 - `crates/app-scriva/src/shaper.rs:576` **Aptos is measured and deliberately absent.** Word's default face since 2024 fits the same law with a base of exactly 1.2 times the size and a correction of *six* tenths of a point — `tools/probe` writes the probes a…
@@ -489,7 +489,7 @@ Every comment that says an application was *measured* — the rules this code ke
 
 ### `wp-docx`
 
-- `crates/wp-docx/src/body.rs:1276` Measured in Word 16 (2026-09-13): a table stating `tblInd` 0 with cell margins of 108 has its rule on the margin as a Word 2013 document and its text on the margin — the rule 108 twips out — as a Word 2007 one.
+- `crates/wp-docx/src/body.rs:1277` Measured in Word 16 (2026-09-13): a table stating `tblInd` 0 with cell margins of 108 has its rule on the margin as a Word 2013 document and its text on the margin — the rule 108 twips out — as a Word 2007 one.
 - `crates/wp-docx/src/fonts.rs:68` Word substitutes for it instead: measured on such a document, whose list levels name a symbol face 1.48em tall, Word pitches every bulleted line at the ascent of the *text's* face and not at the symbol's, which it cou…
 
 ### `wp-layout`
@@ -539,11 +539,11 @@ Every comment that says an application was *measured* — the rules this code ke
 
 ### `wp-model`
 
-- `crates/wp-model/src/doc.rs:850` Unstretched, the words are set at the size whose advances fill the shape's width and are only scaled down the page until one em covers its height — which for Word's own diagonal `CONFIDENTIAL`, measured, is Courier Ne…
-- `crates/wp-model/src/doc.rs:889` Measured against Word itself, which bakes the answer into its own PDF: a ramp of every grey from 0 to 255, exported at seven settings of brightness and contrast, gives
-- `crates/wp-model/src/doc.rs:922` The two notations say the same thing, which is not obvious and was measured rather than assumed: handed a shape stating `gain="19661f" blacklevel="22938f"`, Word reports the picture's brightness as 0.85 and its contra…
-- `crates/wp-model/src/doc.rs:1208` **Fifteen is where Word began closing up the spaces of a justified line.** Measured against Word over a paragraph of fixed text and a right indent stepped a tenth of a point at a time: a document in mode fifteen holds…
-- `crates/wp-model/src/doc.rs:1238` **The two formats answer this differently and neither states it.** Measured on `word-odf-export.odt`, whose body sets `Body Text` an eighth of an inch above and below and `Heading 2` a quarter above: LibreOffice puts …
+- `crates/wp-model/src/doc.rs:854` Unstretched, the words are set at the size whose advances fill the shape's width and are only scaled down the page until one em covers its height — which for Word's own diagonal `CONFIDENTIAL`, measured, is Courier Ne…
+- `crates/wp-model/src/doc.rs:893` Measured against Word itself, which bakes the answer into its own PDF: a ramp of every grey from 0 to 255, exported at seven settings of brightness and contrast, gives
+- `crates/wp-model/src/doc.rs:926` The two notations say the same thing, which is not obvious and was measured rather than assumed: handed a shape stating `gain="19661f" blacklevel="22938f"`, Word reports the picture's brightness as 0.85 and its contra…
+- `crates/wp-model/src/doc.rs:1212` **Fifteen is where Word began closing up the spaces of a justified line.** Measured against Word over a paragraph of fixed text and a right indent stepped a tenth of a point at a time: a document in mode fifteen holds…
+- `crates/wp-model/src/doc.rs:1242` **The two formats answer this differently and neither states it.** Measured on `word-odf-export.odt`, whose body sets `Body Text` an eighth of an inch above and below and `Heading 2` a quarter above: LibreOffice puts …
 - `crates/wp-model/src/style.rs:373` Nothing in ECMA-376 says so; it was measured, by asking Word for the resolved size of one cell across twenty-three variants of one document (2026-08-23):
 - `crates/wp-model/src/style.rs:497` Measured against a second producer's tables, whose styles pad every cell by 115 twips and whose tables state an indent of -7: Word rules them seven twips into the margin and sets their text a padding further in, so an…
 - `crates/wp-model/src/table.rs:535` Measured: this is what Word's Insert Below copies, with empty cells (LEARNINGS.md, "A column Word inserts…").

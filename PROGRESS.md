@@ -6711,6 +6711,43 @@ No reader or writer changed; `fidelity` holds. The writer's own gap — a
 paragraph written afresh loses its tracked mark and formatting changes —
 is the next entry's.
 
+## A paragraph Scriva writes afresh keeps what is tracked on it (2026-09-17)
+
+The reader kept a paragraph's tracked mark (`<w:ins>` or `<w:del>` in the
+mark's `<w:rPr>`), its tracked formatting change (`<w:pPrChange>`) and its
+runs' (`<w:rPrChange>`); the writer wrote none of them. A paragraph nobody
+touched keeps its bytes, so the loss came only with an edit: typing in a
+paragraph, formatting it, or settling another change in it saved it without
+the rest, which turned a proposed paragraph break into an ordinary one, kept
+a break proposed for deletion, and made a formatting change final without
+anyone accepting it. Assist's proposals, which insert and delete paragraph
+marks and are saved open, could not have been written at all.
+
+`write/emit.rs` writes all three where the schema and Word put them: the
+mark's revision first inside its `<w:rPr>`, then its properties, then the
+change to them; `<w:pPrChange>` last in `<w:pPr>`, after `<w:sectPr>`,
+remembering the paragraph's properties with its style and without mark or
+section; `<w:rPrChange>` last in a run's `<w:rPr>`. A change that remembers
+nothing still writes the record it must have (`<w:pPr/>`, `<w:rPr/>`), as
+Word does. A paragraph whose `<w:pPr>` has nothing else to say — a proposal
+made in the model — still gets one.
+
+The mark's own formatting change (`<w:rPrChange>` inside the mark's
+`<w:rPr>`, which Word writes beside the runs' when a whole paragraph is
+formatted) was not in the model at all; it is `Paragraph::mark_change` now,
+read, written, listed ("formatting changed", where the mark is), accepted,
+rejected, and carried by a join with the rest of the following paragraph's
+mark.
+
+Tests: `a_paragraph_written_afresh_keeps_its_tracked_mark_and_formatting_changes`
+(`wp-docx`: Word's shape for a deletion from a heading's end, a run made
+bold, a mark inserted and made italic, a mark deleted and nothing else, and
+two paragraphs made in the model, each edited, written, checked against the
+exact XML, and read back equal), and
+`a_paragraphs_formatting_change_is_listed_accepted_and_rejected` now covers
+the mark's change too. Fifteen mutations, one rule broken at a time, were
+each caught.
+
 ## The harness sees what the user sees (2026-09-16)
 
 Fifteen fixes in one session paid for the same missing tools each time;
