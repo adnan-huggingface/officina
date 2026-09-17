@@ -391,6 +391,48 @@ fn page_down_at_whole_page_zoom_shows_the_next_page_whole() {
     assert_eq!(app.caret().offset, "six".len(), "at its end");
 }
 
+/// Page Down with a picture picked turns the page as it does with the
+/// caret in the text: Word lets the picture go and moves the view. The
+/// picked picture took every key that was not one of its own and dropped
+/// it, so the keys did nothing at all while a picture was selected.
+#[test]
+fn page_down_with_a_picture_picked_still_turns_the_page() {
+    let drive = Driver::new();
+    let mut app = six_pages(&drive);
+    assert!(app.insert_picture(PIXEL, "image/png", 96, 48));
+    assert!(app.picked.is_some(), "the picture is picked");
+    let fit = app.fit_percent(false).expect("a fit") as f64 / 100.0;
+    app.run(Command::Zoom(fit));
+    drive.settle(&mut app);
+    drive.settle(&mut app);
+    let zoom = (app.view.zoom * view::SCALE) as f32;
+    let pitch = (app.view.pages()[0].geometry.height + view::GAP as f64) as f32 * zoom;
+    let start = app.scroll;
+    drive.press(&mut app, "PageDown");
+    drive.settle(&mut app);
+    assert!(
+        (app.scroll - start - pitch).abs() < 1.0,
+        "the desk moved one page: {} from {start} against {pitch}",
+        app.scroll
+    );
+    assert!(app.picked.is_none(), "and the picture was let go");
+    let page = view::caret_rect(&app.view, wp_model::Scope::Body, app.caret())
+        .map(|(page, _)| page)
+        .expect("a caret");
+    assert_eq!(page, 1, "the caret is on the page shown");
+    app.picked = Some(crate::drawings::Picked {
+        paragraph: 0,
+        nth: 0,
+    });
+    drive.press(&mut app, "PageUp");
+    drive.settle(&mut app);
+    assert!(
+        (app.scroll - start).abs() < 1.0,
+        "Page Up with a picture picked goes back: {} against {start}",
+        app.scroll
+    );
+}
+
 /// The frame a pointer move arrives in, mid-sweep, paints the selection
 /// up to that move — not up to the move before it. The desk painted
 /// first and read the pointer after, so the highlight trailed the mouse

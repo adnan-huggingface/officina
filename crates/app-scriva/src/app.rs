@@ -3755,8 +3755,14 @@ impl Scriva {
         use egui::Key;
         // A selected picture takes the keys that would otherwise edit text:
         // Delete removes it, Escape lets it go, and typing is not for it.
+        // Page Up and Page Down are the view's, not the picture's: Word lets
+        // the picture go and turns the page.
         if self.picked.is_some() {
             match key {
+                Key::PageUp | Key::PageDown => {
+                    self.picked = None;
+                    return self.key(key, modifiers);
+                }
                 Key::Delete | Key::Backspace => {
                     self.delete_drawing();
                 }

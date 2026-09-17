@@ -6083,6 +6083,14 @@ The 161 tests are the same by name, and all pass. Test
 `a_drag_is_a_press_moves_and_a_release_and_a_hold_keeps_the_button_down`
 covers the new gestures (LEARNINGS: a double click after a right click).
 
+## Page Up and Page Down turn the page with a picture picked (2026-09-17)
+
+With a picture picked, `key` gave the picture every key and dropped the
+ones it had no use for, Page Up and Page Down among them, so the keys did
+nothing until the picture was let go. They are the view's now: the
+picture is let go and the page turns, with the caret on the page shown,
+as Word does. Test `page_down_with_a_picture_picked_still_turns_the_page`.
+
 ## The harness sees what the user sees (2026-09-16)
 
 Fifteen fixes in one session paid for the same missing tools each time;

@@ -65,7 +65,7 @@ Every source file, its size, and the first sentence of its module doc.
 - `crates/app-scriva/src/app/surface.rs` (968) The page surface: the scrolling desk the pages sit on, what the pointer does there — carets, selections, a picture picked, dragged and resized — and where on a page a point lands.
 - `crates/app-scriva/src/app/tables.rs` (486) Editing a table: Tab from cell to cell, the edit every table command goes through, cell margins, column widths, and Insert Table itself.
 - `crates/app-scriva/src/app/tests/bands.rs` (753) Headers, footers, watermarks and sections: the bands a page wears.
-- `crates/app-scriva/src/app/tests/desk.rs` (1077) The desk as it is painted: pages, zoom, scrolling, the caret and the pointer.
+- `crates/app-scriva/src/app/tests/desk.rs` (1119) The desk as it is painted: pages, zoom, scrolling, the caret and the pointer.
 - `crates/app-scriva/src/app/tests/editing.rs` (1127) Typing, keys in the text, lists, the clipboard, formatting and undo.
 - `crates/app-scriva/src/app/tests/files.rs` (1366) Opening, saving, the formats between them, and what the window says about a file.
 - `crates/app-scriva/src/app/tests/menus.rs` (743) Menus, shortcuts, boxes and the toolbar, reached the way a keyboard reaches them.
@@ -75,7 +75,7 @@ Every source file, its size, and the first sentence of its module doc.
 - `crates/app-scriva/src/app/tests/tables.rs` (776) Tables: inserting, filling, merging, borders, rows and columns.
 - `crates/app-scriva/src/app/watermark.rs` (424) The watermark: the box that asks for one, and the shape it becomes in a header, written the way Word writes its own so that Word finds it again.
 - `crates/app-scriva/src/app/word_count.rs` (158) The Word Count box, from the status bar's count: pages, words, characters with and without spaces, paragraphs and lines — and, with a selection, the selection beside the document.
-- `crates/app-scriva/src/app.rs` (5501) The application: the window, the commands, and the keys.
+- `crates/app-scriva/src/app.rs` (5507) The application: the window, the commands, and the keys.
 - `crates/app-scriva/src/author.rs` (536) A document written by the application itself, from a script of its own commands.
 - `crates/app-scriva/src/clip.rs` (955) The formatted halves of a copy: CF_HTML and Rich Text Format.
 - `crates/app-scriva/src/commands.rs` (407) Every command with a name and a key, in one table.
@@ -386,8 +386,8 @@ Every comment that says an application was *measured* — the rules this code ke
 - `crates/app-scriva/src/app/tables.rs:460` Measured: a cell that states none is laid to its *content* by Word, whatever the grid says — a 468pt table came back 28pt wide, its second column as wide as "B1", and an empty column under a point.
 - `crates/app-scriva/src/app/watermark.rs:272` measured against a watermark Word wrote itself, which put the shape in the default header and left the other two parts empty.
 - `crates/app-scriva/src/app.rs:470` Word's own Page Setup keeps those last two on the same sheet, under "From edge", and they belong with the margins because they are measured against the same four edges.
-- `crates/app-scriva/src/app.rs:4711` 96 pixels to the inch: what a screen snippet is measured in, and what Word assumes of an image that does not say otherwise.
-- `crates/app-scriva/src/app.rs:4845` What a new document is in Word today, measured on the reference machine (Word 16.0.20326, 2026-09-13): twelve points, eight points after every paragraph, and a line of 278 to 240 — the document defaults Word writes in…
+- `crates/app-scriva/src/app.rs:4717` 96 pixels to the inch: what a screen snippet is measured in, and what Word assumes of an image that does not say otherwise.
+- `crates/app-scriva/src/app.rs:4851` What a new document is in Word today, measured on the reference machine (Word 16.0.20326, 2026-09-13): twelve points, eight points after every paragraph, and a line of 278 to 240 — the document defaults Word writes in…
 - `crates/app-scriva/src/author.rs:5` Nothing measured what it *writes* — and the faults that cost a week of afternoons were all there: a new document that stated no defaults and came back from Word a third taller, an inserted table whose cells stated no …
 - `crates/app-scriva/src/edit.rs:677` Measured on Word, not designed: a page break *inside* a cell is nothing to Word's layout, wherever in the cell it is, and the layout here ignores one too.
 - `crates/app-scriva/src/edit.rs:2026` Measured on Word 16 (`bugs/page-break-in-table-cell.md` in the story):
