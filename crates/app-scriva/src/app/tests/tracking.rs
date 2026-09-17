@@ -687,6 +687,52 @@ fn a_contents_list_with_a_bookmark_among_its_entries_is_left_as_it_was() {
     );
 }
 
+/// Lines pasted at a heading's end, and the paste then rejected, left the
+/// heading a Normal paragraph: the paragraph that ends with the heading's
+/// mark had taken the style after it with nothing recorded. It is recorded
+/// as a formatting change, as Enter's is, and rejecting gives it back.
+#[test]
+fn lines_pasted_at_a_headings_end_and_rejected_leave_it_a_heading() {
+    let mut app = tracking();
+    let before = texts(&app);
+    put(&mut app, 0, 11);
+    app.paste_text(" more\nnext line");
+    assert!(
+        listed(&app)
+            .iter()
+            .any(|(paragraph, what, _)| *paragraph == 1 && what.contains("formatting")),
+        "{:?}",
+        listed(&app)
+    );
+    app.run(Command::RejectAll);
+    assert_eq!(texts(&app), before);
+
+    // A heading whose style was already a tracked change keeps that change
+    // in both halves, each with an id of its own.
+    let mut app = tracking();
+    if let Block::Paragraph(paragraph) = &mut app.document.body[0] {
+        paragraph.prop_change = Some(Box::new(wp_model::PropChange {
+            mark: wp_model::Mark::new(7, "Assistant"),
+            previous: wp_model::revision::PreviousProps::Paragraph(Box::default()),
+        }));
+    }
+    put(&mut app, 0, 11);
+    app.paste_text(" more\nnext line");
+    let restyles: Vec<u32> = crate::revise::tracked(&app.document)
+        .iter()
+        .filter(|change| change.what.contains("formatting"))
+        .map(|change| change.mark.id)
+        .collect();
+    assert_eq!(restyles.len(), 2, "{restyles:?}");
+    assert_ne!(restyles[0], restyles[1]);
+    // Rejected, both halves go back to what the heading was before that
+    // change, and join.
+    app.run(Command::RejectAll);
+    let mut unstyled = before;
+    unstyled[0].0 = None;
+    assert_eq!(texts(&app), unstyled);
+}
+
 /// A second line pasted at a heading's end takes the style after the
 /// heading, as Enter gives it untracked.
 #[test]

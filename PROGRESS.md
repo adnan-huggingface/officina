@@ -6971,6 +6971,22 @@ each caught, and the earlier ones caught again after the second review's
 changes; two more break a check that an earlier one makes unreachable.
 `fidelity` holds.
 
+## A tracked paste rejected leaves a heading a heading (2026-09-17)
+
+Lines pasted at a heading's end with Track Changes on, and then rejected, left
+the heading a Normal paragraph. The paste's last paragraph, which ends with the
+heading's mark, had taken the style after the heading, and nothing recorded
+that. Rejecting the paste then joined the heading's text to it, and a join keeps
+the second paragraph's properties. `revise::paste_paragraphs` now records the
+new properties of that paragraph as a formatting change, as Word does for Enter
+at a heading's end and as Scriva's tracked Enter already did. When the old
+paragraph already had a tracked formatting change, that paragraph keeps a copy
+of it, with an id of its own, which the paste used to drop.
+
+Test: `lines_pasted_at_a_headings_end_and_rejected_leave_it_a_heading`. Three
+mutations, one rule broken at a time, were each caught. A fourth, which applies
+the rule to pastes within one paragraph too, changes nothing a test can see.
+
 ## The harness sees what the user sees (2026-09-16)
 
 Fifteen fixes in one session paid for the same missing tools each time;

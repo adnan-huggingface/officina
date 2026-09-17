@@ -1379,6 +1379,7 @@ pub fn paste_paragraphs(
     }
     let first = next_revision_id(document);
     let mut ids = Ids(first);
+    let target = crate::edit::paragraph_at(document, scope, caret.paragraph);
     let clip: Vec<Paragraph> = clip
         .iter()
         .map(|paragraph| {
@@ -1413,6 +1414,28 @@ pub fn paste_paragraphs(
         };
         if index < landed.paragraph {
             paragraph.mark_revision = Some(Revision::Inserted(author.mark(ids.take())));
+        }
+        // The paragraph that now ends with the old mark has the last pasted
+        // paragraph's properties: a formatting change, as Enter's is, so that
+        // rejecting the paste gives the old paragraph its own back.
+        if let (Some(target), true) = (
+            &target,
+            index == landed.paragraph && index > caret.paragraph,
+        ) {
+            // A change it had already goes with its mark, and the first
+            // paragraph keeps its own copy: an id of its own for each.
+            paragraph.prop_change = target.prop_change.clone().map(|mut change| {
+                change.mark.id = ids.take();
+                change
+            });
+            if paragraph.prop_change.is_none() && look(&paragraph.props) != look(&target.props) {
+                paragraph.prop_change = Some(Box::new(wp_model::PropChange {
+                    mark: author.mark(ids.take()),
+                    previous: wp_model::revision::PreviousProps::Paragraph(Box::new(look(
+                        &target.props,
+                    ))),
+                }));
+            }
         }
         join_changes(&mut paragraph.content, &author.name, first);
         crate::text::prune(paragraph);
