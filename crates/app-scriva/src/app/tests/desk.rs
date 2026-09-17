@@ -214,6 +214,83 @@ fn six_pages(drive: &Driver) -> Scriva {
     app
 }
 
+/// With nothing else to say, the row under the toolbar is the styles
+/// gallery: the document's quick styles as chips in Word's names for them,
+/// the caret's style lit, and a click on one applies it. The idle row was
+/// chrome with nothing on it and no rule above, and read as the toolbar's
+/// margin. Only the chips that fit are drawn, and the desk stays where it
+/// was, since the row was always there.
+#[test]
+fn the_idle_row_is_the_styles_gallery() {
+    let drive = Driver::new();
+    let mut app = app_with(&["before", "after"]);
+    drive.settle(&mut app);
+    // The toolbar's style box says "Normal" too; the gallery's is the lower.
+    let chip = |painted: &Painted, name: &str| -> Option<egui::Rect> {
+        painted
+            .texts()
+            .into_iter()
+            .filter(|text| text.text == name)
+            .map(|text| text.rect)
+            .max_by(|a, b| a.top().total_cmp(&b.top()))
+    };
+    let lit = |painted: &Painted, name: &str| -> bool {
+        let at = chip(painted, name).expect("the chip").center();
+        painted
+            .filled(ui_kit::theme::TINT_ON)
+            .iter()
+            .any(|rect| rect.contains(at))
+    };
+    let painted = drive.paint(&mut app, Vec::new());
+    let desk = painted.largest(ui_kit::theme::DESK).expect("the desk");
+    for name in ["Normal", "Heading 1", "Heading 2", "Heading 3", "Title"] {
+        let rect = chip(&painted, name)
+            .unwrap_or_else(|| panic!("{name} is in the gallery: {:?}", painted.strings()));
+        assert!(rect.bottom() < desk.top(), "{name} is above the desk");
+    }
+    assert!(lit(&painted, "Normal"), "the caret's style is lit");
+    assert!(!lit(&painted, "Heading 1"), "and no other");
+
+    let heading = chip(&painted, "Heading 1").expect("the chip").center();
+    drive.click(&mut app, heading);
+    let heading_id = app
+        .quick_styles()
+        .into_iter()
+        .find(|(_, name)| name == "Heading 1")
+        .map(|(id, _)| id)
+        .expect("Heading 1 is a quick style");
+    assert_eq!(
+        app.document.paragraphs()[0].props.style,
+        Some(heading_id),
+        "the click applied the style to the caret's paragraph"
+    );
+    let painted = drive.paint(&mut app, Vec::new());
+    assert!(lit(&painted, "Heading 1"), "which is lit now");
+    assert!(!lit(&painted, "Normal"));
+    assert_eq!(
+        painted
+            .largest(ui_kit::theme::DESK)
+            .expect("the desk")
+            .top(),
+        desk.top(),
+        "the desk did not move"
+    );
+
+    // In a window too narrow for them all, the ones that do not fit are
+    // left out rather than cut in half.
+    let narrow = Driver::sized(egui::vec2(380.0, 600.0));
+    let mut app = app_with(&["before"]);
+    narrow.settle(&mut app);
+    let painted = narrow.paint(&mut app, Vec::new());
+    assert!(chip(&painted, "Normal").is_some(), "the first chip fits");
+    for name in ["Normal", "Heading 1", "Heading 2", "Heading 3", "Title"] {
+        if let Some(rect) = chip(&painted, name) {
+            assert!(rect.right() <= 380.0, "{name} is whole: {rect:?}");
+        }
+    }
+    assert!(chip(&painted, "Title").is_none(), "the last does not fit");
+}
+
 /// A document opens at the zoom that shows a whole page, as Word opens one;
 /// so does a new document, and the one the window starts with — and the
 /// fit follows the desk until a zoom is chosen, because the window opens

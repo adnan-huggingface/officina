@@ -957,7 +957,7 @@ impl Scriva {
             .map(|(id, style)| {
                 (
                     id,
-                    style.name.as_deref().unwrap_or(&style.id).to_owned(),
+                    shown_style_name(style.name.as_deref().unwrap_or(&style.id)),
                     style.priority.unwrap_or(99),
                 )
             })
@@ -4906,6 +4906,44 @@ fn blank() -> Document {
         document.styles.insert(style);
     }
     document
+}
+
+/// The name Word shows for a style. Word stores its built-in names in
+/// lower case — `heading 1`, `toc 2`, `footnote text` — and shows them
+/// capitalised: `Heading 1`, `TOC 2`, `Footnote Text`. A style the user
+/// named is shown as it was typed.
+pub(crate) fn shown_style_name(name: &str) -> String {
+    const BUILT_IN: [&str; 12] = [
+        "heading ",
+        "toc ",
+        "index ",
+        "caption",
+        "header",
+        "footer",
+        "footnote text",
+        "endnote text",
+        "annotation text",
+        "table of figures",
+        "index heading",
+        "envelope address",
+    ];
+    if !BUILT_IN.iter().any(|built| name.starts_with(built)) {
+        return name.to_owned();
+    }
+    name.split(' ')
+        .map(|word| match word {
+            "toc" => "TOC".to_owned(),
+            "of" => "of".to_owned(),
+            _ => {
+                let mut letters = word.chars();
+                letters
+                    .next()
+                    .map(|first| first.to_uppercase().chain(letters).collect())
+                    .unwrap_or_default()
+            }
+        })
+        .collect::<Vec<String>>()
+        .join(" ")
 }
 
 impl DocumentApp for Scriva {

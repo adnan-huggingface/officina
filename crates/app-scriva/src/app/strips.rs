@@ -3,8 +3,9 @@
 //! The row is always there and always the same height. It says one thing
 //! at a time — the find bar while it is open, news about the document
 //! while there is some, else the strip for the thing the caret is in: a
-//! header being edited, a picked picture, a table — and nothing when there
-//! is nothing to say. It used to appear only when it had something to say,
+//! header being edited, a picked picture, a table — and, when the caret is
+//! in plain text, the document's quick styles, as Word's ribbon shows its
+//! styles gallery. It is empty only for a document with no quick styles. It used to appear only when it had something to say,
 //! and the page moved down a row every time the caret entered a table and
 //! back up when it left; a chrome that changes height under the pointer is
 //! a page that will not hold still.
@@ -35,6 +36,7 @@ enum Says {
     Band,
     Picture(f64, f64),
     Table(TableAt),
+    Styles(Vec<(wp_model::StyleId, String)>, Option<wp_model::StyleId>),
     Nothing,
 }
 
@@ -55,7 +57,11 @@ impl Scriva {
         } else if let Some(table) = self.table_at_caret() {
             Says::Table(table)
         } else {
-            Says::Nothing
+            let styles = self.quick_styles();
+            match styles.is_empty() {
+                true => Says::Nothing,
+                false => Says::Styles(styles, self.style_at()),
+            }
         };
         // The hairline's space is always taken, and the line is drawn only
         // over a row with something on it: an empty row under a rule reads
@@ -84,6 +90,7 @@ impl Scriva {
                     Says::Band => chosen = self.band_bar(ui),
                     Says::Picture(width, height) => chosen = picture_strip(ui, width, height),
                     Says::Table(table) => chosen = table_strip(ui, table),
+                    Says::Styles(styles, current) => chosen = styles_strip(ui, &styles, current),
                     Says::Nothing => {}
                 }
             },
@@ -146,6 +153,39 @@ fn table_strip(ui: &mut egui::Ui, table: TableAt) -> Option<Command> {
         }
         if chip(ui, "Margins…", &tooltip(&Command::CellMargins)).clicked() {
             chosen = Some(Command::CellMargins);
+        }
+    }
+    chosen
+}
+
+/// `Styles` · a chip for each of the document's quick styles, the caret's
+/// lit — Word's styles gallery, in the row's words. The chips that do not
+/// fit the row are left out, not cut in half; the toolbar's style box and
+/// the Styles menu have every one.
+fn styles_strip(
+    ui: &mut egui::Ui,
+    styles: &[(wp_model::StyleId, String)],
+    current: Option<wp_model::StyleId>,
+) -> Option<Command> {
+    let mut chosen = None;
+    ui.add_space(PAD);
+    ui.label(
+        egui::RichText::new("Styles")
+            .strong()
+            .size(theme::TEXT)
+            .color(theme::INK),
+    );
+    divider(ui);
+    // The row can be wider than the window when the toolbar above it is,
+    // so the room is what is left of the row *on screen*.
+    let right = ui.max_rect().right().min(ui.clip_rect().right());
+    for (id, name) in styles {
+        let galley = chip_galley(ui, name);
+        if ui.cursor().left() + galley.size().x + PAD * 2.0 > right {
+            break;
+        }
+        if lit_chip(ui, galley, name, current == Some(*id)).clicked() {
+            chosen = Some(Command::Style(*id));
         }
     }
     chosen
@@ -240,14 +280,30 @@ pub(super) fn divider(ui: &mut egui::Ui) {
 
 /// A flat text button: the running size, padded, tinted for its state.
 fn chip(ui: &mut egui::Ui, label: &str, tip: &str) -> egui::Response {
-    let galley = ui.painter().layout_no_wrap(
+    let galley = chip_galley(ui, label);
+    lit_chip(ui, galley, tip, false)
+}
+
+/// A chip's label, laid out, so that its width can be asked before it is
+/// placed.
+fn chip_galley(ui: &egui::Ui, label: &str) -> std::sync::Arc<egui::Galley> {
+    ui.painter().layout_no_wrap(
         label.to_owned(),
         egui::FontId::proportional(theme::TEXT),
         theme::INK,
-    );
+    )
+}
+
+/// A chip from its laid-out label, lit when `on`.
+fn lit_chip(
+    ui: &mut egui::Ui,
+    galley: std::sync::Arc<egui::Galley>,
+    tip: &str,
+    on: bool,
+) -> egui::Response {
     let size = egui::vec2(galley.size().x + PAD * 2.0, theme::TARGET.y);
     let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
-    icons::paint_state(ui, rect, &response, false);
+    icons::paint_state(ui, rect, &response, on);
     let at = egui::pos2(rect.left() + PAD, rect.center().y - galley.size().y / 2.0);
     ui.painter().galley(at, galley, theme::INK);
     response.on_hover_text(tip)

@@ -6091,6 +6091,24 @@ nothing until the picture was let go. They are the view's now: the
 picture is let go and the page turns, with the caret on the page shown,
 as Word does. Test `page_down_with_a_picture_picked_still_turns_the_page`.
 
+## The row under the toolbar is the styles gallery when it has nothing else to say (2026-09-17)
+
+With the caret in plain text the row under the toolbar was empty chrome
+with no rule above it, and read as the toolbar's margin. It is Word's
+styles gallery now: `Styles`, then a chip for each of the document's
+quick styles in their gallery order, the caret's lit, and a click applies
+one. A mode, the find bar and a notice still take the row, as before, and
+the row keeps its one height, so the desk does not move. Chips that do
+not fit the window are left out rather than cut in half; the room is
+measured against what is on screen, because the row is as wide as the
+toolbar above it, and that can be wider than a narrow window.
+
+Style names are shown as Word shows them: Word stores its built-in names
+in lower case (`heading 1`, `toc 2`) and shows them capitalised
+(`Heading 1`, `TOC 2`). The toolbar's style box and the Styles menu read
+"heading 1" until now. `shown_style_name` changes only what is shown;
+nothing written changes. Test `the_idle_row_is_the_styles_gallery`.
+
 ## The harness sees what the user sees (2026-09-16)
 
 Fifteen fixes in one session paid for the same missing tools each time;

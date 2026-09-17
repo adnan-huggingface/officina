@@ -348,8 +348,8 @@ fn a_style_is_chosen_from_the_styles_menu_by_the_arrows() {
     let styles = app.quick_styles();
     let heading = styles
         .iter()
-        .position(|(_, name)| name == "heading 1")
-        .expect("heading 1 is a quick style");
+        .position(|(_, name)| name == "Heading 1")
+        .expect("Heading 1 is a quick style");
     drive.key(&mut app, egui::Key::S, egui::Modifiers::ALT);
     drive.settle(&mut app);
     drive.settle(&mut app);
