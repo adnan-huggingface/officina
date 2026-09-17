@@ -6313,6 +6313,336 @@ Tests (ui-kit):
 - `the_cache_directory_follows_the_config_directorys_rule_on_every_platform`
 - `assists_settings_are_one_file_for_both_applications`
 
+## Assist, phase 2: the pane (2026-09-17)
+
+The second of Assist's six phases, and `PLAN.md` is its plan: the pane a
+person asks in, drawn once in `ui_kit::assist` for both applications, with
+nothing of either document in it. Nothing in either application calls it
+yet; Scriva is phase 3 and Calx phase 4.
+
+**The contract.** An application gives the pane a `Setup` once — the
+system prompt and the tools — and an `Offer` on every frame it is drawn:
+what a request can be about (`Scope`, with a word count where that is worth
+saying), which scope the selection makes it, the quick verbs, its own rows
+for the pane's menu, and the names of the panes that share the slot. The
+pane gives back a `Chosen`: a request to put into words (`Ask`), a card's
+action, a menu row, a tab, Escape (`Leave`), Close, or Stop on the
+download's bar. The application answers an `Ask` with a `Prepared` — what
+the transcript shows, what the helper is sent, the scope, and what leaves
+the computer, in a phrase — through `send`. What reaches beyond the window
+goes through `Reach` (`look`, `connect`, `check`): `Real` in the
+applications, a fake in the tests.
+
+**The document stays on the window's thread.** A request runs on a thread
+of its own (`request.rs`). `poll`, called on every frame whether the pane
+is drawn or not, takes in the helper's words and hands the application at
+most one `Call`; the application runs it and gives back a `Ran` — the
+result, a line for the transcript, a card for a change — with
+`answer(&call, ran)`. Calls are numbered, and only the call out is
+answered: the result of a call answered already, or made for a request
+stopped since, goes to nobody, though its line and card say what the tool
+did, and `wanted` tells an application whether a call it has not run yet is
+still wanted.
+
+**Stop never waits.** It sets the flag, drops the reply (a tool waiting on
+the document is answered as stopped), marks what arrived as not kept, and
+lets the request go: a let-go request is heard only for what it cost, once
+it ends. The next request gets a helper of its own from `Reach::connect`,
+carrying on from the conversation as it stood before the stopped one
+(`Session::continuing`). A Stop pressed before the helper was asked is read
+before anything is sent. A pane that is dropped stops its request.
+
+**What the transcript says.** The person's words on the right; the
+helper's as they arrive; a grey line for each tool; a card for each change,
+which the application settles with `settle`; and a sentence for every
+other ending, with the one action that helps — Open Settings for a key
+refused or a helper not ready, Try Again for a busy or unreachable one. Try
+Again asks the request that failed, as a `Chosen::Ask` the application puts
+into words afresh, and waits while anything else is under way. Words from a
+request that did not finish — stopped, declined, cut off, failed — are
+greyed and marked "Not kept: the assistant will not remember this answer."
+Refusals under a test happen on the thread that asked and are counted again
+on the window's (`offline::count`), looks and checks nobody waits for any
+more included, so `headless::helpers_refused` sees every one.
+
+**The first-run card.** Built from `assist::ladder`, looked for on a thread
+of its own (`Reach::look`), first row preselected, with the words the
+ladder now gives each row (`Row::about`). The card looks again each time
+the pane opens with nothing chosen. Ollama's row lists every model the
+server has, with its size, and says "large: needs a powerful computer"
+past 8 GB (`assist::LARGE`); the model it offers is the most recent that
+is not large. A model the server passes on elsewhere — one of Ollama's
+cloud models, or one made with a remote host — is not on it, since the row
+says nothing leaves the computer. A row is kept at the address it names:
+Anthropic's for Claude, this computer's for Ollama, whatever an earlier
+choice left in the file. The words "model", "LLM", "token", "inference",
+"endpoint" and "GPU" are nowhere on it. The keyboard reaches "Use this" when the pane
+is given it, and Enter chooses the preselected row.
+
+**The helper on this computer is not ready,** and the user's answer
+preselects it when nothing is found. Decided here, before anything reaches
+the desktop: its row stays where the answer put it and says "Not ready yet:
+it comes in a later version of Officina."; choosing it says
+`assist::LOCAL_NOT_READY` where the choice was made and keeps nothing, and
+the settings box refuses it the same way. `assist::LOCAL_READY` is the
+switch phase 5 turns, and the test that proves this asserts it, so that it
+is rewritten then.
+
+**Settings that cannot be read** are said, with the reason, in place of the
+card: not TOML, not text at all (a file an editor saved in UTF-16), or
+nowhere to keep them (no home directory, where the pane used to fall back
+on the temporary directory). Choose Again looks at the computer, and the
+save that follows moves the old file aside to the first free name of
+`assist.toml.unreadable`, `-2`, `-3`, and names it in the transcript.
+`Settings::save` makes its new file afresh and follows no link.
+
+**Settings that change underneath.** The file is read again whenever the
+pane opens with no conversation, so a choice the other application made is
+taken up; with a conversation, the pane keeps its helper. Whatever makes
+the settings change goes through one place (`adopt`): another helper
+(`Settings::same_helper` — service, address, model, sign-in) stops the
+request, starts a new conversation and says so, marking the old answers as
+not kept; the same helper told something new — a key, the fallback — is
+asked afresh next time and carries the conversation on.
+
+**The settings box** (the pane's menu, Settings…) opens on the file as it
+is: the helper in the card's words; for Claude the sign-in (only those the
+computer was found to have, beside a pasted key), the key, the three models
+in words with what a paragraph costs on each, the fallback, and what the
+session has spent — "The assistant read about 3,800 words and wrote about
+830, for about 3 cents." (a count as three quarters of a word, to two
+figures; each request priced at the Claude model it went to, and a helper
+that costs nothing adding words and no cents, `Assist::cents`); for Ollama
+the address, the model, and its models listed as on the card (the box
+looks for them itself in a window that has not looked); for another
+service the address, the key and the model. Keys are password fields, and
+Claude's part says where Claude is asked, since it has no field for the
+address. What Save keeps is the box's own edit — the helper it shows, the
+part of the draft for that helper, and a typed key only with "A key I
+paste" — written onto the file as it is at the moment of writing
+(`Settings::onto`), so a key the other application saved meanwhile stands,
+and a key that was refused, or typed and left, is not kept. Values that
+mean something only together come together: a key with the sign-in it was
+typed for and the address it goes to, a service's address, key and model,
+Ollama's address and the model chosen from it. What is written is exactly
+what was checked: what the other application saved during a check is
+checked in its turn before anything is written.
+
+**A key is checked before it is kept.** `assist::check` asks one question
+that sends nothing and costs nothing: Anthropic's Models API
+(`GET /v1/models/{model}`, with the key or the `ant` token as a message
+request would carry it), or a service's list (`GET <address>/models`, where
+Ollama must list the model, a name without a tag matching `:latest`, and
+must run it itself; an address missing its `/v1` is said to be when the
+service answers there, and a key refused there is refused; and a service
+with no list at all is taken at its word until the first request). With
+nowhere to keep the settings, nothing is checked.
+A 404 whose message is about the model says the key is not offered it; any
+other 404 says the address is not Anthropic's. The box asks whenever the
+helper, the key, the model or the address changed, on a thread, saying so;
+it keeps the settings only when the answer is yes, and the answer goes into
+the transcript. A refusal leaves the box up, saying why.
+
+**Nothing leaves unannounced.** The first request to a helper elsewhere —
+`assist::destination`: "Anthropic" at Anthropic's own address, "Claude at
+<host>" at any other (an environment login's `ANTHROPIC_BASE_URL`
+included), a service's host, Ollama at an address not this computer's —
+puts a card at the transcript's end: "The selected paragraph and the two
+around it will be sent to Anthropic. Assist asks once for each place your
+words may go." Send sends; Not this time puts the words back in the
+composer. The agreement holds until the words would go somewhere else, a
+helper at this computer's own address never asks, and a request that cannot
+go now waits in the composer unless the person has begun other words there.
+Ollama at such an address sends nothing elsewhere either: before its first
+request the helper asks the server where the model runs (`/api/tags`, whose
+`remote_host` marks a model passed on), and a model the server passes on,
+or one whose name says it is a cloud model, is refused with nothing sent.
+
+**The keyboard.** `focus` gives the pane the keyboard: the composer, or the
+card's "Use this". Enter sends, Shift+Enter is a new line, and Escape in the
+composer hands the keyboard back (`Leave`) without losing the words — at
+every pace, and on the very frame after the pane was given the keys, since
+egui keeps Escape and the arrows for a field only from its second focused
+frame; the pane remembers the frame before, and keeps an arrow from moving
+the keyboard out of the composer. `holds_keyboard` and `box_up` are what an
+application reads to keep its document's keys to itself.
+
+**The rest of the pane.** Quick verbs are chips that send at once with
+`Effort::Low`; one whose label ends in "…" puts its start in the composer
+and waits. The scope chip follows the application's selection until the
+person chooses another, and says how many words a scope is. The header names
+the helper in words ("Ollama — qwen3:1.7b · on this computer",
+"Claude — Opus 5") and has Stop while a request runs, a drawn `⋯` menu
+(Settings…, Clear the Conversation, and the application's rows), and Close.
+The download's bar — drawn now, used in phase 5 — says "Downloading the
+helper: 250 MB of 1.0 GB", fills in the accent, and has Stop.
+
+In `assist`, besides `check` and `destination`: `Machine::ollama_models`
+reads each model's size and where it runs (`Installed::runs_here`);
+`size_words` says a size as Ollama does;
+`Settings::helper_name`, `onto` and `same_helper`; `Session::continuing`;
+`Turn::costs` for a scripted answer that cost something; `cost_words` says
+a dollar or more in dollars; `Http::get` takes headers.
+`ui_kit::theme::INK_ERROR`, held to the contrast test, is the ink of a
+sentence about something refused.
+
+An independent review before the commit found thirteen faults, and each is
+fixed with a test that fails without the fix:
+
+- **The agreement ignored a settings file read again:** the card asking to
+  send to Anthropic stood while the other application chose a service, and
+  Send went to the service.
+- **A late tool answer went to the next request**, whose calls may carry
+  the same names; calls now name their request.
+- **Any change of settings was a new helper**, so turning the fallback off
+  forgot the conversation; and a key a service refused was written to the
+  file by saving another helper.
+- **The spend was priced at the model ticked in the box**, Ollama's words
+  included.
+- **The agreement said "Anthropic" whatever the address** Claude was asked
+  at.
+- **Try Again sent the latest request, not the failed one**, with its old
+  context, and could replace a draft.
+- **A settings file that was not UTF-8 could never be set aside**, and a
+  second unreadable file replaced the first.
+- **The box saved what it had read when it opened** over what the other
+  application had saved since.
+- **An arrow key just after the pane took the keyboard** moved the keyboard
+  out of the composer.
+- **A service with no list of models could never be kept.**
+- **A dropped pane left its request running**, and a check or look nobody
+  waited for went uncounted.
+- **The Stop tests stopped a first request**, so "carries on from before"
+  was never proved; they stop a second one now.
+- **With no home directory the settings went to the shared temporary
+  directory**, through a file that would follow a link.
+
+A second review, of the fixes, found ten more, each also fixed with its
+test:
+
+- **A key a service refused was kept by switching the sign-in** to the
+  computer's own key, whose check never looked at the typed one; the box
+  now keeps a typed key only with "A key I paste".
+- **A key typed for Claude was saved unchecked** when the other application
+  had chosen Ollama meanwhile. The box saves the helper it shows, and checks
+  it.
+- **The merge was made when Save was pressed and written when the check
+  answered**, so what the other application saved during a check was
+  overwritten; the edit is merged onto the file when it is written.
+- **A call answered twice filled the next call's place**; calls are
+  numbered, and only the call out is answered.
+- **A look put away by a choice made elsewhere went uncounted**, and a test
+  counting a cancelled check could see a look's refusals land late.
+- **A request waiting for agreement vanished** when the file, read again,
+  could not be read.
+- **A pane put away with the keyboard took the document's Enter** on the
+  frame it came back.
+- **An address missing its `/v1` passed the check** as a service with no
+  list; the check now tries the address with `/v1` and says so.
+- **A test said the box opens on the file as it is** and never looked at
+  the box; it counts the key field's dots now.
+
+A third review, of the save path, the calls and the check alone, found six
+more, and the calls held; each is fixed with its test:
+
+- **Ollama's cloud models sent the words to ollama.com with no card.** They
+  are listed beside Ollama's own, so the card could offer one, saying
+  nothing leaves the computer, and Ollama at this computer's address never
+  asked.
+- **A key typed while the box showed one service's address was sent to,
+  and saved with, the address the other application had saved**; and a key
+  pasted under "Key:" was saved beside the other application's `ant` login
+  and never checked, while the transcript said it was accepted.
+- **A key refused at the address with `/v1` was kept**, as a service with no
+  list.
+- **What the other application saved during a check was written
+  unchecked.**
+- **A row chosen on the card kept the address the file already had**, so
+  "Ollama on this computer" could be kept at another computer.
+- **With nowhere to keep the settings, a typed key was still sent to be
+  checked.**
+
+Tests (ui-kit), driven through a small application of the tests' own whose
+document counts the letters it is given, with a `Reach` that hands out
+scripted helpers, a helper paced by the test, a canned look and a canned
+check:
+
+- the plan's: `a_request_typed_into_the_composer_streams_its_answer_into_the_transcript`,
+  `a_tool_call_is_handed_to_the_host_one_per_frame_and_its_result_goes_back_to_the_helper`,
+  `words_from_a_request_that_did_not_finish_are_marked_as_not_kept`,
+  `a_refusal_on_the_requests_thread_is_counted_on_the_windows` (the real
+  reach: a request, a look and a check, each refused and counted),
+  `stop_leaves_the_transcript_with_what_arrived_and_the_composer_ready`,
+  `stop_lets_go_of_a_helper_that_has_not_begun_to_answer`,
+  `the_first_run_card_preselects_the_first_thing_found_and_the_local_helper_when_nothing_is`,
+  `the_card_says_model_llm_token_endpoint_and_gpu_nowhere`,
+  `the_ollama_row_lists_every_model_and_says_which_are_large`,
+  `the_helper_on_this_computer_is_not_kept_as_the_choice_until_it_is_ready`,
+  `settings_that_cannot_be_read_are_said_in_place_of_the_card_and_set_aside_when_a_helper_is_chosen`,
+  `the_settings_box_offers_each_claude_model_with_its_cost_and_says_what_the_session_spent`,
+  `a_key_is_kept_only_once_the_service_has_accepted_it_and_is_never_painted`,
+  `the_first_request_to_a_helper_over_the_internet_says_what_will_be_sent_and_waits_for_send`,
+  `escape_in_the_pane_hands_the_keyboard_back` (at 0, 1 and 2 idle frames,
+  and the arrows),
+  `a_quick_verb_sends_at_once_with_little_effort_and_one_that_needs_words_waits_for_them`,
+  `the_scope_chip_follows_the_host_until_the_person_chooses_another`,
+  `the_panes_menu_opens_settings_clears_the_conversation_and_carries_the_hosts_rows`,
+  `every_part_of_the_pane_is_painted_where_it_can_be_seen`,
+  `the_download_bar_fills_as_the_bytes_arrive_and_offers_stop`, and
+  `a_headless_process_refuses_every_helper_but_the_scripted_one_and_counts_it`,
+  which now refuses every check too;
+- from the reviews: `a_late_answer_to_a_stopped_request_goes_to_nobody`,
+  `a_call_answered_twice_reaches_the_helper_once`,
+  `try_again_asks_the_failed_request_afresh`,
+  `a_pane_that_goes_stops_what_it_asked`,
+  `a_key_a_service_refused_is_not_kept_when_another_helper_is_saved`,
+  `each_request_is_priced_at_the_helper_it_went_to`,
+  `settings_changed_elsewhere_are_taken_up_when_the_pane_opens_with_no_conversation`,
+  `the_same_helper_told_something_new_carries_the_conversation_on`,
+  `a_box_saves_its_edit_onto_what_the_other_window_saved_since`,
+  `a_pane_with_nowhere_to_keep_settings_says_why`,
+  `a_check_cancelled_under_way_is_still_counted`,
+  `a_key_typed_then_left_for_another_sign_in_is_not_kept`,
+  `the_box_saves_the_helper_it_shows_and_checks_it`,
+  `a_key_saved_elsewhere_during_a_check_stands_once_it_too_is_checked`,
+  `settings_saved_elsewhere_during_a_check_are_checked_before_they_are_kept`,
+  `a_key_typed_for_the_address_shown_goes_there_and_is_saved_with_it`,
+  `a_key_pasted_is_checked_and_saved_with_the_sign_in_it_was_pasted_for`,
+  `the_box_says_where_claude_is_asked`,
+  `a_request_waiting_for_agreement_is_kept_when_the_settings_cannot_be_read`,
+  `a_look_put_away_by_a_choice_made_elsewhere_is_still_counted`;
+- and `a_count_is_said_to_two_figures_with_its_thousands_marked`.
+
+Tests (assist): `a_key_is_checked_with_a_request_that_costs_nothing` (over
+a socket: Claude with a key and with a token, a key refused, a model not
+offered, an address that is not the API, a redirect; Ollama with and
+without a tag, and where each runs; a service with its key, with no list,
+missing its `/v1`, and in trouble),
+`a_request_is_said_to_go_where_the_helper_is`,
+`ollamas_models_come_with_their_sizes_and_the_small_ones_first`,
+`a_model_ollama_passes_on_elsewhere_is_not_offered`,
+`a_model_ollama_passes_on_elsewhere_is_refused_before_anything_is_sent`,
+`a_key_refused_where_the_service_answers_is_not_kept`,
+`a_row_is_chosen_at_the_address_the_card_describes`,
+`an_edit_is_saved_onto_the_file_as_it_is_now`,
+`a_key_comes_with_its_sign_in_and_its_address_and_a_model_with_its_server`,
+and
+`settings_that_cannot_be_read_are_the_defaults` now sets aside a file that
+is not text, next to the first, and saves through a link without following
+it.
+
+The pane's forty-one tests ran eighty times in a row and a hundred times
+four at once without a failure, and `assist`'s thirty-four fifty times. Two races were found in tests on the way: a
+Stop pressed before the helper had been asked is read first, which is
+right, so that test waits until the helper has been asked; and a test
+counting one refusal could see a look's four land late, so its reach looks
+at nothing. Seventy mutations, one rule broken at a time — twenty-four
+before the reviews, then fifteen, nine and twenty-two after each — were
+each caught by the test that claims the rule.
+
+Nothing in a reader or a writer changed: `fidelity` and `compare --check`
+hold.
+
 ## The harness sees what the user sees (2026-09-16)
 
 Fifteen fixes in one session paid for the same missing tools each time;

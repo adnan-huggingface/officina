@@ -171,7 +171,11 @@ Data flows through crates in layers; UI never touches file formats directly:
   own rather than `ooxml`'s: an ODF package puts `mimetype` first and uncompressed
   and lists its parts in a manifest, where OPC has content types and relationships.
 - `chart` renders DrawingML charts for both apps; `ui-kit` holds shared egui widgets
-  (menu bar + toolbar — there is no ribbon), fonts, and theming.
+  (menu bar + toolbar — there is no ribbon), fonts, and theming, and the Assist pane
+  both apps host (`ui_kit::assist`): the transcript, the composer, the first-run card
+  and the settings box. A request runs on a thread of its own; the helper's tool
+  calls come back to the application one a frame, and it runs them on its own
+  document.
 - `assist` is the assistant's other half, below `ui-kit` and knowing neither egui
   nor documents: the helpers that answer (Claude over the Messages API, Ollama or
   any chat-completions service, a script for tests), the conversation, the tool

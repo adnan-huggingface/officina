@@ -111,8 +111,19 @@ impl Http {
         respond(sent, url, helper)
     }
 
-    pub fn get(&self, url: &str, helper: &str) -> Result<Response, Failure> {
-        respond(self.agent.get(url).call(), url, helper)
+    /// Asks `url` a question that sends nothing and costs nothing, and waits
+    /// for the answer's headers.
+    pub fn get(
+        &self,
+        url: &str,
+        headers: &[(&str, String)],
+        helper: &str,
+    ) -> Result<Response, Failure> {
+        let mut request = self.agent.get(url);
+        for (name, value) in headers {
+            request = request.header(*name, value.as_str());
+        }
+        respond(request.call(), url, helper)
     }
 }
 
@@ -272,7 +283,9 @@ pub(crate) fn host_of(address: &str) -> String {
     }
 }
 
-fn is_loopback(address: &str) -> bool {
+/// Whether the address is this computer's own, which a request to it never
+/// leaves.
+pub(crate) fn is_loopback(address: &str) -> bool {
     let host = host_of(address);
     let name = match host.strip_prefix('[') {
         Some(bracketed) => bracketed.split(']').next().unwrap_or(""),

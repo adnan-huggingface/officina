@@ -4,6 +4,7 @@
 //! `TcpListener` on the loopback address, which serves what the test wrote and
 //! hands back what it was sent.
 
+mod check;
 mod claude;
 mod compatible;
 mod failures;
@@ -31,6 +32,7 @@ const PATIENCE: Duration = Duration::from_secs(20);
 /// What the listener was sent.
 #[derive(Debug)]
 pub(crate) struct Heard {
+    pub method: String,
     pub path: String,
     /// By lowercase name.
     pub headers: BTreeMap<String, String>,
@@ -140,7 +142,9 @@ pub(crate) fn serve(replies: Vec<Reply>) -> Server {
 fn read_request(reader: &mut BufReader<TcpStream>) -> Option<Heard> {
     let mut line = String::new();
     reader.read_line(&mut line).ok()?;
-    let path = line.split_whitespace().nth(1)?.to_owned();
+    let mut request_line = line.split_whitespace();
+    let method = request_line.next()?.to_owned();
+    let path = request_line.next()?.to_owned();
     let mut headers = BTreeMap::new();
     loop {
         line.clear();
@@ -163,6 +167,7 @@ fn read_request(reader: &mut BufReader<TcpStream>) -> Option<Heard> {
         _ => serde_json::from_slice(&body).ok()?,
     };
     Some(Heard {
+        method,
         path,
         headers,
         body,

@@ -127,94 +127,322 @@ pub fn stream(
     answer
 }
 
+/// Whether the helper on this computer can answer yet. It cannot until its
+/// runtime and its download are built (phase 5 of the programme): until then
+/// its row is offered, as the user asked, and choosing it says it is not ready
+/// rather than keeping a choice that cannot answer.
+pub const LOCAL_READY: bool = false;
+
+const NO_HELPER: &str = "No helper has been chosen yet.";
+const LOCAL: &str = "The helper on this computer";
+/// What choosing the helper on this computer says until it is ready.
+pub const LOCAL_NOT_READY: &str = "The helper on this computer is not ready yet: it comes in \
+                                   a later version of Officina. Choose Claude or Ollama for now.";
+
 /// The helper the settings name, ready to ask.
 pub fn connect(settings: &Settings) -> Box<dyn Provider> {
     match settings.helper {
         None => Box::new(NotReady {
             name: "Assist",
-            sentence: "No helper has been chosen yet.",
+            sentence: NO_HELPER,
         }),
-        // Phase 5 of the programme: until the runtime and its download exist,
-        // the row says what it will be and the request says it is not there.
+        // Until the runtime and its download exist, the row says what it will
+        // be and the request says it is not there.
         Some(Choice::Local) => Box::new(NotReady {
-            name: "The helper on this computer",
-            sentence: "The helper on this computer is not ready yet. \
-                       Choose Claude or Ollama in Assist's settings for now.",
+            name: LOCAL,
+            sentence: LOCAL_NOT_READY,
         }),
         Some(Choice::Claude) => Box::new(claude(settings)),
-        Some(Choice::Ollama) => Box::new(Compatible::new(
-            "Ollama",
-            &format!("{}/v1", settings.ollama.address.trim_end_matches('/')),
-            None,
-            &settings.ollama.model,
-        )),
-        Some(Choice::Service) => {
-            let key = Some(settings.service.key.clone()).filter(|key| !key.is_empty());
-            Box::new(Compatible::new(
-                &crate::http::host_of(&settings.service.address),
-                &settings.service.address,
-                key,
-                &settings.service.model,
-            ))
+        Some(Choice::Ollama) => Box::new(OllamaHere {
+            answers: ollama(settings),
+            address: settings.ollama.address.clone(),
+            model: settings.ollama.model.trim().to_owned(),
+            known: false,
+        }),
+        Some(Choice::Service) => Box::new(service(settings)),
+    }
+}
+
+/// What is said of a model Ollama passes on to `place`.
+fn elsewhere(model: &str, place: &str) -> String {
+    format!(
+        "Ollama passes what “{model}” is asked on to {place}, and Assist uses Ollama only \
+         for what runs on this computer. Choose another model in Assist's settings."
+    )
+}
+
+/// Ollama, answering only with a model it runs itself. Its cloud models, and
+/// any model made with a remote host, are listed beside its own and send what
+/// they are asked elsewhere; nothing says so to the person, who was told
+/// Ollama keeps what they write on this computer. So before its first
+/// request the helper asks Ollama where the model runs, and sends nothing
+/// until the answer is "here".
+struct OllamaHere {
+    answers: Compatible,
+    address: String,
+    model: String,
+    /// Whether the model is known to run here.
+    known: bool,
+}
+
+impl Provider for OllamaHere {
+    fn name(&self) -> &str {
+        self.answers.name()
+    }
+
+    fn answer(&mut self, request: &Request, stop: &StopFlag, text: &mut dyn FnMut(&str)) -> Answer {
+        if !self.known {
+            match crate::machine::where_ollama_runs(&self.address, &self.model) {
+                Ok(None) => self.known = true,
+                Ok(Some(place)) => {
+                    return Answer::failed(Failure::new(
+                        FailureKind::NotReady,
+                        format!("{} Nothing was sent.", elsewhere(&self.model, &place)),
+                    ))
+                }
+                Err(failure) => return Answer::failed(failure),
+            }
         }
+        self.answers.answer(request, stop, text)
+    }
+}
+
+/// Whether the helper the settings name is there, and takes the key: one
+/// question, asked of the service's list of what it can answer with, which
+/// sends nothing of the document and costs nothing. `Ok` says what the service
+/// answered; a key is kept only after it.
+pub fn check(settings: &Settings) -> Result<String, Failure> {
+    match settings.helper {
+        None => {
+            crate::offline::check("Assist")?;
+            Err(Failure::new(FailureKind::NotReady, NO_HELPER))
+        }
+        Some(Choice::Local) => {
+            crate::offline::check(LOCAL)?;
+            Err(Failure::new(FailureKind::NotReady, LOCAL_NOT_READY))
+        }
+        Some(Choice::Claude) => claude(settings).check(),
+        Some(Choice::Ollama) => {
+            let model = settings.ollama.model.trim();
+            let listed = ollama(settings).models()?;
+            if model.is_empty() {
+                return Err(Failure::new(
+                    FailureKind::NotReady,
+                    "Ollama answered. Choose which of its models Assist should use.",
+                ));
+            }
+            // Ollama lists a model pulled without a tag under `latest`.
+            let has = listed
+                .iter()
+                .any(|name| name == model || *name == format!("{model}:latest"));
+            if has {
+                if let Some(place) =
+                    crate::machine::where_ollama_runs(&settings.ollama.address, model)?
+                {
+                    return Err(Failure::new(
+                        FailureKind::NotReady,
+                        elsewhere(model, &place),
+                    ));
+                }
+            }
+            match has {
+                true => Ok(format!("Ollama answered, and has {model}.")),
+                false => Err(Failure::new(
+                    FailureKind::NotReady,
+                    format!(
+                        "Ollama answered, but has no “{model}”. Pull it with \
+                         “ollama pull {model}”, or choose another."
+                    ),
+                )),
+            }
+        }
+        Some(Choice::Service) => {
+            let service_settings = &settings.service;
+            let host = crate::http::host_of(&service_settings.address);
+            if service_settings.address.trim().is_empty() {
+                crate::offline::check("Another service")?;
+                return Err(Failure::new(
+                    FailureKind::NotReady,
+                    "Give the service's address.",
+                ));
+            }
+            let listed = match service(settings).models() {
+                Ok(listed) => listed,
+                // Not every service lists what it answers with. One that
+                // says it has no such list has answered, and a key it does
+                // not take is refused by the first request instead.
+                Err(Failure {
+                    kind:
+                        FailureKind::Rejected {
+                            status: 404 | 405 | 501,
+                        },
+                    ..
+                }) => {
+                    // The commonest mistake in an address is to leave off the
+                    // `/v1` the service documents, and it answers exactly so.
+                    let address = service_settings.address.trim_end_matches('/');
+                    if !address.ends_with("/v1") {
+                        let mut guessed = settings.clone();
+                        guessed.service.address = format!("{address}/v1");
+                        match service(&guessed).models() {
+                            Ok(_) => {
+                                return Err(Failure::new(
+                                    FailureKind::Rejected { status: 404 },
+                                    format!(
+                                        "{host} answers at {address}/v1, not at {address}. \
+                                         Add /v1 to the address."
+                                    ),
+                                ))
+                            }
+                            // The service is there, and has refused the key.
+                            Err(Failure {
+                                kind: FailureKind::Unauthorized,
+                                ..
+                            }) => {
+                                return Err(Failure::new(
+                                    FailureKind::Unauthorized,
+                                    format!(
+                                        "{host} answers at {address}/v1, not at {address}, \
+                                         and did not accept the key there. Add /v1 to the \
+                                         address, and check the key."
+                                    ),
+                                ))
+                            }
+                            Err(_) => {}
+                        }
+                    }
+                    return Ok(format!(
+                        "{host} answered, but not with a list of what it can answer \
+                         with, as most services do. The key is checked when the first \
+                         request goes; if that fails, check the address."
+                    ));
+                }
+                Err(failure) => return Err(failure),
+            };
+            let accepted = match service_settings.key.is_empty() {
+                true => format!("{host} answered"),
+                false => format!("{host} accepted the key"),
+            };
+            let model = service_settings.model.trim();
+            Ok(
+                match (model.is_empty(), listed.iter().any(|name| name == model)) {
+                    (true, _) => format!("{accepted}. Give the name of the model it should use."),
+                    (false, true) => format!("{accepted}, and lists {model}."),
+                    (false, false) => format!(
+                        "{accepted}. It does not list “{model}”, which some services do not; \
+                     if a request fails, check the name."
+                    ),
+                },
+            )
+        }
+    }
+}
+
+fn ollama(settings: &Settings) -> Compatible {
+    Compatible::new(
+        "Ollama",
+        &format!("{}/v1", settings.ollama.address.trim_end_matches('/')),
+        None,
+        &settings.ollama.model,
+    )
+}
+
+fn service(settings: &Settings) -> Compatible {
+    let key = Some(settings.service.key.clone()).filter(|key| !key.is_empty());
+    Compatible::new(
+        &crate::http::host_of(&settings.service.address),
+        &settings.service.address,
+        key,
+        &settings.service.model,
+    )
+}
+
+/// Where a request's words go when the helper the settings name is asked, if
+/// that is anywhere but this computer: the name the pane gives before the
+/// first request is sent — "Anthropic", "Claude at relay.example.com",
+/// "api.example.com". A helper at one of this computer's own addresses sends
+/// nothing away, except Claude, whose address here is a relay that passes the
+/// words on.
+pub fn destination(settings: &Settings) -> Option<String> {
+    match settings.helper? {
+        Choice::Local => None,
+        Choice::Claude => {
+            let host = crate::http::host_of(&claude_address(settings));
+            Some(
+                match host == crate::http::host_of(crate::anthropic::ADDRESS) {
+                    true => "Anthropic".to_owned(),
+                    false => format!("Claude at {host}"),
+                },
+            )
+        }
+        Choice::Ollama => {
+            let address = &settings.ollama.address;
+            (!crate::http::is_loopback(address))
+                .then(|| format!("Ollama at {}", crate::http::host_of(address)))
+        }
+        Choice::Service => {
+            let address = &settings.service.address;
+            (!crate::http::is_loopback(address)).then(|| crate::http::host_of(address))
+        }
+    }
+}
+
+/// The address Claude is asked at: the settings', or for a login taken from
+/// the environment the environment's, as the Anthropic SDKs take it — a base
+/// address set beside a token is where that token is meant to go. Under a
+/// test the environment is not read.
+fn claude_address(settings: &Settings) -> String {
+    let claude = &settings.claude;
+    match claude.login {
+        ClaudeLogin::Environment => (!crate::offline::active())
+            .then(|| ThisComputer.var("ANTHROPIC_BASE_URL"))
+            .flatten()
+            .unwrap_or_else(|| claude.address.clone()),
+        ClaudeLogin::Key | ClaudeLogin::Ant => claude.address.clone(),
     }
 }
 
 fn claude(settings: &Settings) -> Anthropic {
     let claude = &settings.claude;
-    let (address, login): (String, crate::anthropic::LoginSource) = match claude.login {
+    let address = claude_address(settings);
+    let login: crate::anthropic::LoginSource = match claude.login {
         ClaudeLogin::Key => {
             let key = claude.key.clone();
-            (
-                claude.address.clone(),
-                Box::new(move || match key.is_empty() {
-                    true => Err(Failure::new(
-                        FailureKind::Unauthorized,
-                        "No Anthropic key has been given. Add one in Assist's settings.",
-                    )),
-                    false => Ok(Login::Key(key.clone())),
-                }),
-            )
+            Box::new(move || match key.is_empty() {
+                true => Err(Failure::new(
+                    FailureKind::Unauthorized,
+                    "No Anthropic key has been given. Add one in Assist's settings.",
+                )),
+                false => Ok(Login::Key(key.clone())),
+            })
         }
-        // The key and the address both come from the environment, as the
-        // Anthropic SDKs take them: a base address set beside a token is where
-        // that token is meant to go.
         // Under a test the environment is not read at all; the request is
         // refused before the login would be.
-        ClaudeLogin::Environment => (
-            (!crate::offline::active())
-                .then(|| ThisComputer.var("ANTHROPIC_BASE_URL"))
-                .flatten()
-                .unwrap_or_else(|| claude.address.clone()),
-            Box::new(|| {
-                if let Some(key) = ThisComputer.var("ANTHROPIC_API_KEY") {
-                    return Ok(Login::Key(key));
-                }
-                if let Some(token) = ThisComputer.var("ANTHROPIC_AUTH_TOKEN") {
-                    return Ok(Login::Token(token));
-                }
-                Err(Failure::new(
-                    FailureKind::Unauthorized,
-                    "The Anthropic key this computer had is no longer set. \
-                     Choose another way in Assist's settings.",
-                ))
-            }),
-        ),
+        ClaudeLogin::Environment => Box::new(|| {
+            if let Some(key) = ThisComputer.var("ANTHROPIC_API_KEY") {
+                return Ok(Login::Key(key));
+            }
+            if let Some(token) = ThisComputer.var("ANTHROPIC_AUTH_TOKEN") {
+                return Ok(Login::Token(token));
+            }
+            Err(Failure::new(
+                FailureKind::Unauthorized,
+                "The Anthropic key this computer had is no longer set. \
+                 Choose another way in Assist's settings.",
+            ))
+        }),
         // The token is short-lived, so it is asked for on every request;
         // `ant` renews it when it must.
-        ClaudeLogin::Ant => (
-            claude.address.clone(),
-            Box::new(|| {
-                ThisComputer.ant_token().map(Login::Token).ok_or_else(|| {
-                    Failure::new(
-                        FailureKind::Unauthorized,
-                        "The login from the ant command is not there any more. \
-                         Run `ant auth login` again, or choose another way in \
-                         Assist's settings.",
-                    )
-                })
-            }),
-        ),
+        ClaudeLogin::Ant => Box::new(|| {
+            ThisComputer.ant_token().map(Login::Token).ok_or_else(|| {
+                Failure::new(
+                    FailureKind::Unauthorized,
+                    "The login from the ant command is not there any more. \
+                     Run `ant auth login` again, or choose another way in \
+                     Assist's settings.",
+                )
+            })
+        }),
     };
     Anthropic::new(&address, login, &claude.model).fallback(claude.fallback)
 }

@@ -20,6 +20,7 @@ pub struct Turn {
     text: Vec<String>,
     calls: Vec<(String, Value)>,
     ending: Option<Result<Ending, Failure>>,
+    usage: Usage,
 }
 
 impl Turn {
@@ -29,6 +30,7 @@ impl Turn {
             text: vec![words.to_owned()],
             calls: Vec::new(),
             ending: None,
+            usage: Usage::default(),
         }
     }
 
@@ -38,6 +40,7 @@ impl Turn {
             text: Vec::new(),
             calls: vec![(tool.to_owned(), input)],
             ending: None,
+            usage: Usage::default(),
         }
     }
 
@@ -47,6 +50,7 @@ impl Turn {
             text: Vec::new(),
             calls: Vec::new(),
             ending: Some(Ok(ending)),
+            usage: Usage::default(),
         }
     }
 
@@ -56,12 +60,19 @@ impl Turn {
             text: Vec::new(),
             calls: Vec::new(),
             ending: Some(Err(Failure::new(kind, sentence))),
+            usage: Usage::default(),
         }
     }
 
     /// More words, arriving as a piece of their own.
     pub fn then_says(mut self, words: &str) -> Turn {
         self.text.push(words.to_owned());
+        self
+    }
+
+    /// What the answer is said to have cost, as a service counts it.
+    pub fn costs(mut self, usage: Usage) -> Turn {
+        self.usage = usage;
         self
     }
 
@@ -154,7 +165,7 @@ impl Provider for Scripted {
         Answer {
             message: crate::conversation::Message::assistant(content),
             ending,
-            usage: Usage::default(),
+            usage: turn.usage,
         }
     }
 }

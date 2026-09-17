@@ -43,9 +43,12 @@ pub use anthropic::{Anthropic, Login};
 pub use compatible::Compatible;
 pub use conversation::{Block, Conversation, Message, Role, ToolCall, ToolResult};
 pub use event::{Ending, Event, Failure, FailureKind, Usage};
-pub use machine::{ladder, Machine, Row, ThisComputer};
+pub use machine::{ladder, size_words, Installed, Machine, Row, ThisComputer};
 pub use models::{ClaudeModel, CLAUDE_MODELS, DEFAULT_CLAUDE_MODEL};
-pub use provider::{connect, stream, Answer, Effort, Provider, Request, StopFlag};
+pub use provider::{
+    check, connect, destination, stream, Answer, Effort, Provider, Request, StopFlag,
+    LOCAL_NOT_READY, LOCAL_READY,
+};
 pub use scripted::{Heard, Scripted, Turn};
 pub use session::{Host, Session, MOST_STEPS};
 pub use settings::{Choice, ClaudeLogin, Settings};

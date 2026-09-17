@@ -101,24 +101,25 @@ Every source file, its size, and the first sentence of its module doc.
 
 ### `assist`
 
-- `crates/assist/src/anthropic.rs` (508) Claude, through Anthropic's Messages API.
-- `crates/assist/src/compatible.rs` (297) Ollama, and any other service that speaks the chat-completions shape.
+- `crates/assist/src/anthropic.rs` (559) Claude, through Anthropic's Messages API.
+- `crates/assist/src/compatible.rs` (325) Ollama, and any other service that speaks the chat-completions shape.
 - `crates/assist/src/conversation.rs` (150) A conversation with a helper: the user's words, the helper's answers, and the results of the tools it asked for.
 - `crates/assist/src/event.rs` (137) What a helper says while it answers, and how an answer ends.
-- `crates/assist/src/http.rs` (336) Requests to a helper over HTTP, and what their failures say.
-- `crates/assist/src/lib.rs` (52) Assist's helpers: who answers a request, how it travels, and what a helper may ask the editor to do.
-- `crates/assist/src/machine.rs` (376) What this computer already has that could answer, and the first-run card's rows in the order they are offered.
-- `crates/assist/src/models.rs` (120) The Claude models Assist offers, in words, with what a paragraph costs.
+- `crates/assist/src/http.rs` (349) Requests to a helper over HTTP, and what their failures say.
+- `crates/assist/src/lib.rs` (55) Assist's helpers: who answers a request, how it travels, and what a helper may ask the editor to do.
+- `crates/assist/src/machine.rs` (777) What this computer already has that could answer, and the first-run card's rows in the order they are offered.
+- `crates/assist/src/models.rs` (136) The Claude models Assist offers, in words, with what a paragraph costs.
 - `crates/assist/src/offline.rs` (66) A process that must reach nothing: one under a test.
-- `crates/assist/src/provider.rs` (239) The one shape every helper answers in, and the helper the settings name.
-- `crates/assist/src/scripted.rs` (160) A helper that plays canned turns: the only helper a test may use.
-- `crates/assist/src/session.rs` (157) A conversation with one helper, and the loop that runs its tools.
-- `crates/assist/src/settings.rs` (434) What the user chose, kept in one file both applications read.
+- `crates/assist/src/provider.rs` (467) The one shape every helper answers in, and the helper the settings name.
+- `crates/assist/src/scripted.rs` (171) A helper that plays canned turns: the only helper a test may use.
+- `crates/assist/src/session.rs` (166) A conversation with one helper, and the loop that runs its tools.
+- `crates/assist/src/settings.rs` (685) What the user chose, kept in one file both applications read.
 - `crates/assist/src/sse.rs` (147) Server-sent events, read by hand: `event:` and `data:` lines, and a blank line after each event.
+- `crates/assist/src/tests/check.rs` (468) B4: a key, checked before it is kept, with a request that costs nothing.
 - `crates/assist/src/tests/claude.rs` (449) A2: Claude, over a socket.
 - `crates/assist/src/tests/compatible.rs` (119) A3: another service, over a socket.
 - `crates/assist/src/tests/failures.rs` (318) A4: failures, and Stop.
-- `crates/assist/src/tests/mod.rs` (512) The helpers, driven against listeners the tests open themselves.
+- `crates/assist/src/tests/mod.rs` (517) The helpers, driven against listeners the tests open themselves.
 - `crates/assist/src/tests/session.rs` (316) A1: a conversation, a scripted helper, and the loop between them.
 - `crates/assist/src/tool.rs` (77) A tool a helper may ask for: a name, what it is for, and the shape of what it takes.
 
@@ -268,6 +269,17 @@ Every source file, its size, and the first sentence of its module doc.
 
 ### `ui-kit`
 
+- `crates/ui-kit/src/assist/choosing.rs` (280) The first-run card: which helper Assist should use, asked once, in words.
+- `crates/ui-kit/src/assist/mod.rs` (1510) Assist's pane: where a person asks for a change in their own words, sees the answer arrive, sees what the helper read and changed, and stops it — and where the helper is chosen, once, in words.
+- `crates/ui-kit/src/assist/request.rs` (188) A request on a thread of its own, and anything else the pane waits for without stopping the window.
+- `crates/ui-kit/src/assist/settings_box.rs` (615) Assist ▸ Settings: the helper, and what it needs, in one box.
+- `crates/ui-kit/src/assist/tests/card.rs` (466) B3: the first-run card.
+- `crates/ui-kit/src/assist/tests/changes.rs` (690) What the pane does when its settings change under it: in the other application, in its own box, or nowhere to keep them at all.
+- `crates/ui-kit/src/assist/tests/keeping.rs` (501) B4 and B5: the settings box, and what is said before anything leaves the computer.
+- `crates/ui-kit/src/assist/tests/mod.rs` (510) The pane, driven in an application of the tests' own.
+- `crates/ui-kit/src/assist/tests/requests.rs` (835) B1 and B2: a request on a thread of its own, and Stop.
+- `crates/ui-kit/src/assist/tests/window.rs` (479) B6 and B7: the pane in a window, and the download's bar.
+- `crates/ui-kit/src/assist/transcript.rs` (331) The transcript: what was asked, what the helper said and did, and the changes it made, in the order they happened.
 - `crates/ui-kit/src/brand.rs` (31) The window icon, as the windowing system takes it.
 - `crates/ui-kit/src/catalogue.rs` (504) What type the machine actually has, by the name a document calls it.
 - `crates/ui-kit/src/chart.rs` (310) Drawing a chart on the screen.
@@ -276,15 +288,15 @@ Every source file, its size, and the first sentence of its module doc.
 - `crates/ui-kit/src/drive/painted.rs` (255) What a frame painted, asked about the way a test asks.
 - `crates/ui-kit/src/drive.rs` (1202) Driving an application by keystroke, without a window.
 - `crates/ui-kit/src/fonts.rs` (1431) Real type faces, loaded from the system at startup.
-- `crates/ui-kit/src/headless.rs` (193) An application running without a person in front of it: under a test.
+- `crates/ui-kit/src/headless.rs` (221) An application running without a person in front of it: under a test.
 - `crates/ui-kit/src/keys.rs` (105) Keyboard shortcuts, matched on every modifier.
-- `crates/ui-kit/src/lib.rs` (52) Shared application shell for Calx and Scriva.
+- `crates/ui-kit/src/lib.rs` (53) Shared application shell for Calx and Scriva.
 - `crates/ui-kit/src/menu.rs` (1094) A menu bar, and menus that look like menus.
 - `crates/ui-kit/src/paths.rs` (254) Config, state and cache directory resolution.
 - `crates/ui-kit/src/recent.rs` (205) The files that have been opened, most recent first.
 - `crates/ui-kit/src/scroll.rs` (65) Scroll bars in the suite's palette.
 - `crates/ui-kit/src/shell.rs` (654) The window shell both apps boot into.
-- `crates/ui-kit/src/theme.rs` (187) The design language, as named numbers.
+- `crates/ui-kit/src/theme.rs` (192) The design language, as named numbers.
 
 ### `wp-compare`
 

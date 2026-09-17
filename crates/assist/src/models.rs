@@ -63,6 +63,11 @@ const PARAGRAPH: Usage = Usage {
 };
 
 impl ClaudeModel {
+    /// The model's name without the words about it: "Opus 5".
+    pub fn name(&self) -> &'static str {
+        self.words.split(" (").next().unwrap_or(self.words)
+    }
+
     /// What `usage` costs on this model, in US cents. Input read from the
     /// cache costs a tenth, and input written to it a quarter more.
     pub fn cents(&self, usage: Usage) -> f64 {
@@ -79,17 +84,20 @@ impl ClaudeModel {
     }
 }
 
-/// An amount in cents as the settings box says it.
+/// An amount in cents as the settings box says it: a paragraph's cost, or a
+/// session's.
 pub fn cost_words(cents: f64) -> String {
     if cents < 0.5 {
         "under half a cent".to_owned()
     } else if cents < 1.0 {
         "under a cent".to_owned()
-    } else {
+    } else if cents < 99.5 {
         match cents.round() as u64 {
             1 => "about a cent".to_owned(),
             n => format!("about {n} cents"),
         }
+    } else {
+        format!("about ${:.2}", cents / 100.0)
     }
 }
 
@@ -103,6 +111,14 @@ mod tests {
         assert_eq!(words("claude-opus-5"), "about 2 cents");
         assert_eq!(words("claude-sonnet-5"), "under a cent");
         assert_eq!(words("claude-haiku-4-5"), "under half a cent");
+        assert_eq!(cost_words(1.2), "about a cent");
+        assert_eq!(cost_words(99.4), "about 99 cents");
+        assert_eq!(cost_words(99.6), "about $1.00");
+        assert_eq!(cost_words(1234.0), "about $12.34");
+        assert_eq!(
+            claude_model("claude-haiku-4-5").map(ClaudeModel::name),
+            Some("Haiku 4.5")
+        );
         assert_eq!(
             CLAUDE_MODELS[0].id, DEFAULT_CLAUDE_MODEL,
             "the best is offered first"

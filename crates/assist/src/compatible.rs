@@ -12,6 +12,7 @@
 //! `tool_calls`. What is sent is the plainest form every one of them accepts.
 
 use std::collections::BTreeMap;
+use std::io::Read;
 
 use serde_json::{json, Map, Value};
 
@@ -41,6 +42,33 @@ impl Compatible {
             key,
             model: model.to_owned(),
         }
+    }
+
+    /// What the service says it has, asked of its list (`GET <address>/models`),
+    /// which sends nothing and costs nothing: the ids, in its order. A service
+    /// that does not take the key says so here.
+    pub fn models(&self) -> Result<Vec<String>, Failure> {
+        crate::offline::check(&self.name)?;
+        let headers: Vec<(&str, String)> = self
+            .key
+            .iter()
+            .map(|key| ("authorization", format!("Bearer {key}")))
+            .collect();
+        let url = format!("{}/models", self.address);
+        let response = self.http.get(&url, &headers, &self.name)?;
+        if response.status != 200 {
+            return Err(response.failure(&self.name));
+        }
+        let list: Value = serde_json::from_reader(response.body.take(4 * 1024 * 1024))
+            .map_err(|_| Failure::garbled(&self.name, "its list of what it can answer with"))?;
+        Ok(list["data"]
+            .as_array()
+            .map(|data| {
+                data.iter()
+                    .filter_map(|model| model["id"].as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default())
     }
 
     /// The request's body, exactly as it is sent.

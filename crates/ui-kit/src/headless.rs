@@ -80,9 +80,9 @@ mod tests {
     use std::sync::Arc;
 
     use assist::{
-        connect, ladder, Anthropic, Choice, ClaudeLogin, Compatible, Ending, Event, FailureKind,
-        Host, Login, Provider, Row, Scripted, Session, Settings, StopFlag, ThisComputer, ToolCall,
-        ToolResult, Turn,
+        check, connect, ladder, Anthropic, Choice, ClaudeLogin, Compatible, Ending, Event,
+        FailureKind, Host, Login, Provider, Row, Scripted, Session, Settings, StopFlag,
+        ThisComputer, ToolCall, ToolResult, Turn,
     };
 
     struct Quiet;
@@ -122,7 +122,7 @@ mod tests {
             }
         });
 
-        let chosen = |choice: Option<Choice>, login: ClaudeLogin| {
+        let settings = |choice: Option<Choice>, login: ClaudeLogin| {
             let mut settings = Settings {
                 helper: choice,
                 ..Settings::default()
@@ -134,8 +134,18 @@ mod tests {
             settings.ollama.model = "qwen3".into();
             settings.service.address = address.clone();
             settings.service.model = "some-model".into();
-            connect(&settings)
+            settings
         };
+        let every_choice = [
+            (None, ClaudeLogin::Key),
+            (Some(Choice::Local), ClaudeLogin::Key),
+            (Some(Choice::Claude), ClaudeLogin::Key),
+            (Some(Choice::Claude), ClaudeLogin::Environment),
+            (Some(Choice::Claude), ClaudeLogin::Ant),
+            (Some(Choice::Ollama), ClaudeLogin::Key),
+            (Some(Choice::Service), ClaudeLogin::Key),
+        ];
+        let chosen = |choice: Option<Choice>, login: ClaudeLogin| connect(&settings(choice, login));
         let helpers: Vec<Box<dyn Provider>> = vec![
             Box::new(Anthropic::new(
                 &address,
@@ -185,9 +195,27 @@ mod tests {
             "no helper opened a connection"
         );
 
+        // Nor is a key checked: the check is a request like any other.
+        for (choice, login) in every_choice {
+            let failure = check(&settings(choice, login)).expect_err("a check reached a helper");
+            assert_eq!(
+                failure.kind,
+                FailureKind::Offline,
+                "{choice:?}, {login:?}: {}",
+                failure.sentence
+            );
+        }
+        let checks = every_choice.len();
+        assert_eq!(super::helpers_refused() - before, count + 4 + checks);
+        assert_eq!(
+            connections.load(Ordering::SeqCst),
+            0,
+            "no check opened a connection"
+        );
+
         // The scripted helper plays, and is not counted.
         let scripted = Box::new(Scripted::new([Turn::says("Hello to you.")]));
         assert_eq!(ask(scripted), Ok(Ending::Finished));
-        assert_eq!(super::helpers_refused() - before, count + 4);
+        assert_eq!(super::helpers_refused() - before, count + 4 + checks);
     }
 }

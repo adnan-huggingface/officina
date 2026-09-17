@@ -58,6 +58,15 @@ impl Session {
         }
     }
 
+    /// The same session, carrying on from `conversation` — one this session's
+    /// kind produced, as it stood between two requests. A window that let go
+    /// of a stopped request gives the next one a helper of its own, from where
+    /// the stopped one began.
+    pub fn continuing(mut self, conversation: Conversation) -> Session {
+        self.conversation = conversation;
+        self
+    }
+
     /// The helper's name, as the transcript shows it.
     pub fn helper(&self) -> &str {
         self.provider.name()

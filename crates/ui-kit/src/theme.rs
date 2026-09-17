@@ -30,6 +30,11 @@ pub const INK: Color32 = rgb(0x1F, 0x1F, 0x1F);
 /// the plain one, so it is as dark as it is: `#6B6B6B` reads 4.3 to 1 on
 /// [`TINT_ON`], and this reads 4.9.
 pub const INK_SOFT: Color32 = rgb(0x62, 0x62, 0x62);
+/// A sentence about something refused or failed — a key a service did not
+/// accept, a choice that cannot be kept — set in the chrome's running size.
+/// The message boxes' error red is a badge's fill; this is its ink, dark
+/// enough to read on every fill a pane or a box sets it on.
+pub const INK_ERROR: Color32 = rgb(0xB0, 0x26, 0x18);
 /// Disabled text and strokes. Not held to a contrast: disabled is meant to
 /// read as out of reach.
 pub const INK_FAINT: Color32 = rgb(0xB0, 0xB0, 0xB0);
@@ -159,7 +164,7 @@ mod tests {
         // reach, and a disabled row that reads as well as a live one is a row
         // nobody can tell is disabled.
         let fills = [CHROME, FIELD, TINT_HOVER, TINT_DOWN, TINT_ON, NOTICE];
-        for ink in [INK, INK_SOFT] {
+        for ink in [INK, INK_SOFT, INK_ERROR] {
             for fill in fills {
                 let ratio = contrast(ink, fill);
                 assert!(

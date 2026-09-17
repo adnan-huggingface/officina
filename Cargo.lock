@@ -3387,6 +3387,7 @@ dependencies = [
  "chart",
  "dpi-guard",
  "eframe",
+ "serde_json",
 ]
 
 [[package]]

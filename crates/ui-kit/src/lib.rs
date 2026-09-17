@@ -6,6 +6,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod assist;
 pub mod brand;
 pub mod catalogue;
 pub mod chart;

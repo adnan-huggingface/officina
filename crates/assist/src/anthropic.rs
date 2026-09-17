@@ -34,7 +34,7 @@ use std::collections::BTreeMap;
 use serde_json::{json, Map, Value};
 
 use crate::conversation::{Block, Role, ToolCall};
-use crate::event::{Ending, Failure, Usage};
+use crate::event::{Ending, Failure, FailureKind, Usage};
 use crate::http::Http;
 use crate::models;
 use crate::provider::{Answer, Effort, Provider, Request, StopFlag};
@@ -155,6 +155,57 @@ impl Anthropic {
             body["fallbacks"] = json!("default");
         }
         body
+    }
+
+    /// Whether Claude takes the login, and offers the model to it — asked of
+    /// the Models API (`GET /v1/models/{model}`), which reads no text, writes
+    /// none, and so costs nothing. The sentence says what came back.
+    pub fn check(&mut self) -> Result<String, Failure> {
+        crate::offline::check(self.name())?;
+        let login = (self.login)()?;
+        let mut headers = vec![("anthropic-version", VERSION.to_owned())];
+        match login {
+            Login::Key(key) => headers.push(("x-api-key", key)),
+            Login::Token(token) => {
+                headers.push(("authorization", format!("Bearer {token}")));
+                headers.push(("anthropic-beta", OAUTH_BETA.to_owned()));
+            }
+        }
+        let url = format!("{}/v1/models/{}", self.address, self.model);
+        let response = self.http.get(&url, &headers, "Claude")?;
+        let model = match models::claude_model(&self.model) {
+            Some(known) => known.name().to_owned(),
+            None => format!("“{}”", self.model),
+        };
+        match response.status {
+            200 => Ok(format!(
+                "Claude accepted the key, and {model} is there to answer."
+            )),
+            // The API says the same for a model that does not exist and one
+            // the account may not use, and says it about the model; a 404 about
+            // anything else is an address that is not Anthropic's API.
+            404 => {
+                let said = response.error_message();
+                Err(match said.starts_with("model:") {
+                    true => Failure::new(
+                        FailureKind::Rejected { status: 404 },
+                        format!(
+                            "Claude accepted the key, but does not offer {model} to it. \
+                             Choose another in Assist's settings."
+                        ),
+                    ),
+                    false => Failure::new(
+                        FailureKind::Rejected { status: 404 },
+                        format!(
+                            "{} did not answer as Anthropic's API does (HTTP 404). \
+                             Check the address in Assist's settings.",
+                            crate::http::host_of(&self.address)
+                        ),
+                    ),
+                })
+            }
+            _ => Err(response.failure("Claude")),
+        }
     }
 
     fn headers(&self, login: Login) -> Vec<(&'static str, String)> {

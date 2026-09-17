@@ -2225,3 +2225,63 @@ to another host, and keeps every other header, so Anthropic's `x-api-key`
 would have gone to whatever address a 302 named. A client that sends a
 key in a header of its own naming must not follow redirects: the address
 the person gave is the only place the key may go.
+
+**A selectable label takes the click from the row it is in.** egui
+labels are selectable by default, and a selectable label senses clicks
+and drags for its text; on top of a clickable frame it wins the hit test,
+so a row clicked on its words never hears the click, while one clicked
+in its margin does. A row that is a control turns `selectable_labels` off
+in its own scope.
+
+**egui holds Escape and the arrows for a field only from its second
+frame with the keyboard.** `Memory::set_focus_lock_filter` takes effect
+only for a widget that had the focus on the frame before as well, so a
+field given the keyboard on one frame loses it, at the start of the next,
+to an Escape — or to an arrow, which moves the keyboard to whatever widget
+lies that way — before the field can read the key. The Assist composer
+remembers that it had the keyboard when the last frame ended, reads Escape
+by that rather than by egui's focus, and cancels egui's move for an arrow
+(`move_focus(FocusDirection::None)`).
+
+**Anthropic's Models API is the free way to check a key.** `GET
+/v1/models/{id}` takes the same credentials a message does — `x-api-key`,
+or a bearer token with the OAuth beta — resolves an alias such as
+`claude-opus-5`, and reads and writes no text, so nothing is billed. A key
+it refuses is a 401. A model the account may not use is a 404 whose
+message begins `model:`, which is how it is told from an address that is
+not the API at all. Chat-completions services have `GET <base>/models`,
+and Ollama serves it too, listing a model pulled without a tag under
+`:latest`.
+
+**A thread's test has to wait for the thread to be where the test says.**
+A test that pressed Stop "while the helper waits for its first word" was
+green 39 runs in 40: in the fortieth, Stop landed before the request's
+thread had asked the helper at all, the session read the flag first, and
+the request ended at once — correctly. The driver's frames take
+microseconds, so a few idle frames prove nothing about another thread.
+The test now waits until the helper has been asked, and the pane's tests
+are run eighty times in a row and a hundred times four at once before
+they are believed.
+
+**A settings box is an edit, not a copy.** Two applications share one
+settings file, and a box opened in one stays open while the other saves.
+Writing the box's copy back puts the other application's values back as
+they were — a key replaced there, reverted here — and writing it before a
+slow check answers loses whatever was saved during the check. What a box
+saves is its own changes, onto the file as it is at the moment of writing;
+what it shows (the helper selected) counts as a change, and what it did
+not show (a key typed for a sign-in then left) does not. Values that
+mean something only together — a key and the address it goes to — are
+one change, and what is written must be what was checked, so a check
+that another window overtook is asked again. Three reviews found a new
+way round each simpler rule.
+
+**Ollama lists models it does not run.** Its cloud models
+(`gpt-oss:120b-cloud`, `glm-4.6:cloud`) are pulled like any other and
+listed in `/api/tags` beside the models it runs, and `ollama create` can
+make a model under any name that points at another server. Ollama at `127.0.0.1` passes what such a model is asked on to that
+server, so "Ollama on this computer" is not a promise that the words stay
+here. The list says so: such an entry carries `remote_host` (and
+`remote_model`), which `/api/show` gives too. A cloud model's tag is
+`cloud` or ends in `-cloud`.
+
