@@ -3,6 +3,7 @@
 
 use super::*;
 
+mod assisting;
 mod bands;
 mod desk;
 mod editing;

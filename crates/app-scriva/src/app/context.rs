@@ -193,6 +193,26 @@ pub(super) fn context_rows(ui: &mut egui::Ui, state: &ContextState) -> Option<Co
     if let Some(command) = row(ui, "&New Comment", Command::AddComment) {
         chosen = Some(command);
     }
+    // Ask about what the menu was opened on: in the pane, or at once.
+    menu::sub(ui, "Ask t&he Assistant", |ui| {
+        if let Some(command) = row(ui, "&Ask\u{2026}", Command::AskAssistant) {
+            chosen = Some(command);
+        }
+        menu::sep(ui);
+        for (index, label) in [
+            "&Improve the Wording",
+            "&Fix Spelling and Grammar",
+            "Make It &Shorter",
+            "Su&mmarize",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if let Some(command) = row(ui, label, Command::AssistVerb(index)) {
+                chosen = Some(command);
+            }
+        }
+    });
     menu::sep(ui);
     if let Some(command) = row(ui, "Select &All", Command::SelectAll) {
         chosen = Some(command);

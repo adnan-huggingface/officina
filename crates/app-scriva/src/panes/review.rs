@@ -250,175 +250,167 @@ impl Scriva {
         }
         let lit = keyboard_here.then_some(row_at);
 
-        egui::Panel::right("scriva-reviewer")
-            .default_size(300.0)
-            .resizable(true)
-            .frame(egui::Frame::new().fill(theme::CHROME))
+        // Drawn inside the right-hand side the window opens for it, which
+        // Assist takes in turn.
+        // Header: the tabs, the counts, the filter, the close.
+        let header = egui::Frame::new()
+            .inner_margin(egui::Margin::symmetric(10, 5))
             .show(ui, |ui| {
-                // Header: the name, the counts, the filter, the close.
-                let header = egui::Frame::new()
-                    .inner_margin(egui::Margin::symmetric(10, 5))
-                    .show(ui, |ui| {
-                        ui.set_min_height(theme::PANE_HEADER - 10.0);
-                        ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new("Review").strong().size(theme::TEXT));
-                            ui.label(
-                                egui::RichText::new(format!(
-                                    "{} · {}",
-                                    plural(changes, "change"),
-                                    plural(comments, "comment")
-                                ))
-                                .color(theme::INK_SOFT)
-                                .size(theme::TEXT_SMALL),
-                            );
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    if ui
-                                        .add(egui::Button::new("×").frame(false))
-                                        .on_hover_text("Close the pane")
-                                        .clicked()
-                                    {
-                                        chosen = Some(Command::Reviewer);
-                                    }
-                                },
-                            );
-                        });
-                        // The filter on a row of its own: beside the counts it
-                        // ran into them at the pane's width.
-                        ui.horizontal(|ui| {
-                            for (label, value) in [
-                                ("All", Filter::All),
-                                ("Changes", Filter::Changes),
-                                ("Comments", Filter::Comments),
-                            ] {
-                                if ui
-                                    .selectable_label(
-                                        filter == value,
-                                        egui::RichText::new(label).size(theme::TEXT_SMALL),
-                                    )
-                                    .clicked()
-                                {
-                                    filter = value;
-                                }
-                            }
-                        });
-                    });
-                let rule = header.response.rect.bottom() + 0.5;
-                ui.painter().hline(
-                    header.response.rect.x_range(),
-                    rule,
-                    egui::Stroke::new(1.0, theme::CHROME_RULE),
-                );
-
-                // Footer first, so the body's scroll area takes what is left.
-                egui::Panel::bottom("scriva-reviewer-foot")
-                    .resizable(false)
-                    .frame(
-                        egui::Frame::new()
-                            .fill(theme::CHROME)
-                            .inner_margin(egui::Margin::symmetric(10, 8)),
-                    )
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.add_enabled_ui(changes > 0, |ui| {
-                                if dialog::button(ui, "Accept All", false).clicked() {
-                                    chosen = Some(Command::AcceptAll);
-                                }
-                                if dialog::button(ui, "Reject All", false).clicked() {
-                                    chosen = Some(Command::RejectAll);
-                                }
-                            });
-                        });
-                    });
-
-                ui_kit::scroll::show(
-                    ui,
-                    egui::ScrollArea::vertical().auto_shrink([false, false]),
-                    |ui| {
-                        ui.add_space(6.0);
-                        ui.spacing_mut().item_spacing.y = 6.0;
-                        let mut drafted = false;
-                        if cards.is_empty() && draft.is_none() {
-                            ui.add_space(8.0);
-                            ui.horizontal(|ui| {
-                                ui.add_space(10.0);
-                                ui.label(
-                                    egui::RichText::new("Nothing to review.")
-                                        .color(theme::INK_SOFT),
-                                );
-                            });
+                ui.set_min_height(theme::PANE_HEADER - 10.0);
+                ui.horizontal(|ui| {
+                    for (index, name) in crate::app::assisting::TABS.iter().enumerate() {
+                        let label = egui::RichText::new(*name).strong().size(theme::TEXT);
+                        if ui.selectable_label(index == 0, label).clicked() && index != 0 {
+                            chosen = Some(Command::ShowAssist);
                         }
-                        for (at, card) in cards.iter().enumerate() {
-                            let is_lit = lit == Some(at);
-                            // The draft goes where its comment will: before the
-                            // first card that comes after it.
-                            if let (Some(place), Some(d), false) =
-                                (draft_place, &mut draft, drafted)
-                            {
-                                if d.reply_to.is_none() && card.place() >= place {
-                                    drafted = true;
-                                    let (command, holds) = draft_card(ui, d);
-                                    chosen = chosen.take().or(command);
-                                    held |= holds;
-                                }
-                            }
-                            match card {
-                                Card::Change(card) if filter != Filter::Comments => {
-                                    chosen = chosen.take().or(change_card(ui, card, is_lit));
-                                }
-                                Card::Comment(card) if filter != Filter::Changes => {
-                                    let reply_draft =
-                                        draft.as_mut().filter(|d| d.reply_to == Some(card.id));
-                                    let (command, holds) =
-                                        comment_card(ui, card, reply_draft, is_lit);
-                                    chosen = chosen.take().or(command);
-                                    held |= holds;
-                                    if draft.as_ref().is_some_and(|d| d.reply_to == Some(card.id)) {
-                                        drafted = true;
-                                    }
-                                }
-                                _ => {}
-                            }
+                    }
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{} · {}",
+                            plural(changes, "change"),
+                            plural(comments, "comment")
+                        ))
+                        .color(theme::INK_SOFT)
+                        .size(theme::TEXT_SMALL),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .add(egui::Button::new("×").frame(false))
+                            .on_hover_text("Close the pane")
+                            .clicked()
+                        {
+                            chosen = Some(Command::Reviewer);
                         }
-                        if let (Some(d), false) = (&mut draft, drafted) {
+                    });
+                });
+                // The filter on a row of its own: beside the counts it
+                // ran into them at the pane's width.
+                ui.horizontal(|ui| {
+                    for (label, value) in [
+                        ("All", Filter::All),
+                        ("Changes", Filter::Changes),
+                        ("Comments", Filter::Comments),
+                    ] {
+                        if ui
+                            .selectable_label(
+                                filter == value,
+                                egui::RichText::new(label).size(theme::TEXT_SMALL),
+                            )
+                            .clicked()
+                        {
+                            filter = value;
+                        }
+                    }
+                });
+            });
+        let rule = header.response.rect.bottom() + 0.5;
+        ui.painter().hline(
+            header.response.rect.x_range(),
+            rule,
+            egui::Stroke::new(1.0, theme::CHROME_RULE),
+        );
+
+        // Footer first, so the body's scroll area takes what is left.
+        egui::Panel::bottom("scriva-reviewer-foot")
+            .resizable(false)
+            .frame(
+                egui::Frame::new()
+                    .fill(theme::CHROME)
+                    .inner_margin(egui::Margin::symmetric(10, 8)),
+            )
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.add_enabled_ui(changes > 0, |ui| {
+                        if dialog::button(ui, "Accept All", false).clicked() {
+                            chosen = Some(Command::AcceptAll);
+                        }
+                        if dialog::button(ui, "Reject All", false).clicked() {
+                            chosen = Some(Command::RejectAll);
+                        }
+                    });
+                });
+            });
+
+        ui_kit::scroll::show(
+            ui,
+            egui::ScrollArea::vertical().auto_shrink([false, false]),
+            |ui| {
+                ui.add_space(6.0);
+                ui.spacing_mut().item_spacing.y = 6.0;
+                let mut drafted = false;
+                if cards.is_empty() && draft.is_none() {
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        ui.add_space(10.0);
+                        ui.label(egui::RichText::new("Nothing to review.").color(theme::INK_SOFT));
+                    });
+                }
+                for (at, card) in cards.iter().enumerate() {
+                    let is_lit = lit == Some(at);
+                    // The draft goes where its comment will: before the
+                    // first card that comes after it.
+                    if let (Some(place), Some(d), false) = (draft_place, &mut draft, drafted) {
+                        if d.reply_to.is_none() && card.place() >= place {
+                            drafted = true;
                             let (command, holds) = draft_card(ui, d);
                             chosen = chosen.take().or(command);
                             held |= holds;
                         }
-                        ui.add_space(6.0);
-
-                        // The card at the caret, kept in view as the caret moves —
-                        // once per arrival, not on every frame, or the list could
-                        // not be scrolled away from it.
-                        // With the keyboard here, the lit card instead.
-                        let drawn = drawn_now(ui.ctx());
-                        let follow = match lit {
-                            Some(at) => drawn.get(at).cloned(),
-                            None => drawn.iter().find(|card| card.at_caret).cloned(),
-                        };
-                        if let Some(card) = follow {
-                            if scroll_to.as_ref() != Some(&card.key) {
-                                ui.scroll_to_rect(card.rect, Some(egui::Align::Center));
-                                scroll_to = Some(card.key.clone());
-                            }
-                            if go {
-                                chosen = Some(match &card.key {
-                                    CardKey::Change(mark) => Command::GoToChange(mark.clone()),
-                                    CardKey::Comment(id) => Command::GoToComment(*id),
-                                    CardKey::Draft => Command::PostComment,
-                                });
-                            }
-                            if tab {
-                                if let Some(first) = card.first_action {
-                                    ui.ctx().memory_mut(|m| m.request_focus(first));
-                                    held = true;
-                                }
+                    }
+                    match card {
+                        Card::Change(card) if filter != Filter::Comments => {
+                            chosen = chosen.take().or(change_card(ui, card, is_lit));
+                        }
+                        Card::Comment(card) if filter != Filter::Changes => {
+                            let reply_draft =
+                                draft.as_mut().filter(|d| d.reply_to == Some(card.id));
+                            let (command, holds) = comment_card(ui, card, reply_draft, is_lit);
+                            chosen = chosen.take().or(command);
+                            held |= holds;
+                            if draft.as_ref().is_some_and(|d| d.reply_to == Some(card.id)) {
+                                drafted = true;
                             }
                         }
-                    },
-                );
-            });
+                        _ => {}
+                    }
+                }
+                if let (Some(d), false) = (&mut draft, drafted) {
+                    let (command, holds) = draft_card(ui, d);
+                    chosen = chosen.take().or(command);
+                    held |= holds;
+                }
+                ui.add_space(6.0);
+
+                // The card at the caret, kept in view as the caret moves —
+                // once per arrival, not on every frame, or the list could
+                // not be scrolled away from it.
+                // With the keyboard here, the lit card instead.
+                let drawn = drawn_now(ui.ctx());
+                let follow = match lit {
+                    Some(at) => drawn.get(at).cloned(),
+                    None => drawn.iter().find(|card| card.at_caret).cloned(),
+                };
+                if let Some(card) = follow {
+                    if scroll_to.as_ref() != Some(&card.key) {
+                        ui.scroll_to_rect(card.rect, Some(egui::Align::Center));
+                        scroll_to = Some(card.key.clone());
+                    }
+                    if go {
+                        chosen = Some(match &card.key {
+                            CardKey::Change(mark) => Command::GoToChange(mark.clone()),
+                            CardKey::Comment(id) => Command::GoToComment(*id),
+                            CardKey::Draft => Command::PostComment,
+                        });
+                    }
+                    if tab {
+                        if let Some(first) = card.first_action {
+                            ui.ctx().memory_mut(|m| m.request_focus(first));
+                            held = true;
+                        }
+                    }
+                }
+            },
+        );
 
         self.review_filter = filter;
         self.review_scrolled = scroll_to;

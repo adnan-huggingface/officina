@@ -159,6 +159,9 @@ pub struct History {
     /// entry. Word collapses a word's worth of typing into a single undo, which
     /// is what makes Ctrl+Z usable at all.
     last: Option<(Scope, usize, usize)>,
+    /// How many times the document has been changed through here — each
+    /// change recorded, typed, undone or redone, and the history cleared.
+    generation: u64,
 }
 
 impl History {
@@ -178,6 +181,14 @@ impl History {
         self.undo.clear();
         self.redo.clear();
         self.last = None;
+        self.generation += 1;
+    }
+
+    /// A number that differs whenever the document has been changed through
+    /// this history since it was last read: what tells whether what someone
+    /// was shown of the document is still what it holds.
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 
     /// Records a change, discarding anything that was redoable.
@@ -185,6 +196,7 @@ impl History {
         self.undo.push(Entry { scope, change });
         self.redo.clear();
         self.last = None;
+        self.generation += 1;
     }
 
     /// Records a change made by typing one character at `caret`.
@@ -203,6 +215,7 @@ impl History {
         if !continues {
             self.undo.push(Entry { scope, change });
         }
+        self.generation += 1;
         self.redo.clear();
         self.last = if word_end {
             None
@@ -216,6 +229,7 @@ impl History {
     /// rather than moving a caret in the body to the same number.
     pub fn undo(&mut self, document: &mut Document) -> Option<(Scope, Caret)> {
         let entry = self.undo.pop()?;
+        self.generation += 1;
         let (inverse, caret) = apply(document, entry.scope, entry.change);
         self.redo.push(Entry {
             scope: entry.scope,
@@ -227,6 +241,7 @@ impl History {
 
     pub fn redo(&mut self, document: &mut Document) -> Option<(Scope, Caret)> {
         let entry = self.redo.pop()?;
+        self.generation += 1;
         let (inverse, caret) = apply(document, entry.scope, entry.change);
         self.undo.push(Entry {
             scope: entry.scope,
@@ -784,6 +799,30 @@ fn insert_paragraphs_at(document: &mut Document, scope: Scope, at: usize, with: 
     container.splice(index..index, with.into_iter().map(Block::Paragraph));
 }
 
+/// Puts `with` in as whole paragraphs before paragraph `at` of the flow's
+/// flattened walk, beside it in its own container — which, where the
+/// paragraph before is a table's last or a cell's, is not that paragraph's.
+/// `false`, and nothing done, when there is no paragraph `at`.
+pub fn insert_before(
+    document: &mut Document,
+    scope: Scope,
+    at: usize,
+    with: Vec<Paragraph>,
+) -> bool {
+    let Some((steps, index)) = place_of(document.blocks(scope), &mut 0, at) else {
+        return false;
+    };
+    let Some(container) = document
+        .blocks_mut(scope)
+        .and_then(|blocks| container_mut(blocks, &steps))
+    else {
+        return false;
+    };
+    let index = index.min(container.len());
+    container.splice(index..index, with.into_iter().map(Block::Paragraph));
+    true
+}
+
 /// Whether paragraphs `range` of the flow's flattened walk stand side by side
 /// in one container, with no table or content control among them: the only
 /// range an edit may change the number of paragraphs in.
@@ -1049,6 +1088,7 @@ pub fn type_text_with(
     let Some(before) = paragraph_at(document, scope, caret.paragraph) else {
         return caret;
     };
+    let next_id = crate::revise::next_revision_id(document);
     let word_end = input
         .chars()
         .next()
@@ -1068,6 +1108,17 @@ pub fn type_text_with(
     let Some(target) = paragraphs.get_mut(caret.paragraph) else {
         return caret;
     };
+    // Beside a tracked change, the text is ordinary text, as Word types it
+    // with Track Changes off: never part of the change.
+    let props = with
+        .clone()
+        .unwrap_or_else(|| text::props_at(target, caret.offset));
+    if let Some(after) = crate::revise::insert_plain(target, caret.offset, input, props, next_id) {
+        return Caret {
+            paragraph: caret.paragraph,
+            offset: after,
+        };
+    }
     let placed = with.and_then(|props| {
         let at = crate::revise::top_level_split(target, caret.offset)?;
         target.content.insert(

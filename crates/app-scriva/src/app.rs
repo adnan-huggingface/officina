@@ -20,6 +20,7 @@ use crate::shaper::Egui;
 use crate::text;
 use crate::view::{self, View};
 
+pub(crate) mod assisting;
 mod bands;
 mod context;
 mod dialogs;
@@ -27,13 +28,13 @@ mod find_bar;
 mod font_dialog;
 mod goto;
 mod help;
-mod notices;
+pub(crate) mod notices;
 mod page_setup;
 mod strips;
 mod surface;
 mod tables;
 mod watermark;
-mod word_count;
+pub(crate) mod word_count;
 
 pub(crate) use font_dialog::FontDraft;
 pub(crate) use notices::{thousands, Notice};
@@ -68,6 +69,8 @@ pub(crate) enum Keyboard {
     Document,
     Navigate,
     Review,
+    /// Assist's pane: its composer, or a button in it.
+    Assist,
     Find,
     Toolbar,
 }
@@ -277,6 +280,20 @@ pub enum Command {
     DeleteCommentOf(u32),
     /// The pane of tracked changes and comments down the right.
     Reviewer,
+    /// Assist's pane: opened with the keyboard in it, or — from the pane
+    /// itself — put away. Ctrl+Alt+A.
+    Assist,
+    /// Assist's pane, opened: a notice's Show, the status bar's chip.
+    ShowAssist,
+    /// Assist's pane, put away: View ▸ Assist while it is open.
+    HideAssist,
+    /// The right-click menu's Ask: the pane, about the selection.
+    AskAssistant,
+    /// A quick verb from the right-click menu, sent at once.
+    AssistVerb(usize),
+    /// Settle every change the assistant proposed, and no one else's.
+    AcceptAssistant,
+    RejectAssistant,
 }
 
 /// Which of the three formats a path names.
@@ -437,6 +454,29 @@ pub struct Scriva {
     fields: wp_layout::FieldValues,
     navigator: bool,
     reviewer: bool,
+    /// Assist's pane, once it has been wanted, and whether it shows — in the
+    /// right-hand side, where it and Review take turns.
+    pub(crate) assist: Option<Box<ui_kit::assist::Assist>>,
+    pub(crate) assisting: bool,
+    /// The pane's cards, and what each settles.
+    pub(crate) carded: Vec<assisting::Carded>,
+    /// How many cards there have been, which names the next.
+    cards: u64,
+    /// The document revision the cards were last checked against.
+    cards_for: u64,
+    /// The last time a proposal was made at, in seconds, so that each has
+    /// one of its own.
+    proposal_time: u64,
+    /// Changes and comments proposed while the pane was put away.
+    unseen: (usize, usize),
+    /// The document, as a number of the changes made to it, when the helper
+    /// was last shown it or last changed it: what says whether the paragraph
+    /// numbers it has are still the document's.
+    assist_seen: u64,
+    /// Whether a menu was open at the end of the last frame: the Escape that
+    /// closed it, which egui leaves for the next reader, is not also a step
+    /// back to the document.
+    popup_before: bool,
     /// Who a recorded change is attributed to. Word takes this from the
     /// application's own settings; there is nowhere else to get it, and a
     /// document full of changes by "Unknown" is worse than one by a name the
@@ -690,6 +730,15 @@ impl Scriva {
             fields: wp_layout::FieldValues::new(),
             navigator: false,
             reviewer: false,
+            assist: None,
+            assisting: false,
+            carded: Vec::new(),
+            cards: 0,
+            cards_for: 0,
+            proposal_time: 0,
+            unseen: (0, 0),
+            assist_seen: 0,
+            popup_before: false,
             author: crate::revise::Author::new("Scriva user"),
             draft: None,
             keyboard: Keyboard::Document,
@@ -1207,7 +1256,7 @@ impl Scriva {
     /// break separates (`text()` drops a page break, silently gluing the words
     /// around it), and a slash splits — "TCP/IP" is two words to Word even
     /// though "real-time" is one.
-    fn word_count(&self) -> usize {
+    pub(crate) fn word_count(&self) -> usize {
         use wp_model::doc::Piece;
         self.document
             .paragraphs()
@@ -1275,6 +1324,7 @@ impl Scriva {
         self.path = Some(path.to_path_buf());
         self.dirty = false;
         self.history.clear();
+        self.end_conversation();
         self.selection = Selection::default();
         self.scope = wp_model::Scope::Body;
         self.left_behind = None;
@@ -1315,6 +1365,7 @@ impl Scriva {
                 self.path = Some(path.to_path_buf());
                 self.dirty = false;
                 self.history.clear();
+                self.end_conversation();
                 self.selection = Selection::default();
                 self.scope = wp_model::Scope::Body;
                 self.left_behind = None;
@@ -1360,6 +1411,7 @@ impl Scriva {
                 // Not saved yet: it has never been written in this format.
                 self.dirty = true;
                 self.history.clear();
+                self.end_conversation();
                 self.selection = Selection::default();
                 self.scope = wp_model::Scope::Body;
                 self.left_behind = None;
@@ -1427,6 +1479,7 @@ impl Scriva {
                 self.path = Some(path.to_path_buf());
                 self.dirty = false;
                 self.history.clear();
+                self.end_conversation();
                 self.selection = Selection::default();
                 self.scope = wp_model::Scope::Body;
                 self.left_behind = None;
@@ -1822,6 +1875,7 @@ impl Scriva {
         match then {
             Chosen::SaveAs(after) => {
                 if self.save_to(path) {
+                    self.say_saved();
                     if let Some(command) = after {
                         self.finish(*command, ctx);
                     }
@@ -1900,9 +1954,9 @@ impl Scriva {
         )
     }
 
-    /// What this document is called off the screen: for a PDF's title, for the
-    /// print queue's entry.
-    /// `Saved report.docx`, in the status bar.
+    /// `Saved report.docx`, in the status bar — and how many of the
+    /// assistant's proposals went into the file still open, since a
+    /// proposal saved is a tracked change in it.
     fn say_saved(&mut self) {
         let name = self
             .path
@@ -1910,9 +1964,27 @@ impl Scriva {
             .and_then(|path| path.file_name())
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_else(|| "document".to_owned());
-        self.say(format!("Saved {name}"));
+        // Only a `.docx` keeps tracked changes; the other formats hold what
+        // a proposal says rather than the proposal.
+        let keeps = self.path.as_deref().map(Format::of) == Some(Format::Docx);
+        let said = match (crate::assistant::open(&self.document), keeps) {
+            (0, _) => format!("Saved {name}"),
+            (1, true) => format!("Saved {name}, with one of the assistant's proposals still open"),
+            (n, true) => format!("Saved {name}, with {n} of the assistant's proposals still open"),
+            (1, false) => {
+                let how = "the assistant's open proposal is in it as its new text";
+                format!("Saved {name}, which keeps no tracked changes: {how}")
+            }
+            (n, false) => {
+                let how = format!("the assistant's {n} open proposals are in it as their new text");
+                format!("Saved {name}, which keeps no tracked changes: {how}")
+            }
+        };
+        self.say(said);
     }
 
+    /// What this document is called off the screen: for a PDF's title, for the
+    /// print queue's entry.
     fn published_name(&self) -> String {
         self.path
             .as_ref()
@@ -2046,6 +2118,7 @@ impl Scriva {
         self.path = None;
         self.dirty = false;
         self.history.clear();
+        self.end_conversation();
         self.selection = Selection::default();
         self.scope = wp_model::Scope::Body;
         self.left_behind = None;
@@ -2395,7 +2468,16 @@ impl Scriva {
             }
             Command::ShowComments => self.view.show_comments = !self.view.show_comments,
             Command::Navigator => self.navigator = !self.navigator,
-            Command::Reviewer => self.reviewer = !self.reviewer,
+            Command::Reviewer => match self.reviewer {
+                true => self.reviewer = false,
+                false => self.show_reviewer(),
+            },
+            Command::Assist => self.toggle_assist(),
+            Command::HideAssist => self.hide_assist(),
+            Command::ShowAssist | Command::AskAssistant => self.show_assist(),
+            Command::AssistVerb(index) => self.assist_verb(index),
+            Command::AcceptAssistant => self.settle_assistant(crate::revise::Resolve::Accept),
+            Command::RejectAssistant => self.settle_assistant(crate::revise::Resolve::Reject),
             Command::TrackChanges => {
                 self.document.settings.track_changes = !self.document.settings.track_changes;
                 self.changed();
@@ -2438,7 +2520,7 @@ impl Scriva {
                     .find(|range| range.id == id)
                     .cloned()
                 {
-                    self.reviewer = true;
+                    self.show_reviewer();
                     self.draft = Some(Draft {
                         scope: range.scope,
                         range: range.range,
@@ -2516,7 +2598,7 @@ impl Scriva {
                     } else {
                         self.selection
                     };
-                    self.reviewer = true;
+                    self.show_reviewer();
                     self.draft = Some(Draft {
                         scope: self.scope,
                         range,
@@ -2734,7 +2816,7 @@ impl Scriva {
                 );
             }
         }
-        self.reviewer = true;
+        self.show_reviewer();
         self.changed();
     }
 
@@ -2758,6 +2840,7 @@ impl Scriva {
             || self.paragraph_draft.is_some()
             || self.size_draft.is_some()
             || self.zoom_draft.is_some()
+            || self.assist.as_ref().is_some_and(|assist| assist.box_up())
     }
 
     /// The stops F6 walks, in order, with only the open ones in.
@@ -2768,6 +2851,9 @@ impl Scriva {
         }
         if self.reviewer {
             order.push(Keyboard::Review);
+        }
+        if self.assisting {
+            order.push(Keyboard::Assist);
         }
         if self.finder.is_some() {
             order.push(Keyboard::Find);
@@ -2780,7 +2866,7 @@ impl Scriva {
     /// or on the toolbar brings it back to the document and closes nothing.
     /// Read before anything is drawn, so this frame shows the result.
     fn cycle_keyboard(&mut self, ui: &egui::Ui) {
-        if self.box_up() || egui::Popup::is_any_open(ui.ctx()) {
+        if self.box_up() || egui::Popup::is_any_open(ui.ctx()) || self.popup_before {
             return;
         }
         let (forward, back) = ui.input_mut(|i| {
@@ -2789,6 +2875,19 @@ impl Scriva {
                 ui_kit::keys::take(i, egui::Modifiers::SHIFT, egui::Key::F6),
             )
         });
+        // Assist's key is read here, with F6, so that it works from
+        // wherever the keyboard is — the pane's composer included.
+        let assist_key = ui.input_mut(|i| {
+            ui_kit::keys::take(
+                i,
+                egui::Modifiers::COMMAND.plus(egui::Modifiers::ALT),
+                egui::Key::A,
+            )
+        });
+        if assist_key {
+            self.toggle_assist();
+            return;
+        }
         if forward || back {
             let order = self.keyboard_order();
             let at = order
@@ -2804,7 +2903,7 @@ impl Scriva {
         }
         if matches!(
             self.keyboard,
-            Keyboard::Navigate | Keyboard::Review | Keyboard::Toolbar
+            Keyboard::Navigate | Keyboard::Review | Keyboard::Assist | Keyboard::Toolbar
         ) && ui.input_mut(|i| ui_kit::keys::take(i, egui::Modifiers::NONE, egui::Key::Escape))
         {
             self.give_keyboard(Keyboard::Document, ui.ctx());
@@ -2822,6 +2921,7 @@ impl Scriva {
                 }
             }
             // A pane keeps no widget focused: its rows are its own.
+            Keyboard::Assist => self.assist_mut().focus(),
             Keyboard::Navigate | Keyboard::Review => ctx.memory_mut(|m| {
                 if let Some(focused) = m.focused() {
                     m.surrender_focus(focused);
@@ -5264,6 +5364,17 @@ impl DocumentApp for Scriva {
             {
                 self.run(Command::TrackChanges);
             }
+            if self.assistant_working()
+                && chip(
+                    ui,
+                    "Assistant is working\u{2026}",
+                    true,
+                    "Show the Assist pane",
+                )
+                .clicked()
+            {
+                self.run(Command::ShowAssist);
+            }
             if self.editing_band() {
                 let label = match self.in_footer() {
                     true => "Editing footer \u{00b7} Esc",
@@ -5371,6 +5482,9 @@ impl DocumentApp for Scriva {
     }
 
     fn overlay(&mut self, ctx: &egui::Context) {
+        if let Some(assist) = self.assist.as_mut() {
+            assist.overlay(ctx);
+        }
         if let Some(asking) = self.asking.take() {
             match asking.answered() {
                 Ok((path, then)) => self.chosen(path, then, ctx),
@@ -5477,7 +5591,9 @@ impl DocumentApp for Scriva {
             match answer {
                 Some(0) => {
                     self.pending = None;
-                    self.save_text(&path, format);
+                    if self.save_text(&path, format) {
+                        self.say_saved();
+                    }
                 }
                 Some(_) => self.pending = None,
                 None => {}
@@ -5576,6 +5692,9 @@ impl DocumentApp for Scriva {
         if self.shaper.is_none() {
             self.shaper = Some(Egui::new(ui.ctx()));
         }
+        // What the helper asked for is done before the page is laid out, so
+        // that the frame it lands on shows it.
+        self.tend_assist(&ui.ctx().clone());
         self.lay_out();
         self.pane_held = false;
         self.cycle_keyboard(ui);
@@ -5586,16 +5705,7 @@ impl DocumentApp for Scriva {
         } else if self.keyboard == Keyboard::Navigate {
             self.keyboard = Keyboard::Document;
         }
-        if self.reviewer {
-            if let Some(command) = self.review_pane(ui) {
-                self.run(command);
-            }
-        } else {
-            self.draft = None;
-            if self.keyboard == Keyboard::Review {
-                self.keyboard = Keyboard::Document;
-            }
-        }
+        self.right_side(ui);
         let bar_held = self.find_held || self.field_held;
 
         // Any key, letter or press starts the caret's blink over, solid.
@@ -5641,6 +5751,7 @@ impl DocumentApp for Scriva {
             || self.paragraph_draft.is_some()
             || self.size_draft.is_some()
             || self.zoom_draft.is_some()
+            || self.assist.as_ref().is_some_and(|assist| assist.box_up())
             || bar_held
             || egui::Popup::is_any_open(ui.ctx());
         if !blocked {
@@ -5682,6 +5793,7 @@ impl DocumentApp for Scriva {
         if self.asking.is_some() {
             ui.ctx().request_repaint();
         }
+        self.popup_before = egui::Popup::is_any_open(ui.ctx());
     }
 }
 

@@ -208,6 +208,7 @@ would be worse than not offering it.
 | `Alt+Shift+F7` | Previous change |
 | `Ctrl+Alt+M` | New comment — on the selection, or on the word at the caret; written in the Review pane, `Ctrl+Enter` posts it |
 | `Alt+Shift+C` | Review pane |
+| `Ctrl+Alt+A` | Assist pane: ask for a change in your own words. What the assistant changes arrives as tracked changes by "Assistant", to accept or reject; from the pane, the same key puts it away |
 
 Tracked changes and comments are editable, not merely preserved: accept, reject,
 reply and resolve all work and are written back.
@@ -216,11 +217,11 @@ reply and resolve all work and are written back.
 
 | | |
 |---|---|
-| `F6` / `Shift+F6` | Move the keyboard round the window: the document, the Navigate pane, the Review pane, the find bar, the toolbar — skipping what is not open. In a pane the arrows walk the rows and `Enter` goes there |
+| `F6` / `Shift+F6` | Move the keyboard round the window: the document, the Navigate pane, the Review or Assist pane, the find bar, the toolbar — skipping what is not open. In a pane the arrows walk the rows and `Enter` goes there |
 | `Esc` | From a pane, the find bar or the toolbar: back to the document, closing nothing. In the document: close the header or footer first, then the find bar |
 | `Ctrl+Shift+8` | Formatting marks |
 | `F9` | Update the table of contents |
-| `Shift+F10` | The page's right-click menu, at the caret. Its rows are the menus' own: Cut, Copy, Paste, Paste Unformatted, the three emphases, Paragraph, Styles, New Comment, Select All — with Open Hyperlink and Copy Link Address first on a link, a Table submenu first in a table, Accept and Reject first on a tracked change, and a menu of its own on a picked picture |
+| `Shift+F10` | The page's right-click menu, at the caret. Its rows are the menus' own: Cut, Copy, Paste, Paste Unformatted, the three emphases, Paragraph, Styles, New Comment, Ask the Assistant, Select All — with Open Hyperlink and Copy Link Address first on a link, a Table submenu first in a table, Accept and Reject first on a tracked change, and a menu of its own on a picked picture |
 | `Ctrl+Shift+V` | Paste the board's text without its formatting |
 | `Ctrl+G` | Go To: a small box on the status bar's page count. A page number, or `+3` and `-2` from here, and `Enter` goes; `Heading ▾` lists the headings. Clicking the page count opens the same box, and clicking the word count opens Word Count |
 

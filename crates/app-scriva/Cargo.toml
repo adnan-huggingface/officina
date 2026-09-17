@@ -29,6 +29,10 @@ wp-odf.workspace = true
 wp-text.workspace = true
 wp-print.workspace = true
 ooxml.workspace = true
+# Assist: the helper's tools and instructions, and the JSON its tool calls
+# arrive in. Neither is new to the tree: ui-kit's pane is built on both.
+assist.workspace = true
+serde_json = "1.0.151"
 # Default features: the XDG portal on Linux, so a build needs no GTK headers.
 rfd = "0.15"
 # Menu-driven paste has no key event to ride, so the OS clipboard has to be

@@ -2804,6 +2804,7 @@ name = "scriva"
 version = "0.1.0"
 dependencies = [
  "arboard",
+ "assist",
  "brand",
  "chart",
  "clipboard-win",
@@ -2812,6 +2813,7 @@ dependencies = [
  "ooxml",
  "quick-xml",
  "rfd",
+ "serde_json",
  "ui-kit",
  "wp-doc",
  "wp-docx",

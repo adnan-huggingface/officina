@@ -313,6 +313,11 @@ pub struct Assist {
     download: Option<Progress>,
     /// The frame the pane was last drawn on, to tell a pane just opened.
     drawn: Option<u64>,
+    /// Whether a menu was open when the pane was last drawn. egui closes a
+    /// menu on Escape and leaves the key for whoever reads it next: without
+    /// this, the Escape that closed a menu also gave the keyboard away, and
+    /// the Enter that chose a row sent the composer's words.
+    popup_before: bool,
     ctx: Option<egui::Context>,
 }
 
@@ -325,9 +330,9 @@ fn more_id() -> egui::Id {
 }
 
 /// Where the last frame drew the pane's `⋯`, which has no words to be found
-/// by: what a test presses instead of a person.
-#[cfg(test)]
-pub(crate) fn more_button(ctx: &egui::Context) -> Option<egui::Rect> {
+/// by: what a test — the pane's own, or an application's — presses instead
+/// of a person.
+pub fn more_button(ctx: &egui::Context) -> Option<egui::Rect> {
     ctx.data(|d| d.get_temp(more_id()))
 }
 
@@ -388,6 +393,7 @@ impl Assist {
             cents: None,
             download: None,
             drawn: None,
+            popup_before: false,
             ctx: None,
         }
     }
@@ -405,6 +411,12 @@ impl Assist {
     /// Whether a request is under way.
     pub fn is_working(&self) -> bool {
         self.running.is_some()
+    }
+
+    /// Whether a request is under way or waiting to be agreed to: what says
+    /// whether the words the application prepares now are the ones that go.
+    pub fn is_busy(&self) -> bool {
+        self.running.is_some() || self.consent.is_some()
     }
 
     /// Whether the settings box is up, holding the keyboard.
@@ -453,6 +465,16 @@ impl Assist {
     /// first-run card's "Use this" while the card is up.
     pub fn focus(&mut self) {
         self.focus = true;
+    }
+
+    /// Gives the composer the keyboard at once, unless a card or the
+    /// settings box is up: for an application whose keyboard is still the
+    /// pane's when nothing holds the focus — a menu opened from the composer
+    /// has closed, or a box over the window has gone.
+    pub fn keep_keyboard(&self, ctx: &egui::Context) {
+        if self.choosing.is_none() && !self.box_up() {
+            ctx.memory_mut(|m| m.request_focus(composer_id()));
+        }
     }
 
     /// Opens the settings box.
@@ -1041,7 +1063,7 @@ impl Assist {
         // The keys the composer answers to, read before anything is drawn.
         let composer_has_keyboard = ctx.memory(|m| m.has_focus(composer_id()));
         let keys_here = composer_has_keyboard || self.composer_had_keyboard;
-        let popup = egui::Popup::is_any_open(&ctx);
+        let popup = egui::Popup::is_any_open(&ctx) || (self.popup_before && !just_opened);
         let (enter, escape, arrows) = match keys_here && !popup && !self.box_up() {
             true => ui.input_mut(|i| {
                 let arrows = i.events.iter().any(|event| {
@@ -1114,6 +1136,7 @@ impl Assist {
         // Kept for the next frame: egui keeps Escape and the arrows for a
         // field only from its second frame with the keyboard.
         self.composer_had_keyboard = !escape && ctx.memory(|m| m.has_focus(composer_id()));
+        self.popup_before = egui::Popup::is_any_open(&ctx);
         chosen
     }
 

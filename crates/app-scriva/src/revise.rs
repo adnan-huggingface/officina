@@ -502,8 +502,12 @@ fn settle(content: &[Inline], how: Resolve, only: Option<&Mark>) -> Vec<Inline> 
                     // insertion is ordinary text, not an insertion that has been
                     // ticked off.
                     out.extend(unwrap(settle(content, how, only)));
+                } else {
+                    // Otherwise the content goes with the wrapper — all but
+                    // the anchors and a comment's reference, without which a
+                    // comment still in the file would be a damaged one.
+                    salvage(content.clone(), &mut out);
                 }
-                // Otherwise the content goes with the wrapper.
             }
             Inline::Hyperlink(link) => {
                 let mut link = link.clone();
@@ -612,12 +616,22 @@ impl Author {
         }
     }
 
-    fn mark(&self, id: u32) -> Mark {
+    pub(crate) fn mark(&self, id: u32) -> Mark {
         Mark {
             id,
             author: self.name.clone(),
             date: self.date.clone(),
         }
+    }
+
+    /// Whether a change is this author's own: what is taken back rather
+    /// than struck when this author deletes it. A person's edits carry no
+    /// time, and all of a person's changes are theirs, as in Word, whenever
+    /// they were made. The assistant's proposals each carry a time of their
+    /// own, and only a change of that time is the proposal's own, so one
+    /// proposal never takes back another.
+    pub fn made(&self, mark: &Mark) -> bool {
+        mark.author == self.name && (self.date.is_none() || mark.date == self.date)
     }
 }
 
@@ -915,7 +929,7 @@ fn insert_in(
             })],
         },
     );
-    join_changes(&mut content, &author.name, id);
+    join_changes(&mut content, author, id);
     paragraph.content = content;
     crate::text::prune(paragraph);
     Some(offset + input.len())
@@ -963,7 +977,7 @@ fn delete_in(
     let covered: Vec<Inline> = content.drain(start..end).collect();
     let deleted = strike_all(covered, author, ids)?;
     content.splice(start..start, deleted);
-    join_changes(&mut content, &author.name, first);
+    join_changes(&mut content, author, first);
     paragraph.content = content;
     crate::text::prune(paragraph);
     Some(())
@@ -991,7 +1005,7 @@ fn strike_all(covered: Vec<Inline>, author: &Author, ids: &mut Ids) -> Option<Ve
                 flush(&mut runs, &mut out, author, ids);
                 // The same author's own insertion is simply taken back — all
                 // but the anchors in it, which a comment or a bookmark needs.
-                if mark.author == author.name {
+                if author.made(&mark) {
                     salvage(content, &mut out);
                 } else {
                     let inner = strike_all(content, author, ids)?;
@@ -1068,16 +1082,23 @@ fn struck(run: Run) -> Run {
 /// author's insertion that the edit cut and then put nothing between. The
 /// older mark stays, and the runs are joined where they differ only in their
 /// text, as Word writes them.
-fn join_changes(content: &mut Vec<Inline>, author: &str, from: u32) {
-    fn kin(first: &Revision, second: &Revision, from: u32) -> bool {
+fn join_changes(content: &mut Vec<Inline>, author: &Author, from: u32) {
+    let kin = |first: &Revision, second: &Revision| {
         let same_kind = matches!(
             (first, second),
             (Revision::Inserted(_), Revision::Inserted(_))
                 | (Revision::Deleted(_), Revision::Deleted(_))
         );
         let (a, b) = (first.mark(), second.mark());
-        same_kind && a.author == b.author && (a.id >= from || b.id >= from)
-    }
+        // A change carries one time, so two of different times stay two. Of
+        // this author's own, side by side, either is one this edit made or
+        // one whose neighbour it took away — the halves of an insertion typed
+        // into and then mended — and those are one change again.
+        same_kind
+            && a.author == b.author
+            && a.date == b.date
+            && (a.id >= from || b.id >= from || (author.made(a) && author.made(b)))
+    };
     let mut index = 0;
     while index < content.len() {
         if let Inline::Revised {
@@ -1085,13 +1106,13 @@ fn join_changes(content: &mut Vec<Inline>, author: &str, from: u32) {
             content: inner,
         } = &mut content[index]
         {
-            if &*mark.author != author {
+            if !author.made(mark) {
                 join_changes(inner, author, from);
             }
         }
         let joins = match (&content[index], content.get(index + 1)) {
             (Inline::Revised { revision: a, .. }, Some(Inline::Revised { revision: b, .. })) => {
-                kin(a, b, from)
+                kin(a, b)
             }
             _ => false,
         };
@@ -1119,11 +1140,31 @@ fn join_changes(content: &mut Vec<Inline>, author: &str, from: u32) {
 /// Joins neighbouring runs that differ in nothing but their text, and
 /// neighbouring pieces of text in each.
 fn coalesce(content: &mut Vec<Inline>) {
+    // Only runs of text are joined: a comment's or a note's reference, a
+    // field's characters and a drawing keep a run of their own, as Word
+    // writes them.
+    fn text_only(run: &Run) -> bool {
+        run.content.iter().all(|piece| {
+            matches!(
+                piece,
+                Piece::Text(_)
+                    | Piece::Deleted(_)
+                    | Piece::Tab
+                    | Piece::Break(_)
+                    | Piece::Hyphen { .. }
+                    | Piece::Symbol { .. }
+            )
+        })
+    }
     let mut index = 0;
     while index + 1 < content.len() {
         let same = matches!(
             (&content[index], &content[index + 1]),
-            (Inline::Run(a), Inline::Run(b)) if a.props == b.props && a.prop_change == b.prop_change
+            (Inline::Run(a), Inline::Run(b))
+                if a.props == b.props
+                    && a.prop_change == b.prop_change
+                    && text_only(a)
+                    && text_only(b)
         );
         if !same {
             index += 1;
@@ -1158,6 +1199,50 @@ fn join_runs_at(content: &mut Vec<Inline>, at: usize) {
     let mut pair: Vec<Inline> = content.drain(at - 1..=at).collect();
     coalesce(&mut pair);
     content.splice(at - 1..at - 1, pair);
+}
+
+/// A paragraph as it reads with every change in it accepted: what the
+/// assistant is shown of it.
+pub fn accepted(paragraph: &Paragraph) -> Paragraph {
+    settle_paragraph(paragraph, Resolve::Accept, None)
+}
+
+/// What stands in the way of a second formatting change to a paragraph: it
+/// keeps one record of its properties before any change, so a change by
+/// someone else, or at another time, could not be rejected on its own.
+pub const FORMATTING_OPEN: &str = "its formatting has a tracked change still open";
+
+/// Gives a paragraph other properties as a tracked formatting change by
+/// `author`, the change `id`, as Word records a style changed with Track
+/// Changes on. A formatting change the same author has open already is kept:
+/// what it remembers is the properties before either. One by anyone else is
+/// [`FORMATTING_OPEN`], and nothing is changed. The mark's own formatting
+/// stays, since a paragraph's formatting change does not take it in.
+pub(crate) fn restyle(
+    paragraph: &mut Paragraph,
+    props: &wp_model::prop::ParaProps,
+    author: &Author,
+    id: u32,
+) -> Result<(), &'static str> {
+    if look(&paragraph.props) == look(props) {
+        return Ok(());
+    }
+    match &paragraph.prop_change {
+        Some(change) if !author.made(&change.mark) => return Err(FORMATTING_OPEN),
+        Some(_) => {}
+        None => {
+            paragraph.prop_change = Some(Box::new(wp_model::PropChange {
+                mark: author.mark(id),
+                previous: wp_model::revision::PreviousProps::Paragraph(Box::new(look(
+                    &paragraph.props,
+                ))),
+            }))
+        }
+    }
+    let mark = paragraph.props.mark.take();
+    paragraph.props = look(props);
+    paragraph.props.mark = mark;
+    Ok(())
 }
 
 /// A paragraph's properties without its mark's formatting, which is not
@@ -1233,7 +1318,7 @@ pub fn delete_range(
                 paragraph.mark_revision = Some(Revision::Deleted(author.mark(ids.take())));
                 deleted_a_mark = true;
             }
-            Some(Revision::Inserted(mark)) if mark.author == author.name => {
+            Some(Revision::Inserted(mark)) if author.made(mark) => {
                 let next = after.remove(index + 1);
                 let at = after[index].content.len();
                 let mut merged = crate::text::merge(&after[index], &next);
@@ -1437,10 +1522,30 @@ pub fn paste_paragraphs(
                 }));
             }
         }
-        join_changes(&mut paragraph.content, &author.name, first);
+        join_changes(&mut paragraph.content, author, first);
         crate::text::prune(paragraph);
     }
     Ok(landed)
+}
+
+/// `paragraphs`, whole, as `author` put them in: their text in insertions of
+/// their own and their marks inserted, the changes numbered from `next` on.
+/// The next unused number comes back beside them.
+pub(crate) fn as_inserted(
+    paragraphs: Vec<Paragraph>,
+    author: &Author,
+    next: u32,
+) -> (Vec<Paragraph>, u32) {
+    let mut ids = Ids(next);
+    let out = paragraphs
+        .into_iter()
+        .map(|mut paragraph| {
+            paragraph.content = inserted(std::mem::take(&mut paragraph.content), author, &mut ids);
+            paragraph.mark_revision = Some(Revision::Inserted(author.mark(ids.take())));
+            paragraph
+        })
+        .collect();
+    (out, ids.0)
 }
 
 /// `content`, all of it inserted by `author`: runs in insertions of their
@@ -1606,7 +1711,7 @@ pub fn insert_break(
             prop_change: None,
         })],
     });
-    join_changes(&mut head.content, &author.name, first);
+    join_changes(&mut head.content, author, first);
     head.mark_revision = Some(Revision::Inserted(author.mark(ids.take())));
     history.push(
         scope,
@@ -1716,7 +1821,7 @@ pub fn record_drawing_deletion(
                 revision: Revision::Inserted(mark),
                 content: inner,
             } => {
-                if mark.author == author.name {
+                if author.made(mark) {
                     if !paragraph.remove_drawing(nth) {
                         return None;
                     }
@@ -1727,12 +1832,59 @@ pub fn record_drawing_deletion(
             }
             _ => return None,
         }
-        join_changes(&mut content, &author.name, id);
+        join_changes(&mut content, author, id);
         paragraph.content = content;
         crate::text::prune(paragraph);
         return Some(());
     }
     None
+}
+
+/// Puts `input` at `offset` in `props` as ordinary text — typing with Track
+/// Changes off — where the paragraph holds tracked changes: never inside
+/// one, as Word types it (measured, `track-untracked`). Inside an insertion,
+/// the insertion is cut in two around the new text, its second half a change
+/// of its own from `next_id` on; at a deletion, the text goes before it; at
+/// an insertion's edge, beside it. The new text joins an ordinary run beside
+/// it that looks the same. `None` where the paragraph holds no tracked
+/// change, or the offset is inside something that cannot be cut — a
+/// hyperlink, a field — for ordinary typing to answer.
+pub(crate) fn insert_plain(
+    paragraph: &mut Paragraph,
+    offset: usize,
+    input: &str,
+    props: wp_model::RunProps,
+    next_id: u32,
+) -> Option<usize> {
+    fn tracked(content: &[Inline]) -> bool {
+        content.iter().any(|inline| match inline {
+            Inline::Revised { .. } => true,
+            Inline::Hyperlink(link) => tracked(&link.content),
+            Inline::Structured(sdt) => tracked(&sdt.content),
+            Inline::Wrapper { content, .. } | Inline::SimpleField { content, .. } => {
+                tracked(content)
+            }
+            _ => false,
+        })
+    }
+    if !tracked(&paragraph.content) {
+        return None;
+    }
+    let mut content = paragraph.content.clone();
+    let at = cut(&mut content, offset, Some(&mut Ids(next_id)), Side::Before)?;
+    content.insert(
+        at,
+        Inline::Run(Run {
+            props,
+            content: vec![Piece::Text(input.into())],
+            prop_change: None,
+        }),
+    );
+    join_runs_at(&mut content, at + 1);
+    join_runs_at(&mut content, at);
+    paragraph.content = content;
+    crate::text::prune(paragraph);
+    Some(offset + input.len())
 }
 
 /// Whether a tracked insertion can be recorded at `caret`: not inside a
@@ -2835,6 +2987,87 @@ mod tests {
 
     /// Backspace twice, and Delete twice: each pair is one deletion, as Word
     /// writes "ds" and "Bo" (`backspace-twice`).
+    /// Two of the assistant's proposals, each with a time of its own, stay
+    /// two changes side by side; and the second, deleting what the first
+    /// put in, strikes it rather than taking it back, so that rejecting the
+    /// second leaves the first as it was.
+    #[test]
+    fn changes_made_at_different_times_stay_apart() {
+        let at_time = |date: &str| Author {
+            date: Some(date.into()),
+            ..Author::new("Assistant")
+        };
+        let (first, second) = (
+            at_time("2026-09-17T10:00:00Z"),
+            at_time("2026-09-17T10:00:01Z"),
+        );
+        let mut word = document(vec![Block::Paragraph(Paragraph::of("Body"))]);
+        if let Block::Paragraph(paragraph) = &mut word.body[0] {
+            record_insertion(paragraph, 0, "one ", &first, 1).expect("recorded");
+            record_insertion(paragraph, 4, "two ", &second, 2).expect("recorded");
+            record_deletion(paragraph, 0..4, &second, 3).expect("recorded");
+            assert_eq!(paragraph.text(), "two Body");
+        }
+        let changes = tracked(&word);
+        let whats: Vec<(&str, u32)> = changes
+            .iter()
+            .map(|change| (change.what, change.mark.id))
+            .collect();
+        assert_eq!(whats.len(), 3, "{whats:?}");
+        for change in changes.iter().filter(|change| second.made(&change.mark)) {
+            assert!(resolve_one(
+                &mut word,
+                &mut History::new(),
+                &change.mark,
+                Resolve::Reject
+            ));
+        }
+        assert_eq!(word.paragraphs()[0].text(), "one Body");
+        let left: Vec<Mark> = tracked(&word)
+            .into_iter()
+            .map(|change| change.mark)
+            .collect();
+        assert_eq!(left.len(), 1);
+        assert!(first.made(&left[0]));
+
+        // A person's own insertion, dated as Word dates one, is still
+        // theirs: deleting it takes it back, as Word does; what they type
+        // beside it is a change of its own, of no time, since a change
+        // carries one time; and typing inside one and taking it back leaves
+        // the insertion whole again.
+        let person = Author::new("Adnan Khan");
+        let mut dated = inserted_by("Adnan Khan", 1, vec![Inline::Run(Run::of("typed"))]);
+        if let Inline::Revised {
+            revision: Revision::Inserted(mark),
+            ..
+        } = &mut dated
+        {
+            mark.date = Some("2026-09-17T08:46:00Z".into());
+        }
+        let mut word = document(vec![Block::Paragraph(Paragraph {
+            content: vec![Inline::Run(Run::of("Body ")), dated],
+            ..Paragraph::new()
+        })]);
+        if let Block::Paragraph(paragraph) = &mut word.body[0] {
+            record_insertion(paragraph, 10, "!", &person, 5).expect("typed");
+            assert_eq!(
+                tracked_in_paragraph(paragraph).len(),
+                2,
+                "two times, two changes"
+            );
+            // Typed inside it, and taken back: one insertion again.
+            record_insertion(paragraph, 7, "X", &person, 6).expect("typed inside");
+            assert_eq!(tracked_in_paragraph(paragraph).len(), 4, "cut in two by it");
+            record_deletion(paragraph, 7..8, &person, 7).expect("taken back");
+            assert_eq!(tracked_in_paragraph(paragraph).len(), 2, "mended");
+            record_deletion(paragraph, 5..10, &person, 8).expect("deleted");
+            assert_eq!(paragraph.text(), "Body !");
+        }
+        let left = tracked(&word);
+        assert_eq!(left.len(), 1, "{left:?}");
+        assert_eq!(left[0].mark.date, None, "only the new typing is left");
+    }
+
     #[test]
     fn letters_deleted_one_after_another_are_one_deletion() {
         let mut paragraph = Paragraph::of("Body words");
@@ -4010,6 +4243,15 @@ mod tests {
         ids.sort();
         ids.dedup();
         assert_eq!(ids.len(), listed, "{:?}", tracked(&word));
+    }
+
+    /// The changes in one paragraph, by mark.
+    fn tracked_in_paragraph(paragraph: &Paragraph) -> Vec<Mark> {
+        let word = document(vec![Block::Paragraph(paragraph.clone())]);
+        tracked(&word)
+            .into_iter()
+            .map(|change| change.mark)
+            .collect()
     }
 
     fn restyled_mark(id: u32) -> Option<Box<wp_model::PropChange>> {

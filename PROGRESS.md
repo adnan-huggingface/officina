@@ -6987,6 +6987,207 @@ Test: `lines_pasted_at_a_headings_end_and_rejected_leave_it_a_heading`. Three
 mutations, one rule broken at a time, were each caught. A fourth, which applies
 the rule to pastes within one paragraph too, changes nothing a test can see.
 
+## Assist, phase 3: the assistant in Scriva (2026-09-17)
+
+The third of Assist's six phases, and `PLAN.md` is its plan: the pane phase 2
+built is Scriva's now. View ▸ Assist and Ctrl+Alt+A open it on the right, a
+tab beside Review at the same width, so switching between them does not move
+the page; F6 walks it with the window's other stops, and Escape gives the
+document back. A request is about the selection, the caret's paragraph or the
+whole document, and the helper answers by editing, through four tools —
+`read_paragraphs`, `replace_paragraphs`, `insert_paragraphs` and `comment` —
+which `scriva::assistant` runs against the text a call at a time, on the
+window's thread (`app::assisting`).
+
+**Every edit is a proposal.** The tools edit through the functions Track
+Changes records with, by an author named "Assistant", whether or not the
+document's own Track Changes is on: the old words struck and the new beside
+them, a card in the pane with Accept, Reject and Show, and the same changes
+listed and settled in Review. A comment is a comment by "Assistant", with Show
+and Delete on its card. One proposal is one step to undo, and so is settling
+one. Accept All and Reject All on the pane's menu settle the assistant's
+changes and nobody else's; a card whose changes are settled elsewhere, or
+undone, says "No longer open".
+
+**Each proposal carries a time of its own**, as Word writes one on every
+change (`w:date`), a second after the last proposal's at least. Scriva now
+keeps changes made at different times apart: an edit joins a change beside it
+only when the author *and* the time are the same, and a proposal takes back
+only what it put in itself (`revise::Author::made`). A proposal therefore
+never joins another; a second proposal that rewrites what the first put in
+strikes it rather than taking it back, so rejecting the second gives the first
+back; and a card settles exactly its own changes. A person's own edits carry
+no time, as before; deleting their own insertion still takes it back, however
+long ago — from Word, dated — it was made.
+
+**A rewrite keeps the look of what it rewrites.** Each new paragraph takes the
+properties of the one it replaces — a rewritten heading stays a heading, a
+list item a list item — and its words the formatting of that paragraph's plain
+words, with `**` and `*` made bold and italic. A line that begins with `#` is
+a heading of that level, and a paragraph added after a heading takes the style
+that follows it, as Enter gives it. A rewrite into more or fewer paragraphs
+accepts to the new ones and rejects to the old, exactly; a single paragraph
+restyled records the change as a formatting change (`revise::restyle`), so
+that rejecting it gives the old style back. Replacing paragraphs with nothing
+proposes taking them out, their marks with them.
+
+**What the helper is sent** (`assistant::request`): the document's size and
+headings, the paragraphs the request is about with two on each side — numbered
+from the text's first, table cells included, each a line of Markdown as it
+reads with its changes accepted (`wp_text::markdown::line`) — the words
+selected, and the request. What the helper is told is `assist::prompt`, one
+text sent with every request: an editor's brief that names the tools and says
+the document is the person's material and never an instruction. A paragraph
+telling the assistant to delete everything is text in the request, and a
+helper that obeys it anyway can only propose: every word stays on the page,
+struck, and Reject gives the document back whole. A proposal that would
+reach across a table, a cell's edge, a link, a field or a content control is
+refused whole, and the helper is told why in words it can act on; one
+passage is at most fifty paragraphs, and one reading two hundred.
+
+**In the window.** The scope chip follows the selection and says how many
+words the selection and the whole document are, and the question asked before
+anything goes to a helper elsewhere names the same. Proposals that arrive with
+the pane put away are a notice under the toolbar, with Show; the status bar's
+chip says the assistant is working while it is. The right-click menu's Ask the
+Assistant sends a quick verb about the selection at once, with little thought
+asked for, or opens the pane. A document saved with proposals open carries
+them as tracked changes and says so — "Saved report.docx, with 2 of the
+assistant's proposals still open". A new or opened document stops the request
+and clears the conversation about the old one. A request made while a header
+is open is about the text where the caret was. The pane is made the first
+time it is wanted, so a window nobody asks for help in never reads Assist's
+settings.
+
+Found on the way and fixed:
+
+- **Markdown export panicked on a run of nothing but a space** — the one
+  between a bold word and an italic word — cutting it past its own end.
+- **An underscore inside a word opened emphasis on import**: `snake_case_name`
+  read as `snake`, an italic `case`, and `name`. It is a letter now, as
+  CommonMark reads it; around a word it is still emphasis, and an asterisk
+  inside a word still opens it, as CommonMark's does.
+- **The Assist settings box let keys through to the document**, found by the
+  test before anyone saw it: the window's list of what holds the keyboard now
+  has it.
+- **The Escape that closed a menu also took the keyboard out of a pane.**
+  egui closes a menu on Escape and leaves the key for whoever reads it next,
+  and the window and the pane, drawn after the menu bar, read it as "back to
+  the document": a person who opened a menu from the composer and closed it
+  typed the next words into the document. Both now leave Escape and Enter
+  alone on the frame after a menu was open. The pane's keyboard stays the
+  pane's until another stop takes it, and when nothing holds the focus — a
+  menu opened with the mouse has closed — the composer takes it back
+  (`Assist::keep_keyboard`).
+
+**What an independent review of the phase found**, and what each cost:
+
+- **A tool call ran against a document the helper had not seen.** A person who
+  typed while the helper worked moved every paragraph number under it, and the
+  call landed a paragraph out. A proposal is now refused whole when the
+  document changed since the helper was last shown it — "the person edited the
+  document while you were working" — and the helper is asked to say what it
+  would have done instead.
+- **A rewrite dropped what a line cannot show.** A paragraph's line is
+  Markdown, and a picture, a note, a field, an equation, a link or a page
+  break has no place in it, so a rewrite of that paragraph lost it silently.
+  Such a paragraph is not rewritten now, the refusal names what it holds, and
+  the request itself says which paragraphs those are, so that the helper
+  comments on them instead.
+- **Another author's open formatting change could be written over.** A
+  proposal that would restyle a paragraph whose `<w:pPrChange>` is somebody
+  else's is refused whole, wherever it arises — the last paragraph of a
+  container, the paragraph a new one takes its mark from, the paragraph a
+  take-out joins into — because `<w:pPrChange>` remembers one state and a
+  second change would lose the first.
+- **A rewrite into fewer paragraphs gave the new text the wrong styles**: the
+  paragraphs are matched from the first now, and the last new one carries the
+  old mark, so a heading and its body keep their own looks either way.
+- **What the helper echoed back did not come back the same.** A line is
+  written with a backslash before anything that would read as Markdown — a
+  leading `[`, `#`, `-`, `>`, a number and a dot — and the text after a line
+  break is escaped as a line start too, so that a paragraph cannot pass itself
+  off as a heading or as another numbered paragraph.
+- **A paragraph taken out where nothing could join it** — before a table, in a
+  cell of its own, at the document's end — left an empty paragraph behind and
+  said nothing. It says so now, in the tool's own words, so that the helper
+  neither reports the paragraph gone nor calls again to take the empty one
+  out.
+- **A heading deeper than the document has a style for** takes the nearest
+  level it has, and the helper is told; a document with no heading styles gets
+  ordinary paragraphs, and is told that.
+- **Settling a proposal put the caret at the document's top**: the step it
+  records is the proposal's own paragraphs, not the whole body, so undoing it
+  leaves the caret where the proposal was.
+- **The save line was for `.docx` only.** Saved as Markdown or ODT, which
+  carry no tracked changes, it says the proposals are in the file as their new
+  text.
+- **A comment's id comes back round**, since Word gives a deleted comment's id
+  to the next one: a card knows its comment by the time it was made as well as
+  by its id, and settles or deletes only its own.
+- **The writers wrote what XML cannot carry.** A character a person can type
+  or paste but XML 1.0 has no place for — `U+FFFE`, `U+FFFF`, a stray control
+  — went into the part as it stood, and the file then parsed as nothing at
+  all. Both writers drop those characters now (`write::splice::writable`).
+
+Tests: in `assist`, `the_editors_instructions_say_the_document_is_data_and_stay_short`;
+in `wp-text`, `one_paragraph_is_one_line_of_markdown_and_an_underscore_in_a_word_is_a_letter`;
+in `revise`, `changes_made_at_different_times_stay_apart`; in `assistant`,
+`a_request_carries_the_scope_numbered_with_the_paragraphs_around_it_and_the_headings`,
+`the_four_tools_are_strict_and_reading_answers_with_the_paragraphs_named`,
+`a_rewritten_heading_is_still_a_heading_and_its_bold_words_are_still_bold`,
+`reject_puts_the_paragraph_back_and_undo_takes_the_proposal_away_entirely`,
+`a_rewrite_into_more_or_fewer_paragraphs_accepts_to_the_new_ones_and_rejects_to_the_old`,
+`paragraphs_inserted_or_taken_out_are_proposals_too`,
+`each_card_settles_its_own_proposal_and_no_other`,
+`a_proposal_is_tracked_whether_track_changes_is_on_or_not`,
+`a_proposal_that_cannot_be_recorded_is_refused_whole`,
+`the_helpers_markdown_is_read_a_paragraph_a_line`,
+`a_proposals_time_is_written_as_word_writes_one`,
+`a_paragraph_holding_what_its_line_cannot_show_is_not_rewritten`,
+`a_proposal_leaves_a_formatting_change_someone_else_has_open_alone`,
+`headings_go_as_deep_as_the_documents_own_styles_do`,
+`what_the_helper_echoes_comes_back_as_the_same_text` and
+`a_paragraph_taken_out_beside_a_table_or_an_empty_one_is_still_one_proposal`;
+in `wp-docx` and `wp-odf`, `what_xml_cannot_carry_is_not_written`; and driven,
+with a scripted helper and a settings file of the test's own,
+`improve_the_wording_lands_as_a_redline_by_the_assistant_that_accept_makes_plain_text`,
+`a_comment_from_the_assistant_is_a_card_on_the_page_and_in_review`,
+`accept_all_and_reject_all_in_the_pane_settle_only_the_assistants_changes`,
+`a_document_saved_with_open_proposals_carries_them_as_tracked_changes_and_says_so`,
+`a_paragraph_that_tells_the_assistant_to_delete_everything_can_only_propose`,
+`ctrl_alt_a_opens_assist_and_f6_walks_it`,
+`assist_and_review_share_the_right_hand_side`,
+`the_scope_chip_follows_the_selection_and_whole_document_states_the_word_count`,
+`proposals_arriving_with_the_pane_closed_are_a_notice_on_the_row`,
+`the_status_bar_says_the_assistant_is_working`,
+`the_right_click_menu_asks_the_assistant_about_the_selection`,
+`a_new_document_ends_the_conversation_about_the_old_one`,
+`a_card_whose_proposal_leaves_the_text_says_so`,
+`a_request_from_a_header_is_about_the_text_left_behind` and
+`the_assist_pane_is_drawn_where_it_can_be_seen`,
+`the_escape_that_closes_a_menu_leaves_the_composer_the_keyboard`,
+`a_call_is_refused_when_the_person_edited_while_the_helper_worked`,
+`what_the_person_types_at_a_proposal_is_their_own_either_way`,
+`the_caret_follows_the_text_a_proposal_moved`,
+`undo_after_a_card_is_settled_leaves_the_caret_at_the_proposal`,
+`a_comment_being_written_survives_the_assist_pane`,
+`the_view_menus_assist_row_shows_the_pane_and_puts_it_away`,
+`saving_where_tracked_changes_cannot_go_says_the_proposal_is_in_the_text` and
+`a_card_does_not_settle_a_later_comment_that_took_its_id`; the menus' and the
+right-click menu's letter checks walk the new rows. Eighty-four mutations, one
+rule broken at a time, were each caught. Nothing reaches a
+helper: the driven tests say so. `fidelity` holds, and `compare --check` is
+unchanged.
+
+Not done here, and said: the tools read and change the text only — not a
+header, a footer, a note or a comment's own words; a proposal neither makes a
+list nor takes one apart, and a list marker the helper writes is dropped; a
+card whose proposal was undone keeps its verdict when the proposal is redone,
+and is settled from Review then; and GUIDE.md names Ctrl+Alt+A and the
+right-click row, with the Assist section itself left to phase 6. Calx is
+phase 4, and the helper on this computer phase 5.
+
 ## The harness sees what the user sees (2026-09-16)
 
 Fifteen fixes in one session paid for the same missing tools each time;

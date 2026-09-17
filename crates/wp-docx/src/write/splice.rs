@@ -105,10 +105,12 @@ impl<'a> Splicer<'a> {
 /// `>` is escaped as well as `<` and `&`. It does not have to be, and Word does
 /// it, and the point of this writer is to look like Word.
 ///
-/// A control character is dropped rather than written: XML 1.0 has no way to
-/// carry one, escaped or not, and Word reports a file holding one as corrupt.
-/// The model gets them from a legacy `.doc`, whose stories use them as marks
-/// — the tab, the line feed and the carriage return are the three it allows.
+/// A character XML cannot carry is dropped rather than written: XML 1.0 has
+/// no way to hold one, escaped or not, and Word reports a file holding one as
+/// corrupt. The model gets control characters from a legacy `.doc`, whose
+/// stories use them as marks — the tab, the line feed and the carriage return
+/// are the three XML allows — and `U+FFFE` and `U+FFFF`, which are characters
+/// no text should hold, from whatever was typed or pasted into it.
 pub(crate) fn escape_text(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for c in text.chars() {
@@ -116,18 +118,25 @@ pub(crate) fn escape_text(text: &str) -> String {
             '&' => out.push_str("&amp;"),
             '<' => out.push_str("&lt;"),
             '>' => out.push_str("&gt;"),
-            '\t' | '\n' | '\r' => out.push(c),
-            control if control.is_control() && (control as u32) < 0x20 => {}
-            other => out.push(other),
+            other if writable(other) => out.push(other),
+            _ => {}
         }
     }
     out
+}
+
+/// Whether XML 1.0 can carry the character at all.
+pub(crate) fn writable(c: char) -> bool {
+    matches!(c, '\t' | '\n' | '\r') || matches!(c as u32, 0x20..=0xFFFD | 0x10000..=0x10FFFF)
 }
 
 /// Escapes an attribute value, quotes included.
 pub(crate) fn escape_attr(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for c in text.chars() {
+        if !writable(c) {
+            continue;
+        }
         match c {
             '&' => out.push_str("&amp;"),
             '<' => out.push_str("&lt;"),
@@ -160,6 +169,18 @@ pub(crate) fn needs_space_preserve(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A character XML cannot carry — one a person or a helper can type or
+    /// paste — was written into the part as it stood, and the file then
+    /// parsed as nothing at all.
+    #[test]
+    fn what_xml_cannot_carry_is_not_written() {
+        assert_eq!(escape_text("a\u{FFFF}b\u{FFFE}c"), "abc");
+        assert_eq!(escape_text("a\u{1}b"), "ab");
+        assert_eq!(escape_text("keep\ta\nb\rc"), "keep\ta\nb\rc");
+        assert_eq!(escape_text("\u{10000} stays"), "\u{10000} stays");
+        assert!(!escape_attr("a\u{FFFF}b").contains('\u{FFFF}'));
+    }
 
     #[test]
     fn a_byte_order_mark_does_not_shift_every_span_by_three() {

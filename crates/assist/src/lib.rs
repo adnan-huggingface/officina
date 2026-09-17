@@ -29,6 +29,7 @@ mod http;
 pub mod machine;
 pub mod models;
 pub mod offline;
+pub mod prompt;
 mod provider;
 mod scripted;
 mod session;

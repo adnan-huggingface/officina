@@ -13,6 +13,16 @@
 //! run boundaries, which is not always where they were — `**bold** text` and
 //! `**bold**` + ` text` are the same document and different files.
 //!
+//! **An underscore inside a word is a letter.** `snake_case_name` is a name,
+//! not `snake`, an italic `case` and `name`, as CommonMark reads it; an
+//! asterisk inside a word still opens emphasis, as CommonMark's does.
+//!
+//! **Text that looks like Markdown is written escaped.** A paragraph that
+//! reads `1. Introduction` or `* see note *` is written `1\. Introduction`
+//! and `\* see note \*`, and a backslash before punctuation is read as that
+//! punctuation, so that what is written reads back as the same text. A line
+//! break inside a paragraph is written, and read, as `<br>`.
+//!
 //! **Stated limits.** Not implemented on import: reference links, footnotes,
 //! tables, block quotes beyond one level, setext headings, and HTML. Each is
 //! carried through as the literal text it is, which is what a Markdown reader
@@ -148,7 +158,7 @@ pub fn write(document: &Document) -> String {
             }
             (None, None) if text.trim().is_empty() => out.push('\n'),
             (None, None) => {
-                out.push_str(&text);
+                out.push_str(&escape_start(&text));
                 out.push_str("\n\n");
             }
         }
@@ -160,6 +170,102 @@ pub fn write(document: &Document) -> String {
     out.trim_start_matches('\n').to_owned()
 }
 
+/// One paragraph as one line of Markdown, as [`write`] writes it: its
+/// heading's `#`, its list's `-` or `1.`, and `**` and `*` around its bold and
+/// italic runs, with a line break as `<br>` — and a paragraph with no text as
+/// `<empty>`. For handing a document to something that reads it a numbered
+/// line at a time; [`read_lines`] reads it back.
+pub fn line(document: &Document, paragraph: &Paragraph) -> String {
+    let text = markers(paragraph);
+    if text.trim().is_empty() {
+        return EMPTY.to_owned();
+    }
+    if let Some(level) = wp_model::outline::heading_level(paragraph, &document.styles) {
+        return format!(
+            "{} {}",
+            "#".repeat(level.clamp(1, 6) as usize),
+            escape_breaks(&text, false)
+        );
+    }
+    match paragraph
+        .props
+        .numbering
+        .filter(|reference| reference.is_numbered())
+    {
+        Some(reference) => {
+            let ordered = document
+                .numbering
+                .level(reference.num_id, reference.level)
+                .is_some_and(|level| level.format.counts());
+            format!(
+                "{} {}",
+                if ordered { "1." } else { "-" },
+                escape_breaks(&text, false)
+            )
+        }
+        None => escape_breaks(&text, true),
+    }
+}
+
+/// A paragraph's text with every part after a line break escaped as the start
+/// of a line, and the first part too when `lead`.
+///
+/// **A paragraph is one line, so nothing inside it may read as another.** The
+/// text after a break starts a line on the page, and a reader — a person or a
+/// helper reading numbered paragraphs — takes `# x` or `[9] x` there for a
+/// heading or another paragraph. After `#` or `1.` the first part is already
+/// inside a line, so it is left alone. An escaped `\<br>` splits here too and
+/// joins back unchanged, and a backslash the reader does not need is dropped
+/// when it reads the line again.
+fn escape_breaks(text: &str, lead: bool) -> String {
+    let mut out = String::with_capacity(text.len());
+    for (at, part) in text.split("<br>").enumerate() {
+        if at > 0 {
+            out.push_str("<br>");
+        }
+        if at > 0 || lead {
+            out.push_str(&escape_start(part));
+        } else {
+            out.push_str(part);
+        }
+    }
+    out
+}
+
+/// How [`line`] writes a paragraph with no text.
+pub const EMPTY: &str = "<empty>";
+
+/// Reads what [`line`] writes: a paragraph a line, each with the level of
+/// the heading it is, if it is one. Blank lines part nothing; a line of
+/// [`EMPTY`] is an empty paragraph; a list's or a quote's marker is dropped,
+/// and a rule is an empty paragraph.
+pub fn read_lines(source: &str) -> Vec<(Option<u8>, Paragraph)> {
+    let mut out = Vec::new();
+    for raw in crate::encoding::lines(source) {
+        let line = raw.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if line == EMPTY || is_rule(line) {
+            out.push((None, Paragraph::new()));
+            continue;
+        }
+        if let Some((level, text)) = heading_of(line) {
+            out.push((Some(level), spans(text)));
+            continue;
+        }
+        let text = match bullet_of(line) {
+            Some((_, text)) => text,
+            None => line
+                .strip_prefix("> ")
+                .or_else(|| line.strip_prefix('>'))
+                .unwrap_or(line),
+        };
+        out.push((None, spans(text)));
+    }
+    out
+}
+
 /// A paragraph's text with `**` and `*` back around its emphasised runs.
 fn markers(paragraph: &Paragraph) -> String {
     let mut out = String::new();
@@ -169,31 +275,96 @@ fn markers(paragraph: &Paragraph) -> String {
             continue;
         }
         // The markers go *inside* the spaces: `**bold** word`, never `**bold **
-        // word`, which Markdown does not read as emphasis at all.
-        let lead: String = text.chars().take_while(|c| c.is_whitespace()).collect();
-        let tail: String = text
-            .chars()
-            .rev()
-            .take_while(|c| c.is_whitespace())
-            .collect();
-        let core = &text[lead.len()..text.len() - tail.len()];
+        // word`, which Markdown does not read as emphasis at all. A run of
+        // nothing but a space — the one between a bold word and an italic
+        // one — is all lead, and was cut past its own end.
+        let started = text.trim_start();
+        let lead = &text[..text.len() - started.len()];
+        let core = started.trim_end();
+        let tail = &started[core.len()..];
         let mark = match (run.props.bold(), run.props.italic()) {
             (true, true) => "***",
             (true, false) => "**",
             (false, true) => "*",
             (false, false) => "",
         };
-        out.push_str(&lead);
+        out.push_str(&breaks(lead));
         if core.is_empty() {
-            out.push_str(&tail);
+            out.push_str(&breaks(tail));
             continue;
         }
         out.push_str(mark);
-        out.push_str(core);
+        out.push_str(&breaks(&escape_inline(core)));
         out.push_str(mark);
-        out.push_str(&tail);
+        out.push_str(&breaks(tail));
     }
     out
+}
+
+/// A line break as `<br>`, so that a paragraph stays one line; and anything
+/// else that would end a line, as a space.
+fn breaks(text: &str) -> String {
+    text.chars()
+        .map(|c| match c {
+            '\n' => "<br>".to_owned(),
+            '\r' | '\u{0B}' | '\u{0C}' | '\u{85}' | '\u{2028}' | '\u{2029}' => " ".to_owned(),
+            other => other.to_string(),
+        })
+        .collect()
+}
+
+/// Text with a backslash before what the reader would take for Markdown: a
+/// backslash, an asterisk, an underscore not inside a word, and the `<` of
+/// something that would read as a line break or an empty paragraph.
+fn escape_inline(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    for (at, &c) in chars.iter().enumerate() {
+        let before = at.checked_sub(1).map(|i| chars[i]);
+        let after = chars.get(at + 1).copied();
+        let escaped = match c {
+            '\\' | '*' => true,
+            '_' => {
+                !(before.is_some_and(char::is_alphanumeric)
+                    && after.is_some_and(|c| c.is_alphanumeric() || c == '_'))
+            }
+            '<' => {
+                let rest: String = chars[at..].iter().take(7).collect();
+                rest.starts_with("<br") || rest.starts_with(EMPTY)
+            }
+            _ => false,
+        };
+        if escaped {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// A plain paragraph's text with a backslash before whatever at its start
+/// would make it a heading, a list item, a quote, a rule, a fence — or, in
+/// [`line`]'s numbered lines, a paragraph number.
+fn escape_start(text: &str) -> String {
+    let body = text.trim_start();
+    let lead = &text[..text.len() - body.len()];
+    let digits = body.chars().take_while(char::is_ascii_digit).count();
+    let escaped = if body.starts_with('#')
+        || body.starts_with('[')
+        || body.starts_with('>')
+        || body.starts_with("- ")
+        || body.starts_with("+ ")
+        || body.starts_with("```")
+        || body.starts_with("~~~")
+        || is_rule(body)
+    {
+        format!("\\{body}")
+    } else if digits > 0 && (body[digits..].starts_with(". ") || body[digits..].starts_with(") ")) {
+        format!("{}\\{}", &body[..digits], &body[digits..])
+    } else {
+        return text.to_owned();
+    };
+    format!("{lead}{escaped}")
 }
 
 /// `# Heading` -> (1, "Heading").
@@ -205,8 +376,15 @@ fn heading_of(line: &str) -> Option<(u8, &str)> {
     let rest = &line[hashes..];
     // `#Hashtag` is not a heading: Markdown needs the space, and a document full
     // of headings called `#rust` is what happens without this.
-    let text = rest.strip_prefix(' ')?;
-    Some((hashes as u8, text.trim_end_matches('#').trim()))
+    let text = rest.strip_prefix(' ')?.trim_end();
+    // A closing run of `#` is one only after a space: `C\#` ends in a
+    // character, not a closing run.
+    let closed = text.trim_end_matches('#');
+    let text = match closed.is_empty() || closed.ends_with(' ') {
+        true => closed,
+        false => text,
+    };
+    Some((hashes as u8, text.trim()))
 }
 
 /// `- item`, `* item`, `1. item`.
@@ -240,55 +418,161 @@ fn fence_of(line: &str) -> Option<char> {
         .find(|marker| line.starts_with(&marker.to_string().repeat(3)))
 }
 
+/// A character of a line, as emphasis sees it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Unit {
+    /// Written as itself: an asterisk or an underscore may open or close
+    /// emphasis.
+    Char(char),
+    /// Escaped with a backslash: only ever itself.
+    Literal(char),
+    /// `<br>`.
+    Break,
+}
+
+impl Unit {
+    fn char(self) -> Option<char> {
+        match self {
+            Unit::Char(c) | Unit::Literal(c) => Some(c),
+            Unit::Break => None,
+        }
+    }
+}
+
+fn units(line: &str) -> Vec<Unit> {
+    let mut out = Vec::new();
+    let mut chars = line.char_indices().peekable();
+    while let Some((at, c)) = chars.next() {
+        if c == '\\' {
+            match chars.peek() {
+                Some(&(_, next)) if next.is_ascii_punctuation() => {
+                    chars.next();
+                    out.push(Unit::Literal(next));
+                }
+                _ => out.push(Unit::Literal('\\')),
+            }
+            continue;
+        }
+        if c == '<' {
+            let rest = &line[at..];
+            if let Some(tag) = ["<br>", "<br/>", "<br />"]
+                .into_iter()
+                .find(|tag| rest.starts_with(tag))
+            {
+                // The rest of the tag, all of it ASCII.
+                for _ in 1..tag.len() {
+                    chars.next();
+                }
+                out.push(Unit::Break);
+                continue;
+            }
+        }
+        out.push(Unit::Char(c));
+    }
+    out
+}
+
 /// Splits a line into runs at its emphasis markers.
 fn spans(line: &str) -> Paragraph {
+    let units = units(line);
     let mut paragraph = Paragraph::new();
-    let mut plain = String::new();
-    let mut chars = line.char_indices().peekable();
+    let mut plain: Vec<Unit> = Vec::new();
 
-    let push = |paragraph: &mut Paragraph, text: &str, bold: bool, italic: bool| {
-        if text.is_empty() {
+    let push = |paragraph: &mut Paragraph, units: &[Unit], bold: bool, italic: bool| {
+        if units.is_empty() {
             return;
         }
-        let mut run = Run::of(text);
-        run.props.toggles.set(Toggle::Bold, bold);
-        run.props.toggles.set(Toggle::Italic, italic);
-        if !bold && !italic {
-            run.props.toggles = Default::default();
+        let mut pieces = Vec::new();
+        let mut text = String::new();
+        for unit in units {
+            match unit.char() {
+                Some(c) => text.push(c),
+                None => {
+                    if !text.is_empty() {
+                        pieces.push(Piece::Text(std::mem::take(&mut text).into()));
+                    }
+                    pieces.push(Piece::Break(wp_model::doc::Break::Line));
+                }
+            }
+        }
+        if !text.is_empty() {
+            pieces.push(Piece::Text(text.into()));
+        }
+        let mut run = Run {
+            content: pieces,
+            ..Run::new()
+        };
+        if bold || italic {
+            run.props.toggles.set(Toggle::Bold, bold);
+            run.props.toggles.set(Toggle::Italic, italic);
         }
         paragraph.content.push(Inline::Run(run));
     };
+    let alphanumeric = |unit: Option<&Unit>| {
+        unit.and_then(|unit| unit.char())
+            .is_some_and(char::is_alphanumeric)
+    };
+    // How many of `c` stand in a row from `at`, written as themselves.
+    let run_of = |at: usize, c: char| {
+        units[at..]
+            .iter()
+            .take_while(|unit| **unit == Unit::Char(c))
+            .count()
+    };
 
-    while let Some((at, c)) = chars.next() {
-        if c != '*' && c != '_' {
-            plain.push(c);
+    let mut at = 0;
+    while at < units.len() {
+        let c = match units[at] {
+            Unit::Char(c @ ('*' | '_')) => c,
+            other => {
+                plain.push(other);
+                at += 1;
+                continue;
+            }
+        };
+        let length = run_of(at, c);
+        // Underscores after a letter are part of the word, however many.
+        if c == '_' && alphanumeric(at.checked_sub(1).and_then(|i| units.get(i))) {
+            plain.extend(std::iter::repeat_n(Unit::Char(c), length));
+            at += length;
             continue;
         }
-        let double = chars.peek().map(|(_, next)| *next) == Some(c);
-        let marker = if double {
-            chars.next();
-            format!("{c}{c}")
-        } else {
-            c.to_string()
-        };
-        let rest = &line[at + marker.len()..];
-        let Some(close) = rest.find(&marker) else {
+        let width = length.min(3);
+        // The closing run: as wide, and for underscores, not followed by a
+        // letter, which would make it part of a word.
+        let mut close = None;
+        let mut probe = at + width;
+        while probe < units.len() {
+            let found = run_of(probe, c);
+            if found == 0 {
+                probe += 1;
+                continue;
+            }
+            if found >= width
+                && probe > at + width
+                && (c != '_' || !alphanumeric(units.get(probe + found)))
+            {
+                close = Some(probe);
+                break;
+            }
+            probe += found;
+        }
+        let Some(close) = close else {
             // A lone `*` is a literal asterisk, which is what Markdown does and
             // what a document full of `*` in the middle of sentences needs.
-            plain.push_str(&marker);
+            plain.extend(std::iter::repeat_n(Unit::Char(c), width));
+            at += width;
             continue;
         };
         push(&mut paragraph, &plain, false, false);
         plain.clear();
-        push(&mut paragraph, &rest[..close], double, !double);
-        // Skip what was consumed.
-        let consumed = at + marker.len() + close + marker.len();
-        while let Some(&(index, _)) = chars.peek() {
-            if index >= consumed {
-                break;
-            }
-            chars.next();
-        }
+        let (bold, italic) = match width {
+            1 => (false, true),
+            2 => (true, false),
+            _ => (true, true),
+        };
+        push(&mut paragraph, &units[at + width..close], bold, italic);
+        at = close + width;
     }
     push(&mut paragraph, &plain, false, false);
     paragraph
@@ -475,6 +759,189 @@ mod tests {
             .find(|run| run.props.italic())
             .expect("an italic run");
         assert_eq!(italic.text(), "italic");
+    }
+
+    /// A paragraph is handed over a line at a time, marked as the whole
+    /// document would be; and an underscore inside a word, which a name has,
+    /// reads back as a letter, where one around a word is still emphasis.
+    #[test]
+    fn one_paragraph_is_one_line_of_markdown_and_an_underscore_in_a_word_is_a_letter() {
+        let document = read("# Title\n\nplain **bold** *it*\n\n- item\n\n1. first\n");
+        let lines: Vec<String> = document
+            .paragraphs()
+            .iter()
+            .map(|paragraph| line(&document, paragraph))
+            .collect();
+        assert_eq!(
+            lines,
+            ["# Title", "plain **bold** *it*", "- item", "1. first"]
+        );
+        // The space between the bold word and the italic one is a run of its
+        // own, which the writer cut past its end.
+        assert!(write(&document).contains("plain **bold** *it*"));
+
+        let names =
+            read("call snake_case_name and __init__ with _care_ and a_b_ or _snake_case_\n");
+        let paragraph = names.paragraphs()[0];
+        assert_eq!(
+            paragraph.text(),
+            "call snake_case_name and init with care and a_b_ or snake_case"
+        );
+        let emphasised: Vec<(String, bool, bool)> = paragraph
+            .runs()
+            .iter()
+            .filter(|run| run.props.bold() || run.props.italic())
+            .map(|run| (run.text(), run.props.bold(), run.props.italic()))
+            .collect();
+        assert_eq!(
+            emphasised,
+            [
+                ("init".to_owned(), true, false),
+                ("care".to_owned(), false, true),
+                ("snake_case".to_owned(), false, true)
+            ]
+        );
+        // Inside a word, an asterisk is still emphasis.
+        let starred = read("un*frigging*believable\n");
+        assert_eq!(starred.paragraphs()[0].text(), "unfriggingbelievable");
+    }
+
+    /// Paragraphs whose text looks like Markdown — a list's number, a
+    /// heading's hash, a quote, a rule, stars — are written escaped and read
+    /// back as the same text, and a line break inside a paragraph stays one.
+    #[test]
+    fn text_that_looks_like_markdown_is_written_so_that_it_reads_back_the_same() {
+        let texts = [
+            "[1] Smith, J. and others",
+            "1. Introduction",
+            "12) Twelfth",
+            "- 5 degrees",
+            "+ plus",
+            "> quoted",
+            "# of items",
+            "---",
+            "```",
+            "Terms marked * apply; see note *",
+            "__init__ and _care_ and a_b_ and back\\slash",
+            "C# and <br> and <empty> as words",
+            "  # indented",
+        ];
+        let mut document = blank();
+        document.body = texts
+            .iter()
+            .map(|text| Block::Paragraph(Paragraph::of(text)))
+            .collect();
+        let mut broken = Paragraph::of("first");
+        if let Some(Inline::Run(run)) = broken.content.first_mut() {
+            run.content.push(Piece::Break(wp_model::doc::Break::Line));
+            run.content.push(Piece::Text("second".into()));
+        }
+        document.body.push(Block::Paragraph(broken));
+        let written = write(&document);
+        let back = read(&written);
+        let mut expected: Vec<String> = texts
+            .iter()
+            .map(|text| text.trim_start().to_owned())
+            .collect();
+        expected.push("first\nsecond".to_owned());
+        assert_eq!(text_of(&back), expected, "{written}");
+        assert!(
+            back.paragraphs()
+                .iter()
+                .all(|paragraph| paragraph.props.style.is_none()
+                    && paragraph.props.numbering.is_none()
+                    && paragraph.runs().iter().all(|run| !run.props.italic())),
+            "{written}"
+        );
+        // Each paragraph one line, and each line the same text read one at a
+        // time.
+        let lines: Vec<String> = document
+            .paragraphs()
+            .iter()
+            .map(|paragraph| line(&document, paragraph))
+            .collect();
+        assert!(lines.iter().all(|line| !line.contains('\n')), "{lines:?}");
+        assert_eq!(lines.last().map(String::as_str), Some("first<br>second"));
+
+        // What follows a break is a line on the page, so it is escaped like
+        // one: a paragraph cannot pass itself off as a heading or as another
+        // numbered paragraph, and it reads back the same.
+        let mut broken = Document::new();
+        broken.body = vec![
+            Block::Paragraph(Paragraph::of("one\n# Two\n[9] Three")),
+            Block::Paragraph(Paragraph::of("[1] Smith")),
+        ];
+        let written: Vec<String> = broken
+            .paragraphs()
+            .iter()
+            .map(|paragraph| line(&broken, paragraph))
+            .collect();
+        assert_eq!(written, ["one<br>\\# Two<br>\\[9] Three", "\\[1] Smith"]);
+        // A heading's own `#` needs no escape, but what follows a break in it
+        // does.
+        let mut headed = read("# Head\n");
+        let mut head = Paragraph::of("Title\n# Two");
+        head.props.style = headed.paragraphs()[0].props.style;
+        headed.body = vec![Block::Paragraph(head)];
+        assert_eq!(line(&headed, headed.paragraphs()[0]), "# Title<br>\\# Two");
+
+        let back: Vec<String> = read_lines(&written.join("\n"))
+            .iter()
+            .map(|(_, paragraph)| paragraph.text())
+            .collect();
+        assert_eq!(back, ["one\n# Two\n[9] Three", "[1] Smith"]);
+        let read: Vec<String> = read_lines(&lines.join("\n\n"))
+            .into_iter()
+            .map(|(level, paragraph)| {
+                assert_eq!(level, None);
+                paragraph.text()
+            })
+            .collect();
+        assert_eq!(read, expected);
+    }
+
+    /// The numbered lines' own shapes: an empty paragraph is `<empty>`,
+    /// blank lines part nothing, and a heading's level comes back.
+    #[test]
+    fn lines_read_a_paragraph_a_line() {
+        let lines = read_lines("## Part\n\n<empty>\nplain **bold**<br/>next\n- item\n---\n");
+        let summary: Vec<(Option<u8>, String, usize)> = lines
+            .iter()
+            .map(|(level, paragraph)| (*level, paragraph.text(), paragraph.runs().len()))
+            .collect();
+        assert_eq!(
+            summary,
+            [
+                (Some(2), "Part".to_owned(), 1),
+                (None, String::new(), 0),
+                (None, "plain bold\nnext".to_owned(), 3),
+                (None, "item".to_owned(), 1),
+                (None, String::new(), 0),
+            ]
+        );
+        let document = read_lines("C\\# heading").remove(0).1;
+        assert_eq!(document.text(), "C# heading");
+        assert_eq!(read("# C\\#\n").paragraphs()[0].text(), "C#");
+        assert_eq!(read("# Closed ##\n").paragraphs()[0].text(), "Closed");
+    }
+
+    /// Underscores inside a word are letters however many there are, and
+    /// three stars are bold and italic at once.
+    #[test]
+    fn underscores_inside_a_word_are_letters_in_any_number() {
+        let document = read("block__element__modifier a__b__c ***both*** end\n");
+        let paragraph = document.paragraphs()[0];
+        assert_eq!(
+            paragraph.text(),
+            "block__element__modifier a__b__c both end"
+        );
+        let emphasised: Vec<(String, bool, bool)> = paragraph
+            .runs()
+            .iter()
+            .filter(|run| run.props.bold() || run.props.italic())
+            .map(|run| (run.text(), run.props.bold(), run.props.italic()))
+            .collect();
+        assert_eq!(emphasised, [("both".to_owned(), true, true)]);
     }
 
     #[test]

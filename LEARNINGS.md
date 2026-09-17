@@ -2363,3 +2363,42 @@ words, which move to the next paragraph. Setting `Range.Text` from automation
 writes the insertion first — a probe that uses it measures a different
 order from the one a person types.
 
+
+**Word dates a tracked change to the minute.** Every `<w:ins>` and `<w:del>`
+Word 16 wrote in the Track Changes probes carries `w:date` with the seconds
+at `00` — `2026-09-17T08:46:00Z` — and the schema makes the attribute
+optional. Scriva's own edits carry none. Assist's proposals carry one each, a
+second apart at least, which is what keeps two proposals by the one author
+"Assistant" apart: Scriva joins, or takes back, only a change of the same
+author and the same time. Whether Word keeps those seconds when it saves the
+file again is not measured; if it rounds them, two proposals made in one
+minute become one proposal to Scriva after the round trip.
+
+**In Markdown, an underscore inside a word is a letter; an asterisk is not.**
+CommonMark lets `_` open or close emphasis only at a word's edge, and `*`
+anywhere: `snake_case_name` is plain text, `_snake_case_` is an italic
+`snake_case`, and `un*frigging*believable` stresses its middle. A reader that
+treats the two alike turns every identifier in a document into italics — and
+an assistant's rewrite goes through that reader.
+
+**Typed text beside another author's tracked change is not part of it.** With
+Track Changes off, Word 16 puts what is typed in as plain text wherever the
+caret stands among somebody else's changes — measured case by case through
+COM (`bugs/evidence/word/track-untracked.ps1` in the story). In the middle of
+an insertion the insertion splits in two, each half keeping its author and
+date and the second taking a new id, and the typed letters stand plain
+between them. At an insertion's start or end they are plain beside it. Where
+a deletion and its replacement stand together, letters typed between them go
+after the deletion; at the start of a struck paragraph they go before the
+struck text. Nothing typed ever joins the other author's change, so rejecting
+it leaves the letters behind — which is what lets Scriva leave the caret at
+the start of a proposal it has just made.
+
+**XML 1.0 cannot carry every character a person can type.** `U+0000`–`U+001F`
+but tab, newline and carriage return, and `U+FFFE` and `U+FFFF`, have no
+representation at all — not even as a character reference — and a document
+that holds one (pasted from a terminal, or written by a helper) is written
+into a part that no reader will parse: Word offers to repair it, and Scriva
+reopens nothing. Both writers drop them as they escape
+(`write::splice::writable`), which is what Word does when it saves such text
+itself.

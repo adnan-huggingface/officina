@@ -303,6 +303,12 @@ pub const TABLE: &[Entry] = &[
     ),
     entry("Navigation Pane", "", None, Command::Navigator),
     entry(
+        "Assist",
+        "Ctrl+Alt+A",
+        Some((CTRL_ALT, Key::A)),
+        Command::Assist,
+    ),
+    entry(
         "Context Menu",
         "Shift+F10",
         Some((Modifiers::SHIFT, Key::F10)),

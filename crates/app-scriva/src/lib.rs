@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 pub mod app;
+pub mod assistant;
 pub mod author;
 pub mod clip;
 pub mod commands;

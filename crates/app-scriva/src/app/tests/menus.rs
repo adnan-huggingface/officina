@@ -532,7 +532,7 @@ fn no_two_rows_of_the_context_menu_share_a_letter() {
 
     // Text.
     let mut app = app_with(&["plain text"]);
-    let labels = open(&drive, &mut app, &["S"]);
+    let labels = open(&drive, &mut app, &["S", "H"]);
     assert!(
         labels.contains(&"Paste Unformatted".to_owned()),
         "{labels:?}"
@@ -541,7 +541,7 @@ fn no_two_rows_of_the_context_menu_share_a_letter() {
     // In a table: the Table submenu in front.
     let mut app = app_with(&["after"]);
     app.insert_table(2, 2);
-    let labels = open(&drive, &mut app, &["T", "S"]);
+    let labels = open(&drive, &mut app, &["T", "S", "H"]);
     assert_eq!(
         labels.first().map(String::as_str),
         Some("Table"),
@@ -562,7 +562,7 @@ fn no_two_rows_of_the_context_menu_share_a_letter() {
         paragraph: 0,
         offset: 7,
     });
-    let labels = open(&drive, &mut app, &["S"]);
+    let labels = open(&drive, &mut app, &["S", "H"]);
     assert_eq!(
         labels.first().map(String::as_str),
         Some("Accept Change"),

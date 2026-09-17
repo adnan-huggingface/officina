@@ -67,6 +67,7 @@ impl Scriva {
         let style = self.style_at();
         let navigator = self.showing_navigator();
         let (tracking, reviewer) = self.reviewing();
+        let assisting = self.assisting;
         let (orientation, paper, margins) = self.page_setup();
         let in_band = self.editing_band();
         let (has_header, has_footer) = self.has_bands();
@@ -265,6 +266,13 @@ impl Scriva {
                 .clicked()
                 {
                     chosen = Some(Command::Reviewer);
+                }
+                // Beside Review, whose place on the right it shares.
+                if menu::check(ui, "&Assist", shortcut(&Command::Assist), assisting).clicked() {
+                    chosen = Some(match assisting {
+                        true => Command::HideAssist,
+                        false => Command::Assist,
+                    });
                 }
             });
 
