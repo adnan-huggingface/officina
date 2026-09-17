@@ -244,6 +244,83 @@ fn the_card_at_the_caret_is_the_outlined_one() {
     );
 }
 
+/// A card clicked on its words went nowhere: the words were labels, egui's
+/// labels are selectable, and a selectable label takes the click from the
+/// card it sits on. Only a click in a card's margin went to its place; Word's
+/// reviewing pane goes to the change wherever its entry is clicked.
+#[test]
+fn a_card_clicked_on_its_words_goes_to_its_place() {
+    use crate::panes::review::{drawn, CardDrawn, CardKey};
+    let drive = ui_kit::drive::Driver::new();
+    // The painted text of `words` on `card`, found afresh after `app` drew.
+    let words_on = |app: &mut Scriva, words: &str, card: &dyn Fn(&CardDrawn) -> bool| {
+        let painted = drive.paint(app, Vec::new());
+        let card = drawn(drive.ctx())
+            .into_iter()
+            .find(|drawn| card(drawn))
+            .expect("the card");
+        painted
+            .texts()
+            .into_iter()
+            .find(|text| text.text == words && card.rect.contains(text.shown().center()))
+            .unwrap_or_else(|| panic!("{words:?} on the card"))
+            .shown()
+            .center()
+    };
+
+    let mut app = with_two_changes();
+    app.run(Command::Reviewer);
+    drive.settle(&mut app);
+    let deletion = |card: &CardDrawn| matches!(&card.key, CardKey::Change(mark) if mark.id == 2);
+    for words in ["Adnan Khan", "deleted", "gone"] {
+        app.selection = Selection::at(Caret {
+            paragraph: 0,
+            offset: 0,
+        });
+        drive.settle(&mut app);
+        let at = words_on(&mut app, words, &deletion);
+        drive.click(&mut app, at);
+        drive.settle(&mut app);
+        assert_eq!(
+            app.caret().paragraph,
+            1,
+            "a click on {words:?} went to the deletion"
+        );
+    }
+
+    let mut app = app_with(&["a word to comment on", "and more"]);
+    drive.settle(&mut app);
+    app.selection = Selection {
+        anchor: Caret {
+            paragraph: 0,
+            offset: 0,
+        },
+        head: Caret {
+            paragraph: 0,
+            offset: 6,
+        },
+    };
+    drive.press(&mut app, "ctrl+alt+M");
+    drive.settle(&mut app);
+    drive.type_text(&mut app, "kept");
+    drive.press(&mut app, "ctrl+Enter");
+    drive.settle(&mut app);
+    app.selection = Selection::at(Caret {
+        paragraph: 1,
+        offset: 3,
+    });
+    drive.settle(&mut app);
+    let comment = |card: &CardDrawn| matches!(card.key, CardKey::Comment(_));
+    let at = words_on(&mut app, "kept", &comment);
+    drive.click(&mut app, at);
+    drive.settle(&mut app);
+    assert_eq!(
+        app.selected_text().as_deref(),
+        Some("a word"),
+        "a click on the comment's words selected what it is about"
+    );
+}
+
 /// Four paragraphs, two of them headings, for the Navigate pane.
 fn with_headings() -> Scriva {
     let mut app = app_with(&["Intro", "words under intro", "Method", "words under method"]);

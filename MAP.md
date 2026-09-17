@@ -71,7 +71,7 @@ Every source file, its size, and the first sentence of its module doc.
 - `crates/app-scriva/src/app/tests/files.rs` (1366) Opening, saving, the formats between them, and what the window says about a file.
 - `crates/app-scriva/src/app/tests/menus.rs` (743) Menus, shortcuts, boxes and the toolbar, reached the way a keyboard reaches them.
 - `crates/app-scriva/src/app/tests/mod.rs` (189) Scriva's window, driven: one file per area, and here what more than one of them uses.
-- `crates/app-scriva/src/app/tests/panes.rs` (461) The find bar and the panes beside the page: navigation, review and comments.
+- `crates/app-scriva/src/app/tests/panes.rs` (538) The find bar and the panes beside the page: navigation, review and comments.
 - `crates/app-scriva/src/app/tests/pictures.rs` (462) Pictures and charts: in by paste or menu, sized, moved and taken out.
 - `crates/app-scriva/src/app/tests/tables.rs` (776) Tables: inserting, filling, merging, borders, rows and columns.
 - `crates/app-scriva/src/app/watermark.rs` (424) The watermark: the box that asks for one, and the shape it becomes in a header, written the way Word writes its own so that Word finds it again.
@@ -90,7 +90,7 @@ Every source file, its size, and the first sentence of its module doc.
 - `crates/app-scriva/src/menus.rs` (745) The menu bar and the formatting row.
 - `crates/app-scriva/src/panes/mod.rs` (12) The panes beside the page: Review on the right, and — from phase 5 of the redesign — Navigate on the left.
 - `crates/app-scriva/src/panes/navigate.rs` (509) The Navigate pane: the document's headings as a tree, and its bookmarks.
-- `crates/app-scriva/src/panes/review.rs` (781) The Review pane: every tracked change and comment as a card, in document order, with what can be done about each on the card itself.
+- `crates/app-scriva/src/panes/review.rs` (784) The Review pane: every tracked change and comment as a card, in document order, with what can be done about each on the card itself.
 - `crates/app-scriva/src/pictures.rs` (366) Decoding the drawings a document carries, and holding them for the painter.
 - `crates/app-scriva/src/publish.rs` (196) What leaves the editor: the fonts and pictures a page renderer needs.
 - `crates/app-scriva/src/revise.rs` (1517) Accepting and rejecting tracked changes, and recording new ones.

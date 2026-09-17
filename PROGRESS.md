@@ -6643,6 +6643,24 @@ each caught by the test that claims the rule.
 Nothing in a reader or a writer changed: `fidelity` and `compare --check`
 hold.
 
+## A Review card clicked on its words goes to its change (2026-09-17)
+
+The Review pane says a card clicked anywhere but on a button goes to its
+place. It did only in the card's margins. The card's words are labels,
+egui's labels are selectable, and a selectable label senses clicks for its
+text: on top of the card's clickable frame it won the hit test, so a click
+on the author, on "deleted" or on the changed text selected words instead.
+Word's reviewing pane goes to the change wherever its entry is clicked.
+Found while building Assist's first-run card, which had the same shape.
+
+`card_frame` turns `selectable_labels` off in the card's scope, so a card's
+words are no longer for selecting; a reply being written in a card is a
+field, and is unchanged.
+
+Test: `a_card_clicked_on_its_words_goes_to_its_place` clicks the author,
+the kind of change and the changed text of a deletion's card, and the words
+of a comment, and fails without the fix at each.
+
 ## The harness sees what the user sees (2026-09-16)
 
 Fifteen fixes in one session paid for the same missing tools each time;

@@ -454,6 +454,9 @@ fn card_frame(
     add: impl FnOnce(&mut egui::Ui),
 ) -> egui::Response {
     let inner = ui.scope_builder(egui::UiBuilder::new().sense(egui::Sense::click()), |ui| {
+        // The card is the control. A selectable label senses clicks for its
+        // text, and would take them from the card it is on.
+        ui.style_mut().interaction.selectable_labels = false;
         let edge = if at_caret || lit {
             egui::Stroke::new(1.5, theme::ACCENT)
         } else {
