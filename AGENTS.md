@@ -3,8 +3,8 @@
 This file provides guidance to coding agents working in this repository.
 
 Officina is a native office suite in Rust: **Calx** (spreadsheets: xlsx/xls/csv) and
-**Scriva** (documents: docx/doc/odt/markdown), built on egui + wgpu. Windows-first;
-Linux code paths exist but are unverified.
+**Scriva** (documents: docx/doc/odt/markdown), built on egui + wgpu. Built on Windows
+first; the gate also passes on Ubuntu 24.04.
 
 ## Commands
 

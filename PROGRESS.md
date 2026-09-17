@@ -6128,6 +6128,21 @@ type (`anchors`, `zz_probe`, `print_smoke`, `wp-compare`).
 
 The 61 ui-kit library tests are the same by name, and all pass.
 
+## The README says what Officina is for (2026-09-17)
+
+The README now opens with Officina as a vibe-first office suite: a
+feature is added by describing it to an agent, which builds it by the
+repository's practice, with the fidelity promise underneath. A new
+section, "Adding a feature by vibe", walks through that practice (plan,
+tests, code, gate, record) and points at the redesign as the worked
+example. The fidelity paragraph is unchanged.
+
+Three stale facts were corrected on the way. The figures are now about
+177,000 lines of Rust and 2,100 tests, where they read 100,000 and 1,350.
+The toolchain is 1.95, as `Cargo.toml` says. And Linux is no longer
+"unverified": the gate passes on Ubuntu 24.04, in the README and in
+AGENTS.md. Scriva's `.odt` is listed beside `.docx`.
+
 ## The harness sees what the user sees (2026-09-16)
 
 Fifteen fixes in one session paid for the same missing tools each time;

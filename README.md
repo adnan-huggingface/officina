@@ -1,15 +1,24 @@
 # Officina
 
-Officina is a native office suite, written in Rust, for the two file formats
-an engineer cannot avoid. It is two desktop applications:
+Officina is a vibe-first office suite. You add a feature by describing it to a
+coding agent, and the agent builds it by the practice this repository writes
+down: a plan whose every item proves itself, tests that use the applications
+the way a person does, a gate that has to pass, and a record of what was done
+and what it taught. The applications are the product, and so is the way they
+grow.
+
+Under the practice sits the promise that makes it safe to point an agent at
+real files: saving never rewrites what you did not edit.
+
+Officina is two native desktop applications, written in Rust:
 
 - **Calx** — spreadsheets. Opens and saves `.xlsx`, reads `.xls`, reads and
   writes `.csv` and `.tsv`.
-- **Scriva** — documents. Opens and saves `.docx`, reads `.doc`, reads and
-  writes Markdown and plain text.
+- **Scriva** — documents. Opens and saves `.docx` and `.odt`, reads `.doc`,
+  reads and writes Markdown and plain text.
 
 Each is a single executable with no runtime to install, no bundled browser, and
-no telemetry. Between them they are about 100,000 lines of Rust and 1,350 tests.
+no telemetry. Between them they are about 177,000 lines of Rust and 2,100 tests.
 
 ## The one thing worth knowing
 
@@ -28,9 +37,42 @@ an untouched save, once for a save after an edit.
 See [DESIGN.md](DESIGN.md) §3 for how it works and [FORMATS.md](FORMATS.md) for
 exactly what is and is not understood.
 
+## Adding a feature by vibe
+
+Describe the feature to an agent working in this repository. Claude Code reads
+[CLAUDE.md](CLAUDE.md), which brings in [AGENTS.md](AGENTS.md); other agents
+read AGENTS.md directly. From there the agent works the way every change here
+has been made:
+
+1. **It writes a plan.** [PLAN.md](PLAN.md) lists the work, and each item
+   carries a `verify:` command. An item is done when its command exits zero,
+   and the plan is not edited while the work runs, so nothing doing the work
+   can declare itself finished.
+2. **It writes the tests.** They drive the application through the window's
+   own frame, with the keys, clicks and menus a person would use, and read
+   back what the window painted. [adr/0002](adr/0002-test-by-using-it-as-a-human.md)
+   records why: one afternoon of using the application as a person found a
+   crash and two silent data losses that a green suite had never touched.
+3. **It writes the code** at the layer that owns the behaviour. The interface
+   never touches a file format, so a feature cannot quietly change what is
+   saved.
+4. **It passes the gate.** `python .claude/hooks/gate.py` exits zero only when
+   formatting, clippy, every test, the layout check and every plan item pass.
+5. **It records the change.** [PROGRESS.md](PROGRESS.md) is the work log, and
+   [LEARNINGS.md](LEARNINGS.md) keeps what a format taught, so the next agent
+   starts from it.
+
+[MAP.md](MAP.md), regenerated on every check, tells an agent where each thing
+lives and what Word or Excel was measured to do.
+
+The Scriva redesign of September 2026 is the worked example: ten phases built
+from a written specification, one commit each, every claim proved by a test.
+PROGRESS.md tells it, from "The chrome is one palette" to "What driving the
+redesign found".
+
 ## Install
 
-Requires a Rust toolchain (1.80 or newer).
+Requires a Rust toolchain (1.95 or newer).
 
 ```bash
 cargo xtask install
@@ -62,12 +104,12 @@ there works.
 
 ### Linux
 
-The code is written for both platforms — the config directory, the font search
-and the path comparison all have Linux branches, and the only Windows-specific
-paths in the repository are in tests that skip themselves when Office is not
-installed. But this has been **built and run on Windows 11 only**. A Linux build
-has not been verified, and until someone runs `cargo xtask check` on Ubuntu that
-sentence should be read exactly as written.
+Officina was built on Windows 11 and has since been built and tested on Ubuntu
+24.04, where `cargo xtask check` passes whole. The tests that drive Word or
+Excel skip themselves where Office is not installed, and the layout check reads
+the committed renderings in `corpus/rendered/`, so it needs neither. Renewing
+one of those renderings needs a machine with the application that owns the
+format.
 
 ## Other commands
 
