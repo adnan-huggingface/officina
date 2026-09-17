@@ -7,24 +7,20 @@
 
 use std::collections::HashMap;
 
-use ui_kit::egui;
-
 fn corpus(name: &str) -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("../../corpus/docx/{name}"))
 }
 
 #[test]
 fn the_chart_a_document_carries_is_drawn_on_its_page() {
-    let ctx = egui::Context::default();
-    // The machine's own type, not just the family names: a chart sets its
-    // labels in Calibri, which is an exactly-named face, and a context given
-    // no directories to read has none of those — every name falls back to the
-    // generic sans, and the page this test leaves behind is set in the wrong
-    // face while every assertion in it still passes.
-    ui_kit::fonts::install(&ctx);
-    let mut out = ctx.run_ui(egui::RawInput::default(), |_| {});
-    out.textures_delta.clear();
-    let mut shaper = scriva::shaper::Egui::new(&ctx);
+    // The driver's context, which reads no font folder. The chart's labels
+    // are set in Calibri, which a test lays in the generic sans: nothing
+    // asserted here depends on the face, and a test that used the machine's
+    // Calibri where there is one would lay a different page on every
+    // machine.
+    let drive = ui_kit::drive::Driver::new();
+    drive.warm();
+    let mut shaper = scriva::shaper::Egui::new(drive.ctx());
 
     let path = corpus("file-sample_500kB.docx");
     let (document, package) = wp_docx::open(&path).expect("the corpus document opens");

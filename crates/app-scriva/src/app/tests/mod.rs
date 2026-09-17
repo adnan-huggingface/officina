@@ -12,30 +12,29 @@ mod panes;
 mod pictures;
 mod tables;
 
+use ui_kit::drive::{Driven, Driver};
+
 /// One key press, through `keys`, in a frame of its own.
 ///
 /// egui's `consume_key` ignores an extra Shift or Alt, and every plain entry
 /// in `keys` was asked before its shifted sibling, so Ctrl+Shift+S saved
 /// without a dialog and Ctrl+Shift+M indented further.
 fn pressed(app: &mut Scriva, key: egui::Key, modifiers: egui::Modifiers) -> Option<Command> {
-    let ctx = egui::Context::default();
-    ui_kit::fonts::register(&ctx, &[]);
-    let mut warm = ctx.run_ui(egui::RawInput::default(), |_| {});
-    warm.textures_delta.clear();
-    let mut input = egui::RawInput::default();
-    input.events.push(egui::Event::Key {
-        key,
-        physical_key: None,
-        pressed: true,
-        repeat: false,
-        modifiers,
-    });
-    let mut found = None;
-    let mut out = ctx.run_ui(input, |ui| {
-        found = app.keys(ui);
-    });
-    out.textures_delta.clear();
-    found
+    /// The key table alone, and what it answered on the last frame.
+    struct Keys<'a> {
+        app: &'a mut Scriva,
+        found: Option<Command>,
+    }
+    impl Driven for Keys<'_> {
+        fn drive(&mut self, ui: &mut egui::Ui) {
+            self.found = self.app.keys(ui);
+        }
+    }
+    let drive = Driver::new();
+    let mut keys = Keys { app, found: None };
+    drive.settle(&mut keys);
+    drive.key(&mut keys, key, modifiers);
+    keys.found
 }
 
 /// What every paragraph and every run of it resolves to through the
@@ -103,15 +102,13 @@ fn typed(app: &mut Scriva, input: &str) {
 /// An app whose view has really been laid out, for keys that ask the
 /// layout where the caret is — Home, End and the arrows.
 fn laid_app(text: &str, text_width: f64) -> Scriva {
-    let ctx = egui::Context::default();
-    ui_kit::fonts::register(&ctx, &[]);
-    let mut out = ctx.run_ui(egui::RawInput::default(), |_| {});
-    out.textures_delta.clear();
+    let drive = Driver::new();
+    drive.warm();
     let mut app = app_with(&[text]);
     let margins =
         app.document.section.margins.start.points() + app.document.section.margins.end.points();
     app.document.section.page.width = Twips::from_points(text_width + margins);
-    let mut shaper = Egui::new(&ctx);
+    let mut shaper = Egui::new(drive.ctx());
     app.view.refresh(
         &app.document,
         &wp_layout::FieldValues::new(),

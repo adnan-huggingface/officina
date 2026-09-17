@@ -66,13 +66,13 @@ Every source file, its size, and the first sentence of its module doc.
 - `crates/app-scriva/src/app/tables.rs` (486) Editing a table: Tab from cell to cell, the edit every table command goes through, cell margins, column widths, and Insert Table itself.
 - `crates/app-scriva/src/app/tests/bands.rs` (753) Headers, footers, watermarks and sections: the bands a page wears.
 - `crates/app-scriva/src/app/tests/desk.rs` (1077) The desk as it is painted: pages, zoom, scrolling, the caret and the pointer.
-- `crates/app-scriva/src/app/tests/editing.rs` (1167) Typing, keys in the text, lists, the clipboard, formatting and undo.
-- `crates/app-scriva/src/app/tests/files.rs` (1368) Opening, saving, the formats between them, and what the window says about a file.
+- `crates/app-scriva/src/app/tests/editing.rs` (1127) Typing, keys in the text, lists, the clipboard, formatting and undo.
+- `crates/app-scriva/src/app/tests/files.rs` (1366) Opening, saving, the formats between them, and what the window says about a file.
 - `crates/app-scriva/src/app/tests/menus.rs` (743) Menus, shortcuts, boxes and the toolbar, reached the way a keyboard reaches them.
-- `crates/app-scriva/src/app/tests/mod.rs` (192) Scriva's window, driven: one file per area, and here what more than one of them uses.
-- `crates/app-scriva/src/app/tests/panes.rs` (489) The find bar and the panes beside the page: navigation, review and comments.
+- `crates/app-scriva/src/app/tests/mod.rs` (189) Scriva's window, driven: one file per area, and here what more than one of them uses.
+- `crates/app-scriva/src/app/tests/panes.rs` (461) The find bar and the panes beside the page: navigation, review and comments.
 - `crates/app-scriva/src/app/tests/pictures.rs` (462) Pictures and charts: in by paste or menu, sized, moved and taken out.
-- `crates/app-scriva/src/app/tests/tables.rs` (793) Tables: inserting, filling, merging, borders, rows and columns.
+- `crates/app-scriva/src/app/tests/tables.rs` (776) Tables: inserting, filling, merging, borders, rows and columns.
 - `crates/app-scriva/src/app/watermark.rs` (424) The watermark: the box that asks for one, and the shape it becomes in a header, written the way Word writes its own so that Word finds it again.
 - `crates/app-scriva/src/app/word_count.rs` (158) The Word Count box, from the status bar's count: pages, words, characters with and without spaces, paragraphs and lines — and, with a selection, the selection beside the document.
 - `crates/app-scriva/src/app.rs` (5501) The application: the window, the commands, and the keys.
@@ -82,7 +82,7 @@ Every source file, its size, and the first sentence of its module doc.
 - `crates/app-scriva/src/drawings.rs` (353) A picture as an object: selected, moved, resized, deleted.
 - `crates/app-scriva/src/edit.rs` (2164) Editing a document, and taking it back.
 - `crates/app-scriva/src/find.rs` (319) Finding text in the document, and putting something else in its place.
-- `crates/app-scriva/src/icons.rs` (445) Toolbar icons, drawn from lines rather than typed.
+- `crates/app-scriva/src/icons.rs` (439) Toolbar icons, drawn from lines rather than typed.
 - `crates/app-scriva/src/lib.rs` (26) Scriva — the word processor.
 - `crates/app-scriva/src/links.rs` (117) Following a hyperlink out of the document, or to somewhere inside it.
 - `crates/app-scriva/src/main.rs` (31) Scriva — word processor.
@@ -91,12 +91,12 @@ Every source file, its size, and the first sentence of its module doc.
 - `crates/app-scriva/src/panes/navigate.rs` (509) The Navigate pane: the document's headings as a tree, and its bookmarks.
 - `crates/app-scriva/src/panes/review.rs` (781) The Review pane: every tracked change and comment as a card, in document order, with what can be done about each on the card itself.
 - `crates/app-scriva/src/pictures.rs` (364) Decoding the drawings a document carries, and holding them for the painter.
-- `crates/app-scriva/src/publish.rs` (199) What leaves the editor: the fonts and pictures a page renderer needs.
+- `crates/app-scriva/src/publish.rs` (196) What leaves the editor: the fonts and pictures a page renderer needs.
 - `crates/app-scriva/src/revise.rs` (1517) Accepting and rejecting tracked changes, and recording new ones.
-- `crates/app-scriva/src/shaper.rs` (873) Measuring text with the faces the application actually has.
+- `crates/app-scriva/src/shaper.rs` (869) Measuring text with the faces the application actually has.
 - `crates/app-scriva/src/text.rs` (781) Editing the text of a paragraph.
 - `crates/app-scriva/src/toolbar.rs` (1091) The toolbar: one row, on which the caret's state can be read at a glance.
-- `crates/app-scriva/src/view.rs` (3149) The document surface: pages on a desk, a caret, and a selection.
+- `crates/app-scriva/src/view.rs` (3145) The document surface: pages on a desk, a caret, and a selection.
 
 ### `brand`
 
@@ -250,7 +250,7 @@ Every source file, its size, and the first sentence of its module doc.
 - `crates/ui-kit/src/chooser.rs` (141) The operating system's file chooser, asked without stopping the window.
 - `crates/ui-kit/src/dialog.rs` (851) The look of every dialog both apps put on the screen.
 - `crates/ui-kit/src/drive/painted.rs` (255) What a frame painted, asked about the way a test asks.
-- `crates/ui-kit/src/drive.rs` (1176) Driving an application by keystroke, without a window.
+- `crates/ui-kit/src/drive.rs` (1190) Driving an application by keystroke, without a window.
 - `crates/ui-kit/src/fonts.rs` (1431) Real type faces, loaded from the system at startup.
 - `crates/ui-kit/src/headless.rs` (54) An application running without a person in front of it: under a test.
 - `crates/ui-kit/src/keys.rs` (105) Keyboard shortcuts, matched on every modifier.

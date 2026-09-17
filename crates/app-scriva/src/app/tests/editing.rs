@@ -56,25 +56,6 @@ fn a_link_to_a_bookmark_takes_the_caret_there() {
     assert!(app.message.is_some(), "a dangling link is reported");
 }
 
-/// One whole frame of the window as the shell lays it out — dialogs, the
-/// menu bar and toolbar, and the page — with `events` as its input.
-fn window_frame(app: &mut Scriva, ctx: &egui::Context, events: Vec<egui::Event>) {
-    let input = egui::RawInput {
-        screen_rect: Some(egui::Rect::from_min_size(
-            egui::Pos2::ZERO,
-            egui::vec2(1600.0, 1000.0),
-        )),
-        events,
-        ..Default::default()
-    };
-    let mut out = ctx.run_ui(input, |ui| {
-        app.overlay(ui.ctx());
-        egui::Panel::top("test-toolbar").show(ui, |ui| app.toolbar(ui));
-        egui::CentralPanel::no_frame().show(ui, |ui| app.ui(ui));
-    });
-    out.textures_delta.clear();
-}
-
 /// Observed once on a keystroke drive and then reproduced: letters typed
 /// after a table were eaten, the rest struck through, and a menu title
 /// sat highlighted with no menu open. Nothing held the keyboard, so each
@@ -83,38 +64,17 @@ fn window_frame(app: &mut Scriva, ctx: &egui::Context, events: Vec<egui::Event>)
 /// took the typing as its commands.
 #[test]
 fn tab_and_enter_stay_in_the_document_when_nothing_else_has_the_keyboard() {
+    let drive = ui_kit::drive::Driver::new();
     let mut app = app_with(&["text"]);
-    let ctx = egui::Context::default();
-    ui_kit::fonts::register(&ctx, &[]);
-    window_frame(&mut app, &ctx, vec![]);
-    window_frame(&mut app, &ctx, vec![]);
+    drive.settle(&mut app);
+    drive.settle(&mut app);
     for _ in 0..5 {
-        window_frame(
-            &mut app,
-            &ctx,
-            vec![egui::Event::Key {
-                key: egui::Key::Tab,
-                physical_key: None,
-                pressed: true,
-                repeat: false,
-                modifiers: egui::Modifiers::NONE,
-            }],
-        );
+        drive.press(&mut app, "Tab");
     }
-    window_frame(
-        &mut app,
-        &ctx,
-        vec![egui::Event::Key {
-            key: egui::Key::Enter,
-            physical_key: None,
-            pressed: true,
-            repeat: false,
-            modifiers: egui::Modifiers::NONE,
-        }],
-    );
-    window_frame(&mut app, &ctx, vec![]);
+    drive.press(&mut app, "Enter");
+    drive.settle(&mut app);
     assert!(
-        !egui::Popup::is_any_open(&ctx),
+        !egui::Popup::is_any_open(drive.ctx()),
         "Enter opened a menu instead of ending the paragraph"
     );
     assert_eq!(
@@ -123,7 +83,7 @@ fn tab_and_enter_stay_in_the_document_when_nothing_else_has_the_keyboard() {
         "Enter split the paragraph"
     );
     assert_eq!(
-        ctx.memory(|m| m.focused()),
+        drive.ctx().memory(|m| m.focused()),
         app.surface_id,
         "and the page holds the keyboard"
     );

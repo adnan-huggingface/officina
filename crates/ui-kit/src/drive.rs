@@ -288,6 +288,13 @@ impl Driver {
         self.run(app, input);
     }
 
+    /// A frame with nothing in it: egui has no fonts until a frame has run,
+    /// and a shaper that asks before then panics rather than measuring. For
+    /// a test that lays type without a window to lay it in.
+    pub fn warm(&self) {
+        self.settle(&mut Nothing);
+    }
+
     /// A frame in which nothing is pressed — what a window does between keys,
     /// and what a menu or a dialog opened last frame needs in order to appear.
     pub fn settle<A: Driven + ?Sized>(&self, app: &mut A) {
@@ -421,6 +428,13 @@ impl Driver {
         self.key(app, letter(item), egui::Modifiers::NONE);
         self.settle(app);
     }
+}
+
+/// What [`Driver::warm`] runs.
+struct Nothing;
+
+impl Driven for Nothing {
+    fn drive(&mut self, _ui: &mut egui::Ui) {}
 }
 
 /// A button, going down or coming up at a point.

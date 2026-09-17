@@ -154,7 +154,6 @@ pub fn rasters(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ui_kit::egui;
     use wp_model::doc::{Block, Paragraph};
     use wp_model::Document;
 
@@ -168,11 +167,9 @@ mod tests {
         // The whole path the Export command takes, minus the file dialog: the
         // screen's own layout, through the screen's own font resolution, into
         // a file that ends the way a PDF must.
-        let ctx = egui::Context::default();
-        ui_kit::fonts::register(&ctx, &[]);
-        let mut out = ctx.run_ui(egui::RawInput::default(), |_| {});
-        out.textures_delta.clear();
-        let mut shaper = crate::shaper::Egui::new(&ctx);
+        let drive = ui_kit::drive::Driver::new();
+        drive.warm();
+        let mut shaper = crate::shaper::Egui::new(drive.ctx());
         let mut view = crate::view::View::default();
         let document = Document {
             body: vec![

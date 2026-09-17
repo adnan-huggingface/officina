@@ -483,14 +483,12 @@ fn a_save_as_answered_frames_later_saves_and_then_does_what_it_was_for() {
         Chosen::SaveAs(Some(Box::new(Command::Close))),
     ));
 
-    let ctx = egui::Context::default();
-    ui_kit::fonts::register(&ctx, &[]);
+    let drive = ui_kit::drive::Driver::new();
     for _ in 0..200 {
         if app.asking.is_none() {
             break;
         }
-        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| app.overlay(ui.ctx()));
-        out.textures_delta.clear();
+        drive.settle(&mut app);
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
     assert!(app.asking.is_none(), "the answer was picked up");

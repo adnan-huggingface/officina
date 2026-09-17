@@ -2,34 +2,16 @@
 
 use super::*;
 
-/// Frames of `overlay` — the dialogs — each with one key pressed.
-fn press_in_dialogs(app: &mut Scriva, keys: &[egui::Key]) {
-    let ctx = egui::Context::default();
-    ui_kit::fonts::register(&ctx, &[]);
-    let mut warm = ctx.run_ui(egui::RawInput::default(), |ui| app.overlay(ui.ctx()));
-    warm.textures_delta.clear();
-    for &key in keys {
-        let mut input = egui::RawInput::default();
-        input.events.push(egui::Event::Key {
-            key,
-            physical_key: None,
-            pressed: true,
-            repeat: false,
-            modifiers: egui::Modifiers::NONE,
-        });
-        let mut out = ctx.run_ui(input, |ui| app.overlay(ui.ctx()));
-        out.textures_delta.clear();
-    }
-}
-
 /// Insert ▸ Table…, Enter. The form answered only to the pointer, so the
 /// Enter did nothing and what was typed next went into its fields.
 #[test]
 fn enter_inserts_the_table_the_dialog_describes() {
+    let drive = ui_kit::drive::Driver::new();
     let mut app = app_with(&["before"]);
+    drive.settle(&mut app);
     app.run(Command::InsertTable);
     app.table_draft = Some(["3".to_owned(), "2".to_owned()]);
-    press_in_dialogs(&mut app, &[egui::Key::Enter]);
+    drive.press(&mut app, "Enter");
     assert!(app.table_draft.is_none(), "Enter closes the dialog");
     let table = app
         .document
@@ -45,8 +27,9 @@ fn enter_inserts_the_table_the_dialog_describes() {
 
     // And Escape is still the way out, with nothing inserted.
     let mut app = app_with(&["before"]);
+    drive.settle(&mut app);
     app.run(Command::InsertTable);
-    press_in_dialogs(&mut app, &[egui::Key::Escape]);
+    drive.press(&mut app, "Escape");
     assert!(app.table_draft.is_none());
     assert!(
         !app.document

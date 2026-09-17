@@ -2038,15 +2038,11 @@ mod tests {
     }
 
     fn context() -> egui::Context {
-        let ctx = egui::Context::default();
-        ui_kit::fonts::register(&ctx, &[]);
-        // egui has no fonts until a frame has been run, and a shaper that asks
-        // before then panics rather than measuring.
-        let mut out = ctx.run_ui(egui::RawInput::default(), |_| {});
-        // epaint panics if a frame's texture deltas are dropped unapplied —
-        // there is no GPU here to apply them to.
-        out.textures_delta.clear();
-        ctx
+        // The driver's context: no font folder read, the names registered,
+        // and a frame run so that egui has fonts to measure with.
+        let drive = ui_kit::drive::Driver::new();
+        drive.warm();
+        drive.ctx().clone()
     }
 
     fn document(texts: &[&str]) -> Document {

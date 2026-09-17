@@ -2,57 +2,29 @@
 
 use super::*;
 
-/// One whole frame of the window's body, with `events` as its input.
-fn frame_of(app: &mut Scriva, ctx: &egui::Context, events: Vec<egui::Event>) {
-    let input = egui::RawInput {
-        screen_rect: Some(egui::Rect::from_min_size(
-            egui::Pos2::ZERO,
-            egui::vec2(1600.0, 1000.0),
-        )),
-        events,
-        ..Default::default()
-    };
-    let mut out = ctx.run_ui(input, |ui| {
-        egui::Panel::top("test-toolbar").show(ui, |ui| app.toolbar(ui));
-        egui::CentralPanel::no_frame().show(ui, |ui| app.ui(ui));
-    });
-    out.textures_delta.clear();
-}
-
-fn key_event(key: egui::Key) -> egui::Event {
-    egui::Event::Key {
-        key,
-        physical_key: None,
-        pressed: true,
-        repeat: false,
-        modifiers: egui::Modifiers::NONE,
-    }
-}
-
 /// The most ordinary find and replace there is — type the word, Enter,
 /// Tab to the other field, type its replacement — edited the document
 /// instead: the Tab left the bar for an arrow button, the bar said it no
 /// longer held the keyboard, and the same Tab was typed over the match.
 #[test]
 fn tab_in_the_find_bar_goes_to_the_replace_field_and_not_into_the_document() {
+    let drive = ui_kit::drive::Driver::new();
     let mut app = app_with(&["the quick fox and the quick dog"]);
-    let ctx = egui::Context::default();
-    ui_kit::fonts::register(&ctx, &[]);
-    frame_of(&mut app, &ctx, vec![]);
+    drive.settle(&mut app);
     app.run(Command::Replace);
-    frame_of(&mut app, &ctx, vec![]);
-    frame_of(&mut app, &ctx, vec![egui::Event::Text("quick".into())]);
-    frame_of(&mut app, &ctx, vec![key_event(egui::Key::Enter)]);
-    frame_of(&mut app, &ctx, vec![]);
+    drive.settle(&mut app);
+    drive.type_text(&mut app, "quick");
+    drive.press(&mut app, "Enter");
+    drive.settle(&mut app);
     assert_eq!(
         app.selected_text().as_deref(),
         Some("quick"),
         "Enter selects the first match"
     );
-    frame_of(&mut app, &ctx, vec![key_event(egui::Key::Tab)]);
-    frame_of(&mut app, &ctx, vec![]);
-    frame_of(&mut app, &ctx, vec![egui::Event::Text("slow".into())]);
-    frame_of(&mut app, &ctx, vec![]);
+    drive.press(&mut app, "Tab");
+    drive.settle(&mut app);
+    drive.type_text(&mut app, "slow");
+    drive.settle(&mut app);
 
     assert_eq!(
         app.document.text(),
@@ -91,20 +63,20 @@ fn a_replace_all_with_nothing_to_put_back_deletes_every_match() {
 /// All back under the pointer. Nothing after the count moves now.
 #[test]
 fn the_find_bar_controls_stay_put_while_the_count_changes() {
+    let drive = ui_kit::drive::Driver::new();
     let mut app = app_with(&["the quick fox and the quick dog"]);
-    let ctx = egui::Context::default();
-    ui_kit::fonts::register(&ctx, &[]);
-    frame_of(&mut app, &ctx, vec![]);
+    drive.settle(&mut app);
     app.run(Command::Replace);
-    frame_of(&mut app, &ctx, vec![]);
-    frame_of(&mut app, &ctx, vec![egui::Event::Text("quick".into())]);
-    frame_of(&mut app, &ctx, vec![]);
+    drive.settle(&mut app);
+    drive.type_text(&mut app, "quick");
+    drive.settle(&mut app);
     let field = egui::Id::new("scriva-find-replacement");
-    let before = ctx.read_response(field).expect("the field is drawn").rect;
-    frame_of(&mut app, &ctx, vec![key_event(egui::Key::Enter)]);
-    frame_of(&mut app, &ctx, vec![]);
+    let drawn = |drive: &ui_kit::drive::Driver| drive.ctx().read_response(field).map(|r| r.rect);
+    let before = drawn(&drive).expect("the field is drawn");
+    drive.press(&mut app, "Enter");
+    drive.settle(&mut app);
     assert!(app.selected_text().is_some(), "the count now says 1 of 2");
-    let after = ctx.read_response(field).expect("still drawn").rect;
+    let after = drawn(&drive).expect("still drawn");
     assert_eq!(before, after, "and Replace with did not move");
 }
 

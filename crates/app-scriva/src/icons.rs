@@ -411,23 +411,17 @@ mod tests {
     /// Every icon draws *something*, which is the failure a hollow box is.
     #[test]
     fn every_icon_puts_ink_on_the_screen() {
-        let ctx = egui::Context::default();
-        ui_kit::fonts::register(&ctx, &[]);
+        /// One toolbar button, alone in the window.
+        struct Alone(Icon);
+        impl ui_kit::drive::Driven for Alone {
+            fn drive(&mut self, ui: &mut egui::Ui) {
+                button(ui, self.0, false, "");
+            }
+        }
+        let drive = ui_kit::drive::Driver::sized(egui::vec2(200.0, 60.0));
         for icon in ALL {
-            let mut out = ctx.run_ui(
-                egui::RawInput {
-                    screen_rect: Some(egui::Rect::from_min_size(
-                        egui::Pos2::ZERO,
-                        egui::vec2(200.0, 60.0),
-                    )),
-                    ..Default::default()
-                },
-                |ui| {
-                    button(ui, icon, false, "");
-                },
-            );
-            out.textures_delta.clear();
-            let drew = out.shapes.into_iter().map(|s| s.shape).any(|shape| {
+            let painted = drive.paint(&mut Alone(icon), Vec::new());
+            let drew = painted.shapes().iter().any(|shape| {
                 matches!(
                     shape,
                     egui::Shape::LineSegment { .. }

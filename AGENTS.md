@@ -52,7 +52,10 @@ points from `Scriva::on_screen(caret)`, not from a page corner and a zoom
 worked out by hand. An application runs in the shell's frame. A widget with
 tests of its own, such as Calx's grid, implements `ui_kit::drive::Driven` and
 runs bare in the driver's window, so its tests keep the widget's own
-coordinates and still get the driver's fonts, theme, clock and gestures. `Driver::opening()` opens small and grows, as the real window does.
+coordinates and still get the driver's fonts, theme, clock and gestures. A
+test that only lays type takes its context from `Driver::new()` after
+`warm()`, never from a bare `egui::Context`: only the driver makes the process
+headless. `Driver::opening()` opens small and grows, as the real window does.
 The driver's clock moves a frame's time each frame; `wait(seconds)` sees an
 animation out. A headless process reads no font folder, so tests lay type the
 same on every machine. `Driver::in_hack()` sets the sans face in Hack, the

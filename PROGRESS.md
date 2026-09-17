@@ -6037,6 +6037,28 @@ does. One `Change::Range` of the same count undoes it. Test
 `deleting_a_selection_across_cells_clears_every_cell_it_covers`,
 Delete and Backspace and the undo.
 
+## Scriva's last hand-built frames go through the harness (2026-09-17)
+
+The helpers item 0e left in Scriva's tests are gone:
+- `pressed` asks the key table through a `Driven` that keeps what
+  `app.keys` answered.
+- `press_in_dialogs`, `frame_of` and `window_frame`, each a partial window
+  put together by hand, are the driver's whole window now.
+- The chooser test's overlay loop settles the window.
+
+`Driver::warm()` is new: one empty frame, so that a test laying type
+without a window has fonts to measure with. `shaper`, `view`, `publish` and
+`laid_app` warm their contexts with it. The icon test runs one button bare
+through `Driven` and reads it with `Painted`.
+
+**`charts_on_paper` no longer loads the machine's fonts.** It set the
+chart's Calibri labels in the machine's Calibri where there was one, a
+different page on every machine, although no assertion depended on the
+face. It runs headless now, like every other test in the gate. The
+measuring tools run by hand (`anchors`, `zz_probe`, `print_smoke`) keep
+real type on purpose. Scriva's 355 library tests and the integration
+tests pass unchanged.
+
 ## Calx's tests drive through the harness too (2026-09-17)
 
 Calx's tests built their own frames: the grid's widget tests ran
