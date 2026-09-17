@@ -547,27 +547,17 @@ mod tests {
     fn the_size_kept_while_maximized_is_the_one_to_come_back_to() {
         // The screen's size is not a preference. A window maximized at close
         // has to reopen maximized *and* remember what un-maximizing means.
-        let ctx = egui::Context::default();
+        let drive = crate::drive::Driver::sized(egui::vec2(1920.0, 1080.0));
         let restore = Placement {
             maximized: false,
             size: [1024.0, 768.0],
             pos: Some([64.0, 64.0]),
         };
-        let mut out = ctx.run_ui(
-            egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(1920.0, 1080.0),
-                )),
-                ..Default::default()
-            },
-            |_ui| {},
-        );
-        out.textures_delta.clear();
+        drive.warm();
         // No window manager here, so the viewport reports nothing about being
         // maximized: the answer must still be the size handed in, never a
         // guess made from the screen.
-        let now = Placement::of(&ctx, restore);
+        let now = Placement::of(drive.ctx(), restore);
         assert_eq!(now.size, restore.size);
         assert_eq!(now.pos, restore.pos);
     }
@@ -619,16 +609,10 @@ mod tests {
     /// line drawn off the bottom of the screen, unreachable and invisible.
     #[test]
     fn the_centre_leaves_room_for_the_panels_around_it() {
-        let ctx = egui::Context::default();
-        let window = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 700.0));
-        let input = egui::RawInput {
-            screen_rect: Some(window),
-            ..Default::default()
-        };
-
+        let drive = crate::drive::Driver::sized(egui::vec2(1000.0, 700.0));
         let mut centre = egui::Rect::NOTHING;
         let mut status = egui::Rect::NOTHING;
-        let mut out = ctx.run_ui(input, |ui| {
+        drive.settle(&mut crate::drive::Bare(|ui: &mut egui::Ui| {
             egui::Panel::top("t")
                 .resizable(false)
                 .show(ui, |ui| ui.label("toolbar"));
@@ -658,8 +642,7 @@ mod tests {
             egui::CentralPanel::default().show(ui, |ui| {
                 centre = ui.available_rect_before_wrap();
             });
-        });
-        out.textures_delta.clear();
+        }));
 
         assert!(status.height() > 0.0, "the status panel drew nothing");
         assert!(

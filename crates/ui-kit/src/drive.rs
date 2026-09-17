@@ -430,6 +430,18 @@ impl Driver {
     }
 }
 
+/// A few lines of drawing, run bare in the driver's window: for a test of a
+/// piece of chrome — a message box, a menu row, a chart — that has no widget
+/// type of its own to implement [`Driven`] on. The closure names its
+/// argument's type, `|ui: &mut egui::Ui|`, for the compiler to take it.
+pub struct Bare<F>(pub F);
+
+impl<F: FnMut(&mut egui::Ui)> Driven for Bare<F> {
+    fn drive(&mut self, ui: &mut egui::Ui) {
+        (self.0)(ui);
+    }
+}
+
 /// What [`Driver::warm`] runs.
 struct Nothing;
 

@@ -52,7 +52,9 @@ points from `Scriva::on_screen(caret)`, not from a page corner and a zoom
 worked out by hand. An application runs in the shell's frame. A widget with
 tests of its own, such as Calx's grid, implements `ui_kit::drive::Driven` and
 runs bare in the driver's window, so its tests keep the widget's own
-coordinates and still get the driver's fonts, theme, clock and gestures. A
+coordinates and still get the driver's fonts, theme, clock and gestures.
+A few lines of chrome with no widget type of their own (a message box, a
+menu row, a chart) run bare as `ui_kit::drive::Bare(|ui: &mut egui::Ui| …)`. A
 test that only lays type takes its context from `Driver::new()` after
 `warm()`, never from a bare `egui::Context`: only the driver makes the process
 headless. `Driver::opening()` opens small and grows, as the real window does.

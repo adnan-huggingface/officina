@@ -699,73 +699,35 @@ fn bang(painter: &egui::Painter, middle: f32, x: f32, size: f32, dot_below: bool
 mod tests {
     use super::*;
 
-    /// Runs one frame of a message box and hands back what it drew.
-    fn shown(choices: &[Choice<'_>], input: egui::RawInput) -> (Option<usize>, Vec<egui::Shape>) {
-        let ctx = egui::Context::default();
-        // The names only, with no directories to read them from: the heading
-        // asks for the bold sans face, and epaint panics on a family nobody
-        // has registered rather than substituting for it.
-        crate::fonts::register(&ctx, &[]);
-        // A modal fades in, and a colour read mid-fade is the colour times the
-        // opacity so far. Nothing here is testing the animation.
-        ctx.all_styles_mut(|style| style.animation_time = 0.0);
-        let mut chosen = None;
-        let mut frame = |input: egui::RawInput| {
-            ctx.run_ui(input, |_ui| {
-                chosen = message(
-                    &ctx,
-                    "test",
-                    Severity::Warning,
-                    "Save changes to budget.xlsx?",
-                    "Your changes will be lost if you don't save them.",
-                    Some("os error 32"),
-                    choices,
-                );
-            })
-        };
-        // Twice: a centred `Area` spends its first frame working out how big it
-        // is, and a sizing pass throws its shapes away.
-        let mut warm = frame(egui::RawInput {
-            screen_rect: input.screen_rect,
-            ..Default::default()
-        });
-        warm.textures_delta.clear();
-        let mut out = frame(input);
-        out.textures_delta.clear();
-        // Flattened: a `Ui` hands back nested `Shape::Vec`s, and a button's
-        // body is inside one of them.
-        fn flatten(shape: egui::Shape, into: &mut Vec<egui::Shape>) {
-            match shape {
-                egui::Shape::Vec(many) => {
-                    for one in many {
-                        flatten(one, into);
-                    }
-                }
-                one => into.push(one),
+    /// A message box in the driver's window, shown until its fade-in is
+    /// over, then one frame with `key` pressed (if any): what the box
+    /// answered, and what that frame painted.
+    fn shown(choices: &[Choice<'_>], key: Option<egui::Key>) -> (Option<usize>, Vec<egui::Shape>) {
+        let drive = crate::drive::Driver::sized(egui::vec2(1000.0, 700.0));
+        let chosen = std::cell::Cell::new(None);
+        let mut boxed = crate::drive::Bare(|ui: &mut egui::Ui| {
+            let answer = message(
+                ui.ctx(),
+                "test",
+                Severity::Warning,
+                "Save changes to budget.xlsx?",
+                "Your changes will be lost if you don't save them.",
+                Some("os error 32"),
+                choices,
+            );
+            if answer.is_some() {
+                chosen.set(answer);
             }
-        }
-        let mut shapes = Vec::new();
-        for clipped in out.shapes {
-            flatten(clipped.shape, &mut shapes);
-        }
-        (chosen, shapes)
-    }
-
-    fn keyed(key: egui::Key) -> egui::RawInput {
-        egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(
-                egui::Pos2::ZERO,
-                egui::vec2(1000.0, 700.0),
-            )),
-            events: vec![egui::Event::Key {
-                key,
-                physical_key: None,
-                pressed: true,
-                repeat: false,
-                modifiers: egui::Modifiers::NONE,
-            }],
-            ..Default::default()
-        }
+        });
+        // A modal fades in, and a colour read mid-fade is the colour times
+        // the opacity so far; a centred `Area` also spends its first frame
+        // working out how big it is.
+        drive.wait(&mut boxed, 1.0);
+        let events = key
+            .map(|key| crate::drive::key_events(key, egui::Modifiers::NONE))
+            .unwrap_or_default();
+        let shapes = drive.paint(&mut boxed, events).shapes().to_vec();
+        (chosen.get(), shapes)
     }
 
     #[test]
@@ -792,8 +754,8 @@ mod tests {
             Choice::new("Don't Save"),
             Choice::new("Cancel").escapes(),
         ];
-        assert_eq!(shown(&choices, keyed(egui::Key::Enter)).0, Some(0));
-        assert_eq!(shown(&choices, keyed(egui::Key::Escape)).0, Some(2));
+        assert_eq!(shown(&choices, Some(egui::Key::Enter)).0, Some(0));
+        assert_eq!(shown(&choices, Some(egui::Key::Escape)).0, Some(2));
     }
 
     #[test]
@@ -801,7 +763,7 @@ mod tests {
         // Every box should offer one; the point is that a key never invents an
         // answer the caller did not list.
         let choices = [Choice::new("Retry").primary()];
-        assert_eq!(shown(&choices, keyed(egui::Key::Escape)).0, None);
+        assert_eq!(shown(&choices, Some(egui::Key::Escape)).0, None);
     }
 
     /// The complaint this module exists to answer: buttons that draw no button.
@@ -811,16 +773,7 @@ mod tests {
             Choice::new("Save").primary(),
             Choice::new("Cancel").escapes(),
         ];
-        let (_, shapes) = shown(
-            &choices,
-            egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(1000.0, 700.0),
-                )),
-                ..Default::default()
-            },
-        );
+        let (_, shapes) = shown(&choices, None);
 
         let filled: Vec<&egui::epaint::RectShape> = shapes
             .iter()

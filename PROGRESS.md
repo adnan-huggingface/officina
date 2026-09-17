@@ -6109,6 +6109,25 @@ in lower case (`heading 1`, `toc 2`) and shows them capitalised
 "heading 1" until now. `shown_style_name` changes only what is shown;
 nothing written changes. Test `the_idle_row_is_the_styles_gallery`.
 
+## ui-kit's own tests drive through the harness (2026-09-17)
+
+The last tests that built an egui context of their own were ui-kit's:
+the message box, the menu rows and the menu bar, the chart painter and
+two of the shell's. Scriva's picture cache tests used one too. They all
+take the driver's context now, so every test in the gate runs headless,
+in the driver's fonts and theme. Only the tools run by hand keep real
+type (`anchors`, `zz_probe`, `print_smoke`, `wp-compare`).
+
+- **`ui_kit::drive::Bare`** runs a closure as a `Driven`, for chrome
+  with no widget type to implement it on.
+- The message box is shown until its fade-in is over with `wait`,
+  rather than with animations switched off, and its colours are read
+  after that.
+- The menu-letter test presses its letter with `press`, which sends the
+  typed text beside the key, as the bug needed.
+
+The 61 ui-kit library tests are the same by name, and all pass.
+
 ## The harness sees what the user sees (2026-09-16)
 
 Fifteen fixes in one session paid for the same missing tools each time;

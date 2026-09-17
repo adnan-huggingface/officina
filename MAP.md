@@ -90,7 +90,7 @@ Every source file, its size, and the first sentence of its module doc.
 - `crates/app-scriva/src/panes/mod.rs` (12) The panes beside the page: Review on the right, and — from phase 5 of the redesign — Navigate on the left.
 - `crates/app-scriva/src/panes/navigate.rs` (509) The Navigate pane: the document's headings as a tree, and its bookmarks.
 - `crates/app-scriva/src/panes/review.rs` (781) The Review pane: every tracked change and comment as a card, in document order, with what can be done about each on the card itself.
-- `crates/app-scriva/src/pictures.rs` (364) Decoding the drawings a document carries, and holding them for the painter.
+- `crates/app-scriva/src/pictures.rs` (366) Decoding the drawings a document carries, and holding them for the painter.
 - `crates/app-scriva/src/publish.rs` (196) What leaves the editor: the fonts and pictures a page renderer needs.
 - `crates/app-scriva/src/revise.rs` (1517) Accepting and rejecting tracked changes, and recording new ones.
 - `crates/app-scriva/src/shaper.rs` (869) Measuring text with the faces the application actually has.
@@ -246,20 +246,20 @@ Every source file, its size, and the first sentence of its module doc.
 
 - `crates/ui-kit/src/brand.rs` (31) The window icon, as the windowing system takes it.
 - `crates/ui-kit/src/catalogue.rs` (504) What type the machine actually has, by the name a document calls it.
-- `crates/ui-kit/src/chart.rs` (319) Drawing a chart on the screen.
+- `crates/ui-kit/src/chart.rs` (310) Drawing a chart on the screen.
 - `crates/ui-kit/src/chooser.rs` (141) The operating system's file chooser, asked without stopping the window.
-- `crates/ui-kit/src/dialog.rs` (851) The look of every dialog both apps put on the screen.
+- `crates/ui-kit/src/dialog.rs` (804) The look of every dialog both apps put on the screen.
 - `crates/ui-kit/src/drive/painted.rs` (255) What a frame painted, asked about the way a test asks.
-- `crates/ui-kit/src/drive.rs` (1190) Driving an application by keystroke, without a window.
+- `crates/ui-kit/src/drive.rs` (1202) Driving an application by keystroke, without a window.
 - `crates/ui-kit/src/fonts.rs` (1431) Real type faces, loaded from the system at startup.
 - `crates/ui-kit/src/headless.rs` (54) An application running without a person in front of it: under a test.
 - `crates/ui-kit/src/keys.rs` (105) Keyboard shortcuts, matched on every modifier.
 - `crates/ui-kit/src/lib.rs` (46) Shared application shell for Calx and Scriva.
-- `crates/ui-kit/src/menu.rs` (1141) A menu bar, and menus that look like menus.
+- `crates/ui-kit/src/menu.rs` (1094) A menu bar, and menus that look like menus.
 - `crates/ui-kit/src/paths.rs` (99) Config and state directory resolution.
 - `crates/ui-kit/src/recent.rs` (205) The files that have been opened, most recent first.
 - `crates/ui-kit/src/scroll.rs` (65) Scroll bars in the suite's palette.
-- `crates/ui-kit/src/shell.rs` (671) The window shell both apps boot into.
+- `crates/ui-kit/src/shell.rs` (654) The window shell both apps boot into.
 - `crates/ui-kit/src/theme.rs` (187) The design language, as named numbers.
 
 ### `wp-compare`

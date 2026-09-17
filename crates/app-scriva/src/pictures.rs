@@ -231,10 +231,11 @@ mod tests {
 
     #[test]
     fn preparing_the_same_part_twice_decodes_it_once() {
-        let ctx = egui::Context::default();
+        let drive = ui_kit::drive::Driver::new();
+        let ctx = drive.ctx();
         let mut pictures = Pictures::new();
         let rels = ["rId3".to_owned(), "rId3".to_owned(), "rId4".to_owned()];
-        pictures.prepare(&ctx, None, None, rels.into_iter());
+        pictures.prepare(ctx, None, None, rels.into_iter());
         assert_eq!(pictures.asked(), 2);
         assert!(pictures.texture("rId3").is_none());
     }
@@ -354,11 +355,12 @@ mod tests {
     fn an_image_that_cannot_be_decoded_is_asked_for_once() {
         // Otherwise a broken PNG is retried sixty times a second for as long as
         // the document is open.
-        let ctx = egui::Context::default();
+        let drive = ui_kit::drive::Driver::new();
+        let ctx = drive.ctx();
         let mut pictures = Pictures::new();
-        assert!(pictures.get(&ctx, None, None, "rId9").is_none());
+        assert!(pictures.get(ctx, None, None, "rId9").is_none());
         assert_eq!(pictures.asked(), 1);
-        assert!(pictures.get(&ctx, None, None, "rId9").is_none());
+        assert!(pictures.get(ctx, None, None, "rId9").is_none());
         assert_eq!(pictures.asked(), 1, "and not asked again");
     }
 }

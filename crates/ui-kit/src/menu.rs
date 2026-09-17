@@ -898,50 +898,29 @@ mod tests {
         marks: bool,
         add: impl FnOnce(&mut egui::Ui),
     ) -> Vec<egui::epaint::Shape> {
-        let ctx = egui::Context::default();
-        crate::fonts::register(&ctx, &[]);
-        ctx.data_mut(|d| d.insert_temp(marks_id(), marks));
-        ctx.all_styles_mut(|style| style.animation_time = 0.0);
-        let input = || egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(
-                egui::Pos2::ZERO,
-                egui::vec2(900.0, 600.0),
-            )),
-            ..Default::default()
-        };
-        let mut add = Some(add);
-        // Two passes: the first sizes the bar, the second paints it.
-        let mut out = ctx.run_ui(input(), |ui| {
+        let drive = crate::drive::Driver::sized(egui::vec2(900.0, 600.0));
+        // A menu row does not animate here; a bar does, and nothing below
+        // reads it mid-way.
+        drive
+            .ctx()
+            .all_styles_mut(|style| style.animation_time = 0.0);
+        // Two passes: the first sizes the bar, the second paints the rows.
+        drive.settle(&mut crate::drive::Bare(|ui: &mut egui::Ui| {
             bar(ui, |ui| {
                 top(ui, "File", |_| {});
             });
-            let _ = &mut add;
-        });
-        out.textures_delta.clear();
-        // The warm-up ran `bar`, which decides for itself whether the marks
-        // show. Put the answer the test wants back before the pass it reads.
-        ctx.data_mut(|d| d.insert_temp(marks_id(), marks));
-        let mut out = ctx.run_ui(input(), |ui| {
+        }));
+        // The first pass ran `bar`, which decides for itself whether the
+        // marks show. Put the answer the test wants back before the pass it
+        // reads.
+        drive.ctx().data_mut(|d| d.insert_temp(marks_id(), marks));
+        let mut add = Some(add);
+        let mut rows = crate::drive::Bare(|ui: &mut egui::Ui| {
             if let Some(add) = add.take() {
                 add(ui);
             }
         });
-        out.textures_delta.clear();
-        let mut flat = Vec::new();
-        fn walk(shape: egui::epaint::Shape, into: &mut Vec<egui::epaint::Shape>) {
-            match shape {
-                egui::epaint::Shape::Vec(shapes) => {
-                    for shape in shapes {
-                        walk(shape, into);
-                    }
-                }
-                other => into.push(other),
-            }
-        }
-        for clipped in out.shapes {
-            walk(clipped.shape, &mut flat);
-        }
-        flat
+        drive.paint(&mut rows, Vec::new()).shapes().to_vec()
     }
 
     #[test]
@@ -971,33 +950,18 @@ mod tests {
     /// then P split the panes and typed "p" into the cell underneath.
     #[test]
     fn a_menu_letter_is_taken_from_the_keyboard_rather_than_merely_read() {
-        let ctx = egui::Context::default();
-        crate::fonts::register(&ctx, &[]);
+        let drive = crate::drive::Driver::sized(egui::vec2(900.0, 600.0));
+        let mut taken = false;
         let mut left = Vec::new();
-        let mut out = ctx.run_ui(
-            egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(900.0, 600.0),
-                )),
-                events: vec![
-                    egui::Event::Key {
-                        key: egui::Key::P,
-                        physical_key: None,
-                        pressed: true,
-                        repeat: false,
-                        modifiers: egui::Modifiers::NONE,
-                    },
-                    egui::Event::Text("p".to_string()),
-                ],
-                ..Default::default()
-            },
-            |ui| {
-                assert!(mark("S&plit").taken(ui, egui::Modifiers::NONE));
+        // A letter sends its key and the text it types, both.
+        drive.press(
+            &mut crate::drive::Bare(|ui: &mut egui::Ui| {
+                taken = mark("S&plit").taken(ui, egui::Modifiers::NONE);
                 left = ui.input(|i| i.events.clone());
-            },
+            }),
+            "P",
         );
-        out.textures_delta.clear();
+        assert!(taken, "the letter chose the row");
         assert!(left.is_empty(), "the keyboard still holds {left:?}");
     }
 
@@ -1060,26 +1024,15 @@ mod tests {
     /// times wider than its longest label.
     #[test]
     fn a_rule_does_not_get_a_vote_on_how_wide_the_menu_is() {
-        let ctx = egui::Context::default();
-        crate::fonts::register(&ctx, &[]);
+        let drive = crate::drive::Driver::sized(egui::vec2(1600.0, 900.0));
         let mut asked = f32::NAN;
-        let mut out = ctx.run_ui(
-            egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(1600.0, 900.0),
-                )),
-                ..Default::default()
-            },
-            |ui| {
-                ui.scope_builder(egui::UiBuilder::new().sizing_pass(), |ui| {
-                    let before = ui.min_rect().width();
-                    sep(ui);
-                    asked = ui.min_rect().width() - before;
-                });
-            },
-        );
-        out.textures_delta.clear();
+        drive.settle(&mut crate::drive::Bare(|ui: &mut egui::Ui| {
+            ui.scope_builder(egui::UiBuilder::new().sizing_pass(), |ui| {
+                let before = ui.min_rect().width();
+                sep(ui);
+                asked = ui.min_rect().width() - before;
+            });
+        }));
         assert_eq!(asked, 0.0, "the rule claimed {asked} points of width");
     }
 

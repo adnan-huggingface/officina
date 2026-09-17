@@ -181,29 +181,20 @@ mod tests {
     /// Every shape a chart draws into a 400x300 box, so a test can look for
     /// the ones that matter rather than at a screenshot.
     fn painted(plot: &Plot, series: &[Plotted]) -> Vec<egui::Shape> {
-        let ctx = egui::Context::default();
-        crate::fonts::register(&ctx, &[]);
-        let input = egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(
-                egui::Pos2::ZERO,
-                egui::vec2(500.0, 400.0),
-            )),
-            ..Default::default()
+        let drive = crate::drive::Driver::sized(egui::vec2(500.0, 400.0));
+        let style = Style {
+            background: [255, 255, 255],
+            outline: [128, 128, 128],
+            text: [0, 0, 0],
+            grid: [128, 128, 128],
+            zoom: 1.0,
+            label: chart::draw::plain_label,
         };
-        let mut out = ctx.run_ui(input, |ui| {
+        let mut chart = crate::drive::Bare(|ui: &mut egui::Ui| {
             let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 300.0));
-            let style = Style {
-                background: [255, 255, 255],
-                outline: [128, 128, 128],
-                text: [0, 0, 0],
-                grid: [128, 128, 128],
-                zoom: 1.0,
-                label: chart::draw::plain_label,
-            };
             draw(ui.painter(), rect, plot, series, &style);
         });
-        out.textures_delta.clear();
-        out.shapes.into_iter().map(|s| s.shape).collect()
+        drive.paint(&mut chart, Vec::new()).shapes().to_vec()
     }
 
     #[test]
