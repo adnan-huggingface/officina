@@ -93,6 +93,11 @@ pub struct Paragraph {
     /// `<w:pPr><w:rPr><w:ins>`. This is what a tracked paragraph split or merge
     /// is: rejecting a deleted mark joins this paragraph to the next.
     pub mark_revision: Option<Revision>,
+    /// The mark, inserted as a tracked change (`mark_revision`), was then
+    /// deleted as another — by a second author, since an author's own
+    /// insertion is simply taken back. Word writes `<w:ins>` and `<w:del>`
+    /// both in the mark's `<w:rPr>`.
+    pub mark_deleted: Option<Mark>,
     /// `<w:pPrChange>` — the properties before a tracked formatting change.
     pub prop_change: Option<Box<PropChange>>,
     /// `<w:rPrChange>` in the mark's `<w:rPr>` — what the paragraph mark's
@@ -156,25 +161,35 @@ impl Paragraph {
     /// after the last letter of a word is not in the word: a link's last
     /// character is the last place following it can mean anything.
     pub fn link_at(&self, offset: usize) -> Option<&Hyperlink> {
+        // Counted as a caret counts: every run's pieces by `Piece::text_len`,
+        // a deleted tab and a moved passage among them, and no equation.
+        fn wide(content: &[Inline]) -> usize {
+            content
+                .iter()
+                .map(|inline| match inline {
+                    Inline::Run(run) => run.content.iter().map(Piece::text_len).sum(),
+                    Inline::Hyperlink(link) => wide(&link.content),
+                    Inline::Revised { content, .. }
+                    | Inline::Wrapper { content, .. }
+                    | Inline::SimpleField { content, .. } => wide(content),
+                    Inline::Structured(sdt) => wide(&sdt.content),
+                    Inline::Math(_) | Inline::Anchor(_) => 0,
+                })
+                .sum()
+        }
         fn walk<'a>(content: &'a [Inline], at: &mut usize, offset: usize) -> Option<&'a Hyperlink> {
             for inline in content {
                 match inline {
                     Inline::Hyperlink(link) => {
                         let start = *at;
-                        let mut text = String::new();
-                        inline.write_text(&mut text, true);
-                        *at += text.len();
+                        *at += wide(&link.content);
                         if (start..*at).contains(&offset) {
                             return Some(link);
                         }
                     }
-                    Inline::Revised { revision, content } => {
-                        // A deleted stretch is not in the text the offset is
-                        // measured against, so it is not stepped over either.
-                        if revision.is_present() {
-                            if let Some(found) = walk(content, at, offset) {
-                                return Some(found);
-                            }
+                    Inline::Revised { content, .. } => {
+                        if let Some(found) = walk(content, at, offset) {
+                            return Some(found);
                         }
                     }
                     Inline::Structured(sdt) => {
@@ -188,9 +203,7 @@ impl Paragraph {
                         }
                     }
                     Inline::Run(_) | Inline::Math(_) | Inline::Anchor(_) => {
-                        let mut text = String::new();
-                        inline.write_text(&mut text, true);
-                        *at += text.len();
+                        *at += wide(std::slice::from_ref(inline));
                     }
                 }
             }

@@ -2308,3 +2308,58 @@ which is how Word writes it. What a `<w:pPrChange>` records is
 `CT_PPrBase`: the style is in it, and the mark's formatting and the section
 are not, so rejecting it leaves those as they are.
 
+**Word nests one author's deletion inside another's insertion.** Deleting
+text another author inserted, with Track Changes on, writes
+`<w:ins author="A">…<w:del author="B">…</w:del></w:ins>`: rejecting B's
+deletion gives A's insertion back, and rejecting A's insertion takes both
+away. Typing inside it splits it — `<w:ins A>`, `<w:ins B>`, `<w:ins A>` with
+a new id. Deleting a paragraph break another author inserted writes both
+`<w:ins/>` and `<w:del/>` in the mark's `<w:rPr>`, and Accept All and Reject
+All then both join the paragraphs. The same author's own insertion is not
+nested: deleting it takes it back with no trace, and Enter then Backspace
+leaves the file as it was.
+
+**Word's Backspace at a paragraph's start is two tracked changes.** The mark
+before is deleted, and the paragraph after is given the earlier one's
+paragraph properties as a `<w:pPrChange>`, because accepting a deleted mark
+keeps the following paragraph's properties and the joined text should look
+as the text before it did. Nothing is restyled when there is no text before
+the mark. Enter at the end of a heading likewise marks the new mark
+inserted and records the style after the heading as a formatting change on
+the new paragraph. Letters deleted one after another are one `<w:del>`.
+
+**`Paragraph::text` is not what a caret counts.** It leaves out everything
+inside a tracked deletion, a deleted tab included, and puts in an
+equation's text; the layout and the edits count every run's pieces by
+`Piece::text_len`, where a deleted tab is a character and an equation is
+nothing. In a paragraph with neither, the two agree, which is why keys that
+measured with one and edits that cut with the other passed every test until
+a paragraph had a deleted tab before a curly apostrophe and a tracked
+Backspace sliced inside it. The caret's text is `text::content`, the runs'
+text, and Find reads the same with what a change took away blanked;
+`Paragraph::text` is what the document says, for counts and export.
+
+**A bookmark's end can stand between two paragraphs.** `CT_Body`, a cell
+and a content control take the range markup — `w:bookmarkStart`,
+`w:bookmarkEnd`, `w:commentRangeStart` and their like — as blocks of their
+own, beside paragraphs and tables. Two paragraphs with one between them
+are not side by side: joining them, by Backspace or by accepting a deleted
+mark, has nowhere to keep it, and dropping it breaks a bookmark or a
+comment's range.
+
+**A splice over a range of paragraphs can reach over a table.** Replacing
+paragraphs 0 to 2 of a flattened walk, where paragraph 1 is a table's cell,
+spliced the replacement over the table's block and the table was gone —
+Accept All did it to every table in a document, and undo, which restored
+paragraphs, could not restore rows. A change of how many paragraphs a range
+holds is only sound when the range's paragraphs stand side by side in one
+container; anything else is overwritten one for one, or done on the blocks
+themselves and undone by the blocks.
+
+**Word writes what replaces a selection after what it deleted.** Typed over
+with Track Changes on, a selection is `<w:del>old</w:del><w:ins>new</w:ins>`;
+Enter or Ctrl+Enter over one puts the new paragraph mark before the struck
+words, which move to the next paragraph. Setting `Range.Text` from automation
+writes the insertion first — a probe that uses it measures a different
+order from the one a person types.
+

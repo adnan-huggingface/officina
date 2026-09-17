@@ -108,6 +108,7 @@ fn para_props(out: &mut String, paragraph: &Paragraph, styles: &StyleTable) {
     let props = &paragraph.props;
     let mark = props.mark.as_deref().filter(|mark| !mark.is_empty());
     let revision = paragraph.mark_revision.as_ref();
+    let deleted = paragraph.mark_deleted.as_ref();
     let mark_change = paragraph
         .mark_change
         .as_deref()
@@ -125,6 +126,7 @@ fn para_props(out: &mut String, paragraph: &Paragraph, styles: &StyleTable) {
         && paragraph.section.is_none()
         && mark.is_none()
         && revision.is_none()
+        && deleted.is_none()
         && mark_change.is_none()
         && change.is_none()
     {
@@ -138,15 +140,25 @@ fn para_props(out: &mut String, paragraph: &Paragraph, styles: &StyleTable) {
     // `<w:pPrChange>`, and in that order: they end the sequence. A mark
     // inserted or deleted is said first inside its `<w:rPr>`, and a change to
     // its formatting last.
-    if mark.is_some() || revision.is_some() || mark_change.is_some() {
+    if mark.is_some() || revision.is_some() || deleted.is_some() || mark_change.is_some() {
         out.push_str("<w:rPr>");
-        if let Some(revision) = revision {
-            let (element, mark) = match revision {
-                Revision::Inserted(mark) => ("ins", mark),
-                Revision::Deleted(mark) => ("del", mark),
-                Revision::MovedFrom { mark, .. } => ("moveFrom", mark),
-                Revision::MovedTo { mark, .. } => ("moveTo", mark),
-            };
+        // In the schema's order: ins, del, moveFrom, moveTo — a mark inserted
+        // or moved here and then deleted says the deletion between the two.
+        let (inserted, moved) = match revision {
+            Some(Revision::Inserted(mark)) => (Some(mark), None),
+            Some(Revision::MovedFrom { mark, .. }) => (None, Some(("moveFrom", mark))),
+            Some(Revision::MovedTo { mark, .. }) => (None, Some(("moveTo", mark))),
+            _ => (None, None),
+        };
+        let deleted = match revision {
+            Some(Revision::Deleted(mark)) => Some(mark),
+            _ => deleted,
+        };
+        for (element, mark) in [("ins", inserted), ("del", deleted)]
+            .into_iter()
+            .filter_map(|(element, mark)| Some((element, mark?)))
+            .chain(moved)
+        {
             let _ = write!(out, "<w:{element}");
             mark_attributes(out, mark);
             out.push_str("/>");

@@ -525,10 +525,11 @@ mod tests {
     /// of the document — the heading's mark deleted, and the paragraph after
     /// it given the heading's style as a tracked formatting change — with that
     /// paragraph's words made bold as another, a paragraph whose mark was
-    /// inserted and made italic, both tracked, and one whose mark was deleted
-    /// and nothing else.
+    /// inserted and made italic, both tracked, one whose mark was deleted and
+    /// nothing else, and one whose mark another author inserted and a second
+    /// deleted, which Word writes as both.
     const TRACKED_BODY: &[u8] = br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<w:document xmlns:w="x" xmlns:w14="y"><w:body><w:p w14:paraId="11111111"><w:pPr><w:pStyle w:val="Heading1"/><w:rPr><w:del w:id="0" w:author="Adnan Khan" w:date="2026-09-17T12:36:00Z"/></w:rPr><w:pPrChange w:id="1" w:author="Adnan Khan" w:date="2026-09-17T12:36:00Z"><w:pPr><w:pStyle w:val="Heading1"/></w:pPr></w:pPrChange></w:pPr><w:r><w:t>Title words</w:t></w:r></w:p><w:p w14:paraId="22222222"><w:pPr><w:pStyle w:val="Heading1"/><w:pPrChange w:id="2" w:author="Adnan Khan" w:date="2026-09-17T12:36:00Z"><w:pPr/></w:pPrChange></w:pPr><w:del w:id="3" w:author="Adnan Khan" w:date="2026-09-17T12:36:00Z"><w:r><w:rPr><w:b/><w:rPrChange w:id="4" w:author="Adnan Khan" w:date="2026-09-17T12:36:00Z"><w:rPr/></w:rPrChange></w:rPr><w:delText>Body words</w:delText></w:r></w:del></w:p><w:p w14:paraId="33333333"><w:pPr><w:rPr><w:ins w:id="5" w:author="Adnan Khan"/><w:i/><w:rPrChange w:id="9" w:author="Adnan Khan"><w:rPr/></w:rPrChange></w:rPr></w:pPr><w:r><w:t>Inserted mark</w:t></w:r></w:p><w:p w14:paraId="55555555"><w:pPr><w:rPr><w:del w:id="6" w:author="Adnan Khan"/></w:rPr></w:pPr><w:r><w:t>Deleted mark</w:t></w:r></w:p><w:p w14:paraId="44444444"><w:r><w:t>End</w:t></w:r></w:p><w:sectPr><w:pgSz w:w="12240" w:h="15840"/></w:sectPr></w:body></w:document>"#;
+<w:document xmlns:w="x" xmlns:w14="y"><w:body><w:p w14:paraId="11111111"><w:pPr><w:pStyle w:val="Heading1"/><w:rPr><w:del w:id="0" w:author="Adnan Khan" w:date="2026-09-17T12:36:00Z"/></w:rPr><w:pPrChange w:id="1" w:author="Adnan Khan" w:date="2026-09-17T12:36:00Z"><w:pPr><w:pStyle w:val="Heading1"/></w:pPr></w:pPrChange></w:pPr><w:r><w:t>Title words</w:t></w:r></w:p><w:p w14:paraId="22222222"><w:pPr><w:pStyle w:val="Heading1"/><w:pPrChange w:id="2" w:author="Adnan Khan" w:date="2026-09-17T12:36:00Z"><w:pPr/></w:pPrChange></w:pPr><w:del w:id="3" w:author="Adnan Khan" w:date="2026-09-17T12:36:00Z"><w:r><w:rPr><w:b/><w:rPrChange w:id="4" w:author="Adnan Khan" w:date="2026-09-17T12:36:00Z"><w:rPr/></w:rPrChange></w:rPr><w:delText>Body words</w:delText></w:r></w:del></w:p><w:p w14:paraId="33333333"><w:pPr><w:rPr><w:ins w:id="5" w:author="Adnan Khan"/><w:i/><w:rPrChange w:id="9" w:author="Adnan Khan"><w:rPr/></w:rPrChange></w:rPr></w:pPr><w:r><w:t>Inserted mark</w:t></w:r></w:p><w:p w14:paraId="55555555"><w:pPr><w:rPr><w:del w:id="6" w:author="Adnan Khan"/></w:rPr></w:pPr><w:r><w:t>Deleted mark</w:t></w:r></w:p><w:p w14:paraId="66666666"><w:pPr><w:rPr><w:ins w:id="10" w:author="Assistant"/><w:del w:id="11" w:author="Adnan Khan"/></w:rPr></w:pPr><w:r><w:t>Inserted, then deleted</w:t></w:r></w:p><w:p w14:paraId="77777777"><w:pPr><w:rPr><w:del w:id="12" w:author="Adnan Khan"/><w:moveTo w:id="13" w:author="Assistant"/></w:rPr></w:pPr><w:r><w:t>Moved here, then deleted</w:t></w:r></w:p><w:p w14:paraId="44444444"><w:r><w:t>End</w:t></w:r></w:p><w:sectPr><w:pgSz w:w="12240" w:h="15840"/></w:sectPr></w:body></w:document>"#;
 
     fn read(bytes: &[u8]) -> Document {
         let package = crate::tests_support::package_with(bytes);
@@ -555,8 +556,11 @@ mod tests {
                         .map(|run| format!("{:?}", run.prop_change))
                         .collect();
                     format!(
-                        "{:?} {:?} {:?} {runs:?}",
-                        paragraph.mark_revision, paragraph.prop_change, paragraph.mark_change
+                        "{:?} {:?} {:?} {:?} {runs:?}",
+                        paragraph.mark_revision,
+                        paragraph.mark_deleted,
+                        paragraph.prop_change,
+                        paragraph.mark_change
                     )
                 })
                 .collect()
@@ -564,10 +568,10 @@ mod tests {
         assert_eq!(
             tracked(&read_back)
                 .iter()
-                .filter(|line| !line.starts_with("None None None"))
+                .filter(|line| !line.starts_with("None None None None"))
                 .count(),
-            4,
-            "the reader keeps all three: {:?}",
+            6,
+            "the reader keeps them all: {:?}",
             tracked(&read_back)
         );
         for block in &mut document.body {
@@ -599,7 +603,7 @@ mod tests {
         let text = String::from_utf8(out.clone()).expect("utf-8");
         assert_eq!(
             text.matches(" more</w:t>").count(),
-            5,
+            7,
             "each written afresh: {text}"
         );
         for shape in [
@@ -608,6 +612,8 @@ mod tests {
             r#"<w:rPr><w:b/><w:rPrChange w:id="4" w:author="Adnan Khan" w:date="2026-09-17T12:36:00Z"><w:rPr/></w:rPrChange></w:rPr>"#,
             r#"<w:pPr><w:rPr><w:ins w:id="5" w:author="Adnan Khan"/><w:i/><w:rPrChange w:id="9" w:author="Adnan Khan"><w:rPr/></w:rPrChange></w:rPr></w:pPr>"#,
             r#"<w:pPr><w:rPr><w:del w:id="6" w:author="Adnan Khan"/></w:rPr></w:pPr>"#,
+            r#"<w:pPr><w:rPr><w:ins w:id="10" w:author="Assistant"/><w:del w:id="11" w:author="Adnan Khan"/></w:rPr></w:pPr>"#,
+            r#"<w:pPr><w:rPr><w:del w:id="12" w:author="Adnan Khan"/><w:moveTo w:id="13" w:author="Assistant"/></w:rPr></w:pPr>"#,
             r#"<w:p><w:pPr><w:rPr><w:ins w:id="7" w:author="Assistant"/></w:rPr></w:pPr><w:r><w:t>Proposed</w:t></w:r></w:p>"#,
             r#"<w:p><w:pPr><w:pPrChange w:id="8" w:author="Assistant"><w:pPr><w:jc w:val="center"/></w:pPr></w:pPrChange></w:pPr><w:r><w:t>Restyled</w:t></w:r></w:p>"#,
         ] {

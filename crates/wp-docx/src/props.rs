@@ -37,6 +37,8 @@ pub(crate) struct RunPropsRead {
     /// paragraph break itself being a tracked change. In a run's `<w:rPr>` this
     /// does not occur.
     pub mark_revision: Option<Revision>,
+    /// `<w:del>` after an `<w:ins>` there: the inserted mark was deleted.
+    pub mark_deleted: Option<Mark>,
 }
 
 /// What a `<w:pPr>` yielded.
@@ -46,6 +48,7 @@ pub(crate) struct ParaPropsRead {
     pub section: Option<Box<SectionProps>>,
     pub change: Option<Box<PropChange>>,
     pub mark_revision: Option<Revision>,
+    pub mark_deleted: Option<Mark>,
     /// The mark's own formatting change.
     pub mark_change: Option<Box<PropChange>>,
 }
@@ -259,7 +262,23 @@ pub(crate) fn run_props(reader: &mut Reader<&[u8]>, ctx: &mut Ctx<'_>) -> RunPro
                         }));
                     }
                     b"ins" | b"del" | b"moveFrom" | b"moveTo" => {
-                        out.mark_revision = revision(&name, &e);
+                        match (out.mark_revision.take(), revision(&name, &e)) {
+                            // A mark inserted, or moved here, and then deleted
+                            // says both — the deletion after an insertion and
+                            // before a move, as the schema orders them.
+                            (
+                                Some(put @ (Revision::Inserted(_) | Revision::MovedTo { .. })),
+                                Some(Revision::Deleted(mark)),
+                            )
+                            | (
+                                Some(Revision::Deleted(mark)),
+                                Some(put @ (Revision::Inserted(_) | Revision::MovedTo { .. })),
+                            ) => {
+                                out.mark_revision = Some(put);
+                                out.mark_deleted = Some(mark);
+                            }
+                            (_, read) => out.mark_revision = read,
+                        }
                     }
                     _ => {}
                 }
@@ -346,6 +365,7 @@ pub(crate) fn para_props(reader: &mut Reader<&[u8]>, ctx: &mut Ctx<'_>) -> ParaP
                         let read = run_props(reader, ctx);
                         out.props.mark = Some(Box::new(read.props));
                         out.mark_revision = read.mark_revision;
+                        out.mark_deleted = read.mark_deleted;
                         out.mark_change = read.change;
                     }
                     b"sectPr" if !empty => {

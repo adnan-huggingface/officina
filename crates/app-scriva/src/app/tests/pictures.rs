@@ -243,6 +243,62 @@ fn a_copied_picture_pastes_as_the_same_part_shown_twice() {
     assert_eq!(drawings[0].rel, drawings[1].rel);
 }
 
+/// A copied chart pasted where Track Changes cannot record it is refused
+/// before its part is copied: the package is as it was, and the refusal is
+/// the answer.
+#[test]
+fn a_copied_chart_pasted_where_nothing_can_be_recorded_copies_no_part() {
+    let mut app = app_with(&["ab"]);
+    app.selection = Selection::at(Caret {
+        paragraph: 0,
+        offset: 1,
+    });
+    assert!(
+        app.insert_chart_part(&ss_xlsx_free_chart(), 3_000_000, 2_000_000),
+        "it pastes"
+    );
+    app.picked = Some(crate::drawings::Picked {
+        paragraph: 0,
+        nth: 0,
+    });
+    assert!(app.copy_drawing(), "there is a chart to copy");
+    app.picked = None;
+    // A link after the chart, and the caret inside it.
+    if let Block::Paragraph(paragraph) = &mut app.document.body[0] {
+        paragraph
+            .content
+            .push(wp_model::doc::Inline::Hyperlink(Box::new(
+                wp_model::Hyperlink {
+                    rel: None,
+                    anchor: Some("x".into()),
+                    tooltip: None,
+                    history: true,
+                    content: vec![wp_model::doc::Inline::Run(wp_model::doc::Run::of("linked"))],
+                },
+            )));
+    }
+    app.document.settings.track_changes = true;
+    app.changed();
+    let len = crate::text::len(app.document.paragraphs()[0]);
+    app.selection = Selection::at(Caret {
+        paragraph: 0,
+        offset: len - 2,
+    });
+    let before = app.document.body.clone();
+    let parts = app.package.as_ref().map(|package| package.parts().count());
+    assert!(parts.is_some(), "the chart made a package");
+    assert!(app.paste_copied_drawing(), "the refusal is the answer");
+    assert_eq!(app.document.body, before);
+    assert_eq!(
+        app.package.as_ref().map(|package| package.parts().count()),
+        parts
+    );
+    assert_eq!(
+        app.notice.as_ref().map(|(said, _)| said.as_str()),
+        Some(crate::revise::CANNOT_RECORD)
+    );
+}
+
 #[test]
 fn a_cut_picture_leaves_and_a_paste_puts_it_back() {
     let mut app = app_with(&["ab"]);

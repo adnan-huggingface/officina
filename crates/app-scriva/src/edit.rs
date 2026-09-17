@@ -742,6 +742,12 @@ pub fn replace_range(
     range: std::ops::Range<usize>,
     with: Vec<Paragraph>,
 ) {
+    // Nothing replaced is an insertion: after the paragraph before the
+    // range, in its container, or before the first.
+    if range.is_empty() {
+        insert_paragraphs_at(document, scope, range.start, with);
+        return;
+    }
     let mut with = Some(with);
     let mut flat = 0usize;
     if let Some(blocks) = document.blocks_mut(scope) {
@@ -750,8 +756,192 @@ pub fn replace_range(
         }
     }
     if let Some(with) = with.take() {
+        // In place, only as many as there were: a caller changing how many
+        // there are asks [`side_by_side`] first.
+        debug_assert_eq!(with.len(), range.len(), "a count changed across containers");
         replace_in_place(document, scope, range, with);
     }
+}
+
+/// Puts `with` in as paragraphs `at..` of the flow's flattened walk: after
+/// paragraph `at - 1`, beside it in its container.
+fn insert_paragraphs_at(document: &mut Document, scope: Scope, at: usize, with: Vec<Paragraph>) {
+    let blocks = document.blocks(scope);
+    let (steps, index) = match at
+        .checked_sub(1)
+        .and_then(|before| place_of(blocks, &mut 0, before))
+    {
+        Some((steps, index)) => (steps, index + 1),
+        None => place_of(blocks, &mut 0, at).unwrap_or((Vec::new(), blocks.len())),
+    };
+    let Some(container) = document
+        .blocks_mut(scope)
+        .and_then(|blocks| container_mut(blocks, &steps))
+    else {
+        return;
+    };
+    let index = index.min(container.len());
+    container.splice(index..index, with.into_iter().map(Block::Paragraph));
+}
+
+/// Whether paragraphs `range` of the flow's flattened walk stand side by side
+/// in one container, with no table or content control among them: the only
+/// range an edit may change the number of paragraphs in.
+pub fn side_by_side(document: &Document, scope: Scope, range: std::ops::Range<usize>) -> bool {
+    fn walk(blocks: &[Block], flat: &mut usize, range: &std::ops::Range<usize>) -> Option<bool> {
+        let mut inside = false;
+        for block in blocks {
+            match block {
+                Block::Paragraph(_) => {
+                    inside |= *flat == range.start;
+                    *flat += 1;
+                    if *flat == range.end {
+                        return Some(inside);
+                    }
+                }
+                // A table, a content control, a bookmark's edge or an
+                // imported chunk between them: a join would take it.
+                _ if inside => return Some(false),
+                Block::Table(table) => {
+                    for cell in table.rows.iter().flat_map(|row| &row.cells) {
+                        if let Some(answer) = walk(&cell.content, flat, range) {
+                            return Some(answer);
+                        }
+                    }
+                }
+                Block::Structured(sdt) => {
+                    if let Some(answer) = walk(&sdt.content, flat, range) {
+                        return Some(answer);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+    range.is_empty() || walk(document.blocks(scope), &mut 0, &range).unwrap_or(false)
+}
+
+/// One step down from a flow to a container of blocks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Step {
+    Cell {
+        block: usize,
+        row: usize,
+        cell: usize,
+    },
+    Control {
+        block: usize,
+    },
+}
+
+/// Where paragraph `paragraph` of the flattened walk stands: the steps down to
+/// its container, and its index among that container's blocks.
+fn place_of(blocks: &[Block], flat: &mut usize, paragraph: usize) -> Option<(Vec<Step>, usize)> {
+    for (index, block) in blocks.iter().enumerate() {
+        match block {
+            Block::Paragraph(_) => {
+                if *flat == paragraph {
+                    return Some((Vec::new(), index));
+                }
+                *flat += 1;
+            }
+            Block::Table(table) => {
+                for (at_row, row) in table.rows.iter().enumerate() {
+                    for (at_cell, cell) in row.cells.iter().enumerate() {
+                        if let Some((mut steps, at)) = place_of(&cell.content, flat, paragraph) {
+                            steps.insert(
+                                0,
+                                Step::Cell {
+                                    block: index,
+                                    row: at_row,
+                                    cell: at_cell,
+                                },
+                            );
+                            return Some((steps, at));
+                        }
+                    }
+                }
+            }
+            Block::Structured(sdt) => {
+                if let Some((mut steps, at)) = place_of(&sdt.content, flat, paragraph) {
+                    steps.insert(0, Step::Control { block: index });
+                    return Some((steps, at));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// The steps down to the container paragraph `paragraph` stands in.
+fn container_of(document: &Document, scope: Scope, paragraph: usize) -> Option<Vec<Step>> {
+    place_of(document.blocks(scope), &mut 0, paragraph).map(|(steps, _)| steps)
+}
+
+/// The container `steps` lead to.
+fn container_mut<'a>(mut blocks: &'a mut Vec<Block>, steps: &[Step]) -> Option<&'a mut Vec<Block>> {
+    for step in steps {
+        blocks = match *step {
+            Step::Cell { block, row, cell } => match blocks.get_mut(block)? {
+                Block::Table(table) => &mut table.rows.get_mut(row)?.cells.get_mut(cell)?.content,
+                _ => return None,
+            },
+            Step::Control { block } => match blocks.get_mut(block)? {
+                Block::Structured(sdt) => &mut sdt.content,
+                _ => return None,
+            },
+        };
+    }
+    Some(blocks)
+}
+
+/// Deletes from `start` to `end` — two paragraphs of one container with a
+/// table or a content control between them — taking what stands between
+/// whole, as Word does, and joining the two. One undo step gives back the
+/// blocks as they were, tables and all.
+fn delete_across_blocks(
+    document: &mut Document,
+    scope: Scope,
+    history: &mut History,
+    start: Caret,
+    end: Caret,
+) -> Option<Caret> {
+    let blocks = document.blocks(scope);
+    let (steps, first) = place_of(blocks, &mut 0, start.paragraph)?;
+    let (other, last) = place_of(blocks, &mut 0, end.paragraph)?;
+    if steps != other || last <= first {
+        return None;
+    }
+    // The flow's own blocks the change lies in: the range itself, or the one
+    // block — a table, a content control — that holds its container.
+    let (from, to) = match steps.first() {
+        None => (first, last),
+        Some(Step::Cell { block, .. } | Step::Control { block }) => (*block, *block),
+    };
+    let before: Vec<Block> = blocks[from..=to].to_vec();
+    let container = container_mut(document.blocks_mut(scope)?, &steps)?;
+    let (Block::Paragraph(head), Block::Paragraph(tail)) = (&container[first], &container[last])
+    else {
+        return None;
+    };
+    let mut head = head.clone();
+    let mut tail = tail.clone();
+    let head_len = text::len(&head);
+    text::remove(&mut head, start.offset..head_len);
+    text::remove(&mut tail, 0..end.offset);
+    container.splice(first..=last, [Block::Paragraph(text::merge(&head, &tail))]);
+    history.push(
+        scope,
+        Change::Blocks {
+            index: from,
+            before,
+            // The joined paragraph, or the block that holds its container.
+            now: 1,
+        },
+    );
+    Some(start)
 }
 
 /// Splices `with` over `range` when every paragraph of the range is a direct
@@ -781,6 +971,13 @@ fn splice_blocks(
                         None => return false,
                     }
                 }
+            }
+            // A table or a content control inside the range would go with the
+            // splice, rows and all: such a range is not one container's.
+            Block::Table(_) | Block::Structured(_) | Block::Anchor(_) | Block::AltChunk { .. }
+                if start.is_some() =>
+            {
+                return false
             }
             Block::Table(table) => {
                 for row in &mut table.rows {
@@ -934,7 +1131,9 @@ pub fn delete_selection(
     // first keeps its head and the last its tail as before; what lies
     // between is emptied. Joined and written over the first cell alone, the
     // middle cell kept its text and the last its whole.
-    if table_cell_at(document, scope, start) != table_cell_at(document, scope, end) {
+    if container_of(document, scope, start.paragraph)
+        != container_of(document, scope, end.paragraph)
+    {
         history.push(
             scope,
             Change::Range {
@@ -961,6 +1160,9 @@ pub fn delete_selection(
             .collect();
         replace_range(document, scope, start.paragraph..end.paragraph + 1, cleared);
         return start;
+    }
+    if !side_by_side(document, scope, start.paragraph..end.paragraph + 1) {
+        return delete_across_blocks(document, scope, history, start, end).unwrap_or(start);
     }
     history.push(
         scope,
@@ -998,7 +1200,11 @@ pub fn split_paragraph(
     let Some(paragraph) = paragraph_at(document, scope, caret.paragraph) else {
         return caret;
     };
-    let (head, mut tail) = text::split(&paragraph, caret.offset);
+    let (mut head, mut tail) = text::split(&paragraph, caret.offset);
+    crate::revise::distinct_ids(
+        &mut [&mut head, &mut tail],
+        crate::revise::next_revision_id(document),
+    );
     // Word's `<w:next>`: the paragraph after a heading is not a heading.
     if let Some(style) = paragraph.props.style {
         if let Some(next) = document.styles.get(style).and_then(|style| style.next) {
@@ -1040,7 +1246,7 @@ pub fn backspace(
         return caret;
     };
     if caret.offset > 0 {
-        let previous = text::previous_char(&paragraph.text(), caret.offset);
+        let previous = text::previous_char(&text::content(&paragraph), caret.offset);
         history.push(
             scope,
             Change::Paragraph {
@@ -1057,7 +1263,11 @@ pub fn backspace(
             offset: previous,
         };
     }
-    if caret.paragraph == 0 {
+    // Nothing joins across a cell's edge: the last paragraph of one cell and
+    // the first of the next are not side by side.
+    if caret.paragraph == 0
+        || !side_by_side(document, scope, caret.paragraph - 1..caret.paragraph + 1)
+    {
         return caret;
     }
     join_with_previous(document, scope, history, caret.paragraph)
@@ -1077,7 +1287,7 @@ pub fn delete_forward(
     let Some(paragraph) = paragraph_at(document, scope, caret.paragraph) else {
         return caret;
     };
-    let content = paragraph.text();
+    let content = text::content(&paragraph);
     if caret.offset < content.len() {
         let next = text::next_char(&content, caret.offset);
         history.push(
@@ -1093,7 +1303,9 @@ pub fn delete_forward(
         }
         return caret;
     }
-    if caret.paragraph + 1 >= document.paragraphs_in(scope).len() {
+    if caret.paragraph + 1 >= document.paragraphs_in(scope).len()
+        || !side_by_side(document, scope, caret.paragraph..caret.paragraph + 2)
+    {
         return caret;
     }
     join_with_previous(document, scope, history, caret.paragraph + 1)
@@ -1432,14 +1644,42 @@ pub fn paste_paragraphs(
     selection: Selection,
     clip: &[Paragraph],
 ) -> Caret {
+    paste_where(document, scope, history, selection, clip, false)
+}
+
+/// The same, after a tracked deletion standing at the caret rather than
+/// before it: a paste over a selection deleted with Track Changes on.
+pub fn paste_after_deletion(
+    document: &mut Document,
+    scope: Scope,
+    history: &mut History,
+    caret: Caret,
+    clip: &[Paragraph],
+) -> Caret {
+    paste_where(document, scope, history, Selection::at(caret), clip, true)
+}
+
+fn paste_where(
+    document: &mut Document,
+    scope: Scope,
+    history: &mut History,
+    selection: Selection,
+    clip: &[Paragraph],
+    deletion_first: bool,
+) -> Caret {
     let caret = delete_selection(document, scope, history, selection);
     let Some(target) = paragraph_at(document, scope, caret.paragraph) else {
         return caret;
     };
+    let clip = without_anchors_held(document, clip);
     let Some((clip_first, rest)) = clip.split_first() else {
         return caret;
     };
-    let (head, tail) = text::split(&target, caret.offset);
+    let (mut head, mut tail) = text::split_where(&target, caret.offset, deletion_first);
+    crate::revise::distinct_ids(
+        &mut [&mut head, &mut tail],
+        crate::revise::next_revision_id(document),
+    );
 
     if rest.is_empty() {
         // All of it lands inside the one paragraph.
@@ -1483,6 +1723,65 @@ pub fn paste_paragraphs(
     };
     replace_range(document, scope, caret.paragraph..caret.paragraph + 1, built);
     landed
+}
+
+/// `clip` without the anchors the document already holds — a comment's, a
+/// bookmark's: a copy pasted beside its original would give one comment two
+/// places. A cut leaves its anchors where the text was, so a comment on cut
+/// text stays there, with nothing under it, rather than going with the
+/// paste as Word's does.
+fn without_anchors_held(document: &Document, clip: &[Paragraph]) -> Vec<Paragraph> {
+    use wp_model::doc::{Inline, Piece};
+    fn gather(content: &[Inline], anchors: &mut Vec<wp_model::Anchor>, refs: &mut Vec<u32>) {
+        for inline in content {
+            match inline {
+                Inline::Anchor(anchor) => anchors.push(anchor.clone()),
+                Inline::Run(run) => {
+                    refs.extend(run.content.iter().filter_map(|piece| match piece {
+                        Piece::CommentRef(id) => Some(*id),
+                        _ => None,
+                    }))
+                }
+                Inline::Revised { content, .. }
+                | Inline::Wrapper { content, .. }
+                | Inline::SimpleField { content, .. } => gather(content, anchors, refs),
+                Inline::Hyperlink(link) => gather(&link.content, anchors, refs),
+                Inline::Structured(sdt) => gather(&sdt.content, anchors, refs),
+                Inline::Math(_) => {}
+            }
+        }
+    }
+    fn strip(content: &mut Vec<Inline>, anchors: &[wp_model::Anchor], refs: &[u32]) {
+        content
+            .retain(|inline| !matches!(inline, Inline::Anchor(anchor) if anchors.contains(anchor)));
+        for inline in content.iter_mut() {
+            match inline {
+                Inline::Run(run) => run
+                    .content
+                    .retain(|piece| !matches!(piece, Piece::CommentRef(id) if refs.contains(id))),
+                Inline::Revised { content, .. }
+                | Inline::Wrapper { content, .. }
+                | Inline::SimpleField { content, .. } => strip(content, anchors, refs),
+                Inline::Hyperlink(link) => strip(&mut link.content, anchors, refs),
+                Inline::Structured(sdt) => strip(&mut sdt.content, anchors, refs),
+                Inline::Anchor(_) | Inline::Math(_) => {}
+            }
+        }
+    }
+    let (mut anchors, mut refs) = (Vec::new(), Vec::new());
+    for scope in document.flows() {
+        for paragraph in document.paragraphs_in(scope) {
+            gather(&paragraph.content, &mut anchors, &mut refs);
+        }
+    }
+    clip.iter()
+        .map(|paragraph| {
+            let mut paragraph = paragraph.clone();
+            strip(&mut paragraph.content, &anchors, &refs);
+            text::prune(&mut paragraph);
+            paragraph
+        })
+        .collect()
 }
 
 /// The alignment of the paragraph the caret is in.
@@ -2133,6 +2432,263 @@ mod tests {
                 offset: 0
             }
         );
+    }
+
+    /// "before", a table, "after": the three blocks of a body with a table
+    /// between two paragraphs.
+    fn table_between() -> Document {
+        let mut document = cell_document(&["cell"]);
+        document
+            .body
+            .insert(0, Block::Paragraph(Paragraph::of("before")));
+        document
+    }
+
+    /// A selection from before a table to after it took the table with it,
+    /// and undo could not bring it back: the paragraphs around it were
+    /// spliced over it as if nothing stood between.
+    #[test]
+    fn a_selection_across_a_table_takes_it_whole_and_undo_brings_it_back() {
+        let mut document = table_between();
+        let before = document.body.clone();
+        let mut history = History::new();
+        let caret = delete_selection(
+            &mut document,
+            Scope::Body,
+            &mut history,
+            span((0, 3), (2, 9)),
+        );
+        assert_eq!(caret, at(0, 3).head);
+        assert_eq!(texts(&document), ["bef table"]);
+        assert_eq!(document.body.len(), 1, "the table went whole");
+        history.undo(&mut document);
+        assert_eq!(document.body, before, "and came back whole");
+        history.redo(&mut document);
+        assert_eq!(texts(&document), ["bef table"]);
+
+        // Inside a cell, a nested table between two of its paragraphs.
+        let mut outer = cell_document(&["one", "two"]);
+        let nested = table_between().body.remove(1);
+        if let Block::Table(table) = &mut outer.body[0] {
+            table.rows[0].cells[0].content.insert(1, nested);
+        }
+        let before = outer.body.clone();
+        delete_selection(&mut outer, Scope::Body, &mut history, span((0, 1), (2, 1)));
+        assert_eq!(texts(&outer), ["owo", "after the table"]);
+        history.undo(&mut outer);
+        assert_eq!(outer.body, before);
+    }
+
+    /// A count of paragraphs is never changed across a table: a splice that
+    /// would have to reach over one is refused.
+    #[test]
+    fn paragraphs_are_side_by_side_only_with_nothing_but_paragraphs_between() {
+        let document = table_between();
+        assert!(side_by_side(&document, Scope::Body, 0..1));
+        assert!(!side_by_side(&document, Scope::Body, 0..2), "into the cell");
+        assert!(
+            !side_by_side(&document, Scope::Body, 0..3),
+            "over the table"
+        );
+        assert!(
+            !side_by_side(&document, Scope::Body, 1..3),
+            "out of the cell"
+        );
+        let cells = cell_document(&["one", "two"]);
+        assert!(side_by_side(&cells, Scope::Body, 0..2), "in one cell");
+
+        // Replaced one for one across the table, the paragraphs are
+        // overwritten where they stand and the table stays: a splice would
+        // have taken it.
+        let mut document = table_between();
+        let with: Vec<Paragraph> = ["a", "b", "c"]
+            .iter()
+            .map(|text| Paragraph::of(text))
+            .collect();
+        replace_range(&mut document, Scope::Body, 0..3, with);
+        assert_eq!(texts(&document), ["a", "b", "c"]);
+        assert!(matches!(document.body[1], Block::Table(_)));
+    }
+
+    /// Delete at the end of a cell's last paragraph joined the next cell's
+    /// text onto it and left that text where it was too.
+    #[test]
+    fn backspace_and_delete_never_join_across_a_cells_edge() {
+        let mut document = cell_document(&["one"]);
+        let mut history = History::new();
+        let before = document.body.clone();
+        let caret = delete_forward(&mut document, Scope::Body, &mut history, at(0, 3));
+        assert_eq!(caret, at(0, 3).head);
+        assert_eq!(document.body, before);
+        let caret = backspace(&mut document, Scope::Body, &mut history, at(1, 0));
+        assert_eq!(caret, at(1, 0).head);
+        assert_eq!(document.body, before);
+        assert!(!history.can_undo(), "nothing happened");
+    }
+
+    /// A copy of commented words pasted beside the original took the
+    /// comment's anchors along, and the comment had two places. Cut and
+    /// pasted, the words still bring them.
+    #[test]
+    fn a_copy_pasted_beside_its_original_leaves_the_comment_where_it_was() {
+        use wp_model::doc::Inline;
+        let commented = Paragraph {
+            content: vec![
+                Inline::Anchor(wp_model::Anchor::CommentStart { id: 7 }),
+                Inline::Run(wp_model::doc::Run::of("noted")),
+                Inline::Anchor(wp_model::Anchor::CommentEnd { id: 7 }),
+                Inline::Run(wp_model::doc::Run {
+                    content: vec![wp_model::doc::Piece::CommentRef(7)],
+                    ..wp_model::doc::Run::new()
+                }),
+            ],
+            ..Paragraph::new()
+        };
+        let mut document = Document {
+            body: vec![
+                Block::Paragraph(commented.clone()),
+                Block::Paragraph(Paragraph::of("here")),
+            ],
+            ..Document::new()
+        };
+        let mut history = History::new();
+        let clip = copy_range(&document, Scope::Body, span((0, 0), (0, 5)));
+        paste_paragraphs(&mut document, Scope::Body, &mut history, at(1, 4), &clip);
+        assert_eq!(texts(&document), ["noted", "herenoted"]);
+        let anchors = |paragraph: &Paragraph| {
+            paragraph
+                .content
+                .iter()
+                .filter(|inline| matches!(inline, Inline::Anchor(_)))
+                .count()
+        };
+        assert_eq!(anchors(document.paragraphs()[1]), 0, "the copy has none");
+        assert!(!document.paragraphs()[1]
+            .runs()
+            .iter()
+            .any(|run| run.content.contains(&wp_model::doc::Piece::CommentRef(7))));
+
+        let mut document = Document {
+            body: vec![
+                Block::Paragraph(commented),
+                Block::Paragraph(Paragraph::of("here")),
+            ],
+            ..Document::new()
+        };
+        let clip = copy_range(&document, Scope::Body, span((0, 0), (0, 5)));
+        document.body.remove(0);
+        paste_paragraphs(&mut document, Scope::Body, &mut history, at(0, 4), &clip);
+        assert_eq!(anchors(document.paragraphs()[0]), 2, "cut, it brings them");
+    }
+
+    /// A contents list whose field fits in one paragraph gets its entries
+    /// after it: an empty range is an insertion, where it overwrote the
+    /// paragraphs that followed.
+    #[test]
+    fn an_empty_range_is_an_insertion_after_the_paragraph_before_it() {
+        let mut document = table_between();
+        replace_range(&mut document, Scope::Body, 1..1, vec![Paragraph::of("new")]);
+        assert_eq!(
+            texts(&document),
+            ["before", "new", "cell", "after the table"]
+        );
+        assert_eq!(document.body.len(), 4);
+        // Inside a cell, it stays in the cell.
+        let mut document = cell_document(&["one", "two"]);
+        replace_range(&mut document, Scope::Body, 1..1, vec![Paragraph::of("new")]);
+        assert_eq!(texts(&document), ["one", "new", "two", "after the table"]);
+        assert_eq!(document.body.len(), 2);
+    }
+
+    /// A selection from one nested cell to another inside one outer cell was
+    /// never deleted: the outer cell answered for both ends.
+    #[test]
+    fn a_selection_across_nested_cells_clears_each() {
+        let mut outer = cell_document(&["one"]);
+        let nested = Block::Table(wp_model::table::Table {
+            rows: vec![wp_model::table::Row {
+                cells: vec![
+                    wp_model::table::Cell {
+                        props: wp_model::table::CellProps::new(),
+                        content: vec![Block::Paragraph(Paragraph::of("alpha"))],
+                    },
+                    wp_model::table::Cell {
+                        props: wp_model::table::CellProps::new(),
+                        content: vec![Block::Paragraph(Paragraph::of("mid"))],
+                    },
+                    wp_model::table::Cell {
+                        props: wp_model::table::CellProps::new(),
+                        content: vec![Block::Paragraph(Paragraph::of("beta"))],
+                    },
+                ],
+                ..wp_model::table::Row::new()
+            }],
+            ..wp_model::table::Table::new()
+        });
+        if let Block::Table(table) = &mut outer.body[0] {
+            table.rows[0].cells[0].content.push(nested);
+        }
+        let before = outer.body.clone();
+        let mut history = History::new();
+        let caret = delete_selection(&mut outer, Scope::Body, &mut history, span((1, 2), (3, 2)));
+        assert_eq!(caret, at(1, 2).head);
+        assert_eq!(texts(&outer), ["one", "al", "", "ta", "after the table"]);
+        history.undo(&mut outer);
+        assert_eq!(outer.body, before);
+    }
+
+    /// A change that Enter or a paste cut in two, untracked, is two changes:
+    /// one change may not stand in two places.
+    #[test]
+    fn a_change_cut_untracked_is_two_changes() {
+        let proposal = || Document {
+            body: vec![Block::Paragraph(Paragraph {
+                content: vec![wp_model::doc::inserted_by(
+                    "Assistant",
+                    1,
+                    vec![wp_model::doc::Inline::Run(wp_model::doc::Run::of("abcd"))],
+                )],
+                ..Paragraph::new()
+            })],
+            ..Document::new()
+        };
+        let mut entered = proposal();
+        split_paragraph(&mut entered, Scope::Body, &mut History::new(), at(0, 2));
+        let mut pasted = proposal();
+        paste_paragraphs(
+            &mut pasted,
+            Scope::Body,
+            &mut History::new(),
+            at(0, 2),
+            &[Paragraph::of("X"), Paragraph::of("Y")],
+        );
+        for (how, document) in [("Enter", entered), ("a paste", pasted)] {
+            let ids: Vec<u32> = crate::revise::tracked(&document)
+                .iter()
+                .map(|change| change.mark.id)
+                .collect();
+            assert_eq!(ids.len(), 2, "{how}: {ids:?}");
+            assert_ne!(ids[0], ids[1], "{how}");
+        }
+    }
+
+    /// Joining the paragraphs either side of a bookmark's end that stands
+    /// between them would lose it: Backspace does nothing there.
+    #[test]
+    fn nothing_joins_over_what_stands_between_two_paragraphs() {
+        let mut document = Document {
+            body: vec![
+                Block::Paragraph(Paragraph::of("one")),
+                Block::Anchor(wp_model::Anchor::BookmarkEnd { id: 3 }),
+                Block::Paragraph(Paragraph::of("two")),
+            ],
+            ..Document::new()
+        };
+        let before = document.body.clone();
+        let mut history = History::new();
+        backspace(&mut document, Scope::Body, &mut history, at(1, 0));
+        assert_eq!(document.body, before);
+        assert!(!side_by_side(&document, Scope::Body, 0..2));
     }
 
     #[test]

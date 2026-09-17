@@ -63,7 +63,9 @@ pub fn matches(document: &Document, query: &str, options: Options) -> Vec<Found>
     }
     for scope in document.flows() {
         for (index, paragraph) in document.paragraphs_in(scope).iter().enumerate() {
-            let text = paragraph.text();
+            // Counted as a caret counts it, since what is found is selected,
+            // with what a tracked change has taken away left unmatched.
+            let text = crate::text::content_masked(paragraph);
             for range in find_in(&text, query, options) {
                 out.push((
                     scope,
@@ -186,6 +188,42 @@ mod tests {
         assert_eq!(found[0].1.ordered().0.offset, 4);
         assert_eq!(found[1].1.ordered().0.offset, 13);
         assert_eq!(found[2].1.ordered().0.paragraph, 2);
+    }
+
+    /// What is found is selected, so it is counted as a caret counts, a
+    /// deleted tab taking a place; and text a change moved away is not
+    /// found.
+    #[test]
+    fn a_search_counts_as_a_caret_and_skips_what_a_change_took_away() {
+        use wp_model::doc::{Inline, Piece, Run};
+        let paragraph = Paragraph {
+            content: vec![
+                Inline::Run(Run::of("a")),
+                Inline::Revised {
+                    revision: wp_model::Revision::Deleted(wp_model::Mark::new(1, "A")),
+                    content: vec![Inline::Run(Run {
+                        content: vec![Piece::Tab],
+                        ..Run::default()
+                    })],
+                },
+                Inline::Run(Run::of("word ")),
+                Inline::Revised {
+                    revision: wp_model::Revision::MovedFrom {
+                        mark: wp_model::Mark::new(2, "A"),
+                        name: "move1".into(),
+                    },
+                    content: vec![Inline::Run(Run::of("word"))],
+                },
+            ],
+            ..Paragraph::default()
+        };
+        let document = Document {
+            body: vec![Block::Paragraph(paragraph)],
+            ..Document::new()
+        };
+        let found = matches(&document, "word", Options::default());
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].1.ordered().0.offset, 2);
     }
 
     #[test]

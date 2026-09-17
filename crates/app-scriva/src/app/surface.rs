@@ -849,13 +849,26 @@ impl Scriva {
             Some(paragraph) => (*paragraph).clone(),
             None => return false,
         };
+        let tracking = self.document.settings.track_changes;
+        let id = crate::revise::next_revision_id(&self.document);
+        let author = self.author.clone();
         let removed = {
             let mut paragraphs = self.document.paragraphs_in_mut(self.scope);
             paragraphs
                 .get_mut(picked.paragraph)
-                .is_some_and(|paragraph| paragraph.remove_drawing(picked.nth))
+                .is_some_and(|paragraph| match tracking {
+                    // Struck rather than removed, with Track Changes on.
+                    true => {
+                        crate::revise::record_drawing_deletion(paragraph, picked.nth, &author, id)
+                            .is_some()
+                    }
+                    false => paragraph.remove_drawing(picked.nth),
+                })
         };
         if !removed {
+            if tracking {
+                self.say(crate::revise::CANNOT_RECORD);
+            }
             return false;
         }
         self.history.push(

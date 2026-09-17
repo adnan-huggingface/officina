@@ -872,7 +872,7 @@ impl Scriva {
     fn paragraph_text(&self, index: usize) -> String {
         self.document
             .paragraph_in(self.scope, index)
-            .map(|paragraph| paragraph.text())
+            .map(crate::text::content)
             .unwrap_or_default()
     }
 
@@ -2312,6 +2312,9 @@ impl Scriva {
                 props.indent.start = Some(Twips((start.0 + by * 720).max(0)));
             }),
             Command::Style(style) => self.format_paragraphs(move |props| props.style = Some(style)),
+            Command::PageBreak if self.document.settings.track_changes => {
+                self.tracked_page_break();
+            }
             Command::PageBreak => {
                 let caret = edit::insert_break(
                     &mut self.document,
@@ -2421,7 +2424,10 @@ impl Scriva {
                     .cloned()
                 {
                     self.go_to(range.scope, range.range.ordered().0);
-                    self.selection = range.range;
+                    self.selection = Selection {
+                        anchor: clamp(&self.document, range.scope, range.range.anchor),
+                        head: clamp(&self.document, range.scope, range.range.head),
+                    };
                     self.reveal = Some(self.caret());
                 }
             }
@@ -2606,17 +2612,26 @@ impl Scriva {
             })
             .collect();
         let range = span.entries();
-        edit::format_paragraphs(
-            &mut self.document,
-            self.scope,
-            &mut self.history,
-            Selection::at(Caret {
-                paragraph: span.first,
-                offset: 0,
-            }),
-            |_| {},
+        // More entries or fewer only fit where the old ones stand side by
+        // side: a bookmark's end or a table among them would be lost.
+        if rows.len() != range.len()
+            && !edit::side_by_side(&self.document, wp_model::Scope::Body, range.clone())
+        {
+            self.say("The table of contents was not updated: something besides its entries stands among them, and updating would lose it");
+            return;
+        }
+        // The body's blocks, whole, for the undo: the entries may be more or
+        // fewer than they were, and an empty list gains them.
+        let before = self.document.body.clone();
+        edit::replace_range(&mut self.document, wp_model::Scope::Body, range, rows);
+        self.history.push(
+            wp_model::Scope::Body,
+            edit::Change::Blocks {
+                index: 0,
+                now: self.document.body.len(),
+                before,
+            },
         );
-        edit::replace_range(&mut self.document, self.scope, range, rows);
         self.changed();
     }
 
@@ -3260,6 +3275,10 @@ impl Scriva {
         let Some(copied) = self.copied_drawing.clone() else {
             return false;
         };
+        if let Err(why) = self.can_record_here() {
+            self.say(why);
+            return true;
+        }
         // A picture names its part through `rel`; a chart through `chart`.
         let resolves = copied
             .drawing
@@ -3293,13 +3312,9 @@ impl Scriva {
                     .and_then(|package| wp_docx::DocumentParts::locate_in(package).ok());
             }
             let clip = vec![drawing_paragraph(drawing)];
-            let caret = edit::paste_paragraphs(
-                &mut self.document,
-                self.scope,
-                &mut self.history,
-                self.selection,
-                &clip,
-            );
+            let Some(caret) = self.paste_clip(&clip) else {
+                return false;
+            };
             self.selection = Selection::at(clamp(&self.document, self.scope, caret));
             self.changed();
             self.reveal = Some(self.caret());
@@ -3345,6 +3360,12 @@ impl Scriva {
     /// drawable — and savable — the moment it is pasted rather than at the next
     /// save.
     fn insert_picture(&mut self, data: &[u8], content_type: &str, width: u32, height: u32) -> bool {
+        // Where Track Changes cannot record it, nothing goes into the package
+        // either; the refusal is said, and is an answer.
+        if let Err(why) = self.can_record_here() {
+            self.say(why);
+            return true;
+        }
         // An OpenDocument picture is one thing rather than three: the bytes go
         // into the package under `Pictures/` and the drawing names that path.
         // Taken up as a loose picture as well, which is what paints it.
@@ -3385,13 +3406,10 @@ impl Scriva {
             width,
             height,
         )];
-        let caret = edit::paste_paragraphs(
-            &mut self.document,
-            self.scope,
-            &mut self.history,
-            self.selection,
-            &clip,
-        );
+        // A tracked paste that cannot be recorded has said so.
+        let Some(caret) = self.paste_clip(&clip) else {
+            return true;
+        };
         self.selection = Selection::at(clamp(&self.document, self.scope, caret));
         // Word leaves a picture it has just put in picked, with its handles
         // showing, so that the next thing done is done to the picture — its
@@ -3419,6 +3437,10 @@ impl Scriva {
     /// to it from here is what it can do to any drawing: move it, resize it,
     /// delete it. Changing what it plots means going back to Calx.
     fn insert_chart_part(&mut self, chart_space: &[u8], cx: i64, cy: i64) -> bool {
+        if let Err(why) = self.can_record_here() {
+            self.say(why);
+            return true;
+        }
         if self.refuse_in_open_document("Charts cannot be added to an OpenDocument file yet") {
             return false;
         }
@@ -3471,13 +3493,9 @@ impl Scriva {
             outline: None,
         };
         let clip = vec![drawing_paragraph(drawing)];
-        let caret = edit::paste_paragraphs(
-            &mut self.document,
-            self.scope,
-            &mut self.history,
-            self.selection,
-            &clip,
-        );
+        let Some(caret) = self.paste_clip(&clip) else {
+            return false;
+        };
         self.selection = Selection::at(clamp(&self.document, self.scope, caret));
         self.changed();
         self.reveal = Some(self.caret());
@@ -3496,13 +3514,9 @@ impl Scriva {
             self.paste_text(text);
             return;
         };
-        let caret = edit::paste_paragraphs(
-            &mut self.document,
-            self.scope,
-            &mut self.history,
-            self.selection,
-            &paragraphs,
-        );
+        let Some(caret) = self.paste_clip(&paragraphs) else {
+            return;
+        };
         self.selection = Selection::at(clamp(&self.document, self.scope, caret));
         self.changed();
         self.reveal = Some(self.caret());
@@ -3520,7 +3534,7 @@ impl Scriva {
             return;
         }
         if self.document.settings.track_changes {
-            self.record_delete();
+            self.record_delete(self.selection, false);
         } else {
             let caret = edit::delete_selection(
                 &mut self.document,
@@ -3534,10 +3548,61 @@ impl Scriva {
     }
 
     /// Pastes text at the selection: the first line types over it, and each
-    /// newline after that presses Enter.
+    /// newline after that presses Enter. With Track Changes on it is one
+    /// tracked paste, recorded whole or not at all.
     fn paste_text(&mut self, input: &str) {
         let input = input.replace("\r\n", "\n").replace('\r', "\n");
         if input.is_empty() {
+            return;
+        }
+        if self.document.settings.track_changes {
+            let start = self.selection.ordered().0;
+            let Some(target) = edit::paragraph_at(&self.document, self.scope, start.paragraph)
+            else {
+                return;
+            };
+            // In the formatting typing there would have, each line a
+            // paragraph like the one the caret is in.
+            let props = self
+                .take_next_props()
+                .unwrap_or_else(|| text::props_at(&target, start.offset));
+            // Lines after the first are new paragraphs, as Enter makes them:
+            // after a heading's end, in the style that follows it.
+            let (_, end) = self.selection.ordered();
+            let at_end = edit::paragraph_at(&self.document, self.scope, end.paragraph)
+                .is_some_and(|paragraph| end.offset >= text::len(&paragraph));
+            let mut after = target.props.clone();
+            if let Some(next) = target
+                .props
+                .style
+                .and_then(|style| self.document.styles.get(style))
+                .and_then(|style| style.next)
+                .filter(|_| at_end)
+            {
+                after.style = Some(next);
+            }
+            let clip: Vec<Paragraph> = input
+                .split('\n')
+                .enumerate()
+                .map(|(index, line)| {
+                    let mut paragraph = Paragraph::of(line);
+                    paragraph.props = match index {
+                        0 => target.props.clone(),
+                        _ => after.clone(),
+                    };
+                    for inline in &mut paragraph.content {
+                        if let wp_model::doc::Inline::Run(run) = inline {
+                            run.props = props.clone();
+                        }
+                    }
+                    paragraph
+                })
+                .collect();
+            if let Some(caret) = self.paste_clip(&clip) {
+                self.selection = Selection::at(clamp(&self.document, self.scope, caret));
+                self.changed();
+                self.reveal = Some(self.caret());
+            }
             return;
         }
         let mut segments = input.split('\n');
@@ -3546,14 +3611,7 @@ impl Scriva {
             _ => {}
         }
         for segment in segments {
-            let caret = edit::split_paragraph(
-                &mut self.document,
-                self.scope,
-                &mut self.history,
-                self.selection,
-            );
-            self.selection = Selection::at(clamp(&self.document, self.scope, caret));
-            self.changed();
+            self.new_paragraph();
             if !segment.is_empty() {
                 self.type_text(segment);
             }
@@ -3912,6 +3970,10 @@ impl Scriva {
                     self.format_paragraphs(|props| props.numbering = None);
                     return;
                 }
+                if self.document.settings.track_changes {
+                    self.tracked_backspace(word);
+                    return self.follow(was);
+                }
                 // Ctrl+Backspace takes the whole word before the caret.
                 let caret = if word && self.selection.is_empty() && caret.offset > 0 {
                     let from = Caret {
@@ -3939,6 +4001,10 @@ impl Scriva {
                 self.changed();
             }
             Key::Delete => {
+                if self.document.settings.track_changes {
+                    self.tracked_delete(word);
+                    return self.follow(was);
+                }
                 // Ctrl+Delete takes the whole word after the caret.
                 let caret = if word && self.selection.is_empty() && caret.offset < content.len() {
                     let to = Caret {
@@ -3974,14 +4040,7 @@ impl Scriva {
                 {
                     self.format_paragraphs(|props| props.numbering = None);
                 } else {
-                    let caret = edit::split_paragraph(
-                        &mut self.document,
-                        self.scope,
-                        &mut self.history,
-                        self.selection,
-                    );
-                    self.selection = Selection::at(clamp(&self.document, self.scope, caret));
-                    self.changed();
+                    self.new_paragraph();
                 }
             }
             Key::Tab => {
@@ -4004,15 +4063,7 @@ impl Scriva {
                         }
                     });
                 } else if modifiers.command || !self.tab_to_cell(modifiers.shift) {
-                    let caret = edit::type_text(
-                        &mut self.document,
-                        self.scope,
-                        &mut self.history,
-                        self.selection,
-                        "\t",
-                    );
-                    self.selection = Selection::at(caret);
-                    self.changed();
+                    self.type_text("\t");
                 }
             }
             Key::Escape => {
@@ -4029,9 +4080,13 @@ impl Scriva {
             }
             _ => {}
         }
-        // Wherever the keyboard put the caret, the view follows it — otherwise
-        // arrowing or typing below the window edge walks the caret out of sight.
-        // Not after a leap: the view has moved, the caret with it.
+        self.follow(was);
+    }
+
+    /// Wherever the keyboard put the caret, the view follows it — otherwise
+    /// arrowing or typing below the window edge walks the caret out of sight.
+    /// Not after a leap: the view has moved, the caret with it.
+    fn follow(&mut self, was: (Selection, u64)) {
         if (self.selection, self.stamp) != was && self.scroll_by.is_none() {
             self.reveal = Some(self.caret());
         }
@@ -4055,10 +4110,11 @@ impl Scriva {
         }
         // What is selected is *deleted* first, and with tracking on that means
         // marked rather than removed.
-        let (start, _) = self.selection.ordered();
-        if !self.selection.is_empty() {
-            self.record_delete();
+        let replacing = !self.selection.is_empty();
+        if replacing && !self.record_delete(self.selection, false) {
+            return;
         }
+        let (start, _) = self.selection.ordered();
         let id = crate::revise::next_revision_id(&self.document);
         let Some(before) = edit::paragraph_at(&self.document, self.scope, start.paragraph) else {
             return;
@@ -4075,7 +4131,15 @@ impl Scriva {
         let Some(target) = paragraphs.get_mut(start.paragraph) else {
             return;
         };
-        match crate::revise::record_insertion_with(target, start.offset, input, &author, id, with) {
+        let recorded = match replacing {
+            true => {
+                crate::revise::record_replacement(target, start.offset, input, &author, id, with)
+            }
+            false => {
+                crate::revise::record_insertion_with(target, start.offset, input, &author, id, with)
+            }
+        };
+        match recorded {
             Some(after) => {
                 drop(paragraphs);
                 self.selection = Selection::at(Caret {
@@ -4090,47 +4154,211 @@ impl Scriva {
                 // than an unrecorded one, so the edit is refused and said.
                 drop(paragraphs);
                 self.history.undo(&mut self.document);
-                self.say("Track Changes cannot record an edit inside a hyperlink, a content control or a field");
+                self.say(crate::revise::CANNOT_RECORD);
             }
         }
     }
 
-    /// Marks the selection deleted rather than removing it.
-    fn record_delete(&mut self) {
-        let (start, end) = self.selection.ordered();
-        if start.paragraph != end.paragraph {
-            // Across paragraphs the deletion covers paragraph marks too, which
-            // is a change to the body rather than to one paragraph. Not
-            // recorded; stated rather than half-done.
-            let caret = edit::delete_selection(
+    /// Marks `selection` deleted rather than removing it, paragraph marks and
+    /// all, or says why it cannot and changes nothing. Whether it was done.
+    /// `forward` is Delete's caret, after a deleted mark.
+    fn record_delete(&mut self, selection: Selection, forward: bool) -> bool {
+        let author = self.author.clone();
+        match crate::revise::delete_range(
+            &mut self.document,
+            self.scope,
+            &mut self.history,
+            selection,
+            &author,
+            forward,
+        ) {
+            Ok(caret) => {
+                self.selection = Selection::at(caret);
+                self.changed();
+                true
+            }
+            Err(why) => {
+                self.say(why);
+                false
+            }
+        }
+    }
+
+    /// Backspace with Track Changes on: the selection, or the character, the
+    /// word or the paragraph mark before the caret, marked deleted.
+    fn tracked_backspace(&mut self, word: bool) {
+        let caret = self.selection.head;
+        if !self.selection.is_empty() {
+            self.record_delete(self.selection, false);
+            return;
+        }
+        let from = if caret.offset == 0 {
+            let Some(previous) = caret.paragraph.checked_sub(1) else {
+                return;
+            };
+            if !edit::side_by_side(&self.document, self.scope, previous..caret.paragraph + 1) {
+                return;
+            }
+            Caret {
+                paragraph: previous,
+                offset: self.paragraph_text(previous).len(),
+            }
+        } else {
+            let content = self.paragraph_text(caret.paragraph);
+            Caret {
+                paragraph: caret.paragraph,
+                offset: match word {
+                    true => text::word_start_before(&content, caret.offset),
+                    false => text::previous_char(&content, caret.offset),
+                },
+            }
+        };
+        self.record_delete(
+            Selection {
+                anchor: from,
+                head: caret,
+            },
+            false,
+        );
+    }
+
+    /// Delete with Track Changes on: the selection, or the character, the word
+    /// or the paragraph mark after the caret, marked deleted.
+    fn tracked_delete(&mut self, word: bool) {
+        let caret = self.selection.head;
+        if !self.selection.is_empty() {
+            self.record_delete(self.selection, false);
+            return;
+        }
+        let content = self.paragraph_text(caret.paragraph);
+        let to = if caret.offset >= content.len() {
+            if caret.paragraph + 1 >= self.paragraph_count()
+                || !edit::side_by_side(
+                    &self.document,
+                    self.scope,
+                    caret.paragraph..caret.paragraph + 2,
+                )
+            {
+                return;
+            }
+            Caret {
+                paragraph: caret.paragraph + 1,
+                offset: 0,
+            }
+        } else {
+            Caret {
+                paragraph: caret.paragraph,
+                offset: match word {
+                    true => text::word_start_after(&content, caret.offset),
+                    false => text::next_char(&content, caret.offset),
+                },
+            }
+        };
+        self.record_delete(
+            Selection {
+                anchor: caret,
+                head: to,
+            },
+            true,
+        );
+    }
+
+    /// Ctrl+Enter with Track Changes on: the selection deleted, and the break
+    /// and its paragraph mark inserted. A table is not split as a tracked
+    /// change, and says so.
+    fn tracked_page_break(&mut self) {
+        if edit::table_cell_at(&self.document, self.scope, self.selection.ordered().0).is_some() {
+            self.say(crate::revise::TABLE_UNTRACKED);
+            return;
+        }
+        if !self.selection.is_empty() && !self.record_delete(self.selection, false) {
+            return;
+        }
+        let caret = self.selection.head;
+        let author = self.author.clone();
+        match crate::revise::insert_break(
+            &mut self.document,
+            self.scope,
+            &mut self.history,
+            caret,
+            wp_model::doc::Break::Page,
+            &author,
+        ) {
+            Ok(caret) => {
+                self.selection = Selection::at(caret);
+                self.reveal = Some(caret);
+                self.changed();
+            }
+            Err(why) => self.say(why),
+        }
+    }
+
+    /// Enter: a new paragraph at the caret, over the selection, tracked when
+    /// Track Changes is on.
+    fn new_paragraph(&mut self) {
+        if !self.document.settings.track_changes {
+            let caret = edit::split_paragraph(
                 &mut self.document,
                 self.scope,
                 &mut self.history,
                 self.selection,
             );
-            self.selection = Selection::at(caret);
+            self.selection = Selection::at(clamp(&self.document, self.scope, caret));
             self.changed();
             return;
         }
-        let id = crate::revise::next_revision_id(&self.document);
-        let Some(before) = edit::paragraph_at(&self.document, self.scope, start.paragraph) else {
+        if !self.selection.is_empty() && !self.record_delete(self.selection, false) {
             return;
-        };
-        self.history.push(
-            self.scope,
-            edit::Change::Paragraph {
-                index: start.paragraph,
-                before: Box::new(before),
-            },
-        );
-        let author = self.author.clone();
-        let mut paragraphs = self.document.paragraphs_in_mut(self.scope);
-        if let Some(target) = paragraphs.get_mut(start.paragraph) {
-            let _ = crate::revise::record_deletion(target, start.offset..end.offset, &author, id);
         }
-        drop(paragraphs);
-        self.selection = Selection::at(start);
+        let author = self.author.clone();
+        let caret = crate::revise::split_paragraph(
+            &mut self.document,
+            self.scope,
+            &mut self.history,
+            self.selection.head,
+            &author,
+        );
+        self.selection = Selection::at(caret);
         self.changed();
+    }
+
+    /// Whether what is put in at the selection can be recorded: always with
+    /// Track Changes off.
+    fn can_record_here(&self) -> Result<(), &'static str> {
+        match self.document.settings.track_changes {
+            true => crate::revise::can_record(&self.document, self.scope, self.selection),
+            false => Ok(()),
+        }
+    }
+
+    /// Pastes whole paragraphs over the selection — copied ones, a picture —
+    /// tracked when Track Changes is on. Where the caret lands, or `None`
+    /// when a tracked paste could not be recorded, which is said.
+    fn paste_clip(&mut self, clip: &[Paragraph]) -> Option<Caret> {
+        if !self.document.settings.track_changes {
+            return Some(edit::paste_paragraphs(
+                &mut self.document,
+                self.scope,
+                &mut self.history,
+                self.selection,
+                clip,
+            ));
+        }
+        let author = self.author.clone();
+        match crate::revise::paste_paragraphs(
+            &mut self.document,
+            self.scope,
+            &mut self.history,
+            self.selection,
+            clip,
+            &author,
+        ) {
+            Ok(caret) => Some(caret),
+            Err(why) => {
+                self.say(why);
+                None
+            }
+        }
     }
 
     /// The list the caret's paragraph is directly in, when it is a real one —
@@ -4451,7 +4679,7 @@ fn clamp(document: &Document, scope: wp_model::Scope, caret: Caret) -> Caret {
     let index = caret.paragraph.min(paragraphs.len() - 1);
     Caret {
         paragraph: index,
-        offset: caret.offset.min(paragraphs[index].text().len()),
+        offset: caret.offset.min(crate::text::len(paragraphs[index])),
     }
 }
 

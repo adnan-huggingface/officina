@@ -6748,6 +6748,229 @@ exact XML, and read back equal), and
 the mark's change too. Fifteen mutations, one rule broken at a time, were
 each caught.
 
+## Track Changes records Backspace, Delete, Enter and pasting (2026-09-17)
+
+With Track Changes on, only typing was recorded, and a selection within one
+paragraph typed over. Backspace, Delete and their word forms, Enter, Tab,
+pasted lines, a paste of Scriva's own paragraphs, a picture put in, and any
+selection across paragraphs changed the text and recorded nothing — the
+edits a person makes most, lost from review without a word (`record_delete`
+said it "stated" what it did not record; it stated nothing). Typing inside
+any tracked insertion, one's own included, was refused as if it were a
+hyperlink, and so was typing after a tracked deletion further along the
+paragraph, whose deleted text was counted as width. Enter in a paragraph
+with a tracked deletion in it put the deletion in both halves, and gave the
+first half the old mark's tracked state as well.
+
+Word was measured first, through COM on a hidden Word, for twelve cases of
+the keys and five of editing what another author inserted (the probes and
+each case's XML are kept in the story workspace). What it does:
+
+- Backspace and Delete mark the character deleted; letters deleted one
+  after another are one deletion, and a word typed a letter at a time one
+  insertion. What the same author inserted is taken back, untracked; Enter
+  and Backspace straight after leave nothing.
+- Backspace at a paragraph's start, or Delete at the end of the one before,
+  marks that paragraph's mark deleted and — when text stands before it —
+  gives the following paragraph the earlier one's properties as a tracked
+  formatting change, so that accepting leaves the text looking as it did.
+  After an empty paragraph there is nothing to keep.
+- A selection across paragraphs is the same, each paragraph's share of the
+  text deleted and each mark crossed.
+- Enter marks the new mark — the first paragraph's — inserted; at a
+  heading's end the new paragraph takes the heading's next style, recorded
+  as a formatting change.
+- Deleting another author's insertion puts the deletion *inside* it;
+  typing inside one splits it around the new insertion; deleting a break
+  another author inserted writes `<w:ins>` and `<w:del>` both on the mark,
+  and Accept All and Reject All both join the paragraphs.
+
+`revise` records all of that: `record_insertion` and `record_deletion`
+rewritten over one cut that splits runs and insertions (the second half of
+another author's a change of its own, as Word makes it) and measures text
+as a caret does; `delete_range`, `split_paragraph` and `paste_paragraphs`
+for what crosses paragraphs, each one undo step that gives the document back
+exactly; and `Paragraph::mark_deleted`, read, written, listed and settled,
+for an inserted mark later deleted. What cannot be recorded — a hyperlink, a
+field or a content control in the way, a selection across table cells — is
+said (`revise::CANNOT_RECORD`) and nothing is changed, the typing over it
+included. `text::split` gives each tracked deletion to one side and the old
+mark's tracked state to the second paragraph, `text::merge` takes that state
+from the second, and a tracked change left empty is pruned. Settling joins
+runs that nothing but the change set apart.
+
+Measured again for what replaces a selection: typed over, Word writes the
+old words struck and then the new; Enter and Ctrl+Enter over one put the
+break before the struck words, which go on to the next paragraph. Scriva
+does the same, and a paste over a selection follows it as typing does.
+
+An independent review of all this found ten faults, and a second look at
+the code under it found the reason for two of them:
+
+- **A deletion across a table took the table, and undo could not bring it
+  back** — untracked as well as tracked, and Accept All, Reject All and
+  deleting a comment did the same to every table in the flow. `replace_range`
+  spliced a list of paragraphs over a range that had a table inside it. A
+  splice now refuses to reach over a table or a content control
+  (`edit::side_by_side` says which ranges may change how many paragraphs
+  they have); an untracked selection over one takes the blocks between
+  whole, as Word does, undone by the blocks it replaced; a tracked one is
+  refused; settling works container by container and joins nothing across
+  a table; and Backspace and Delete no longer join the last paragraph of a
+  cell to the next cell, which untracked they did, leaving the text in both.
+- **Tracked Backspace and Delete panicked** on a caret the keys had placed
+  in a paragraph with a deleted tab or an equation, and Enter duplicated
+  text there. The keys counted a paragraph as `Paragraph::text` does, and
+  the layout and the edits the other way. `text::content` is now the one
+  count a caret's offsets are taken in, for the keys, `text::len` and Find.
+- **Accept All rewrote paragraphs it did not change**, joining runs Word
+  had split, so that a save wrote them afresh; a paragraph with nothing
+  tracked is now left as it was read.
+- **Ctrl+Enter over a selection, and a picked picture deleted, went
+  around Track Changes.** Both are recorded; a picture is struck in a run
+  of its own, and Ctrl+Enter in a table, which splits the table, says that
+  it cannot be recorded.
+- **A paste refused half-way had pasted part of itself**, and a picture
+  refused had put its part in the package first. A tracked paste is now
+  checked before anything is done, lines and all.
+- **One's own insertion taken back took a comment's anchors with it**, and
+  a copy pasted beside its original took its comment's; anchors the
+  document already holds are no longer pasted again, untracked too.
+- A moved paragraph mark later deleted was written out of the schema's
+  order and its deletion lost on reading; crossing a mark already deleted
+  recorded a formatting change; a change cut in two by Enter or a paste
+  kept one id in two places; Enter and Backspace in the middle of a run
+  left the run in two; and Backspace at a cell's start said a hyperlink was
+  in the way.
+
+A second independent review, of the code as fixed, found ten more, all
+fixed before the commit:
+
+- **Comments were anchored, and found, by a count that took in deleted text
+  and left out tabs**, so a comment on words after a tracked deletion landed
+  on other words, or inside a character. `insert_inlines`, `comment_ranges`
+  and `comment_at` count as a caret does, and an offset inside a character
+  goes before it.
+- **A tracked deletion from just after a note's or a comment's reference,
+  or from a field's first letter, took the reference or the field's
+  characters with it**, and Accept All took them away. What holds no text
+  stays outside a deletion's edges; so does an equation, which a deletion
+  cannot hold, and the words after it are recorded.
+- **Enter beside a comment's anchor or a reference put it in both halves.**
+  Each now goes to one side: a start with what follows it, an end or a
+  reference with what comes before.
+- **Update Table of Contents on a list whose field fits in one paragraph
+  wrote the entries over the paragraphs after it.** `replace_range` given
+  an empty range now inserts. A list with a bookmark's end among its
+  entries, which a splice no longer reaches over, is written in place when
+  the new list is as long, and otherwise left as it was, with a sentence
+  saying why.
+- **A selection across a nested table's cells joined them into one.** Each
+  cell is cleared in place, and those between emptied.
+- **What replaced a selection that held a tab, or began at a comment's
+  start, landed inside the deletion.** It follows all of it, as Word's does.
+- **Refusals came after the work:** a picture, a chart or a copied drawing
+  over a selection that could not be recorded had made its part first.
+  `revise::can_record` is asked before anything is done and says why —
+  `ACROSS_BLOCKS` for a table, a cell's edge or what stands between two
+  paragraphs, `CANNOT_RECORD` for a link, a field or a control — and
+  Ctrl+Enter in a cell says so before its selection is touched.
+- **A bookmark's end standing between two paragraphs was lost when they
+  joined**, by Backspace, Delete or a settled mark. Such a join is not made:
+  the keys do nothing there, and the mark is settled where it stands.
+- **One change kept one id in two places** after an untracked Enter or a
+  paste cut it; `revise::distinct_ids` gives each place its own, formatting
+  changes included.
+- **Find matched text a change had moved away, and selected by
+  `Paragraph::text`'s count**; a link after an equation was found three
+  places along; and lines pasted at a heading's end stayed headings, where
+  Enter gives the style after it. Find reads `text::content_masked`, the
+  caret's count with what a change took away blanked; `link_at` counts as a
+  caret does; and pasted lines follow Enter.
+
+Not yet recorded, and said here rather than left to be found: formatting
+commands (Word tracks them), the first Backspace or Enter on a list item
+(which change its numbering), a page break in a table (which splits the
+table, and says so), table rows and columns put in or taken out, and a
+contents list rebuilt. Word lets Backspace walk over
+deleted text before deleting anything; Scriva's caret never stands inside
+deleted text, so Backspace after a deletion deletes the character before it
+at once.
+
+Also left, found on the way and older than this work: a comment on text
+that is cut stays where the text was, with nothing under it, where Word
+moves it with the paste (a cut leaves every anchor in place, and the paste
+no longer gives the comment a second one); Backspace between two paragraphs
+with a bookmark's end between them does nothing rather than moving the end;
+a contents list with a bookmark's end among its entries is updated only
+when its length stays the same; updating a one-paragraph contents list
+twice adds its entries twice; and a table's tracked formatting change is
+not read.
+
+Tests: in `revise`, `letters_deleted_one_after_another_are_one_deletion`,
+`a_word_typed_a_letter_at_a_time_is_one_insertion`,
+`typing_inside_another_authors_insertion_splits_it`,
+`deleting_another_authors_insertion_keeps_the_deletion_inside_it`,
+`a_deletion_leaves_what_is_deleted_already_and_the_anchors_where_they_are`,
+`a_deletion_across_a_hyperlink_refuses_and_changes_nothing`,
+`a_paragraph_mark_deleted_after_text_is_recorded_as_word_records_it`,
+`a_selection_across_paragraphs_is_deleted_as_word_deletes_it`,
+`enter_is_recorded_as_word_records_it_and_backspace_takes_it_back`,
+`a_break_another_author_inserted_is_marked_deleted_too`,
+`pasted_paragraphs_are_inserted_breaks_and_all`,
+`what_replaces_a_selection_follows_what_it_deleted` and
+`a_page_break_is_inserted_with_its_mark`, each in Word's shape and settled
+both ways to Word's result; from the review,
+`settling_everything_keeps_tables_whole_and_joins_nothing_across_one`,
+`settling_leaves_a_paragraph_with_nothing_tracked_as_it_was`,
+`a_tracked_deletion_across_a_table_is_refused`,
+`crossing_a_mark_deleted_already_records_nothing`,
+`text_taken_back_keeps_the_anchors_in_it`,
+`a_change_cut_by_enter_is_two_changes_and_backspace_puts_the_run_back`,
+`a_paste_where_nothing_can_be_recorded_is_refused_whole`,
+`a_picture_deleted_is_struck_and_one_just_put_in_is_taken_back`,
+`a_comment_after_a_tracked_deletion_is_anchored_on_its_words`,
+`a_comment_whose_end_is_lost_runs_to_the_end_a_caret_reaches`,
+`an_anchor_put_inside_a_character_goes_before_it`,
+`a_tracked_deletion_leaves_what_stands_at_its_edges`,
+`a_deletion_across_blocks_says_what_is_in_the_way`,
+`no_change_stands_in_two_places`,
+`what_replaces_a_selection_with_a_tab_follows_all_of_it` and
+`a_mark_before_a_bookmarks_end_settles_in_place`; in
+`edit`, `a_selection_across_a_table_takes_it_whole_and_undo_brings_it_back`,
+`paragraphs_are_side_by_side_only_with_nothing_but_paragraphs_between`,
+`backspace_and_delete_never_join_across_a_cells_edge`,
+`a_copy_pasted_beside_its_original_leaves_the_comment_where_it_was`,
+`an_empty_range_is_an_insertion_after_the_paragraph_before_it`,
+`a_selection_across_nested_cells_clears_each`,
+`a_change_cut_untracked_is_two_changes` and
+`nothing_joins_over_what_stands_between_two_paragraphs`; in
+`text`,
+`a_split_keeps_each_tracked_deletion_on_one_side_once`,
+`a_split_leaves_the_tracked_mark_with_the_second_paragraph`,
+`a_tracked_change_left_empty_is_pruned`,
+`a_split_keeps_each_anchor_and_reference_on_one_side` and
+`a_search_reads_nothing_a_change_took_away`; in `find`,
+`a_search_counts_as_a_caret_and_skips_what_a_change_took_away`; driven by
+the app, `a_one_paragraph_contents_list_gains_its_entries_after_it`,
+`a_contents_list_with_a_bookmark_among_its_entries_is_left_as_it_was`,
+`lines_pasted_after_a_headings_end_take_the_style_after_it`,
+`a_link_after_an_equation_is_found_where_the_caret_is` and
+`a_copied_chart_pasted_where_nothing_can_be_recorded_copies_no_part`; by
+the keys,
+`backspace_and_delete_mark_the_text_deleted_with_track_changes_on`,
+`backspace_at_a_paragraphs_start_and_enter_are_tracked_as_word_tracks_them`,
+`a_selection_deleted_typed_over_or_pasted_over_is_tracked_marks_and_all`,
+`what_track_changes_cannot_record_is_said_and_left_alone`,
+`keys_count_a_paragraph_as_its_layout_does_with_a_deleted_tab_and_an_equation`,
+`ctrl_enter_and_deleting_a_picture_are_tracked` and
+`backspace_and_delete_at_a_cells_edge_do_nothing`; and the writer's test
+keeps a mark inserted and then deleted, and one moved and then deleted, in
+the schema's order. A hundred mutations, one rule broken at a time, were
+each caught, and the earlier ones caught again after the second review's
+changes; two more break a check that an earlier one makes unreachable.
+`fidelity` holds.
+
 ## The harness sees what the user sees (2026-09-16)
 
 Fifteen fixes in one session paid for the same missing tools each time;

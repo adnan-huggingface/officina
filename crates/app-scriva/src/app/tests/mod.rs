@@ -11,6 +11,7 @@ mod menus;
 mod panes;
 mod pictures;
 mod tables;
+mod tracking;
 
 use ui_kit::drive::{Driven, Driver};
 

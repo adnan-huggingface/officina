@@ -28,9 +28,50 @@ pub struct Spot {
     pub offset: usize,
 }
 
-/// The length of a paragraph's text, in bytes.
+/// The paragraph's text as a caret counts it, which is how the layout counts
+/// it: every run's, a tab or a picture a tracked deletion holds among it, and
+/// no equation, which nothing draws — see `Piece::text_len`.
+/// `Paragraph::text` is what the document says, and leaves out the one and
+/// puts in the other; a caret offset taken from it lands elsewhere, or past a
+/// character's boundary, in a paragraph with either.
+pub fn content(paragraph: &Paragraph) -> String {
+    paragraph.runs().iter().map(|run| run.text()).collect()
+}
+
+/// The same, with the text of what a tracked change has taken away — a
+/// deletion's tab, a passage moved elsewhere — blanked, byte for byte, so
+/// that a search counts as a caret does and finds nothing there.
+pub fn content_masked(paragraph: &Paragraph) -> String {
+    fn walk(content: &[Inline], gone: bool, out: &mut String) {
+        for inline in content {
+            match inline {
+                Inline::Run(run) => {
+                    let text = run.text();
+                    match gone {
+                        true => out.extend(std::iter::repeat_n('\0', text.len())),
+                        false => out.push_str(&text),
+                    }
+                }
+                Inline::Revised { revision, content } => {
+                    walk(content, gone || !revision.is_present(), out)
+                }
+                Inline::Hyperlink(link) => walk(&link.content, gone, out),
+                Inline::Structured(sdt) => walk(&sdt.content, gone, out),
+                Inline::Wrapper { content, .. } | Inline::SimpleField { content, .. } => {
+                    walk(content, gone, out)
+                }
+                Inline::Anchor(_) | Inline::Math(_) => {}
+            }
+        }
+    }
+    let mut out = String::new();
+    walk(&paragraph.content, false, &mut out);
+    out
+}
+
+/// The length of a paragraph's text as a caret counts it, in bytes.
 pub fn len(paragraph: &Paragraph) -> usize {
-    paragraph.text().len()
+    content(paragraph).len()
 }
 
 /// Finds where a text offset lands.
@@ -296,6 +337,8 @@ pub fn prune(paragraph: &mut Paragraph) {
             // freshly cleared text is, so one is kept while it is the only
             // thing there — the caller prunes after the edit, not during it.
             Inline::Run(run) => !run.content.is_empty(),
+            // A tracked change with nothing left in it is no change.
+            Inline::Revised { content, .. } => !content.is_empty(),
             _ => true,
         });
     }
@@ -309,13 +352,49 @@ pub fn prune(paragraph: &mut Paragraph) {
 /// and two paragraphs sharing one would make the writer pair them both to the
 /// same bytes.
 pub fn split(paragraph: &Paragraph, offset: usize) -> (Paragraph, Paragraph) {
+    split_where(paragraph, offset, false)
+}
+
+/// The same, a tracked deletion standing at `offset` going with the first
+/// half when `deletion_first` is set: what is put in over a selection deleted
+/// with Track Changes on follows the deletion, as Word's typing does.
+pub fn split_where(
+    paragraph: &Paragraph,
+    offset: usize,
+    deletion_first: bool,
+) -> (Paragraph, Paragraph) {
     let mut head = paragraph.clone();
     let mut tail = paragraph.clone();
+    // What holds no text — a tracked deletion, a comment's or a bookmark's
+    // anchor, a note's reference, a field's characters — is not taken by any
+    // cut of the text, so each half keeps the ones on its side. At the caret
+    // itself a start goes with what follows it and an end or a reference with
+    // what comes before, and a deletion goes after the caret, as typing there
+    // goes before it — unless the deletion is to come first, and then what
+    // stands at the caret up to the last deletion there stays in front.
+    let last = deletion_first
+        .then(|| last_deletion_at(paragraph, offset))
+        .flatten();
+    let first = move |at: usize, order: usize, zero: Zero| match at.cmp(&offset) {
+        std::cmp::Ordering::Less => true,
+        std::cmp::Ordering::Greater => false,
+        std::cmp::Ordering::Equal => match last {
+            Some(last) => order <= last,
+            None => zero == Zero::Closing,
+        },
+    };
+    keep_zero(&mut head, &mut |at, order, zero| first(at, order, zero));
+    keep_zero(&mut tail, &mut |at, order, zero| !first(at, order, zero));
     let total = len(paragraph);
     remove(&mut head, offset..total);
     remove(&mut tail, 0..offset);
 
     head.section = None;
+    // The mark a split makes is the first paragraph's, and an ordinary one;
+    // the old mark, with whatever is tracked on it, still ends the second.
+    head.mark_revision = None;
+    head.mark_deleted = None;
+    head.mark_change = None;
     tail.id = None;
     tail.text_id = None;
     // A section break belongs to the paragraph that *ends* the section, which
@@ -324,10 +403,121 @@ pub fn split(paragraph: &Paragraph, offset: usize) -> (Paragraph, Paragraph) {
     (head, tail)
 }
 
+/// What stands at a place in the text and holds none of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Zero {
+    /// Deleted text.
+    Deleted,
+    /// Something that opens what follows: a comment's or a bookmark's start,
+    /// a field's beginning and code, a note's own mark.
+    Opening,
+    /// Something that closes, or points at, what came before: an end, a
+    /// reference, a field's end.
+    Closing,
+}
+
+fn zero_piece(piece: &Piece) -> Option<Zero> {
+    match piece {
+        Piece::Deleted(_) | Piece::DeletedInstruction(_) => Some(Zero::Deleted),
+        Piece::FieldStart { .. }
+        | Piece::Instruction(_)
+        | Piece::FieldSeparate
+        | Piece::NoteMark { .. } => Some(Zero::Opening),
+        Piece::FieldEnd
+        | Piece::FootnoteRef { .. }
+        | Piece::EndnoteRef { .. }
+        | Piece::CommentRef(_)
+        | Piece::LastRenderedPageBreak
+        | Piece::PositionTab => Some(Zero::Closing),
+        // Text, and what is drawn, which `remove` sees to.
+        _ => None,
+    }
+}
+
+fn zero_anchor(anchor: &wp_model::Anchor) -> Zero {
+    use wp_model::Anchor;
+    match anchor {
+        Anchor::CommentStart { .. }
+        | Anchor::BookmarkStart { .. }
+        | Anchor::PermissionStart { .. } => Zero::Opening,
+        _ => Zero::Closing,
+    }
+}
+
+/// Keeps each thing in the paragraph that holds no text only if `keep` says
+/// so of its place, its order among such things, and what it is.
+fn keep_zero(paragraph: &mut Paragraph, keep: &mut dyn FnMut(usize, usize, Zero) -> bool) {
+    fn walk(
+        content: &mut Vec<Inline>,
+        seen: &mut usize,
+        order: &mut usize,
+        keep: &mut dyn FnMut(usize, usize, Zero) -> bool,
+    ) {
+        let mut index = 0;
+        while index < content.len() {
+            match &mut content[index] {
+                Inline::Anchor(anchor) => {
+                    let zero = zero_anchor(anchor);
+                    *order += 1;
+                    if !keep(*seen, *order - 1, zero) {
+                        content.remove(index);
+                        continue;
+                    }
+                }
+                Inline::Run(run) => {
+                    let mut at = 0;
+                    while at < run.content.len() {
+                        let piece = &run.content[at];
+                        if let Some(zero) = zero_piece(piece) {
+                            *order += 1;
+                            if !keep(*seen, *order - 1, zero) {
+                                run.content.remove(at);
+                                continue;
+                            }
+                        }
+                        *seen += piece_len(&run.content[at]);
+                        at += 1;
+                    }
+                }
+                Inline::Revised { content, .. }
+                | Inline::Wrapper { content, .. }
+                | Inline::SimpleField { content, .. } => walk(content, seen, order, keep),
+                Inline::Hyperlink(link) => walk(&mut link.content, seen, order, keep),
+                Inline::Structured(sdt) => walk(&mut sdt.content, seen, order, keep),
+                Inline::Math(_) => {}
+            }
+            index += 1;
+        }
+    }
+    walk(&mut paragraph.content, &mut 0, &mut 0, keep);
+    prune(paragraph);
+}
+
+/// The order, among the things that hold no text, of the last deletion
+/// standing at `offset`.
+fn last_deletion_at(paragraph: &Paragraph, offset: usize) -> Option<usize> {
+    let mut last = None;
+    let mut copy = paragraph.clone();
+    keep_zero(&mut copy, &mut |at, order, zero| {
+        if at == offset && zero == Zero::Deleted {
+            last = Some(order);
+        }
+        true
+    });
+    last
+}
+
 /// Joins `tail` onto the end of `head`.
+///
+/// The first paragraph's properties stay, as Word's Backspace and Delete keep
+/// them; the mark that stays is the second paragraph's, with whatever is
+/// tracked on it.
 pub fn merge(head: &Paragraph, tail: &Paragraph) -> Paragraph {
     let mut joined = head.clone();
     joined.content.extend(tail.content.iter().cloned());
+    joined.mark_revision = tail.mark_revision.clone();
+    joined.mark_deleted = tail.mark_deleted.clone();
+    joined.mark_change = tail.mark_change.clone();
     // The surviving paragraph is the first one, and it inherits the section
     // break of the second — otherwise deleting a paragraph mark would delete
     // the section break that was on it.
@@ -611,6 +801,178 @@ mod tests {
             "keptXgoneafter",
             "the deletion is still there"
         );
+    }
+
+    /// "ab", then "XY" deleted as a tracked change, then "cd".
+    fn with_a_deletion() -> Paragraph {
+        Paragraph {
+            content: vec![
+                Inline::Run(Run::of("ab")),
+                Inline::Revised {
+                    revision: wp_model::Revision::Deleted(wp_model::Mark::new(1, "A")),
+                    content: vec![Inline::Run(Run {
+                        content: vec![Piece::Deleted("XY".into())],
+                        ..Run::new()
+                    })],
+                },
+                Inline::Run(Run::of("cd")),
+            ],
+            ..Paragraph::new()
+        }
+    }
+
+    /// Enter in a paragraph with a tracked deletion in it put the deletion in
+    /// both halves: it holds no text, so neither half's cut removed it. A
+    /// deletion before the caret goes with the first half, and one at the
+    /// caret or after it with the second, as typing there goes before it.
+    #[test]
+    fn a_split_keeps_each_tracked_deletion_on_one_side_once() {
+        let paragraph = with_a_deletion();
+        for (offset, head, tail) in [
+            (0, "", "abXYcd"),
+            (1, "a", "bXYcd"),
+            (2, "ab", "XYcd"),
+            (3, "abXYc", "d"),
+            (4, "abXYcd", ""),
+        ] {
+            let (first, second) = split(&paragraph, offset);
+            assert_eq!(
+                (first.shown_text().as_str(), second.shown_text().as_str()),
+                (head, tail),
+                "at {offset}"
+            );
+            let joined = merge(&first, &second);
+            assert_eq!(joined.shown_text(), "abXYcd", "joined again at {offset}");
+            assert_eq!(joined.text(), "abcd");
+        }
+    }
+
+    /// A split makes a new mark, the first paragraph's, and leaves the old one
+    /// — with whatever is tracked on it — to the second paragraph, which ends
+    /// where the old one did. A join keeps the second paragraph's mark, so
+    /// the two undo each other.
+    #[test]
+    fn a_split_leaves_the_tracked_mark_with_the_second_paragraph() {
+        let mut paragraph = with_a_deletion();
+        paragraph.mark_revision = Some(wp_model::Revision::Inserted(wp_model::Mark::new(2, "A")));
+        paragraph.mark_deleted = Some(wp_model::Mark::new(3, "B"));
+        paragraph.mark_change = Some(Box::new(wp_model::PropChange {
+            mark: wp_model::Mark::new(4, "B"),
+            previous: wp_model::revision::PreviousProps::Run(Box::default()),
+        }));
+        let (first, second) = split(&paragraph, 1);
+        assert_eq!(
+            (
+                &first.mark_revision,
+                &first.mark_deleted,
+                &first.mark_change
+            ),
+            (&None, &None, &None),
+            "the new mark is an ordinary one"
+        );
+        assert_eq!(second.mark_revision, paragraph.mark_revision);
+        assert_eq!(second.mark_deleted, paragraph.mark_deleted);
+        assert_eq!(second.mark_change, paragraph.mark_change);
+        let joined = merge(&first, &second);
+        assert_eq!(joined.mark_revision, paragraph.mark_revision);
+        assert_eq!(joined.mark_deleted, paragraph.mark_deleted);
+        assert_eq!(joined.mark_change, paragraph.mark_change);
+    }
+
+    /// A tracked change whose text is all gone is no change: an insertion
+    /// typed and then taken back leaves nothing to review.
+    #[test]
+    fn a_tracked_change_left_empty_is_pruned() {
+        let mut paragraph = Paragraph {
+            content: vec![
+                Inline::Run(Run::of("kept")),
+                Inline::Revised {
+                    revision: wp_model::Revision::Inserted(wp_model::Mark::new(1, "A")),
+                    content: vec![Inline::Run(Run::of("x"))],
+                },
+            ],
+            ..Paragraph::new()
+        };
+        remove(&mut paragraph, 4..5);
+        assert_eq!(paragraph.content, vec![Inline::Run(Run::of("kept"))]);
+    }
+
+    /// Enter put a comment's anchors, its reference and a note's reference in
+    /// both halves: none holds any text, so no cut took them. Each is now on
+    /// one side, at every place the split can fall.
+    #[test]
+    fn a_split_keeps_each_anchor_and_reference_on_one_side() {
+        use wp_model::Anchor;
+        let paragraph = Paragraph {
+            content: vec![
+                Inline::Run(Run::of("ab")),
+                Inline::Anchor(Anchor::CommentStart { id: 7 }),
+                Inline::Run(Run::of("cd")),
+                Inline::Anchor(Anchor::CommentEnd { id: 7 }),
+                Inline::Run(Run {
+                    content: vec![
+                        Piece::CommentRef(7),
+                        Piece::FootnoteRef {
+                            id: 1,
+                            custom_mark: false,
+                        },
+                        Piece::Text("ef".into()),
+                    ],
+                    ..Run::new()
+                }),
+            ],
+            ..Paragraph::new()
+        };
+        let count = |paragraph: &Paragraph| {
+            let anchors = paragraph
+                .content
+                .iter()
+                .filter(|inline| matches!(inline, Inline::Anchor(_)))
+                .count();
+            let pieces = paragraph
+                .runs()
+                .iter()
+                .flat_map(|run| run.content.iter())
+                .filter(|piece| matches!(piece, Piece::CommentRef(_) | Piece::FootnoteRef { .. }))
+                .count();
+            anchors + pieces
+        };
+        for offset in 0..=6 {
+            let (head, tail) = split(&paragraph, offset);
+            assert_eq!(count(&head) + count(&tail), 4, "at {offset}");
+            let joined = merge(&head, &tail);
+            assert_eq!(joined.text(), "abcdef");
+        }
+        // At the comment's start the start goes on; at its end, the end and
+        // the references stay behind.
+        let (head, tail) = split(&paragraph, 2);
+        assert_eq!((count(&head), count(&tail)), (0, 4));
+        let (head, tail) = split(&paragraph, 4);
+        assert_eq!((count(&head), count(&tail)), (4, 0));
+    }
+
+    /// Find matched text a tracked change had moved elsewhere: what the
+    /// search reads blanks it, byte for byte.
+    #[test]
+    fn a_search_reads_nothing_a_change_took_away() {
+        let paragraph = Paragraph {
+            content: vec![
+                Inline::Run(Run::of("keep ")),
+                Inline::Revised {
+                    revision: wp_model::Revision::MovedFrom {
+                        mark: wp_model::Mark::new(1, "A"),
+                        name: "move1".into(),
+                    },
+                    content: vec![Inline::Run(Run::of("gone"))],
+                },
+                Inline::Run(Run::of(" kept")),
+            ],
+            ..Paragraph::new()
+        };
+        let masked = content_masked(&paragraph);
+        assert_eq!(masked.len(), content(&paragraph).len());
+        assert!(!masked.contains("gone"));
+        assert!(masked.ends_with(" kept"));
     }
 
     #[test]
