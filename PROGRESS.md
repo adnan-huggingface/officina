@@ -6143,6 +6143,176 @@ The toolchain is 1.95, as `Cargo.toml` says. And Linux is no longer
 "unverified": the gate passes on Ubuntu 24.04, in the README and in
 AGENTS.md. Scriva's `.odt` is listed beside `.docx`.
 
+## Assist, phase 1: the helpers, and none from a test (2026-09-17)
+
+The user asked for an assistant in both applications, which a person talks
+to while editing. The design and its six phases are in the story workspace
+(`bugs/assist-spec.md`), and `PLAN.md` is phase 1's plan. The five questions
+the design ended on were answered:
+
+- the pane is Assist, on Ctrl+Alt+A;
+- with nothing found on the computer, the helper that runs on it is
+  preselected;
+- Claude's default is Opus 5;
+- a document saved with the assistant's proposals open keeps them as
+  tracked changes;
+- the local helper ships in pure Rust whatever its speed, so the speed
+  measurement moved to phase 5.
+
+A new crate, `assist`, has no window and no document in it:
+
+- **`Provider`** is one exchange. Words are handed over as they arrive,
+  and an `Answer` holds the message as the conversation keeps it, how it
+  ended or failed, and what it cost. `stream` turns an exchange into the
+  pane's `Event`s, handing over tool calls only once the message has
+  ended. **`Session`** runs the tool loop through a `Host`, for at most
+  `MOST_STEPS` exchanges. A request that does not finish is cut out of the
+  conversation.
+- **`Anthropic`** speaks the Messages API directly, streamed, since Rust
+  has no SDK:
+  - the system prompt and the request are marked for the cache, and every
+    tool is strict;
+  - Opus 5 is sent `fallbacks: "default"` with its beta, and a quick verb
+    `effort: low` where the model takes it;
+  - thinking is left at the model's default and sent back as it came;
+  - a key goes as `x-api-key`, and a token from `ant` or the environment
+    as a bearer with the OAuth beta.
+- **`Compatible`** speaks chat completions, for Ollama and any other
+  service. It takes a tool call in fragments or whole, and makes up an id
+  where a server gives none.
+- **`Scripted`** plays canned turns and is the only helper a test may use.
+  It gives the events the two above stream (the first test compares all
+  three) and keeps what it was asked.
+- **Every failure is a sentence**, and none of them waits: a refusal, a 429
+  with its wait, a 401 in the service's words, a connection dropped
+  mid-answer, an error event, an address nothing answers at.
+- **`ladder`** builds the first-run card's rows from what `ThisComputer`
+  has: a key in the environment, else an `ant` login, then an Ollama with
+  a model. With none of them, the helper on this computer is first.
+- **`Settings`** lives in `assist.toml`. It is read value by value, so a
+  bad value costs only itself. It is saved through a 0600 file that
+  replaces the old one in one step and keeps whatever else the file held.
+  A key never appears in `Debug`.
+- **`models`** offers Opus 5, Sonnet 5 and Haiku 4.5 in words, with what a
+  paragraph costs on each: about 2 cents, under a cent, under half a cent.
+- **HTTP** is `ureq` over rustls and ring, with the platform verifier: the
+  operating system's certificates, and no store compiled in. A helper on
+  the loopback address is reached without the environment's proxy. A
+  certificate the platform does not trust has a sentence of its own:
+  nothing was sent.
+
+In ui-kit:
+
+- `OFFICINA` sits beside `CALX` and `SCRIVA`.
+- `paths::cache_dir` follows the configuration directory's rule, with
+  `XDG_CACHE_HOME` and `.cache`.
+- `paths::assist_settings` is the one settings file both applications read.
+- **`headless::enter` enters `assist::offline`.** Under a test, every
+  helper but the scripted one refuses before it connects, the computer is
+  not searched, and `headless::helpers_refused` counts each refusal.
+
+A7's `verify:` line was corrected once, before any item had run. It read
+`cargo tree`'s exit status, which is zero when there is nothing to print,
+so it could never pass.
+
+A program outside the repository, run by hand on this machine, used the
+crate for real:
+
+- a request to `api.anthropic.com` with a made-up key came back in 0.13 s
+  as "Claude did not accept the key. It said: “API key is invalid”", so
+  the platform verifier's TLS works on Linux;
+- `expired.badssl.com` was refused for its certificate, which is where the
+  certificate sentence came from (the first wording blamed the network);
+- the ladder here offers Ollama first, with the model it lists first
+  (a 27B, `qwen3.6:27b-q5_k_m`). `ant` is not installed.
+
+No chat was sent to that Ollama: its only models are 17 to 19 GB.
+
+An independent review of the crate before the commit found ten faults, and
+each is fixed:
+
+- **A key could follow a redirect.** ureq follows redirects and drops only
+  `Authorization`, so `x-api-key` would have gone wherever a 302 pointed.
+  Redirects are no longer followed, and a 3xx is a sentence that says so.
+- **A half-written tool call failed the whole answer.** A call is now read
+  only once the message has ended. A call a declined or cut-off answer left
+  unfinished is dropped; one in an answer that stands must be whole.
+- **An empty final answer was kept,** and the API refuses an empty message
+  on every later request. It is left out now, and Claude's serializer sends
+  turns of the same role that end up side by side as one.
+- **Stop was not read before a request went out,** so the results of a
+  request's last tool were still sent, and paid for. Stop is read before
+  each exchange. A request waiting for its first word still reads it only
+  when a word comes, so phase 2's window must let go of a stopped request.
+- **Saving over a settings file that did not parse wiped it,** key and all.
+  Such a file is now moved aside to `assist.toml.unreadable`, and one that
+  cannot be read at all is left alone and the save fails.
+- **`ant`'s deadline did not cover its output,** so a process it left behind
+  holding the pipe could hold the request. The token is the first line,
+  waited for no longer than the command is.
+- **Refusals were counted only on the thread that made them,** and a
+  window's request runs on a thread of its own. `offline::count` is public
+  now, for the window to count a refusal again when it arrives (phase 2).
+  Reading an environment variable under a test is counted too, so the
+  headless test proves the environment is not read on any machine.
+- **One endless line could fill the memory:** a line is read no further than
+  the event limit.
+- **Calx and Scriva shared one temporary file** when saving at the same
+  moment; each process has its own.
+- **A failed exchange reported no usage,** though what was counted before
+  the failure is billed. It reports it now.
+
+Six mutations were run to see the tests fail for the right reason:
+
+- without the check for Stop in Claude's stream, the Stop test hangs and
+  fails on its deadline;
+- without the fallback boundary, the declined model's tool call is run;
+- without Ollama's offline check, the headless test fails within a second;
+- with redirects followed, the other address hears the request;
+- with every unreadable call a fault, the declined model's half-written call
+  fails the answer;
+- with an empty answer kept, the conversation has one message too many.
+
+Not built here, as the plan says: the pane (phase 2), Scriva's and Calx's
+tools (phases 3 and 4), and the helper on this computer with its speed
+measurement (phase 5). Until then, choosing the local helper answers that
+it is not ready. `THIRD-PARTY-NOTICES.yml` gains the new crates when
+`cargo xtask package` next runs; `cargo-bundle-licenses` is not installed on
+this machine. Nothing in a reader or a writer changed, and `fidelity` and
+`compare --check` hold.
+
+Tests (assist):
+
+- `a_scripted_provider_plays_its_turns_as_the_events_a_real_one_streams`
+- `a_session_hands_each_tool_call_to_the_host_and_sends_every_result_back_in_one_turn`
+- `a_request_that_fails_leaves_the_conversation_as_it_was_before_it`
+- `an_anthropic_stream_over_a_socket_becomes_text_tool_calls_and_a_stop`
+- `the_request_to_anthropic_names_the_model_the_strict_tools_the_cache_and_the_fallback`
+- `thinking_goes_back_as_it_came_and_what_a_declined_model_began_does_not`
+- `a_login_from_ant_is_sent_as_a_bearer_token_and_a_key_as_a_key`
+- `a_compatible_stream_over_a_socket_becomes_the_same_events`
+- `a_tool_result_goes_to_a_compatible_service_as_a_tool_message`
+- `a_refusal_a_rate_limit_and_a_dropped_connection_are_each_a_sentence_not_a_hang`
+- `a_service_that_is_not_there_is_a_sentence_naming_it`
+- `stop_ends_a_request_between_two_chunks`
+- `the_ladder_offers_what_the_machine_has_in_the_order_the_card_shows`
+- `a_key_is_written_to_a_file_only_its_owner_can_read`
+- `settings_that_cannot_be_read_are_the_defaults`
+- `a_paragraph_costs_about_two_cents_on_opus_and_under_one_on_sonnet`
+- from the review: `a_redirect_is_not_followed_so_the_key_goes_nowhere_else`,
+  `a_tool_call_cut_short_is_dropped_but_one_in_an_answer_that_stands_must_be_whole`,
+  `an_answer_with_nothing_to_say_is_not_kept_and_the_next_words_join_the_results`,
+  `a_command_asked_for_a_token_is_waited_on_no_longer_than_its_deadline` (Unix)
+  and `a_line_or_an_event_past_the_limit_is_refused_before_it_is_read_whole`
+- and four smaller ones: SSE events, hosts, untrusted certificates, strict
+  schemas.
+
+Tests (ui-kit):
+
+- `a_headless_process_refuses_every_helper_but_the_scripted_one_and_counts_it`
+- `the_cache_directory_follows_the_config_directorys_rule_on_every_platform`
+- `assists_settings_are_one_file_for_both_applications`
+
 ## The harness sees what the user sees (2026-09-16)
 
 Fifteen fixes in one session paid for the same missing tools each time;

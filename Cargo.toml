@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/assist",
     "crates/brand",
     "crates/chart",
     "crates/metafile",
@@ -34,6 +35,7 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/adnan-huggingface/officina"
 
 [workspace.dependencies]
+assist = { path = "crates/assist" }
 brand = { path = "crates/brand" }
 chart = { path = "crates/chart" }
 metafile = { path = "crates/metafile" }

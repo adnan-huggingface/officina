@@ -1,0 +1,17 @@
+[package]
+name = "assist"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Assist's helpers: who answers a request, how it travels, and what a helper may ask the editor to do"
+
+[dependencies]
+serde_json = "1.0.151"
+toml = "1.1.6"
+# Blocking HTTP on the helper's own thread, so there is no async runtime to
+# carry. TLS is rustls over ring, and the certificates trusted are the operating
+# system's, through the platform verifier: ureq's default would compile
+# Mozilla's store into the binary, and nothing is bundled.
+ureq = { version = "3.4.2", default-features = false, features = ["rustls-no-provider", "platform-verifier"] }
+rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12"] }

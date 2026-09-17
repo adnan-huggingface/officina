@@ -2191,3 +2191,37 @@ click followed at once by two left clicks is not a double click: the first
 left click is counted as the second click after the right one. A hand
 never does that inside a third of a second, so a test that clicks with
 both buttons waits in between (`Driver::wait`).
+
+
+**A refusal from Claude is a success, and a fallback splits the answer.**
+Opus 5's safety classifiers decline with an HTTP 200 whose `stop_reason`
+is `refusal`, sometimes after words have streamed, so the ending is read
+before anything in the content is trusted. With `fallbacks: "default"`, a
+model that declines halfway is replaced within the same stream. A block
+of type `fallback` marks the switch. Before the last such block, only the
+words stand, since they were shown and the new model continues from them.
+The declined model's thinking and tool calls are dropped: its signed
+thinking is not the new model's to send back, and its half-written call
+was never one to run. That is why a call is handed to the application
+only once the whole message has ended, never when its block closes.
+
+**Chat-completions servers agree on the shape and not on the details.** A
+tool call's arguments come as fragments of JSON text from one server and
+as a whole object from another. The call's id may be missing. A server
+may finish with `stop` when it has asked for tools. Reading forgivingly
+and writing the plainest form every server accepts is cheaper than
+knowing each server.
+
+**`cargo tree -i` exits zero when it has nothing to print.** A crate that
+is in the lockfile but not in the graph asked about prints a warning to
+stderr and succeeds, so a check that reads the exit status cannot tell
+"absent" from "present". It is the same trap as a `cargo test` filter
+that matches nothing: read what was printed, and require a positive
+control to be printed too, so that silence is not a pass.
+
+**An HTTP client that follows redirects carries the headers it does not
+know are secret.** ureq drops `Authorization` when it follows a redirect
+to another host, and keeps every other header, so Anthropic's `x-api-key`
+would have gone to whatever address a 302 named. A client that sends a
+key in a header of its own naming must not follow redirects: the address
+the person gave is the only place the key may go.

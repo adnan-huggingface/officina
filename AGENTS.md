@@ -38,7 +38,9 @@ Some tests drive real Word/Excel through COM and skip themselves when Office is 
 the window runs — dialogs, menus, document — with keys, menu letters and text,
 and the application's state is read back from the application. Both apps'
 test constructors enter `ui_kit::headless`: no file chooser reaches the
-desktop and no recent list is written. A keyboard sequence is tested at more
+desktop, no recent list is written, and no assistant is asked — every
+helper but `assist::Scripted` refuses before it connects, and nothing on
+the computer (a key, an `ant` login, an Ollama) is looked for. A keyboard sequence is tested at more
 than one pace (`settle()` between keys), because a real window paints frames
 between keys that the driver does not. `Driver::every_menu` walks every menu
 by keyboard; `ui_kit::menu::clashes` reports two rows of one menu sharing a
@@ -170,6 +172,11 @@ Data flows through crates in layers; UI never touches file formats directly:
   and lists its parts in a manifest, where OPC has content types and relationships.
 - `chart` renders DrawingML charts for both apps; `ui-kit` holds shared egui widgets
   (menu bar + toolbar — there is no ribbon), fonts, and theming.
+- `assist` is the assistant's other half, below `ui-kit` and knowing neither egui
+  nor documents: the helpers that answer (Claude over the Messages API, Ollama or
+  any chat-completions service, a script for tests), the conversation, the tool
+  loop, and the settings both apps share. A helper proposes edits as tool calls;
+  the application runs them through its own editing functions.
 
 Fonts come from the user's system at runtime; icons are drawn in code. Nothing is
 bundled — keep it that way (licensing).

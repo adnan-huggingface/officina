@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+assist.workspace = true
 brand.workspace = true
 chart.workspace = true
 dpi-guard.workspace = true

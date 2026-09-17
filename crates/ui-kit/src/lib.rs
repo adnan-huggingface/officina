@@ -44,3 +44,9 @@ pub const SCRIVA: AppId = AppId {
     slug: "scriva",
     display: "Scriva",
 };
+/// The suite itself, for what one choice serves both applications: Assist's
+/// helper, and what is downloaded for it.
+pub const OFFICINA: AppId = AppId {
+    slug: "officina",
+    display: "Officina",
+};
