@@ -41,14 +41,14 @@ Every source file, its size, and the first sentence of its module doc.
 - `crates/app-calx/src/grid/chart.rs` (248) Where a chart sits on the grid, and what numbers it plots.
 - `crates/app-calx/src/grid/editor.rs` (468) The cell editor: what is being typed, and how it is coloured.
 - `crates/app-calx/src/grid/mod.rs` (1771) The spreadsheet grid.
-- `crates/app-calx/src/grid/paint.rs` (5858) Drawing the grid, and the mouse and keyboard that drive it.
+- `crates/app-calx/src/grid/paint.rs` (5666) Drawing the grid, and the mouse and keyboard that drive it.
 - `crates/app-calx/src/grid/picture.rs` (431) Anchored pictures: decoding them, drawing them, and handling them.
 - `crates/app-calx/src/grid/selection.rs` (675) What is selected, and how the keyboard and mouse change it.
 - `crates/app-calx/src/icons.rs` (590) Toolbar icons, drawn rather than typed.
-- `crates/app-calx/src/inspector.rs` (803) The chart inspector: a panel beside the grid for as long as a chart is selected.
+- `crates/app-calx/src/inspector.rs` (753) The chart inspector: a panel beside the grid for as long as a chart is selected.
 - `crates/app-calx/src/lib.rs` (11) Calx — the spreadsheet application.
 - `crates/app-calx/src/main.rs` (5714) Calx — spreadsheet.
-- `crates/app-calx/src/tests.rs` (1058) 
+- `crates/app-calx/src/tests.rs` (1026) 
 
 ### `scriva`
 
@@ -250,7 +250,7 @@ Every source file, its size, and the first sentence of its module doc.
 - `crates/ui-kit/src/chooser.rs` (141) The operating system's file chooser, asked without stopping the window.
 - `crates/ui-kit/src/dialog.rs` (851) The look of every dialog both apps put on the screen.
 - `crates/ui-kit/src/drive/painted.rs` (255) What a frame painted, asked about the way a test asks.
-- `crates/ui-kit/src/drive.rs` (1088) Driving an application by keystroke, without a window.
+- `crates/ui-kit/src/drive.rs` (1176) Driving an application by keystroke, without a window.
 - `crates/ui-kit/src/fonts.rs` (1431) Real type faces, loaded from the system at startup.
 - `crates/ui-kit/src/headless.rs` (54) An application running without a person in front of it: under a test.
 - `crates/ui-kit/src/keys.rs` (105) Keyboard shortcuts, matched on every modifier.

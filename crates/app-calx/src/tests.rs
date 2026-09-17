@@ -146,51 +146,19 @@ fn a_copied_chart_travels_as_the_part_scriva_pastes() {
     );
 }
 
-/// Frames of `overlay` — the dialogs — each with one key pressed.
-fn press_in_dialogs(app: &mut Calx, keys: &[egui::Key]) {
-    let ctx = egui::Context::default();
-    ui_kit::fonts::register(&ctx, &[]);
-    let mut warm = ctx.run_ui(egui::RawInput::default(), |ui| app.overlay(ui.ctx()));
-    warm.textures_delta.clear();
-    for &key in keys {
-        let mut out = ctx.run_ui(input_of(key), |ui| app.overlay(ui.ctx()));
-        out.textures_delta.clear();
-    }
-}
-
-/// One whole frame — the dialogs, then the body with the grid in it —
-/// with one key pressed, in the order the shell runs them.
-fn whole_frame(app: &mut Calx, ctx: &egui::Context, key: egui::Key) {
-    let mut out = ctx.run_ui(input_of(key), |ui| {
-        app.overlay(ui.ctx());
-        app.ui(ui);
-    });
-    out.textures_delta.clear();
-}
-
-fn input_of(key: egui::Key) -> egui::RawInput {
-    let mut input = egui::RawInput::default();
-    input.events.push(egui::Event::Key {
-        key,
-        physical_key: None,
-        pressed: true,
-        repeat: false,
-        modifiers: egui::Modifiers::NONE,
-    });
-    input
-}
-
 /// Driven on the rig: Column Width…, a number, Enter — and the box stayed
 /// up, as did Format Cells, Protect Sheet, Data Validation and the rest.
 /// They answered only to the pointer. Escape was the one key they knew.
 #[test]
 fn enter_answers_a_dialog_and_escape_closes_it_unanswered() {
+    let drive = ui_kit::drive::Driver::new();
     let mut app = Calx::new();
+    drive.settle(&mut app);
     app.open_size_dialog(Axis::Columns);
     if let Some(Dialog::Size { text, .. }) = &mut app.dialog {
         *text = "20".to_owned();
     }
-    press_in_dialogs(&mut app, &[egui::Key::Enter]);
+    drive.press(&mut app, "Enter");
     assert!(app.dialog.is_none(), "Enter closes the box");
     let width = app
         .doc
@@ -203,7 +171,7 @@ fn enter_answers_a_dialog_and_escape_closes_it_unanswered() {
     if let Some(Dialog::Size { text, .. }) = &mut app.dialog {
         *text = "40".to_owned();
     }
-    press_in_dialogs(&mut app, &[egui::Key::Escape]);
+    drive.press(&mut app, "Escape");
     assert!(app.dialog.is_none(), "Escape closes it");
     let width = app
         .doc
@@ -562,13 +530,12 @@ fn names_by_menu_letters_opens_and_escape_closes() {
 /// copy pending it pasted the clipboard at the target instead.
 #[test]
 fn the_enter_that_answers_a_dialog_does_not_reach_the_grid() {
-    let ctx = egui::Context::default();
-    ui_kit::fonts::register(&ctx, &[]);
+    let drive = ui_kit::drive::Driver::new();
     let mut app = Calx::new();
     app.dialog = Some(Dialog::GoTo {
         text: "C5".to_owned(),
     });
-    whole_frame(&mut app, &ctx, egui::Key::Enter);
+    drive.press(&mut app, "Enter");
     assert!(app.dialog.is_none());
     assert_eq!(
         app.grid.selection.cursor(),
@@ -576,7 +543,7 @@ fn the_enter_that_answers_a_dialog_does_not_reach_the_grid() {
         "the cursor is where Go To put it, not a row further"
     );
     // A frame later the grid has its keys back.
-    whole_frame(&mut app, &ctx, egui::Key::Enter);
+    drive.press(&mut app, "Enter");
     assert_eq!(
         app.grid.selection.cursor(),
         CellRef::from_a1("C6").expect("valid")
@@ -585,13 +552,14 @@ fn the_enter_that_answers_a_dialog_does_not_reach_the_grid() {
 
 #[test]
 fn a_focused_text_box_outside_the_grid_owns_the_keys_and_the_cells_editor_does_not() {
-    let ctx = egui::Context::default();
+    let drive = ui_kit::drive::Driver::new();
+    let ctx = drive.ctx();
     let focus = |id: &str| {
         ctx.memory_mut(|m| m.request_focus(egui::Id::new(id)));
-        keys_belong_elsewhere(&ctx)
+        keys_belong_elsewhere(ctx)
     };
     assert!(
-        !keys_belong_elsewhere(&ctx),
+        !keys_belong_elsewhere(ctx),
         "nothing focused, the grid listens"
     );
     assert!(

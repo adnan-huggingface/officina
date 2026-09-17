@@ -2185,3 +2185,9 @@ other faces would have lost them to the next document opened anywhere in
 the suite. A headless process now reads no font folder at all, and each
 context keeps the definitions it was registered with in its own data.
 
+
+**egui times a double click from the last click of any button.** A right
+click followed at once by two left clicks is not a double click: the first
+left click is counted as the second click after the right one. A hand
+never does that inside a third of a second, so a test that clicks with
+both buttons waits in between (`Driver::wait`).

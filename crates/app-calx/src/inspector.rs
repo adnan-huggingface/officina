@@ -633,28 +633,19 @@ mod tests {
         assert_eq!(plot(&app).gap, 60.0);
     }
 
-    /// One egui frame of the whole app, with these events.
-    fn frame(app: &mut Calx, ctx: &egui::Context, events: Vec<egui::Event>) {
-        use ui_kit::DocumentApp;
-        let input = egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(
-                egui::Pos2::ZERO,
-                egui::vec2(1000.0, 700.0),
-            )),
-            events,
-            ..Default::default()
-        };
-        let mut out = ctx.run_ui(input, |ui| app.ui(ui));
-        out.textures_delta.clear();
-    }
-
-    fn press(pos: egui::Pos2, pressed: bool) -> egui::Event {
-        egui::Event::PointerButton {
-            pos,
-            button: egui::PointerButton::Primary,
-            pressed,
-            modifiers: egui::Modifiers::default(),
-        }
+    /// The window, with the chart selected and its panel drawn, and where
+    /// the panel's title box is on the screen.
+    fn with_panel() -> (ui_kit::drive::Driver, Calx, egui::Pos2) {
+        let drive = ui_kit::drive::Driver::sized(egui::vec2(1000.0, 700.0));
+        let mut app = with_chart();
+        drive.settle(&mut app);
+        drive.settle(&mut app);
+        let title = drive
+            .ctx()
+            .read_response(egui::Id::new("calx-chart-title"))
+            .expect("the title box is on screen")
+            .rect;
+        (drive, app, title.center())
     }
 
     #[test]
@@ -662,31 +653,15 @@ mod tests {
         // Found at the keyboard: the click that should have put the caret in
         // the title box deselected the chart, the panel vanished under the
         // pointer, and the title went into the cell that had been behind it.
-        let ctx = egui::Context::default();
-        ui_kit::fonts::register(&ctx, &[]);
-        let mut app = with_chart();
-        frame(&mut app, &ctx, vec![]);
-        frame(&mut app, &ctx, vec![]);
-        let title = ctx
-            .read_response(egui::Id::new("calx-chart-title"))
-            .expect("the title box is on screen")
-            .rect;
-        let inside = title.center();
-        // As the platform delivers a click: the move and the press in one
-        // frame, and the release hard on their heels.
-        frame(
-            &mut app,
-            &ctx,
-            vec![egui::Event::PointerMoved(inside), press(inside, true)],
-        );
-        frame(&mut app, &ctx, vec![press(inside, false)]);
+        let (drive, mut app, inside) = with_panel();
+        drive.click(&mut app, inside);
         assert_eq!(
             app.grid.selected_chart,
             Some(0),
             "the chart is still selected"
         );
         assert_eq!(
-            ctx.memory(|m| m.focused()),
+            drive.ctx().memory(|m| m.focused()),
             Some(egui::Id::new("calx-chart-title")),
             "and the box has the caret"
         );
@@ -697,36 +672,11 @@ mod tests {
         // Found at the keyboard: the box gave its focus up on Enter while the
         // panel was being drawn, the grid found nothing focused, took the
         // Enter as its own, and deselected the chart.
-        let ctx = egui::Context::default();
-        ui_kit::fonts::register(&ctx, &[]);
-        let mut app = with_chart();
-        frame(&mut app, &ctx, vec![]);
-        frame(&mut app, &ctx, vec![]);
-        let inside = ctx
-            .read_response(egui::Id::new("calx-chart-title"))
-            .expect("the title box is on screen")
-            .rect
-            .center();
-        frame(
-            &mut app,
-            &ctx,
-            vec![egui::Event::PointerMoved(inside), press(inside, true)],
-        );
-        frame(&mut app, &ctx, vec![press(inside, false)]);
-        frame(
-            &mut app,
-            &ctx,
-            vec![egui::Event::Text("Sales by month".to_string())],
-        );
-        let enter = |pressed| egui::Event::Key {
-            key: egui::Key::Enter,
-            physical_key: None,
-            pressed,
-            repeat: false,
-            modifiers: egui::Modifiers::NONE,
-        };
-        frame(&mut app, &ctx, vec![enter(true)]);
-        frame(&mut app, &ctx, vec![enter(false)]);
+        let (drive, mut app, inside) = with_panel();
+        drive.click(&mut app, inside);
+        drive.type_text(&mut app, "Sales by month");
+        drive.press(&mut app, "Enter");
+        drive.settle(&mut app);
         assert_eq!(
             app.grid.selected_chart,
             Some(0),

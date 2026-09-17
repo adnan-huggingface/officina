@@ -51,6 +51,25 @@ pub struct Driver {
     growing: Cell<Option<(egui::Vec2, u32)>>,
     /// The time the next frame is drawn at, in seconds.
     clock: Cell<f64>,
+    /// The pointer shape the last frame asked for.
+    cursor: Cell<egui::CursorIcon>,
+}
+
+/// What a driver's frame runs.
+///
+/// An application runs in the shell's frame — dialogs, toolbar, status bar,
+/// document — as the window runs it. A widget with tests of its own runs
+/// bare, filling the window, by implementing this itself: its tests put
+/// the pointer on the widget's own coordinates, and a toolbar above it
+/// would move every one of them.
+pub trait Driven {
+    fn drive(&mut self, ui: &mut egui::Ui);
+}
+
+impl<A: DocumentApp> Driven for A {
+    fn drive(&mut self, ui: &mut egui::Ui) {
+        shell::frame(self, ui);
+    }
 }
 
 impl Default for Driver {
@@ -88,6 +107,7 @@ impl Driver {
             window: Cell::new(WINDOW),
             growing: Cell::new(None),
             clock: Cell::new(0.0),
+            cursor: Cell::new(egui::CursorIcon::Default),
         }
     }
 
@@ -148,7 +168,7 @@ impl Driver {
     /// only way to see the end of what egui moves by a frame's time per
     /// frame however far the clock jumps: an animated value, and a scroll
     /// area's glide.
-    pub fn wait<A: DocumentApp>(&self, app: &mut A, seconds: f64) {
+    pub fn wait<A: Driven + ?Sized>(&self, app: &mut A, seconds: f64) {
         let frames = (seconds / FRAME).ceil().max(1.0) as usize;
         for _ in 0..frames {
             self.settle(app);
@@ -184,14 +204,21 @@ impl Driver {
         }
     }
 
-    fn run<A: DocumentApp>(&self, app: &mut A, input: egui::RawInput) -> egui::FullOutput {
-        let mut out = self.ctx.run_ui(input, |ui| shell::frame(app, ui));
+    fn run<A: Driven + ?Sized>(&self, app: &mut A, input: egui::RawInput) -> egui::FullOutput {
+        let mut out = self.ctx.run_ui(input, |ui| app.drive(ui));
         out.textures_delta.clear();
+        self.cursor.set(out.platform_output.cursor_icon);
         out
     }
 
+    /// The pointer's shape as the last frame asked for it — what a widget
+    /// says about what a press there would do.
+    pub fn cursor(&self) -> egui::CursorIcon {
+        self.cursor.get()
+    }
+
     /// One whole frame, with `events` as everything the keyboard did in it.
-    pub fn frame<A: DocumentApp>(&self, app: &mut A, events: Vec<egui::Event>) {
+    pub fn frame<A: Driven + ?Sized>(&self, app: &mut A, events: Vec<egui::Event>) {
         self.frame_at(app, events, None);
     }
 
@@ -203,7 +230,7 @@ impl Driver {
     /// back for the same reason a test reads the model back: what was
     /// painted is the only evidence that a caret, a shadow or a strike is on
     /// the screen at all. [`Driver::paint`] reads them.
-    pub fn frame_at<A: DocumentApp>(
+    pub fn frame_at<A: Driven + ?Sized>(
         &self,
         app: &mut A,
         events: Vec<egui::Event>,
@@ -217,20 +244,20 @@ impl Driver {
     }
 
     /// One frame, and what it painted, ready to be asked about.
-    pub fn paint<A: DocumentApp>(&self, app: &mut A, events: Vec<egui::Event>) -> Painted {
+    pub fn paint<A: Driven + ?Sized>(&self, app: &mut A, events: Vec<egui::Event>) -> Painted {
         Painted::new(&self.frame_at(app, events, None))
     }
 
     /// An idle frame with its clock set, and what it painted — how a test
     /// looks at the screen a blink or a fade later.
-    pub fn paint_at<A: DocumentApp>(&self, app: &mut A, time: Option<f64>) -> Painted {
+    pub fn paint_at<A: Driven + ?Sized>(&self, app: &mut A, time: Option<f64>) -> Painted {
         Painted::new(&self.frame_at(app, Vec::new(), time))
     }
 
     /// One frame, and whether it asked for the next one at once — what a
     /// frame that changed something on the screen after painting it must
     /// do, or the change waits for the next event or the caret's blink.
-    pub fn frame_wants_repaint<A: DocumentApp>(
+    pub fn frame_wants_repaint<A: Driven + ?Sized>(
         &self,
         app: &mut A,
         events: Vec<egui::Event>,
@@ -247,7 +274,7 @@ impl Driver {
 
     /// Files dropped on the window, in a frame of their own — what the
     /// desktop sends when a document is dragged out of a file manager.
-    pub fn drop_files<A: DocumentApp>(&self, app: &mut A, paths: &[std::path::PathBuf]) {
+    pub fn drop_files<A: Driven + ?Sized>(&self, app: &mut A, paths: &[std::path::PathBuf]) {
         let input = egui::RawInput {
             dropped_files: paths
                 .iter()
@@ -263,57 +290,97 @@ impl Driver {
 
     /// A frame in which nothing is pressed — what a window does between keys,
     /// and what a menu or a dialog opened last frame needs in order to appear.
-    pub fn settle<A: DocumentApp>(&self, app: &mut A) {
+    pub fn settle<A: Driven + ?Sized>(&self, app: &mut A) {
         self.frame(app, Vec::new());
     }
 
     /// One key, pressed with `modifiers` held, in a frame of its own.
-    pub fn key<A: DocumentApp>(&self, app: &mut A, key: egui::Key, modifiers: egui::Modifiers) {
+    pub fn key<A: Driven + ?Sized>(&self, app: &mut A, key: egui::Key, modifiers: egui::Modifiers) {
         self.frame(app, key_events(key, modifiers));
     }
 
     /// One key by name — `Enter`, `ctrl+shift+S`, `alt+F` — as [`key_spec`]
     /// reads it. A name it does not know is a fault in the test, and says so.
-    pub fn press<A: DocumentApp>(&self, app: &mut A, spec: &str) {
+    pub fn press<A: Driven + ?Sized>(&self, app: &mut A, spec: &str) {
         let (key, modifiers) = key_spec(spec).unwrap_or_else(|why| panic!("{why}"));
         self.key(app, key, modifiers);
     }
 
     /// The primary button goes down at `at`, the pointer having moved there
     /// in the same frame.
-    pub fn press_at<A: DocumentApp>(&self, app: &mut A, at: egui::Pos2) {
-        self.frame(app, vec![egui::Event::PointerMoved(at), button(at, true)]);
+    pub fn press_at<A: Driven + ?Sized>(&self, app: &mut A, at: egui::Pos2) {
+        self.press_button(app, at, egui::PointerButton::Primary);
+    }
+
+    /// Any button goes down at `at`, the pointer having moved there in the
+    /// same frame.
+    pub fn press_button<A: Driven + ?Sized>(
+        &self,
+        app: &mut A,
+        at: egui::Pos2,
+        which: egui::PointerButton,
+    ) {
+        let events = vec![egui::Event::PointerMoved(at), button(at, which, true)];
+        self.frame(app, events);
+    }
+
+    /// Any button comes up at `at`.
+    pub fn release_button<A: Driven + ?Sized>(
+        &self,
+        app: &mut A,
+        at: egui::Pos2,
+        which: egui::PointerButton,
+    ) {
+        let events = vec![egui::Event::PointerMoved(at), button(at, which, false)];
+        self.frame(app, events);
+    }
+
+    /// A click of the secondary button — what opens a context menu.
+    pub fn right_click<A: Driven + ?Sized>(&self, app: &mut A, at: egui::Pos2) {
+        self.press_button(app, at, egui::PointerButton::Secondary);
+        self.release_button(app, at, egui::PointerButton::Secondary);
+        self.settle(app);
     }
 
     /// The pointer moves to `at`, whatever the button is doing, in a frame
     /// of its own.
-    pub fn move_to<A: DocumentApp>(&self, app: &mut A, at: egui::Pos2) {
+    pub fn move_to<A: Driven + ?Sized>(&self, app: &mut A, at: egui::Pos2) {
         self.frame(app, vec![egui::Event::PointerMoved(at)]);
     }
 
     /// The primary button comes up at `at`.
-    pub fn release_at<A: DocumentApp>(&self, app: &mut A, at: egui::Pos2) {
-        self.frame(app, vec![egui::Event::PointerMoved(at), button(at, false)]);
+    pub fn release_at<A: Driven + ?Sized>(&self, app: &mut A, at: egui::Pos2) {
+        self.release_button(app, at, egui::PointerButton::Primary);
     }
 
     /// A click of the pointer at a place in the window: the press in one
     /// frame and the release in the next, which is the least a click is.
-    pub fn click<A: DocumentApp>(&self, app: &mut A, at: egui::Pos2) {
+    pub fn click<A: Driven + ?Sized>(&self, app: &mut A, at: egui::Pos2) {
         self.press_at(app, at);
-        self.frame(app, vec![button(at, false)]);
+        self.frame(app, vec![button(at, egui::PointerButton::Primary, false)]);
+        self.settle(app);
+    }
+
+    /// Two clicks at one place, a frame apart, and a frame for what the pair
+    /// did: well inside any double-click time, as a hand makes one.
+    pub fn double_click<A: Driven + ?Sized>(&self, app: &mut A, at: egui::Pos2) {
+        for _ in 0..2 {
+            self.press_at(app, at);
+            self.release_at(app, at);
+        }
         self.settle(app);
     }
 
     /// A drag from `from` to `to`: pressed, moved there twice — egui calls a
     /// press a drag only once the pointer has moved in a frame after it —
     /// released, and a frame for what the release did.
-    pub fn drag<A: DocumentApp>(&self, app: &mut A, from: egui::Pos2, to: egui::Pos2) {
+    pub fn drag<A: Driven + ?Sized>(&self, app: &mut A, from: egui::Pos2, to: egui::Pos2) {
         self.drag_via(app, &[from, to]);
     }
 
     /// A drag that passes through every point of `path` in turn, a frame
     /// at each, and is released at the last.
-    pub fn drag_via<A: DocumentApp>(&self, app: &mut A, path: &[egui::Pos2]) {
+    pub fn drag_via<A: Driven + ?Sized>(&self, app: &mut A, path: &[egui::Pos2]) {
         let (Some(&first), Some(&last)) = (path.first(), path.last()) else {
             panic!("a drag wants at least a point to start from");
         };
@@ -329,7 +396,7 @@ impl Driver {
     /// The button held and the pointer resting at `at` for `frames` frames —
     /// what a sweep does at the edge of a view that scrolls under it. The
     /// button stays down; [`Driver::release_at`] ends it.
-    pub fn hold<A: DocumentApp>(&self, app: &mut A, at: egui::Pos2, frames: usize) {
+    pub fn hold<A: Driven + ?Sized>(&self, app: &mut A, at: egui::Pos2, frames: usize) {
         for _ in 0..frames {
             self.move_to(app, at);
         }
@@ -337,14 +404,14 @@ impl Driver {
 
     /// Text, as typed: one frame carrying it, the way a paste or a burst of
     /// keys arrives.
-    pub fn type_text<A: DocumentApp>(&self, app: &mut A, text: &str) {
+    pub fn type_text<A: Driven + ?Sized>(&self, app: &mut A, text: &str) {
         self.frame(app, vec![egui::Event::Text(text.to_owned())]);
     }
 
     /// A menu command by mnemonic: Alt and the title's letter, then the
     /// item's, with a frame between for the menu to open and one after for
     /// what it chose to happen.
-    pub fn menu<A: DocumentApp>(&self, app: &mut A, title: char, item: char) {
+    pub fn menu<A: Driven + ?Sized>(&self, app: &mut A, title: char, item: char) {
         let letter = |c: char| {
             egui::Key::from_name(&c.to_ascii_uppercase().to_string())
                 .unwrap_or_else(|| panic!("`{c}` is not a letter a menu can be opened by"))
@@ -356,11 +423,11 @@ impl Driver {
     }
 }
 
-/// The primary button, going down or coming up at a point.
-fn button(at: egui::Pos2, pressed: bool) -> egui::Event {
+/// A button, going down or coming up at a point.
+fn button(at: egui::Pos2, which: egui::PointerButton, pressed: bool) -> egui::Event {
     egui::Event::PointerButton {
         pos: at,
-        button: egui::PointerButton::Primary,
+        button: which,
         pressed,
         modifiers: egui::Modifiers::NONE,
     }
@@ -387,7 +454,7 @@ impl Driver {
     /// [`crate::menu::clashes`]. A menu that opens a dialog or runs a
     /// command is never chosen: only rows that open submenus are pressed,
     /// and only those that are enabled.
-    pub fn every_menu<A: DocumentApp>(
+    pub fn every_menu<A: Driven + ?Sized>(
         &self,
         app: &mut A,
         titles: &str,
@@ -430,7 +497,7 @@ impl Driver {
         found
     }
 
-    fn close_menus<A: DocumentApp>(&self, app: &mut A) {
+    fn close_menus<A: Driven + ?Sized>(&self, app: &mut A) {
         for _ in 0..3 {
             self.key(app, egui::Key::Escape, egui::Modifiers::NONE);
         }
@@ -861,6 +928,8 @@ mod tests {
         seen: Vec<egui::Pos2>,
         held_frames: usize,
         clicks: usize,
+        doubles: usize,
+        secondary: usize,
     }
 
     impl DocumentApp for Pointer {
@@ -884,6 +953,12 @@ mod tests {
             }
             if response.clicked() {
                 self.clicks += 1;
+            }
+            if response.double_clicked() {
+                self.doubles += 1;
+            }
+            if response.secondary_clicked() {
+                self.secondary += 1;
             }
             if ui.input(|i| i.pointer.primary_down()) {
                 self.held_frames += 1;
@@ -934,6 +1009,19 @@ mod tests {
         drive.click(&mut app, from);
         assert_eq!(app.clicks, 1);
         assert_eq!(app.started, None);
+        let mut app = Pointer::default();
+        drive.right_click(&mut app, from);
+        assert_eq!(
+            (app.clicks, app.secondary),
+            (0, 1),
+            "a right click is its own"
+        );
+        // A pause first, as a hand makes one: egui times a double click
+        // from the last click of any button, the right one included.
+        let mut app = Pointer::default();
+        drive.wait(&mut app, 1.0);
+        drive.double_click(&mut app, from);
+        assert_eq!((app.clicks, app.doubles), (2, 1), "two clicks, one pair");
     }
 
     /// An application that writes down the size of every frame.

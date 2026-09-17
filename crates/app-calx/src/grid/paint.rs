@@ -3746,45 +3746,41 @@ mod tests {
     use super::*;
     use crate::grid::Selection;
     use ss_model::cell::{MAX_COLS, MAX_ROWS};
+    use ui_kit::drive::{Driven, Driver};
 
-    /// A context with the type faces installed.
-    ///
-    /// Not optional: the grid asks for `sans-bold` by name, and epaint panics
-    /// rather than substituting when a family has never been registered. The
-    /// shell installs them at startup; a test that drives the grid directly
-    /// has to do the same thing.
-    fn context() -> egui::Context {
-        let ctx = egui::Context::default();
-        // Registered with no directories: the *names* are what the grid asks
-        // for, and epaint panics rather than substituting for a family it has
-        // never heard of. Reading a hundred megabytes of type off the disk is
-        // not something a unit test needs to do.
-        ui_kit::fonts::register(&ctx, &[]);
-        ctx
+    /// A window the grid fills. The grid runs bare in it, with no toolbar
+    /// above, so the points below are the grid's own coordinates; the driver
+    /// brings the fonts, the theme, the clock and the headless process.
+    fn driver() -> Driver {
+        Driver::sized(egui::vec2(1000.0, 700.0))
     }
 
-    /// Drives one egui frame with the given events, giving back the cursor the
+    /// The grid and its workbook, as one frame of the driver runs them.
+    struct Sheet<'a> {
+        view: &'a mut GridView,
+        book: &'a mut Workbook,
+    }
+
+    impl Driven for Sheet<'_> {
+        fn drive(&mut self, ui: &mut egui::Ui) {
+            self.view.show(ui, self.book);
+        }
+    }
+
+    fn on<'a>(view: &'a mut GridView, book: &'a mut Workbook) -> Sheet<'a> {
+        Sheet { view, book }
+    }
+
+    /// One frame with the given events, giving back the pointer shape the
     /// grid asked for while it ran.
     fn frame(
         view: &mut GridView,
         book: &mut Workbook,
         events: Vec<egui::Event>,
-        ctx: &egui::Context,
+        drive: &Driver,
     ) -> egui::CursorIcon {
-        let input = egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(
-                egui::Pos2::ZERO,
-                egui::vec2(1000.0, 700.0),
-            )),
-            events,
-            ..Default::default()
-        };
-        let mut out = ctx.run_ui(input, |ui| {
-            view.show(ui, book);
-        });
-        // Nobody is going to upload the font atlas to a GPU here.
-        out.textures_delta.clear();
-        out.platform_output.cursor_icon
+        drive.frame(&mut on(view, book), events);
+        drive.cursor()
     }
 
     /// A ruled sheet: 64-pixel columns, 20-pixel rows, headers to match.
@@ -3849,24 +3845,17 @@ mod tests {
 
     #[test]
     fn dragging_a_column_edge_writes_a_width_and_reports_it_once() {
-        let ctx = context();
+        let drive = driver();
         let mut book = Workbook::blank();
         let mut view = GridView::default();
-        frame(&mut view, &mut book, vec![], &ctx);
+        drive.settle(&mut on(&mut view, &mut book));
 
         // Where the boundary after column A actually is this frame, rather
         // than where the fixture above says it would be.
         let (_, _, layout) = view.layout.as_ref().expect("laid out");
         let x = 46.0 + layout.cols.size(0) as f32;
         let (from, to) = (egui::pos2(x, 10.0), egui::pos2(x + 40.0, 10.0));
-        frame(&mut view, &mut book, vec![press(from, true)], &ctx);
-        frame(
-            &mut view,
-            &mut book,
-            vec![egui::Event::PointerMoved(to)],
-            &ctx,
-        );
-        frame(&mut view, &mut book, vec![press(to, false)], &ctx);
+        drive.drag(&mut on(&mut view, &mut book), from, to);
 
         let width = book.sheets[0].column_widths.get(&0).copied();
         assert!(
@@ -3911,34 +3900,34 @@ mod tests {
         // over the header, which `cell_at` answers for anyway rather than
         // refusing — so the column collapsed to one cell before the button
         // came back up. The selection looked like it cleared itself.
-        let ctx = context();
+        let drive = driver();
         let mut book = Workbook::blank();
         let mut view = GridView::default();
-        frame(&mut view, &mut book, vec![], &ctx);
+        drive.settle(&mut on(&mut view, &mut book));
 
         let at = header_of(&view, Axis::Columns, 2);
-        frame(&mut view, &mut book, vec![press(at, true)], &ctx);
+        drive.press_at(&mut on(&mut view, &mut book), at);
         let whole = CellRange::new(CellRef::new(0, 2), CellRef::new(MAX_ROWS - 1, 2));
         assert_eq!(view.selection.ranges(), [whole], "on the press");
         // Two more frames with the button still down, which is where it went.
-        frame(&mut view, &mut book, vec![], &ctx);
-        frame(&mut view, &mut book, vec![], &ctx);
+        drive.settle(&mut on(&mut view, &mut book));
+        drive.settle(&mut on(&mut view, &mut book));
         assert_eq!(view.selection.ranges(), [whole], "still down");
-        frame(&mut view, &mut book, vec![press(at, false)], &ctx);
+        drive.release_at(&mut on(&mut view, &mut book), at);
         assert_eq!(view.selection.ranges(), [whole], "after the release");
     }
 
     #[test]
     fn a_row_stays_selected_too() {
-        let ctx = context();
+        let drive = driver();
         let mut book = Workbook::blank();
         let mut view = GridView::default();
-        frame(&mut view, &mut book, vec![], &ctx);
+        drive.settle(&mut on(&mut view, &mut book));
 
         let at = header_of(&view, Axis::Rows, 3);
-        frame(&mut view, &mut book, vec![press(at, true)], &ctx);
-        frame(&mut view, &mut book, vec![], &ctx);
-        frame(&mut view, &mut book, vec![press(at, false)], &ctx);
+        drive.press_at(&mut on(&mut view, &mut book), at);
+        drive.settle(&mut on(&mut view, &mut book));
+        drive.release_at(&mut on(&mut view, &mut book), at);
         assert_eq!(
             view.selection.ranges(),
             [CellRange::new(
@@ -3950,21 +3939,14 @@ mod tests {
 
     #[test]
     fn sweeping_along_a_header_grows_one_band_rather_than_many() {
-        let ctx = context();
+        let drive = driver();
         let mut book = Workbook::blank();
         let mut view = GridView::default();
-        frame(&mut view, &mut book, vec![], &ctx);
+        drive.settle(&mut on(&mut view, &mut book));
 
         let from = header_of(&view, Axis::Columns, 1);
         let to = header_of(&view, Axis::Columns, 4);
-        frame(&mut view, &mut book, vec![press(from, true)], &ctx);
-        frame(
-            &mut view,
-            &mut book,
-            vec![egui::Event::PointerMoved(to)],
-            &ctx,
-        );
-        frame(&mut view, &mut book, vec![press(to, false)], &ctx);
+        drive.drag(&mut on(&mut view, &mut book), from, to);
         assert_eq!(
             view.selection.ranges(),
             [CellRange::new(
@@ -3977,19 +3959,18 @@ mod tests {
 
     #[test]
     fn a_selected_column_can_be_dragged_somewhere_else() {
-        let ctx = context();
+        let drive = driver();
         let mut book = Workbook::blank();
         let mut view = GridView::default();
-        frame(&mut view, &mut book, vec![], &ctx);
+        drive.settle(&mut on(&mut view, &mut book));
 
         // Select B, then pick it up and drop it past D.
         let b = header_of(&view, Axis::Columns, 1);
-        frame(&mut view, &mut book, vec![press(b, true)], &ctx);
-        frame(&mut view, &mut book, vec![press(b, false)], &ctx);
+        drive.click(&mut on(&mut view, &mut book), b);
         view.actions.clear();
 
         let d = header_of(&view, Axis::Columns, 3);
-        frame(&mut view, &mut book, vec![press(b, true)], &ctx);
+        drive.press_at(&mut on(&mut view, &mut book), b);
         assert!(
             matches!(
                 view.drag,
@@ -4002,22 +3983,12 @@ mod tests {
             "a press inside the band picks it up: {:?}",
             view.drag
         );
-        frame(
-            &mut view,
-            &mut book,
-            vec![egui::Event::PointerMoved(d)],
-            &ctx,
-        );
+        drive.move_to(&mut on(&mut view, &mut book), d);
         // Past the middle of D, so it lands after it rather than before.
         let past = egui::pos2(d.x + 20.0, d.y);
-        frame(
-            &mut view,
-            &mut book,
-            vec![egui::Event::PointerMoved(past)],
-            &ctx,
-        );
+        drive.move_to(&mut on(&mut view, &mut book), past);
         assert_eq!(view.move_target, Some(4), "the line sits after D");
-        frame(&mut view, &mut book, vec![press(past, false)], &ctx);
+        drive.release_at(&mut on(&mut view, &mut book), past);
 
         assert_eq!(
             view.actions,
@@ -4034,13 +4005,13 @@ mod tests {
     fn a_press_on_a_header_nobody_selected_still_selects_it() {
         // The two gestures share a press, so the one that is not wanted has to
         // stay out of the way: you cannot move what you have not selected.
-        let ctx = context();
+        let drive = driver();
         let mut book = Workbook::blank();
         let mut view = GridView::default();
-        frame(&mut view, &mut book, vec![], &ctx);
+        drive.settle(&mut on(&mut view, &mut book));
 
         let at = header_of(&view, Axis::Columns, 2);
-        frame(&mut view, &mut book, vec![press(at, true)], &ctx);
+        drive.press_at(&mut on(&mut view, &mut book), at);
         assert!(
             matches!(view.drag, Some(Drag::SelectHeaders { .. })),
             "{:?}",
@@ -4050,44 +4021,35 @@ mod tests {
 
     #[test]
     fn dropping_a_band_back_on_itself_asks_for_nothing() {
-        let ctx = context();
+        let drive = driver();
         let mut book = Workbook::blank();
         let mut view = GridView::default();
-        frame(&mut view, &mut book, vec![], &ctx);
+        drive.settle(&mut on(&mut view, &mut book));
 
         let b = header_of(&view, Axis::Columns, 1);
-        frame(&mut view, &mut book, vec![press(b, true)], &ctx);
-        frame(&mut view, &mut book, vec![press(b, false)], &ctx);
+        drive.click(&mut on(&mut view, &mut book), b);
         view.actions.clear();
 
-        frame(&mut view, &mut book, vec![press(b, true)], &ctx);
-        frame(
-            &mut view,
-            &mut book,
-            vec![egui::Event::PointerMoved(b)],
-            &ctx,
-        );
+        drive.press_at(&mut on(&mut view, &mut book), b);
+        drive.move_to(&mut on(&mut view, &mut book), b);
         assert_eq!(
             view.move_target, None,
             "no line, because nothing would move"
         );
-        frame(&mut view, &mut book, vec![press(b, false)], &ctx);
+        drive.release_at(&mut on(&mut view, &mut book), b);
         assert!(view.actions.is_empty(), "{:?}", view.actions);
     }
 
     #[test]
     fn double_clicking_a_boundary_asks_for_that_one_column_to_be_fitted() {
-        let ctx = context();
+        let drive = driver();
         let mut book = Workbook::blank();
         let mut view = GridView::default();
-        frame(&mut view, &mut book, vec![], &ctx);
+        drive.settle(&mut on(&mut view, &mut book));
 
         let (_, _, layout) = view.layout.as_ref().expect("laid out");
         let at = egui::pos2(46.0 + layout.cols.size(0) as f32, 10.0);
-        for _ in 0..2 {
-            frame(&mut view, &mut book, vec![press(at, true)], &ctx);
-            frame(&mut view, &mut book, vec![press(at, false)], &ctx);
-        }
+        drive.double_click(&mut on(&mut view, &mut book), at);
 
         assert!(
             view.actions.contains(&Action::AutoFitAt {
@@ -4126,17 +4088,14 @@ mod tests {
         // The same trap the boundary fit fell into: the second click arrives
         // while the first one's selection drag still owns the pointer, and the
         // drag branch returns before anything else is looked at.
-        let ctx = context();
+        let drive = driver();
         let mut book = Workbook::blank();
         let mut view = GridView::default();
-        frame(&mut view, &mut book, vec![], &ctx);
+        drive.settle(&mut on(&mut view, &mut book));
 
         let at = CellRef::new(3, 2);
         let pos = cell_of(&view, at);
-        for _ in 0..2 {
-            frame(&mut view, &mut book, vec![press(pos, true)], &ctx);
-            frame(&mut view, &mut book, vec![press(pos, false)], &ctx);
-        }
+        drive.double_click(&mut on(&mut view, &mut book), pos);
 
         let editor = view.editor.as_ref().expect("the cell opened");
         assert_eq!(editor.at, at);
@@ -4161,16 +4120,12 @@ mod tests {
     fn open_at(
         view: &mut GridView,
         book: &mut Workbook,
-        ctx: &egui::Context,
+        drive: &Driver,
         at: CellRef,
     ) -> egui::Rect {
-        frame(view, book, vec![], ctx);
+        drive.settle(&mut on(view, book));
         let pos = cell_of(view, at);
-        for _ in 0..2 {
-            frame(view, book, vec![press(pos, true)], ctx);
-            frame(view, book, vec![press(pos, false)], ctx);
-        }
-        frame(view, book, vec![], ctx);
+        drive.double_click(&mut on(view, book), pos);
         view.editor_box.expect("the editor was drawn")
     }
 
@@ -4179,7 +4134,7 @@ mod tests {
         // A two-character column is an ordinary thing to have, and an editor
         // clipped to one wraps every second character. Excel grows the box
         // over its neighbours instead.
-        let ctx = context();
+        let drive = driver();
         let mut book = Workbook::blank();
         let mut view = GridView::default();
         let at = wrote(&mut book, "B2", "a reasonably long sentence");
@@ -4188,7 +4143,7 @@ mod tests {
             .column_widths
             .insert(1, 2.0);
 
-        let box_rect = open_at(&mut view, &mut book, &ctx, at);
+        let box_rect = open_at(&mut view, &mut book, &drive, at);
         let cell = {
             let (_, _, layout) = view.layout.as_ref().expect("laid out");
             layout.cols.size(1) as f32
@@ -4206,12 +4161,12 @@ mod tests {
 
     #[test]
     fn the_editor_stops_at_the_edge_of_the_grid_and_wraps_downward() {
-        let ctx = context();
+        let drive = driver();
         let mut book = Workbook::blank();
         let mut view = GridView::default();
         let at = wrote(&mut book, "A1", &"long ".repeat(200));
 
-        let box_rect = open_at(&mut view, &mut book, &ctx, at);
+        let box_rect = open_at(&mut view, &mut book, &drive, at);
         let (grid, row) = {
             let (_, _, layout) = view.layout.as_ref().expect("laid out");
             (1000.0 - SCROLLBAR, layout.rows.size(0) as f32)
@@ -4232,13 +4187,13 @@ mod tests {
         // Clicking into the middle of a word is a request to fix that word.
         // Landing the caret at the end of the text instead turns every
         // correction into a retype.
-        let ctx = context();
+        let drive = driver();
         let mut book = Workbook::blank();
         let mut view = GridView::default();
         let at = wrote(&mut book, "A1", "abcdefghij");
-        open_at(&mut view, &mut book, &ctx, at);
+        open_at(&mut view, &mut book, &drive, at);
 
-        let state = egui::TextEdit::load_state(&ctx, egui::Id::new("calx-cell-editor"))
+        let state = egui::TextEdit::load_state(drive.ctx(), egui::Id::new("calx-cell-editor"))
             .expect("the editor stored its state");
         let range = state.cursor.char_range().expect("a caret");
         assert!(
@@ -4250,15 +4205,15 @@ mod tests {
 
     #[test]
     fn f2_leaves_the_caret_at_the_end() {
-        let ctx = context();
+        let drive = driver();
         let mut book = Workbook::blank();
         let mut view = GridView::default();
         wrote(&mut book, "A1", "abcdefghij");
-        frame(&mut view, &mut book, vec![], &ctx);
-        frame(&mut view, &mut book, vec![plain(egui::Key::F2)], &ctx);
-        frame(&mut view, &mut book, vec![], &ctx);
+        drive.settle(&mut on(&mut view, &mut book));
+        frame(&mut view, &mut book, vec![plain(egui::Key::F2)], &drive);
+        drive.settle(&mut on(&mut view, &mut book));
 
-        let state = egui::TextEdit::load_state(&ctx, egui::Id::new("calx-cell-editor"))
+        let state = egui::TextEdit::load_state(drive.ctx(), egui::Id::new("calx-cell-editor"))
             .expect("the editor stored its state");
         let range = state.cursor.char_range().expect("a caret");
         assert_eq!(range.primary.index.0, 10);
@@ -4292,34 +4247,31 @@ mod tests {
         // The box hangs over the next column. A click there is the user
         // placing the caret in their own text, and committing instead would
         // be a strange way to lose an entry.
-        let ctx = context();
+        let drive = driver();
         let mut book = Workbook::blank();
         let mut view = GridView::default();
         let at = wrote(&mut book, "A1", "a reasonably long sentence");
-        let box_rect = open_at(&mut view, &mut book, &ctx, at);
+        let box_rect = open_at(&mut view, &mut book, &drive, at);
 
         let over = egui::pos2(box_rect.right() - 4.0, box_rect.center().y);
         assert!(
             over.x > cell_of(&view, at).x + 32.0,
             "the test is clicking past the first column"
         );
-        frame(&mut view, &mut book, vec![press(over, true)], &ctx);
+        drive.press_at(&mut on(&mut view, &mut book), over);
         assert!(view.editor.is_some(), "the editor is still open");
         assert_eq!(view.selection.cursor(), at, "and still on its own cell");
     }
 
     #[test]
     fn double_clicking_a_header_selects_it_rather_than_opening_an_editor() {
-        let ctx = context();
+        let drive = driver();
         let mut book = Workbook::blank();
         let mut view = GridView::default();
-        frame(&mut view, &mut book, vec![], &ctx);
+        drive.settle(&mut on(&mut view, &mut book));
 
         let at = header_of(&view, Axis::Columns, 2);
-        for _ in 0..2 {
-            frame(&mut view, &mut book, vec![press(at, true)], &ctx);
-            frame(&mut view, &mut book, vec![press(at, false)], &ctx);
-        }
+        drive.double_click(&mut on(&mut view, &mut book), at);
         assert!(view.editor.is_none(), "there is no cell up there to edit");
     }
 
@@ -4328,23 +4280,19 @@ mod tests {
         // The pointer leaves the boundary the moment it starts dragging it, so
         // an icon chosen by hovering drops back to a plain arrow halfway
         // through — which reads as the drag having been let go.
-        let ctx = context();
+        let drive = driver();
         let mut book = Workbook::blank();
         let mut view = GridView::default();
-        frame(&mut view, &mut book, vec![], &ctx);
+        drive.settle(&mut on(&mut view, &mut book));
 
         let (_, _, layout) = view.layout.as_ref().expect("laid out");
         let edge = egui::pos2(46.0 + layout.cols.size(0) as f32, 10.0);
-        frame(&mut view, &mut book, vec![press(edge, true)], &ctx);
+        drive.press_at(&mut on(&mut view, &mut book), edge);
         assert!(matches!(view.drag, Some(Drag::ResizeColumn { .. })));
 
         let away = edge + egui::vec2(120.0, 300.0);
-        let icon = frame(
-            &mut view,
-            &mut book,
-            vec![egui::Event::PointerMoved(away)],
-            &ctx,
-        );
+        drive.move_to(&mut on(&mut view, &mut book), away);
+        let icon = drive.cursor();
         assert_eq!(icon, egui::CursorIcon::ResizeHorizontal);
     }
 
@@ -4394,9 +4342,9 @@ mod tests {
 
     #[test]
     fn the_wheel_moves_the_pane_it_is_over_on_a_split_sheet() {
-        let ctx = context();
+        let drive = driver();
         let (mut book, mut view) = divided(false, CellRef::new(5, 0));
-        frame(&mut view, &mut book, vec![], &ctx);
+        drive.settle(&mut on(&mut view, &mut book));
         let (_, _, layout) = view.layout.as_ref().expect("laid out");
         let seam = 20.0 + layout.rows.offset(5) as f32;
 
@@ -4409,7 +4357,7 @@ mod tests {
                 egui::Event::PointerMoved(over),
                 wheel(egui::vec2(0.0, -60.0)),
             ],
-            &ctx,
+            &drive,
         );
         assert!(view.pinned.y > 0.0, "the top pane scrolled");
         assert_eq!(view.scroll.y, 0.0, "and the bottom one stayed put");
@@ -4424,7 +4372,7 @@ mod tests {
                 egui::Event::PointerMoved(over),
                 wheel(egui::vec2(0.0, -60.0)),
             ],
-            &ctx,
+            &drive,
         );
         assert!(view.scroll.y > 0.0, "the bottom pane scrolled");
         assert_eq!(view.pinned, pinned, "and the top one stayed where it was");
@@ -4432,9 +4380,9 @@ mod tests {
 
     #[test]
     fn a_frozen_sheet_has_nothing_to_scroll_but_its_scrolling_pane() {
-        let ctx = context();
+        let drive = driver();
         let (mut book, mut view) = divided(true, CellRef::new(5, 0));
-        frame(&mut view, &mut book, vec![], &ctx);
+        drive.settle(&mut on(&mut view, &mut book));
         let (_, _, layout) = view.layout.as_ref().expect("laid out");
         let seam = 20.0 + layout.rows.offset(5) as f32;
 
@@ -4446,7 +4394,7 @@ mod tests {
                 egui::Event::PointerMoved(over),
                 wheel(egui::vec2(0.0, -60.0)),
             ],
-            &ctx,
+            &drive,
         );
         assert_eq!(view.pinned, Scroll::default(), "frozen rows are frozen");
         assert!(view.scroll.y > 0.0);
@@ -4454,35 +4402,25 @@ mod tests {
 
     #[test]
     fn dragging_the_split_bar_divides_the_sheet_somewhere_else() {
-        let ctx = context();
+        let drive = driver();
         let (mut book, mut view) = divided(false, CellRef::new(5, 0));
-        frame(&mut view, &mut book, vec![], &ctx);
+        drive.settle(&mut on(&mut view, &mut book));
         let (_, _, layout) = view.layout.as_ref().expect("laid out");
         let seam = 20.0 + layout.rows.offset(5) as f32;
         let row = layout.rows.size(0) as f32;
 
-        frame(
-            &mut view,
-            &mut book,
-            vec![press(egui::pos2(300.0, seam), true)],
-            &ctx,
-        );
+        drive.press_at(&mut on(&mut view, &mut book), egui::pos2(300.0, seam));
         assert!(matches!(view.drag, Some(Drag::MoveSplit { .. })));
 
         // Three rows further down, and then let go.
         let to = egui::pos2(300.0, seam + row * 3.0);
-        frame(
-            &mut view,
-            &mut book,
-            vec![egui::Event::PointerMoved(to)],
-            &ctx,
-        );
+        drive.move_to(&mut on(&mut view, &mut book), to);
         assert_eq!(
             book.sheet(0).expect("sheet 0").panes,
             Some(ss_model::Panes::split(CellRef::new(8, 0)))
         );
 
-        frame(&mut view, &mut book, vec![press(to, false)], &ctx);
+        drive.release_at(&mut on(&mut view, &mut book), to);
         assert!(
             view.actions.iter().any(|a| matches!(a, Action::Resized(_))),
             "the move is one undoable change, reported when the button comes up"
@@ -4491,44 +4429,16 @@ mod tests {
 
     #[test]
     fn dragging_the_split_bar_off_the_top_takes_the_split_away() {
-        let ctx = context();
+        let drive = driver();
         let (mut book, mut view) = divided(false, CellRef::new(5, 0));
-        frame(&mut view, &mut book, vec![], &ctx);
+        drive.settle(&mut on(&mut view, &mut book));
         let (_, _, layout) = view.layout.as_ref().expect("laid out");
         let seam = 20.0 + layout.rows.offset(5) as f32;
 
-        frame(
-            &mut view,
-            &mut book,
-            vec![press(egui::pos2(300.0, seam), true)],
-            &ctx,
-        );
+        drive.press_at(&mut on(&mut view, &mut book), egui::pos2(300.0, seam));
         let to = egui::pos2(300.0, 22.0);
-        frame(
-            &mut view,
-            &mut book,
-            vec![egui::Event::PointerMoved(to)],
-            &ctx,
-        );
+        drive.move_to(&mut on(&mut view, &mut book), to);
         assert_eq!(book.sheet(0).expect("sheet 0").panes, None);
-    }
-
-    fn press(pos: egui::Pos2, pressed: bool) -> egui::Event {
-        egui::Event::PointerButton {
-            pos,
-            button: egui::PointerButton::Primary,
-            pressed,
-            modifiers: egui::Modifiers::default(),
-        }
-    }
-
-    fn right_press(pos: egui::Pos2, pressed: bool) -> egui::Event {
-        egui::Event::PointerButton {
-            pos,
-            button: egui::PointerButton::Secondary,
-            pressed,
-            modifiers: egui::Modifiers::default(),
-        }
     }
 
     #[test]
@@ -4537,27 +4447,19 @@ mod tests {
         // whichever button it came from — so right-clicking a selected range
         // collapsed it to one cell before the menu opened, and "right-click,
         // Sort" sorted a single cell.
-        let ctx = context();
+        let drive = driver();
         let mut book = Workbook::blank();
         let mut view = GridView::default();
-        frame(&mut view, &mut book, vec![], &ctx);
+        drive.settle(&mut on(&mut view, &mut book));
 
         let from = cell_of(&view, CellRef::new(1, 1));
         let to = cell_of(&view, CellRef::new(3, 2));
-        frame(&mut view, &mut book, vec![press(from, true)], &ctx);
-        frame(
-            &mut view,
-            &mut book,
-            vec![egui::Event::PointerMoved(to)],
-            &ctx,
-        );
-        frame(&mut view, &mut book, vec![press(to, false)], &ctx);
+        drive.drag(&mut on(&mut view, &mut book), from, to);
         let range = CellRange::new(CellRef::new(1, 1), CellRef::new(3, 2));
         assert_eq!(view.selection.ranges(), [range]);
 
         let inside = cell_of(&view, CellRef::new(2, 2));
-        frame(&mut view, &mut book, vec![right_press(inside, true)], &ctx);
-        frame(&mut view, &mut book, vec![right_press(inside, false)], &ctx);
+        drive.right_click(&mut on(&mut view, &mut book), inside);
         assert_eq!(view.selection.ranges(), [range], "the selection is kept");
         assert_eq!(
             view.selection.cursor(),
@@ -4567,7 +4469,8 @@ mod tests {
 
         // Outside the selection it moves there first, as Excel's does.
         let outside = cell_of(&view, CellRef::new(6, 4));
-        frame(&mut view, &mut book, vec![right_press(outside, true)], &ctx);
+        let right = egui::PointerButton::Secondary;
+        drive.press_button(&mut on(&mut view, &mut book), outside, right);
         assert_eq!(view.selection.cursor(), CellRef::new(6, 4));
         assert!(view.selection.is_single_cell());
         assert!(view.drag.is_none(), "a right press never starts a drag");
@@ -4575,21 +4478,14 @@ mod tests {
 
     #[test]
     fn dragging_a_selection_keeps_the_active_cell_where_it_started() {
-        let ctx = context();
+        let drive = driver();
         let mut book = Workbook::blank();
         let mut view = GridView::default();
-        frame(&mut view, &mut book, vec![], &ctx);
+        drive.settle(&mut on(&mut view, &mut book));
 
         let from = cell_of(&view, CellRef::new(1, 1));
         let to = cell_of(&view, CellRef::new(4, 3));
-        frame(&mut view, &mut book, vec![press(from, true)], &ctx);
-        frame(
-            &mut view,
-            &mut book,
-            vec![egui::Event::PointerMoved(to)],
-            &ctx,
-        );
-        frame(&mut view, &mut book, vec![press(to, false)], &ctx);
+        drive.drag(&mut on(&mut view, &mut book), from, to);
         assert_eq!(
             view.selection.active_range(),
             CellRange::new(CellRef::new(1, 1), CellRef::new(4, 3))
@@ -4603,28 +4499,23 @@ mod tests {
 
     #[test]
     fn holding_a_drag_past_the_edge_scrolls_the_view() {
-        let ctx = context();
+        let drive = driver();
         let mut book = Workbook::blank();
         let mut view = GridView::default();
-        frame(&mut view, &mut book, vec![], &ctx);
+        drive.settle(&mut on(&mut view, &mut book));
 
         let from = cell_of(&view, CellRef::new(2, 1));
-        frame(&mut view, &mut book, vec![press(from, true)], &ctx);
+        drive.press_at(&mut on(&mut view, &mut book), from);
         // Park the pointer below the bottom edge and let frames pass. Each
         // one nudges the scroll further, even with no new pointer events.
         let below = egui::pos2(from.x, 5000.0);
-        frame(
-            &mut view,
-            &mut book,
-            vec![egui::Event::PointerMoved(below)],
-            &ctx,
-        );
+        drive.move_to(&mut on(&mut view, &mut book), below);
         let after_one = view.scroll.y;
         assert!(after_one > 0.0, "the view moved: {after_one}");
-        frame(&mut view, &mut book, vec![], &ctx);
-        frame(&mut view, &mut book, vec![], &ctx);
+        drive.settle(&mut on(&mut view, &mut book));
+        drive.settle(&mut on(&mut view, &mut book));
         assert!(view.scroll.y > after_one, "and keeps moving while held");
-        frame(&mut view, &mut book, vec![press(below, false)], &ctx);
+        drive.release_at(&mut on(&mut view, &mut book), below);
         assert!(
             view.selection.active_range().rows() > 1,
             "the sweep selected past the first screenful: {:?}",
@@ -4634,10 +4525,10 @@ mod tests {
 
     #[test]
     fn the_pointer_over_the_fill_handle_is_a_thin_cross() {
-        let ctx = context();
+        let drive = driver();
         let mut book = Workbook::blank();
         let mut view = GridView::default();
-        frame(&mut view, &mut book, vec![], &ctx);
+        drive.settle(&mut on(&mut view, &mut book));
 
         // The handle sits on the bottom-right corner of A1.
         let (_, _, layout) = view.layout.as_ref().expect("laid out");
@@ -4645,26 +4536,18 @@ mod tests {
             layout.header_width as f32 + layout.cols.size(0) as f32,
             layout.header_height as f32 + layout.rows.size(0) as f32,
         );
-        let icon = frame(
-            &mut view,
-            &mut book,
-            vec![egui::Event::PointerMoved(corner)],
-            &ctx,
-        );
+        drive.move_to(&mut on(&mut view, &mut book), corner);
+        let icon = drive.cursor();
         assert_eq!(icon, egui::CursorIcon::Crosshair);
 
         // And it stays a cross for the whole fill drag, even though the
         // pointer leaves the handle on the first frame of it.
-        frame(&mut view, &mut book, vec![press(corner, true)], &ctx);
+        drive.press_at(&mut on(&mut view, &mut book), corner);
         let away = cell_of(&view, CellRef::new(4, 0));
-        let icon = frame(
-            &mut view,
-            &mut book,
-            vec![egui::Event::PointerMoved(away)],
-            &ctx,
-        );
+        drive.move_to(&mut on(&mut view, &mut book), away);
+        let icon = drive.cursor();
         assert_eq!(icon, egui::CursorIcon::Crosshair);
-        frame(&mut view, &mut book, vec![press(away, false)], &ctx);
+        drive.release_at(&mut on(&mut view, &mut book), away);
     }
 
     /// A workbook with one picture anchored over B2:D5, near enough.
@@ -4771,10 +4654,10 @@ mod tests {
 
     #[test]
     fn a_chart_selects_moves_and_deletes_like_the_object_it_is() {
-        let ctx = context();
+        let drive = driver();
         let mut book = with_chart();
         let mut view = GridView::default();
-        frame(&mut view, &mut book, vec![], &ctx);
+        drive.settle(&mut on(&mut view, &mut book));
 
         // A press inside it selects it and picks it up.
         let sheet = book.sheet(0).expect("a sheet").clone();
@@ -4783,7 +4666,7 @@ mod tests {
         let rect =
             crate::grid::picture::sheet_rect(&layout, &sheet.charts[0].anchor).translate(origin);
         let inside = rect.center();
-        frame(&mut view, &mut book, vec![press(inside, true)], &ctx);
+        drive.press_at(&mut on(&mut view, &mut book), inside);
         assert_eq!(view.selected_chart, Some(0));
         assert!(
             matches!(view.drag, Some(Drag::MoveChart { .. })),
@@ -4793,13 +4676,8 @@ mod tests {
 
         // Dragging it moves the anchor; releasing reports one undo entry.
         let further = inside + egui::vec2(96.0, 40.0);
-        frame(
-            &mut view,
-            &mut book,
-            vec![egui::Event::PointerMoved(further)],
-            &ctx,
-        );
-        frame(&mut view, &mut book, vec![press(further, false)], &ctx);
+        drive.move_to(&mut on(&mut view, &mut book), further);
+        drive.release_at(&mut on(&mut view, &mut book), further);
         assert_ne!(
             book.sheet(0).expect("sheet").charts[0].anchor,
             sheet.charts[0].anchor,
@@ -4815,7 +4693,7 @@ mod tests {
 
         // Delete removes the chart, not the cells underneath it.
         view.actions.clear();
-        frame(&mut view, &mut book, vec![plain(egui::Key::Delete)], &ctx);
+        frame(&mut view, &mut book, vec![plain(egui::Key::Delete)], &drive);
         assert_eq!(view.actions, [Action::DeleteChart(0)]);
         assert!(view.selected_chart.is_none());
     }
@@ -4826,23 +4704,17 @@ mod tests {
         // the press used to deselect the chart before the copy could see it,
         // handing the copy to the cells underneath. Found by copying a chart
         // by hand and reading "Copied" where "Chart copied" belonged.
-        let ctx = context();
+        let drive = driver();
         let mut book = with_chart();
         let mut view = GridView::default();
-        frame(&mut view, &mut book, vec![], &ctx);
+        drive.settle(&mut on(&mut view, &mut book));
 
         let sheet = book.sheet(0).expect("a sheet").clone();
         let layout = Layout::for_sheet(&book, &sheet, view.zoom);
         let origin = egui::vec2(layout.header_width as f32, layout.header_height as f32);
         let rect =
             crate::grid::picture::sheet_rect(&layout, &sheet.charts[0].anchor).translate(origin);
-        frame(&mut view, &mut book, vec![press(rect.center(), true)], &ctx);
-        frame(
-            &mut view,
-            &mut book,
-            vec![press(rect.center(), false)],
-            &ctx,
-        );
+        drive.click(&mut on(&mut view, &mut book), rect.center());
         assert_eq!(view.selected_chart, Some(0));
 
         view.actions.clear();
@@ -4850,7 +4722,7 @@ mod tests {
             &mut view,
             &mut book,
             vec![ctrl(egui::Key::C), egui::Event::Copy],
-            &ctx,
+            &drive,
         );
         assert_eq!(
             view.selected_chart,
@@ -4875,45 +4747,35 @@ mod tests {
 
     #[test]
     fn clicking_a_picture_selects_it_rather_than_the_cell_under_it() {
-        let ctx = context();
+        let drive = driver();
         let mut book = with_picture();
         let mut view = GridView::default();
         // A first frame so the view has a layout; the rect is the same either way.
-        frame(&mut view, &mut book, Vec::new(), &ctx);
+        drive.settle(&mut on(&mut view, &mut book));
         let middle = picture_rect(&view, &book).center();
 
-        frame(&mut view, &mut book, vec![press(middle, true)], &ctx);
-        frame(&mut view, &mut book, vec![press(middle, false)], &ctx);
+        drive.click(&mut on(&mut view, &mut book), middle);
 
         assert_eq!(view.selected_picture, Some(0));
         // And a click away from it puts the selection back on the cells.
         let away = egui::pos2(700.0, 600.0);
-        frame(&mut view, &mut book, vec![press(away, true)], &ctx);
-        frame(&mut view, &mut book, vec![press(away, false)], &ctx);
+        drive.click(&mut on(&mut view, &mut book), away);
         assert_eq!(view.selected_picture, None);
     }
 
     #[test]
     fn dragging_a_picture_moves_it_and_reports_where_it_was() {
-        let ctx = context();
+        let drive = driver();
         let mut book = with_picture();
         let mut view = GridView::default();
-        frame(&mut view, &mut book, Vec::new(), &ctx);
+        drive.settle(&mut on(&mut view, &mut book));
         let before = book.sheet(0).expect("a sheet").pictures[0].anchor.clone();
         let middle = picture_rect(&view, &book).center();
 
-        frame(&mut view, &mut book, vec![press(middle, true)], &ctx);
-        frame(
-            &mut view,
-            &mut book,
-            vec![egui::Event::PointerMoved(middle + egui::vec2(60.0, 40.0))],
-            &ctx,
-        );
-        frame(
-            &mut view,
-            &mut book,
-            vec![press(middle + egui::vec2(60.0, 40.0), false)],
-            &ctx,
+        drive.drag(
+            &mut on(&mut view, &mut book),
+            middle,
+            middle + egui::vec2(60.0, 40.0),
         );
 
         let after = &book.sheet(0).expect("a sheet").pictures[0].anchor;
@@ -4929,27 +4791,19 @@ mod tests {
 
     #[test]
     fn dragging_the_east_handle_stretches_without_moving_the_left_edge() {
-        let ctx = context();
+        let drive = driver();
         let mut book = with_picture();
         let mut view = GridView::default();
-        frame(&mut view, &mut book, Vec::new(), &ctx);
+        drive.settle(&mut on(&mut view, &mut book));
         let rect = picture_rect(&view, &book);
         let middle = rect.center();
 
         // Select first: handles only exist on a selected picture.
-        frame(&mut view, &mut book, vec![press(middle, true)], &ctx);
-        frame(&mut view, &mut book, vec![press(middle, false)], &ctx);
+        drive.click(&mut on(&mut view, &mut book), middle);
 
         let handle = crate::grid::picture::Handle::East.at(rect);
         let pulled = handle + egui::vec2(80.0, 0.0);
-        frame(&mut view, &mut book, vec![press(handle, true)], &ctx);
-        frame(
-            &mut view,
-            &mut book,
-            vec![egui::Event::PointerMoved(pulled)],
-            &ctx,
-        );
-        frame(&mut view, &mut book, vec![press(pulled, false)], &ctx);
+        drive.drag(&mut on(&mut view, &mut book), handle, pulled);
 
         let after = picture_rect(&view, &book);
         assert!((after.left() - rect.left()).abs() < 0.5, "{after:?}");
@@ -4960,16 +4814,15 @@ mod tests {
 
     #[test]
     fn delete_with_a_picture_selected_removes_the_picture_not_the_cells() {
-        let ctx = context();
+        let drive = driver();
         let mut book = with_picture();
         let mut view = GridView::default();
-        frame(&mut view, &mut book, Vec::new(), &ctx);
+        drive.settle(&mut on(&mut view, &mut book));
         let middle = picture_rect(&view, &book).center();
-        frame(&mut view, &mut book, vec![press(middle, true)], &ctx);
-        frame(&mut view, &mut book, vec![press(middle, false)], &ctx);
+        drive.click(&mut on(&mut view, &mut book), middle);
         view.actions.clear();
 
-        frame(&mut view, &mut book, vec![plain(egui::Key::Delete)], &ctx);
+        frame(&mut view, &mut book, vec![plain(egui::Key::Delete)], &drive);
 
         assert_eq!(view.actions, vec![Action::DeletePicture(0)]);
         assert_eq!(view.selected_picture, None);
@@ -4977,30 +4830,24 @@ mod tests {
 
     #[test]
     fn delete_with_nothing_but_cells_selected_still_clears_cells() {
-        let ctx = context();
+        let drive = driver();
         let mut book = with_picture();
         let mut view = GridView::default();
-        frame(&mut view, &mut book, Vec::new(), &ctx);
-        frame(&mut view, &mut book, vec![plain(egui::Key::Delete)], &ctx);
+        drive.settle(&mut on(&mut view, &mut book));
+        frame(&mut view, &mut book, vec![plain(egui::Key::Delete)], &drive);
         assert_eq!(view.actions, vec![Action::Clear]);
     }
 
     #[test]
     fn a_click_does_not_leave_a_drag_running() {
-        let ctx = context();
+        let drive = driver();
         let mut book = Workbook::blank();
         let mut view = GridView::default();
         let start = egui::pos2(200.0, 200.0);
 
         // Press and release in place: an ordinary click.
-        frame(
-            &mut view,
-            &mut book,
-            vec![egui::Event::PointerMoved(start)],
-            &ctx,
-        );
-        frame(&mut view, &mut book, vec![press(start, true)], &ctx);
-        frame(&mut view, &mut book, vec![press(start, false)], &ctx);
+        drive.move_to(&mut on(&mut view, &mut book), start);
+        drive.click(&mut on(&mut view, &mut book), start);
         let clicked = view.selection.cursor();
         assert!(
             view.drag.is_none(),
@@ -5010,12 +4857,7 @@ mod tests {
         // Now move the pointer across the sheet with no button held. Nothing
         // about the selection may change.
         for x in [300.0, 400.0, 500.0_f32] {
-            frame(
-                &mut view,
-                &mut book,
-                vec![egui::Event::PointerMoved(egui::pos2(x, 400.0))],
-                &ctx,
-            );
+            drive.move_to(&mut on(&mut view, &mut book), egui::pos2(x, 400.0));
         }
         assert_eq!(view.selection.cursor(), clicked);
         assert_eq!(view.selection, Selection::at(clicked));
@@ -5040,8 +4882,8 @@ mod tests {
     }
 
     /// A grid with the keyboard, ready to be typed at.
-    fn typing() -> (egui::Context, Workbook, GridView) {
-        (context(), Workbook::blank(), GridView::default())
+    fn typing() -> (Driver, Workbook, GridView) {
+        (driver(), Workbook::blank(), GridView::default())
     }
 
     /// Fills the named cells with a number, so there is data to navigate.
@@ -5060,20 +4902,19 @@ mod tests {
 
     #[test]
     fn ctrl_a_selects_the_region_first_and_the_sheet_second() {
-        let (ctx, mut book, mut view) = typing();
+        let (drive, mut book, mut view) = typing();
         seed(&mut book, &["B2", "B3", "C2", "C3"]);
-        frame(&mut view, &mut book, vec![], &ctx);
+        drive.settle(&mut on(&mut view, &mut book));
         let b2 = cell_of(&view, CellRef::new(1, 1));
-        frame(&mut view, &mut book, vec![press(b2, true)], &ctx);
-        frame(&mut view, &mut book, vec![press(b2, false)], &ctx);
+        drive.click(&mut on(&mut view, &mut book), b2);
 
-        frame(&mut view, &mut book, vec![ctrl(egui::Key::A)], &ctx);
+        frame(&mut view, &mut book, vec![ctrl(egui::Key::A)], &drive);
         assert_eq!(
             view.selection.ranges(),
             [CellRange::new(CellRef::new(1, 1), CellRef::new(2, 2))],
             "first press: the island"
         );
-        frame(&mut view, &mut book, vec![ctrl(egui::Key::A)], &ctx);
+        frame(&mut view, &mut book, vec![ctrl(egui::Key::A)], &drive);
         assert_eq!(
             view.selection.active_range().rows(),
             MAX_ROWS,
@@ -5088,8 +4929,8 @@ mod tests {
 
     #[test]
     fn ctrl_shift_space_selects_everything() {
-        let (ctx, mut book, mut view) = typing();
-        frame(&mut view, &mut book, vec![], &ctx);
+        let (drive, mut book, mut view) = typing();
+        drive.settle(&mut on(&mut view, &mut book));
         frame(
             &mut view,
             &mut book,
@@ -5097,7 +4938,7 @@ mod tests {
                 egui::Key::Space,
                 egui::Modifiers::CTRL | egui::Modifiers::SHIFT,
             )],
-            &ctx,
+            &drive,
         );
         let all = view.selection.active_range();
         assert_eq!((all.rows(), all.cols()), (MAX_ROWS, MAX_COLS));
@@ -5105,7 +4946,7 @@ mod tests {
 
     #[test]
     fn ctrl_shift_o_gathers_every_cell_with_a_note() {
-        let (ctx, mut book, mut view) = typing();
+        let (drive, mut book, mut view) = typing();
         let sheet = book.sheet_mut(0).expect("a sheet");
         sheet.comments.push(ss_model::Comment::new(
             CellRef::new(1, 1),
@@ -5117,7 +4958,7 @@ mod tests {
             "Ada",
             "and this",
         ));
-        frame(&mut view, &mut book, vec![], &ctx);
+        drive.settle(&mut on(&mut view, &mut book));
         frame(
             &mut view,
             &mut book,
@@ -5125,7 +4966,7 @@ mod tests {
                 egui::Key::O,
                 egui::Modifiers::CTRL | egui::Modifiers::SHIFT,
             )],
-            &ctx,
+            &drive,
         );
         assert_eq!(
             view.selection.ranges(),
@@ -5143,8 +4984,8 @@ mod tests {
 
     #[test]
     fn ctrl_shift_o_on_a_sheet_with_no_notes_changes_nothing() {
-        let (ctx, mut book, mut view) = typing();
-        frame(&mut view, &mut book, vec![], &ctx);
+        let (drive, mut book, mut view) = typing();
+        drive.settle(&mut on(&mut view, &mut book));
         let before = view.selection.clone();
         frame(
             &mut view,
@@ -5153,15 +4994,15 @@ mod tests {
                 egui::Key::O,
                 egui::Modifiers::CTRL | egui::Modifiers::SHIFT,
             )],
-            &ctx,
+            &drive,
         );
         assert_eq!(view.selection, before);
     }
 
     #[test]
     fn the_border_keys_are_told_apart_from_the_delete_key() {
-        let (ctx, mut book, mut view) = typing();
-        frame(&mut view, &mut book, vec![], &ctx);
+        let (drive, mut book, mut view) = typing();
+        drive.settle(&mut on(&mut view, &mut book));
 
         frame(
             &mut view,
@@ -5170,7 +5011,7 @@ mod tests {
                 egui::Key::Minus,
                 egui::Modifiers::CTRL | egui::Modifiers::SHIFT,
             )],
-            &ctx,
+            &drive,
         );
         assert_eq!(
             view.actions,
@@ -5186,7 +5027,7 @@ mod tests {
                 egui::Key::Num7,
                 egui::Modifiers::CTRL | egui::Modifiers::SHIFT,
             )],
-            &ctx,
+            &drive,
         );
         assert_eq!(
             view.actions,
@@ -5194,7 +5035,7 @@ mod tests {
         );
 
         view.actions.clear();
-        frame(&mut view, &mut book, vec![ctrl(egui::Key::Minus)], &ctx);
+        frame(&mut view, &mut book, vec![ctrl(egui::Key::Minus)], &drive);
         assert_eq!(
             view.actions,
             [Action::Delete(Axis::Rows)],
@@ -5204,32 +5045,32 @@ mod tests {
 
     #[test]
     fn end_and_ctrl_end_mirror_home() {
-        let (ctx, mut book, mut view) = typing();
+        let (drive, mut book, mut view) = typing();
         seed(&mut book, &["A1", "C1", "B5"]);
-        frame(&mut view, &mut book, vec![], &ctx);
+        drive.settle(&mut on(&mut view, &mut book));
 
-        frame(&mut view, &mut book, vec![plain(egui::Key::End)], &ctx);
+        frame(&mut view, &mut book, vec![plain(egui::Key::End)], &drive);
         assert_eq!(
             view.selection.cursor(),
             CellRef::new(0, 2),
             "End: the last filled cell of the row"
         );
-        frame(&mut view, &mut book, vec![ctrl(egui::Key::End)], &ctx);
+        frame(&mut view, &mut book, vec![ctrl(egui::Key::End)], &drive);
         assert_eq!(
             view.selection.cursor(),
             CellRef::new(4, 2),
             "Ctrl+End: the bottom-right of everything used"
         );
-        frame(&mut view, &mut book, vec![plain(egui::Key::Home)], &ctx);
+        frame(&mut view, &mut book, vec![plain(egui::Key::Home)], &drive);
         assert_eq!(view.selection.cursor(), CellRef::new(4, 0));
     }
 
     #[test]
     fn ctrl_nine_and_zero_hide_what_shift_unhides() {
-        let (ctx, mut book, mut view) = typing();
-        frame(&mut view, &mut book, vec![], &ctx);
-        frame(&mut view, &mut book, vec![ctrl(egui::Key::Num9)], &ctx);
-        frame(&mut view, &mut book, vec![ctrl(egui::Key::Num0)], &ctx);
+        let (drive, mut book, mut view) = typing();
+        drive.settle(&mut on(&mut view, &mut book));
+        frame(&mut view, &mut book, vec![ctrl(egui::Key::Num9)], &drive);
+        frame(&mut view, &mut book, vec![ctrl(egui::Key::Num0)], &drive);
         frame(
             &mut view,
             &mut book,
@@ -5237,7 +5078,7 @@ mod tests {
                 egui::Key::Num9,
                 egui::Modifiers::CTRL | egui::Modifiers::SHIFT,
             )],
-            &ctx,
+            &drive,
         );
         assert_eq!(
             view.actions,
@@ -5260,8 +5101,8 @@ mod tests {
 
     #[test]
     fn the_number_format_row_reaches_the_grid() {
-        let (ctx, mut book, mut view) = typing();
-        frame(&mut view, &mut book, vec![], &ctx);
+        let (drive, mut book, mut view) = typing();
+        drive.settle(&mut on(&mut view, &mut book));
         // Ctrl+Shift+5 is percent; bare Ctrl+5 stays strikethrough.
         frame(
             &mut view,
@@ -5270,9 +5111,9 @@ mod tests {
                 egui::Key::Num5,
                 egui::Modifiers::CTRL | egui::Modifiers::SHIFT,
             )],
-            &ctx,
+            &drive,
         );
-        frame(&mut view, &mut book, vec![ctrl(egui::Key::Num5)], &ctx);
+        frame(&mut view, &mut book, vec![ctrl(egui::Key::Num5)], &drive);
         assert_eq!(
             view.actions,
             [
@@ -5284,27 +5125,22 @@ mod tests {
 
     #[test]
     fn clicking_a_cell_mid_formula_points_at_it() {
-        let (ctx, mut book, mut view) = typing();
+        let (drive, mut book, mut view) = typing();
         frame(
             &mut view,
             &mut book,
             vec![egui::Event::Text("=".into())],
-            &ctx,
+            &drive,
         );
 
         // Click C3: the reference goes into the formula, the editor stays.
         let c3 = cell_of(&view, CellRef::new(2, 2));
-        frame(&mut view, &mut book, vec![press(c3, true)], &ctx);
+        drive.press_at(&mut on(&mut view, &mut book), c3);
         assert_eq!(view.editor.as_ref().map(|e| e.text.as_str()), Some("=C3"));
         // Dragging stretches it into a range before the button comes up.
         let d4 = cell_of(&view, CellRef::new(3, 3));
-        frame(
-            &mut view,
-            &mut book,
-            vec![egui::Event::PointerMoved(d4)],
-            &ctx,
-        );
-        frame(&mut view, &mut book, vec![press(d4, false)], &ctx);
+        drive.move_to(&mut on(&mut view, &mut book), d4);
+        drive.release_at(&mut on(&mut view, &mut book), d4);
         assert_eq!(
             view.editor.as_ref().map(|e| e.text.as_str()),
             Some("=C3:D4")
@@ -5313,8 +5149,7 @@ mod tests {
         // An operator locks it; the next click starts the second reference.
         view.editor.as_mut().expect("open").text.push('+');
         let b1 = cell_of(&view, CellRef::new(0, 1));
-        frame(&mut view, &mut book, vec![press(b1, true)], &ctx);
-        frame(&mut view, &mut book, vec![press(b1, false)], &ctx);
+        drive.click(&mut on(&mut view, &mut book), b1);
         assert_eq!(
             view.editor.as_ref().map(|e| e.text.as_str()),
             Some("=C3:D4+B1")
@@ -5323,44 +5158,42 @@ mod tests {
         // While the reference is live, another click replaces it — Excel
         // keeps replacing until an operator or Enter locks it in.
         let a5 = cell_of(&view, CellRef::new(4, 0));
-        frame(&mut view, &mut book, vec![press(a5, true)], &ctx);
-        frame(&mut view, &mut book, vec![press(a5, false)], &ctx);
+        drive.click(&mut on(&mut view, &mut book), a5);
         assert_eq!(
             view.editor.as_ref().map(|e| e.text.as_str()),
             Some("=C3:D4+A5")
         );
-        frame(&mut view, &mut book, vec![plain(egui::Key::Enter)], &ctx);
+        frame(&mut view, &mut book, vec![plain(egui::Key::Enter)], &drive);
         assert!(view.editor.is_none());
         assert!(!view.actions.is_empty());
     }
 
     #[test]
     fn arrows_point_while_a_formula_wants_a_reference() {
-        let (ctx, mut book, mut view) = typing();
-        frame(&mut view, &mut book, vec![], &ctx);
+        let (drive, mut book, mut view) = typing();
+        drive.settle(&mut on(&mut view, &mut book));
         // Start at B2 so there is room to arrow in every direction.
         let b2 = cell_of(&view, CellRef::new(1, 1));
-        frame(&mut view, &mut book, vec![press(b2, true)], &ctx);
-        frame(&mut view, &mut book, vec![press(b2, false)], &ctx);
+        drive.click(&mut on(&mut view, &mut book), b2);
         frame(
             &mut view,
             &mut book,
             vec![egui::Event::Text("=".into())],
-            &ctx,
+            &drive,
         );
 
         frame(
             &mut view,
             &mut book,
             vec![plain(egui::Key::ArrowDown)],
-            &ctx,
+            &drive,
         );
         assert_eq!(view.editor.as_ref().map(|e| e.text.as_str()), Some("=B3"));
         frame(
             &mut view,
             &mut book,
             vec![plain(egui::Key::ArrowRight)],
-            &ctx,
+            &drive,
         );
         assert_eq!(
             view.editor.as_ref().map(|e| e.text.as_str()),
@@ -5371,7 +5204,7 @@ mod tests {
             &mut view,
             &mut book,
             vec![key(egui::Key::ArrowDown, egui::Modifiers::SHIFT)],
-            &ctx,
+            &drive,
         );
         assert_eq!(
             view.editor.as_ref().map(|e| e.text.as_str()),
@@ -5379,41 +5212,34 @@ mod tests {
             "shift stretches it"
         );
         // F4 pins it, and pinning takes the reference out of point mode.
-        frame(&mut view, &mut book, vec![plain(egui::Key::F4)], &ctx);
+        frame(&mut view, &mut book, vec![plain(egui::Key::F4)], &drive);
         assert_eq!(
             view.editor.as_ref().map(|e| e.text.as_str()),
             Some("=$C$3:$C$4")
         );
         // Enter still commits.
-        frame(&mut view, &mut book, vec![plain(egui::Key::Enter)], &ctx);
+        frame(&mut view, &mut book, vec![plain(egui::Key::Enter)], &drive);
         assert!(view.editor.is_none());
     }
 
     #[test]
     fn ctrl_enter_asks_for_the_whole_selection() {
-        let (ctx, mut book, mut view) = typing();
-        frame(&mut view, &mut book, vec![], &ctx);
+        let (drive, mut book, mut view) = typing();
+        drive.settle(&mut on(&mut view, &mut book));
         let from = cell_of(&view, CellRef::new(1, 1));
         let to = cell_of(&view, CellRef::new(3, 1));
-        frame(&mut view, &mut book, vec![press(from, true)], &ctx);
-        frame(
-            &mut view,
-            &mut book,
-            vec![egui::Event::PointerMoved(to)],
-            &ctx,
-        );
-        frame(&mut view, &mut book, vec![press(to, false)], &ctx);
+        drive.drag(&mut on(&mut view, &mut book), from, to);
         frame(
             &mut view,
             &mut book,
             vec![egui::Event::Text("7".into())],
-            &ctx,
+            &drive,
         );
         frame(
             &mut view,
             &mut book,
             vec![key(egui::Key::Enter, egui::Modifiers::CTRL)],
-            &ctx,
+            &drive,
         );
         assert!(view.editor.is_none());
         assert_eq!(
@@ -5427,9 +5253,9 @@ mod tests {
 
     #[test]
     fn double_clicking_the_fill_handle_fills_down_beside_the_neighbour() {
-        let (ctx, mut book, mut view) = typing();
+        let (drive, mut book, mut view) = typing();
         seed(&mut book, &["A1", "A2", "A3", "A4", "B1"]);
-        frame(&mut view, &mut book, vec![], &ctx);
+        drive.settle(&mut on(&mut view, &mut book));
 
         // Select B1 and double-click its fill handle.
         view.selection = Selection::at(CellRef::new(0, 1));
@@ -5439,10 +5265,7 @@ mod tests {
             layout.header_height as f32 + layout.rows.size(0) as f32,
         );
         view.actions.clear();
-        for _ in 0..2 {
-            frame(&mut view, &mut book, vec![press(handle, true)], &ctx);
-            frame(&mut view, &mut book, vec![press(handle, false)], &ctx);
-        }
+        drive.double_click(&mut on(&mut view, &mut book), handle);
         assert_eq!(
             view.actions,
             [Action::Fill {
@@ -5457,13 +5280,13 @@ mod tests {
 
     #[test]
     fn dragging_the_selection_border_moves_the_block() {
-        let (ctx, mut book, mut view) = typing();
+        let (drive, mut book, mut view) = typing();
         seed(&mut book, &["B2", "C3"]);
-        frame(&mut view, &mut book, vec![], &ctx);
+        drive.settle(&mut on(&mut view, &mut book));
         view.selection = Selection::at(CellRef::new(1, 1));
         view.selection
             .extend_to(CellRef::new(2, 2), book.sheet(0).expect("sheet"));
-        frame(&mut view, &mut book, vec![], &ctx);
+        drive.settle(&mut on(&mut view, &mut book));
 
         // The top edge of the block, over the middle of column B.
         let (_, _, layout) = view.layout.as_ref().expect("laid out");
@@ -5472,28 +5295,19 @@ mod tests {
             layout.header_height as f32 + layout.rows.offset(1) as f32,
         );
         // Hovering it shows the move cursor.
-        let icon = frame(
-            &mut view,
-            &mut book,
-            vec![egui::Event::PointerMoved(edge)],
-            &ctx,
-        );
+        drive.move_to(&mut on(&mut view, &mut book), edge);
+        let icon = drive.cursor();
         assert_eq!(icon, egui::CursorIcon::Move);
 
-        frame(&mut view, &mut book, vec![press(edge, true)], &ctx);
+        drive.press_at(&mut on(&mut view, &mut book), edge);
         assert!(
             matches!(view.drag, Some(Drag::MoveRange { .. })),
             "the border picks the block up: {:?}",
             view.drag
         );
         let drop = cell_of(&view, CellRef::new(5, 4));
-        frame(
-            &mut view,
-            &mut book,
-            vec![egui::Event::PointerMoved(drop)],
-            &ctx,
-        );
-        frame(&mut view, &mut book, vec![press(drop, false)], &ctx);
+        drive.move_to(&mut on(&mut view, &mut book), drop);
+        drive.release_at(&mut on(&mut view, &mut book), drop);
         assert_eq!(
             view.actions,
             [Action::MoveRange {
@@ -5506,15 +5320,15 @@ mod tests {
         // A press in the middle of the block still just selects.
         view.actions.clear();
         let middle = cell_of(&view, CellRef::new(1, 1));
-        frame(&mut view, &mut book, vec![press(middle, true)], &ctx);
+        drive.press_at(&mut on(&mut view, &mut book), middle);
         assert!(matches!(view.drag, Some(Drag::Select)), "{:?}", view.drag);
-        frame(&mut view, &mut book, vec![press(middle, false)], &ctx);
+        drive.release_at(&mut on(&mut view, &mut book), middle);
     }
 
     #[test]
     fn grouping_keys_and_margin_buttons_speak_outline() {
-        let (ctx, mut book, mut view) = typing();
-        frame(&mut view, &mut book, vec![], &ctx);
+        let (drive, mut book, mut view) = typing();
+        drive.settle(&mut on(&mut view, &mut book));
 
         // Shift+Alt+Right asks to group the selected rows.
         view.selection = Selection::at(CellRef::new(1, 0));
@@ -5527,7 +5341,7 @@ mod tests {
                 egui::Key::ArrowRight,
                 egui::Modifiers::SHIFT | egui::Modifiers::ALT,
             )],
-            &ctx,
+            &drive,
         );
         assert_eq!(
             view.take_actions(),
@@ -5546,7 +5360,7 @@ mod tests {
             sheet.row_outlines.insert(3, 1);
         }
         view.invalidate();
-        frame(&mut view, &mut book, vec![], &ctx);
+        drive.settle(&mut on(&mut view, &mut book));
         let (_, _, layout) = view.layout.as_ref().expect("laid out");
         let margin = layout.outline_row_margin as f32;
         assert!(margin > 0.0, "the margin exists once anything is grouped");
@@ -5555,8 +5369,7 @@ mod tests {
             layout.header_height as f32
                 + (layout.rows.offset(4) + layout.rows.size(4) / 2.0) as f32,
         );
-        frame(&mut view, &mut book, vec![press(button, true)], &ctx);
-        frame(&mut view, &mut book, vec![press(button, false)], &ctx);
+        drive.click(&mut on(&mut view, &mut book), button);
         assert_eq!(
             view.take_actions(),
             [Action::ToggleOutline {
@@ -5569,18 +5382,18 @@ mod tests {
 
     #[test]
     fn escape_dismisses_the_ants_and_enter_pastes_them() {
-        let (ctx, mut book, mut view) = typing();
-        frame(&mut view, &mut book, vec![], &ctx);
+        let (drive, mut book, mut view) = typing();
+        drive.settle(&mut on(&mut view, &mut book));
         let source = CellRange::new(CellRef::new(0, 0), CellRef::new(1, 1));
 
         view.marquee = Some((0, source));
-        frame(&mut view, &mut book, vec![plain(egui::Key::Escape)], &ctx);
+        frame(&mut view, &mut book, vec![plain(egui::Key::Escape)], &drive);
         assert!(view.marquee.is_none());
         assert_eq!(view.actions, [Action::CancelClipboard]);
 
         view.actions.clear();
         view.marquee = Some((0, source));
-        frame(&mut view, &mut book, vec![plain(egui::Key::Enter)], &ctx);
+        frame(&mut view, &mut book, vec![plain(egui::Key::Enter)], &drive);
         assert!(view.marquee.is_none());
         assert_eq!(view.actions, [Action::PasteClip]);
         assert_eq!(
@@ -5592,9 +5405,14 @@ mod tests {
 
     #[test]
     fn ctrl_semicolon_types_todays_date() {
-        let (ctx, mut book, mut view) = typing();
-        frame(&mut view, &mut book, vec![], &ctx);
-        frame(&mut view, &mut book, vec![ctrl(egui::Key::Semicolon)], &ctx);
+        let (drive, mut book, mut view) = typing();
+        drive.settle(&mut on(&mut view, &mut book));
+        frame(
+            &mut view,
+            &mut book,
+            vec![ctrl(egui::Key::Semicolon)],
+            &drive,
+        );
         let open = view.editor.as_ref().expect("an editor opened");
         assert_eq!(open.text.matches('/').count(), 2, "m/d/yyyy: {}", open.text);
         assert_eq!(open.mode, Mode::Enter, "commits like typed digits");
@@ -5602,12 +5420,12 @@ mod tests {
 
     #[test]
     fn typing_a_character_opens_the_editor_with_it() {
-        let (ctx, mut book, mut view) = typing();
+        let (drive, mut book, mut view) = typing();
         frame(
             &mut view,
             &mut book,
             vec![egui::Event::Text("5".into())],
-            &ctx,
+            &drive,
         );
         let open = view.editor.as_ref().expect("editor opened");
         assert_eq!(open.text, "5");
@@ -5620,7 +5438,7 @@ mod tests {
         // focused before reading keys — so typing at an error box was going
         // into the cells behind it, several characters of a cell's contents at
         // a time.
-        let (ctx, mut book, mut view) = typing();
+        let (drive, mut book, mut view) = typing();
         view.blocked = true;
         frame(
             &mut view,
@@ -5630,7 +5448,7 @@ mod tests {
                 plain(egui::Key::ArrowDown),
                 plain(egui::Key::Delete),
             ],
-            &ctx,
+            &drive,
         );
         assert!(view.editor.is_none(), "nothing was typed into a cell");
         assert_eq!(view.selection.cursor(), CellRef::new(0, 0), "nothing moved");
@@ -5642,21 +5460,21 @@ mod tests {
             &mut view,
             &mut book,
             vec![egui::Event::Text("5".into())],
-            &ctx,
+            &drive,
         );
         assert!(view.editor.is_some());
     }
 
     #[test]
     fn enter_commits_and_moves_down() {
-        let (ctx, mut book, mut view) = typing();
+        let (drive, mut book, mut view) = typing();
         frame(
             &mut view,
             &mut book,
             vec![egui::Event::Text("hi".into())],
-            &ctx,
+            &drive,
         );
-        frame(&mut view, &mut book, vec![plain(egui::Key::Enter)], &ctx);
+        frame(&mut view, &mut book, vec![plain(egui::Key::Enter)], &drive);
 
         assert!(view.editor.is_none());
         assert_eq!(
@@ -5675,14 +5493,14 @@ mod tests {
         // committed, and the next button in the toolbar was what had the
         // keyboard — so the next cell's typing went nowhere and its Enter
         // pressed Save. Nor may the editor keep the tab as text.
-        let (ctx, mut book, mut view) = typing();
+        let (drive, mut book, mut view) = typing();
         frame(
             &mut view,
             &mut book,
             vec![egui::Event::Text("hi".into())],
-            &ctx,
+            &drive,
         );
-        frame(&mut view, &mut book, vec![plain(egui::Key::Tab)], &ctx);
+        frame(&mut view, &mut book, vec![plain(egui::Key::Tab)], &drive);
 
         assert!(view.editor.is_none());
         assert_eq!(
@@ -5693,7 +5511,7 @@ mod tests {
                 advance: Some(Direction::Right),
             }]
         );
-        let focused = ctx.memory(|m| m.focused());
+        let focused = drive.ctx().memory(|m| m.focused());
         assert!(
             focused.is_none_or(|id| id == egui::Id::new("calx-cell-editor")),
             "the focus walked off to {focused:?}"
@@ -5703,21 +5521,21 @@ mod tests {
             &mut view,
             &mut book,
             vec![egui::Event::Text("there".into())],
-            &ctx,
+            &drive,
         );
         assert!(view.editor.is_some(), "the next cell is being edited");
     }
 
     #[test]
     fn escape_throws_the_edit_away_without_reporting_it() {
-        let (ctx, mut book, mut view) = typing();
+        let (drive, mut book, mut view) = typing();
         frame(
             &mut view,
             &mut book,
             vec![egui::Event::Text("oops".into())],
-            &ctx,
+            &drive,
         );
-        frame(&mut view, &mut book, vec![plain(egui::Key::Escape)], &ctx);
+        frame(&mut view, &mut book, vec![plain(egui::Key::Escape)], &drive);
 
         assert!(view.editor.is_none());
         assert!(
@@ -5730,28 +5548,28 @@ mod tests {
     fn an_arrow_key_commits_a_typed_edit_but_not_an_f2_edit() {
         // This is the difference between Excel's enter and edit modes, and it is
         // what makes `=A1+` followed by an arrow key point at a cell.
-        let (ctx, mut book, mut view) = typing();
+        let (drive, mut book, mut view) = typing();
         frame(
             &mut view,
             &mut book,
             vec![egui::Event::Text("1".into())],
-            &ctx,
+            &drive,
         );
         frame(
             &mut view,
             &mut book,
             vec![plain(egui::Key::ArrowRight)],
-            &ctx,
+            &drive,
         );
         assert!(view.editor.is_none(), "typed edit committed");
         assert_eq!(view.take_actions().len(), 1);
 
-        frame(&mut view, &mut book, vec![plain(egui::Key::F2)], &ctx);
+        frame(&mut view, &mut book, vec![plain(egui::Key::F2)], &drive);
         frame(
             &mut view,
             &mut book,
             vec![plain(egui::Key::ArrowRight)],
-            &ctx,
+            &drive,
         );
         assert!(view.editor.is_some(), "F2 edit keeps the caret in the text");
         assert!(view.take_actions().is_empty());
@@ -5759,16 +5577,16 @@ mod tests {
 
     #[test]
     fn the_keyboard_reports_what_it_cannot_do_itself() {
-        let (ctx, mut book, mut view) = typing();
-        frame(&mut view, &mut book, vec![plain(egui::Key::Delete)], &ctx);
-        frame(&mut view, &mut book, vec![ctrl(egui::Key::Z)], &ctx);
-        frame(&mut view, &mut book, vec![ctrl(egui::Key::Y)], &ctx);
-        frame(&mut view, &mut book, vec![egui::Event::Copy], &ctx);
+        let (drive, mut book, mut view) = typing();
+        frame(&mut view, &mut book, vec![plain(egui::Key::Delete)], &drive);
+        frame(&mut view, &mut book, vec![ctrl(egui::Key::Z)], &drive);
+        frame(&mut view, &mut book, vec![ctrl(egui::Key::Y)], &drive);
+        frame(&mut view, &mut book, vec![egui::Event::Copy], &drive);
         frame(
             &mut view,
             &mut book,
             vec![egui::Event::Paste("a\tb".into())],
-            &ctx,
+            &drive,
         );
 
         assert_eq!(
@@ -5785,10 +5603,10 @@ mod tests {
 
     #[test]
     fn navigation_keys_do_nothing_while_a_cell_is_being_edited() {
-        let (ctx, mut book, mut view) = typing();
-        frame(&mut view, &mut book, vec![plain(egui::Key::F2)], &ctx);
-        frame(&mut view, &mut book, vec![plain(egui::Key::Delete)], &ctx);
-        frame(&mut view, &mut book, vec![ctrl(egui::Key::Z)], &ctx);
+        let (drive, mut book, mut view) = typing();
+        frame(&mut view, &mut book, vec![plain(egui::Key::F2)], &drive);
+        frame(&mut view, &mut book, vec![plain(egui::Key::Delete)], &drive);
+        frame(&mut view, &mut book, vec![ctrl(egui::Key::Z)], &drive);
 
         assert!(view.editor.is_some());
         assert!(
@@ -5799,12 +5617,12 @@ mod tests {
 
     #[test]
     fn ctrl_d_fills_the_selection_from_its_own_first_row() {
-        let (ctx, mut book, mut view) = typing();
+        let (drive, mut book, mut view) = typing();
         view.selection = Selection::at(CellRef::new(0, 0));
         view.selection
             .extend_to(CellRef::new(3, 1), book.sheet(0).expect("sheet"));
 
-        frame(&mut view, &mut book, vec![ctrl(egui::Key::D)], &ctx);
+        frame(&mut view, &mut book, vec![ctrl(egui::Key::D)], &drive);
         assert_eq!(
             view.take_actions(),
             vec![Action::Fill {
@@ -5832,24 +5650,14 @@ mod tests {
 
     #[test]
     fn holding_the_button_down_does_extend_the_selection() {
-        let ctx = context();
+        let drive = driver();
         let mut book = Workbook::blank();
         let mut view = GridView::default();
         let start = egui::pos2(200.0, 200.0);
 
-        frame(
-            &mut view,
-            &mut book,
-            vec![egui::Event::PointerMoved(start)],
-            &ctx,
-        );
-        frame(&mut view, &mut book, vec![press(start, true)], &ctx);
-        frame(
-            &mut view,
-            &mut book,
-            vec![egui::Event::PointerMoved(egui::pos2(500.0, 400.0))],
-            &ctx,
-        );
+        drive.move_to(&mut on(&mut view, &mut book), start);
+        drive.press_at(&mut on(&mut view, &mut book), start);
+        drive.move_to(&mut on(&mut view, &mut book), egui::pos2(500.0, 400.0));
         assert!(
             !view.selection.is_single_cell(),
             "a held drag selects a block"

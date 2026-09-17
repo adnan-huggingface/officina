@@ -6037,6 +6037,30 @@ does. One `Change::Range` of the same count undoes it. Test
 `deleting_a_selection_across_cells_clears_every_cell_it_covers`,
 Delete and Backspace and the undo.
 
+## Calx's tests drive through the harness too (2026-09-17)
+
+Calx's tests built their own frames: the grid's widget tests ran
+`GridView::show` in a context of their own (214 frames with button events
+spelled out), the chart inspector's ran `app.ui` alone, and the dialog
+tests ran `overlay` alone or `overlay` and `ui` by hand. They all run through
+`ui_kit::drive::Driver` now.
+
+- **`ui_kit::drive::Driven`** is what a driver frame runs. Every
+  `DocumentApp` has it and runs in the shell's frame. The grid's tests
+  implement it for a borrowed `Sheet { view, book }` and run the grid bare,
+  so their coordinates are still the grid's own.
+- The pointer statements became `press_at`, `move_to`, `release_at`,
+  `drag`, `click` and the new **`double_click`**. The right button uses the
+  new **`press_button`**, **`release_button`** and **`right_click`**.
+  **`Driver::cursor()`** is the pointer shape the last frame asked for,
+  which the grid's resize and fill-handle tests assert.
+- The inspector's click-and-type tests and the dialog tests run the whole
+  window: `Driver::sized`, `click`, `type_text`, `press`.
+
+The 161 tests are the same by name, and all pass. Test
+`a_drag_is_a_press_moves_and_a_release_and_a_hold_keeps_the_button_down`
+covers the new gestures (LEARNINGS: a double click after a right click).
+
 ## The harness sees what the user sees (2026-09-16)
 
 Fifteen fixes in one session paid for the same missing tools each time;
