@@ -69,6 +69,18 @@ pub fn tracked(document: &Document) -> Vec<Tracked> {
 /// The tracked changes of one flow, appended.
 fn tracked_in(document: &Document, scope: Scope, out: &mut Vec<Tracked>) {
     for (index, paragraph) in document.paragraphs_in(scope).iter().enumerate() {
+        // A paragraph's own formatting change (`<w:pPrChange>`) is about the
+        // whole paragraph, so it comes first.
+        if let Some(change) = &paragraph.prop_change {
+            out.push(Tracked {
+                scope,
+                paragraph: index,
+                offset: 0,
+                mark: change.mark.clone(),
+                what: "paragraph formatting changed",
+                text: paragraph.text().trim().chars().take(60).collect(),
+            });
+        }
         let mut offset = 0usize;
         walk(&paragraph.content, scope, index, &mut offset, out);
         // A paragraph *mark* can be inserted or deleted too — that is what a
@@ -224,9 +236,7 @@ fn resolve_all_in(
             .is_some_and(|revision| !how.keeps(revision));
         if joins {
             let tail = resolved.remove(index);
-            let head = resolved[index - 1].clone();
-            resolved[index - 1] = crate::text::merge(&head, &tail);
-            resolved[index - 1].mark_revision = None;
+            resolved[index - 1] = joined(&resolved[index - 1], &tail);
         }
     }
     history.push(
@@ -289,8 +299,7 @@ pub fn resolve_one(
                     second: Box::new(next.clone()),
                 },
             );
-            let mut joined = crate::text::merge(&before, &next);
-            joined.mark_revision = None;
+            let joined = joined(&before, &next);
             crate::edit::replace_range(document, scope, index..index + 2, vec![joined]);
             return true;
         }
@@ -319,10 +328,48 @@ pub fn resolve_one(
     true
 }
 
+/// Two paragraphs made one because the mark between them went: a deletion
+/// accepted, or an insertion rejected.
+///
+/// **The mark that stays is the second paragraph's, and so are the
+/// properties** — Word's rule, measured: a heading deleted whole, accepted,
+/// leaves the body paragraph after it a body paragraph. Where Word means the
+/// text before the mark to keep its look, it says so in the file ahead of
+/// time, as a formatting change on the following paragraph. The joined
+/// paragraph keeps the first one's identity, as any join does, and whatever
+/// is still tracked on the second one's mark.
+fn joined(head: &Paragraph, tail: &Paragraph) -> Paragraph {
+    let mut joined = crate::text::merge(head, tail);
+    joined.props = tail.props.clone();
+    joined.prop_change = tail.prop_change.clone();
+    joined.mark_revision = tail.mark_revision.clone();
+    joined
+}
+
 /// Applies `how` to a paragraph's revisions — all of them, or just one.
+///
+/// With all of them, a mark that stays is an ordinary mark afterwards; a mark
+/// that goes is the caller's to join, since it takes the next paragraph.
 fn settle_paragraph(paragraph: &Paragraph, how: Resolve, only: Option<&Mark>) -> Paragraph {
     let mut settled = paragraph.clone();
     settled.content = settle(&paragraph.content, how, only);
+    if let Some(change) = &paragraph.prop_change {
+        if only.is_none_or(|mark| &change.mark == mark) {
+            if how == Resolve::Reject {
+                // What `<w:pPrChange>` remembers is the paragraph's properties
+                // alone: the mark's own formatting is not among them, and stays.
+                if let wp_model::revision::PreviousProps::Paragraph(previous) = &change.previous {
+                    let mark = settled.props.mark.take();
+                    settled.props = (**previous).clone();
+                    settled.props.mark = mark;
+                }
+            }
+            settled.prop_change = None;
+        }
+    }
+    if only.is_none() {
+        settled.mark_revision = None;
+    }
     crate::text::prune(&mut settled);
     settled
 }
@@ -1320,6 +1367,358 @@ mod tests {
         resolve_all(&mut document, &mut history, Resolve::Reject);
         assert_eq!(document.paragraphs().len(), 1);
         assert_eq!(document.text(), "firstsecond");
+    }
+
+    // ---- tracked paragraph marks, in the shapes Word writes them ----------
+    //
+    // Measured on Word 16 through COM: the story workspace's
+    // `bugs/evidence/word/paragraph-marks.ps1`, with each case's tracked XML
+    // and what Accept All and Reject All made of it.
+
+    const HEADING: wp_model::StyleId = wp_model::StyleId(1);
+    const QUOTE: wp_model::StyleId = wp_model::StyleId(2);
+
+    fn by(id: u32) -> Mark {
+        Mark::new(id, "Adnan Khan")
+    }
+
+    /// A paragraph of `text` in `style`, Normal when `None`.
+    fn para(style: Option<wp_model::StyleId>, text: &str) -> Paragraph {
+        let mut paragraph = Paragraph::of(text);
+        paragraph.props.style = style;
+        paragraph
+    }
+
+    /// `text`, deleted as change `id`.
+    fn struck(id: u32, text: &str) -> Inline {
+        Inline::Revised {
+            revision: Revision::Deleted(by(id)),
+            content: vec![Inline::Run(Run {
+                content: vec![Piece::Deleted(text.into())],
+                ..Run::default()
+            })],
+        }
+    }
+
+    /// A paragraph deleted whole: its mark as change `id`, its text as the
+    /// next.
+    fn deleted_whole(style: Option<wp_model::StyleId>, text: &str, id: u32) -> Paragraph {
+        let mut paragraph = Paragraph {
+            content: vec![struck(id + 1, text)],
+            ..Paragraph::new()
+        };
+        paragraph.props.style = style;
+        paragraph.mark_revision = Some(Revision::Deleted(by(id)));
+        paragraph
+    }
+
+    /// A formatting change to a paragraph, which had `previous` before it.
+    fn restyled(id: u32, previous: Option<wp_model::StyleId>) -> Option<Box<wp_model::PropChange>> {
+        Some(Box::new(wp_model::PropChange {
+            mark: by(id),
+            previous: wp_model::revision::PreviousProps::Paragraph(Box::new(
+                wp_model::prop::ParaProps {
+                    style: previous,
+                    ..Default::default()
+                },
+            )),
+        }))
+    }
+
+    type Shape = Vec<(Option<wp_model::StyleId>, String)>;
+
+    /// Each paragraph's style and text, as the probe reported Word's.
+    fn shape(document: &Document) -> Shape {
+        document
+            .paragraphs()
+            .iter()
+            .map(|paragraph| (paragraph.props.style, paragraph.text()))
+            .collect()
+    }
+
+    fn row(style: Option<wp_model::StyleId>, text: &str) -> (Option<wp_model::StyleId>, String) {
+        (style, text.to_owned())
+    }
+
+    /// `word` with every change settled `how` at once, with nothing left
+    /// tracked, and one undo giving `word` back.
+    fn all_at_once(word: &Document, how: Resolve) -> Shape {
+        let mut document = word.clone();
+        let mut history = History::new();
+        resolve_all(&mut document, &mut history, how);
+        let left = tracked(&document);
+        assert!(left.is_empty(), "{how:?} left {left:?}");
+        let settled = shape(&document);
+        history.undo(&mut document);
+        assert_eq!(document.body, word.body, "undo after {how:?}");
+        settled
+    }
+
+    /// The same, one change at a time in the list's order, each of which
+    /// goes from the list when it is settled.
+    fn one_by_one(word: &Document, how: Resolve) -> Shape {
+        let mut document = word.clone();
+        let mut history = History::new();
+        let mut steps = 0;
+        while let Some(change) = tracked(&document).first().cloned() {
+            let before = tracked(&document).len();
+            assert!(
+                resolve_one(&mut document, &mut history, &change.mark, how),
+                "{change:?}"
+            );
+            assert!(
+                !tracked(&document)
+                    .iter()
+                    .any(|left| left.mark == change.mark),
+                "{how:?} of {change:?} left it listed"
+            );
+            assert!(tracked(&document).len() < before);
+            steps += 1;
+        }
+        let settled = shape(&document);
+        for _ in 0..steps {
+            history.undo(&mut document);
+        }
+        assert_eq!(
+            document.body, word.body,
+            "undo, step by step, after {how:?}"
+        );
+        settled
+    }
+
+    /// Settled both ways, all at once and one at a time, the same each way.
+    fn settles(word: &Document, accepted: Shape, rejected: Shape) {
+        for (how, expected) in [(Resolve::Accept, accepted), (Resolve::Reject, rejected)] {
+            assert_eq!(all_at_once(word, how), expected, "{how:?} All");
+            assert_eq!(one_by_one(word, how), expected, "{how:?}, one by one");
+        }
+    }
+
+    /// Word's rule for a paragraph mark that goes, whether a deletion is
+    /// accepted or an insertion rejected: the paragraph left has the
+    /// properties of the mark that stays, which is the following paragraph's.
+    /// A deleted heading accepted leaves the body text as body text.
+    #[test]
+    fn a_paragraph_mark_that_goes_leaves_the_following_paragraphs_properties() {
+        // delete-first: a heading deleted whole, before a Normal paragraph.
+        let word = document(vec![
+            Block::Paragraph(deleted_whole(Some(HEADING), "Title words", 0)),
+            Block::Paragraph(para(None, "Body words")),
+        ]);
+        settles(
+            &word,
+            vec![row(None, "Body words")],
+            vec![row(Some(HEADING), "Title words"), row(None, "Body words")],
+        );
+
+        // delete-middle: a quotation deleted whole.
+        let word = document(vec![
+            Block::Paragraph(para(Some(HEADING), "Title words")),
+            Block::Paragraph(deleted_whole(Some(QUOTE), "Quoted words", 0)),
+            Block::Paragraph(para(None, "Body words")),
+        ]);
+        settles(
+            &word,
+            vec![row(Some(HEADING), "Title words"), row(None, "Body words")],
+            vec![
+                row(Some(HEADING), "Title words"),
+                row(Some(QUOTE), "Quoted words"),
+                row(None, "Body words"),
+            ],
+        );
+
+        // delete-first-two: the heading and the quotation, from the start.
+        let word = document(vec![
+            Block::Paragraph(deleted_whole(Some(HEADING), "Title words", 0)),
+            Block::Paragraph(deleted_whole(Some(QUOTE), "Quoted words", 2)),
+            Block::Paragraph(para(None, "Body words")),
+        ]);
+        settles(
+            &word,
+            vec![row(None, "Body words")],
+            vec![
+                row(Some(HEADING), "Title words"),
+                row(Some(QUOTE), "Quoted words"),
+                row(None, "Body words"),
+            ],
+        );
+
+        // insert-after-heading: Enter at the end of a heading, then words.
+        let mut title = para(Some(HEADING), "Title words");
+        title.mark_revision = Some(Revision::Inserted(by(0)));
+        let added = Paragraph {
+            props: title.props.clone(),
+            content: vec![inserted_by(
+                "Adnan Khan",
+                1,
+                vec![Inline::Run(Run::of("New words"))],
+            )],
+            ..Paragraph::new()
+        };
+        let word = document(vec![
+            Block::Paragraph(title),
+            Block::Paragraph(added),
+            Block::Paragraph(para(None, "Body words")),
+        ]);
+        settles(
+            &word,
+            vec![
+                row(Some(HEADING), "Title words"),
+                row(Some(HEADING), "New words"),
+                row(None, "Body words"),
+            ],
+            vec![row(Some(HEADING), "Title words"), row(None, "Body words")],
+        );
+
+        // insert-at-start: a new paragraph before the heading.
+        let mut added = Paragraph {
+            content: vec![inserted_by(
+                "Adnan Khan",
+                1,
+                vec![Inline::Run(Run::of("New words"))],
+            )],
+            ..Paragraph::new()
+        };
+        added.props.style = Some(HEADING);
+        added.mark_revision = Some(Revision::Inserted(by(0)));
+        let word = document(vec![
+            Block::Paragraph(added),
+            Block::Paragraph(para(Some(HEADING), "Title words")),
+            Block::Paragraph(para(None, "Body words")),
+        ]);
+        settles(
+            &word,
+            vec![
+                row(Some(HEADING), "New words"),
+                row(Some(HEADING), "Title words"),
+                row(None, "Body words"),
+            ],
+            vec![row(Some(HEADING), "Title words"), row(None, "Body words")],
+        );
+
+        // replace-one-with-two: a quotation's text replaced by two
+        // paragraphs of it.
+        let mut first = Paragraph {
+            content: vec![inserted_by(
+                "Adnan Khan",
+                1,
+                vec![Inline::Run(Run::of("First new"))],
+            )],
+            ..Paragraph::new()
+        };
+        first.props.style = Some(QUOTE);
+        first.mark_revision = Some(Revision::Inserted(by(0)));
+        let mut second = Paragraph {
+            content: vec![
+                inserted_by("Adnan Khan", 2, vec![Inline::Run(Run::of("Second new"))]),
+                struck(3, "Body words"),
+            ],
+            ..Paragraph::new()
+        };
+        second.props.style = Some(QUOTE);
+        let word = document(vec![
+            Block::Paragraph(para(Some(HEADING), "Title words")),
+            Block::Paragraph(first),
+            Block::Paragraph(second),
+            Block::Paragraph(para(None, "End words")),
+        ]);
+        settles(
+            &word,
+            vec![
+                row(Some(HEADING), "Title words"),
+                row(Some(QUOTE), "First new"),
+                row(Some(QUOTE), "Second new"),
+                row(None, "End words"),
+            ],
+            vec![
+                row(Some(HEADING), "Title words"),
+                row(Some(QUOTE), "Body words"),
+                row(None, "End words"),
+            ],
+        );
+    }
+
+    /// Word keeps the text before a deleted mark looking as it did by giving
+    /// the following paragraph that look ahead of time, as a tracked
+    /// formatting change (`delete-last`: from the end of a heading's text to
+    /// the end of the document). A paragraph's formatting change is listed,
+    /// and accepting it keeps the look while rejecting puts the old one
+    /// back — all but the mark's own formatting, which it does not record.
+    #[test]
+    fn a_paragraphs_formatting_change_is_listed_accepted_and_rejected() {
+        let mut title = para(Some(HEADING), "Title words");
+        title.mark_revision = Some(Revision::Deleted(by(0)));
+        title.prop_change = restyled(1, Some(HEADING));
+        let mut body = Paragraph {
+            content: vec![struck(3, "Body words")],
+            ..Paragraph::new()
+        };
+        body.props.style = Some(HEADING);
+        let mut bold = wp_model::RunProps::default();
+        bold.toggles.set(Toggle::Bold, true);
+        body.props.mark = Some(Box::new(bold.clone()));
+        body.prop_change = restyled(2, None);
+        let word = document(vec![Block::Paragraph(title), Block::Paragraph(body)]);
+
+        let listed: Vec<(usize, &str)> = tracked(&word)
+            .iter()
+            .map(|change| (change.paragraph, change.what))
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                (0, "paragraph formatting changed"),
+                (0, "paragraph break deleted"),
+                (1, "paragraph formatting changed"),
+                (1, "deleted"),
+            ]
+        );
+        assert_eq!(tracked(&word)[0].text, "Title words");
+        assert_eq!(
+            next_revision_id(&word),
+            4,
+            "a formatting change's id is taken"
+        );
+
+        settles(
+            &word,
+            vec![row(Some(HEADING), "Title words")],
+            vec![row(Some(HEADING), "Title words"), row(None, "Body words")],
+        );
+        // The mark accepted on its own takes the heading's change with it,
+        // and leaves the following paragraph's to be settled on its own:
+        // rejected, the joined paragraph is body text again.
+        let mut document = word.clone();
+        let mut history = History::new();
+        assert!(resolve_one(
+            &mut document,
+            &mut history,
+            &by(0),
+            Resolve::Accept
+        ));
+        let left: Vec<u32> = tracked(&document)
+            .iter()
+            .map(|change| change.mark.id)
+            .collect();
+        assert_eq!(left, [2, 3]);
+        assert!(resolve_one(
+            &mut document,
+            &mut history,
+            &by(2),
+            Resolve::Reject
+        ));
+        assert_eq!(shape(&document), [row(None, "Title words")]);
+
+        for how in [Resolve::Accept, Resolve::Reject] {
+            let mut document = word.clone();
+            resolve_all(&mut document, &mut History::new(), how);
+            let last = document.paragraphs().last().map(|p| p.props.mark.clone());
+            assert_eq!(
+                last,
+                Some(Some(Box::new(bold.clone()))),
+                "{how:?}: the last mark keeps its own formatting"
+            );
+        }
     }
 
     #[test]

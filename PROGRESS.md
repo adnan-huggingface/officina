@@ -6661,6 +6661,56 @@ Test: `a_card_clicked_on_its_words_goes_to_its_place` clicks the author,
 the kind of change and the changed text of a deletion's card, and the words
 of a comment, and fails without the fix at each.
 
+## Tracked paragraph marks settle as Word settles them (2026-09-17)
+
+Measured on Word 16 through COM before Assist's proposals begin to insert
+and delete paragraph marks: seven cases (a paragraph deleted whole at the
+start, in the middle, two at once, a deletion from the end of a heading to
+the end, a paragraph typed after a heading and before it, and one
+paragraph's text replaced by two), each built with Track Changes on, its
+XML kept, and Accept All and Reject All read back. The probe and its
+results are kept in the story workspace; saving a tracked document through
+`SaveAs2` held Word at a box nobody could see, so each case is built twice
+instead.
+
+**Word's rule: when a paragraph mark goes — a deletion accepted, an
+insertion rejected — the paragraph left has the properties of the mark that
+stays, the following paragraph's.** A heading deleted whole and accepted
+leaves the body text after it body text. Where the text before the mark
+survives, Word says ahead of time how it should look: deleting from the end
+of a heading's text to the end of the document gives the following
+paragraph the heading's style as a tracked formatting change
+(`<w:pPrChange>`), which accepting keeps and rejecting undoes.
+
+Scriva got three things wrong:
+
+- **The join kept the first paragraph's properties** (`text::merge`), so
+  accepting the deleted heading left "Body words" a heading. `revise::joined`
+  takes the second paragraph's properties, its formatting change and its
+  mark's revision, and the first paragraph's identity.
+- **A paragraph's formatting change was never listed or settled**, so the
+  Review pane could not show it, Accept All left it in the file, and Reject
+  All did not put the old style back. It is listed ("paragraph formatting
+  changed") before the paragraph's text, and settled like a run's; a
+  rejection keeps the mark's own formatting, which `<w:pPrChange>` does not
+  record.
+- **Accept All left an accepted inserted mark tracked**, and Reject All a
+  rejected deleted one: the loop joined the marks that went and never
+  cleared those that stayed.
+
+Tests: `a_paragraph_mark_that_goes_leaves_the_following_paragraphs_properties`
+(six of Word's cases in Word's own shapes, each accepted and rejected all at
+once and one change at a time in the list's order, each to Word's result,
+with nothing left listed and undo giving the tracked document back) and
+`a_paragraphs_formatting_change_is_listed_accepted_and_rejected` (the
+seventh, a mark accepted on its own leaving the following paragraph's
+change to be rejected, and the mark's formatting kept). Eight mutations,
+one rule broken at a time, were each caught.
+
+No reader or writer changed; `fidelity` holds. The writer's own gap — a
+paragraph written afresh loses its tracked mark and formatting changes —
+is the next entry's.
+
 ## The harness sees what the user sees (2026-09-16)
 
 Fifteen fixes in one session paid for the same missing tools each time;

@@ -2285,3 +2285,16 @@ here. The list says so: such an entry carries `remote_host` (and
 `remote_model`), which `/api/show` gives too. A cloud model's tag is
 `cloud` or ends in `-cloud`.
 
+**When Word removes a paragraph mark, the following paragraph's properties
+survive.** Accepting a tracked deletion that took a mark, or rejecting an
+insertion that added one, joins two paragraphs under the second one's mark,
+and a paragraph's properties live on its mark. A heading deleted whole
+therefore leaves the body text after it body text, where joining by
+keeping the first paragraph's properties (which is what typing Delete at
+the end of a heading looks like) would make the body text a heading. Word
+keeps a surviving head's look by recording it ahead of time: its tracked
+deletion from the end of a heading's text gives the following paragraph
+the heading's style as a `<w:pPrChange>` whose previous properties are the
+old ones. The deleted mark itself is `<w:del>` inside the paragraph's
+`<w:pPr><w:rPr>`, and an inserted one `<w:ins>` there.
+

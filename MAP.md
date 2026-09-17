@@ -93,7 +93,7 @@ Every source file, its size, and the first sentence of its module doc.
 - `crates/app-scriva/src/panes/review.rs` (784) The Review pane: every tracked change and comment as a card, in document order, with what can be done about each on the card itself.
 - `crates/app-scriva/src/pictures.rs` (366) Decoding the drawings a document carries, and holding them for the painter.
 - `crates/app-scriva/src/publish.rs` (196) What leaves the editor: the fonts and pictures a page renderer needs.
-- `crates/app-scriva/src/revise.rs` (1517) Accepting and rejecting tracked changes, and recording new ones.
+- `crates/app-scriva/src/revise.rs` (1916) Accepting and rejecting tracked changes, and recording new ones.
 - `crates/app-scriva/src/shaper.rs` (869) Measuring text with the faces the application actually has.
 - `crates/app-scriva/src/text.rs` (781) Editing the text of a paragraph.
 - `crates/app-scriva/src/toolbar.rs` (1091) The toolbar: one row, on which the caret's state can be read at a glance.
@@ -427,6 +427,8 @@ Every comment that says an application was *measured* — the rules this code ke
 - `crates/app-scriva/src/author.rs:5` Nothing measured what it *writes* — and the faults that cost a week of afternoons were all there: a new document that stated no defaults and came back from Word a third taller, an inserted table whose cells stated no …
 - `crates/app-scriva/src/edit.rs:677` Measured on Word, not designed: a page break *inside* a cell is nothing to Word's layout, wherever in the cell it is, and the layout here ignores one too.
 - `crates/app-scriva/src/edit.rs:2026` Measured on Word 16 (`bugs/page-break-in-table-cell.md` in the story):
+- `crates/app-scriva/src/revise.rs:335` **The mark that stays is the second paragraph's, and so are the properties** — Word's rule, measured: a heading deleted whole, accepted, leaves the body paragraph after it a body paragraph.
+- `crates/app-scriva/src/revise.rs:1374` Measured on Word 16 through COM: the story workspace's `bugs/evidence/word/paragraph-marks.ps1`, with each case's tracked XML and what Accept All and Reject All made of it.
 - `crates/app-scriva/src/shaper.rs:454` A face this machine does not have, whose line Word was measured to lay: its ideal, and the base every face without a measured base gets — the ideal to a twenty-fourth of a point.
 - `crates/app-scriva/src/shaper.rs:565` Word's laid line pitch, measured rather than derived.
 - `crates/app-scriva/src/shaper.rs:576` **Aptos is measured and deliberately absent.** Word's default face since 2024 fits the same law with a base of exactly 1.2 times the size and a correction of *six* tenths of a point — `tools/probe` writes the probes a…
