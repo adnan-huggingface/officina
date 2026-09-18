@@ -1548,3 +1548,50 @@ fn the_document_is_saved_from_the_composer_and_the_request_is_not_lost() {
     assert_eq!(app.document.paragraphs()[1].text(), before);
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// No test reaches a helper, whatever the settings say — the helper on this
+/// computer included, whose weights a test must never download and whose
+/// model a test must never load.
+#[test]
+fn no_test_reaches_a_helper() {
+    let drive = Driver::new();
+    let before = ui_kit::headless::helpers_refused();
+    let mut local = here();
+    local.helper = Some(Choice::Local);
+    // No `Reach` of the test's own: the pane's real one, which is what an
+    // application uses, against the helpers a request goes straight to. (One
+    // over the internet is asked about before anything is sent, which is its
+    // own test.)
+    for settings in [local, here()] {
+        let scratch = Scratch::new("no-helper");
+        let path = scratch.0.join(::assist::settings::FILE);
+        settings.save(&path).expect("settings kept");
+        let mut app = app_with(&["Title", "text"]);
+        app.assist = Some(Box::new(ui_kit::assist::Assist::with(
+            crate::assistant::setup(),
+            std::sync::Arc::new(ui_kit::assist::Real),
+            path,
+        )));
+        drive.settle(&mut app);
+        ask(&drive, &mut app, "Improve the wording");
+        finished(&drive, &mut app);
+        // Nothing was proposed, and the transcript says a helper was refused
+        // rather than answering.
+        assert!(assistants(&app).is_empty(), "nothing was changed");
+        let notes: Vec<String> = transcript(&app)
+            .into_iter()
+            .filter_map(|entry| match entry {
+                Entry::Note { sentence, .. } => Some(sentence),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            notes.iter().any(|note| note.contains("test")),
+            "the refusal says why: {notes:?}"
+        );
+    }
+    assert!(
+        ui_kit::headless::helpers_refused() > before,
+        "and every one of them was counted"
+    );
+}

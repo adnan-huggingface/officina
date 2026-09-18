@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::path::Path;
 
 use ::assist::models::{claude_model, cost_words, CLAUDE_MODELS};
-use ::assist::{Choice, ClaudeLogin, Failure, Row, Settings, Usage, LOCAL_NOT_READY, LOCAL_READY};
+use ::assist::{Choice, ClaudeLogin, Failure, Row, Settings, Usage};
 use eframe::egui;
 
 use super::choosing::model_words;
@@ -60,6 +60,10 @@ type Checking = Background<(Result<String, Failure>, usize)>;
 /// How the box closed.
 pub(crate) enum Closed {
     Cancelled,
+    /// Download the helper on this computer, or take it off again — asked
+    /// for from the box, done by the pane, which owns the thread.
+    Download,
+    Remove,
     /// To be kept: the settings to write, which are what was checked when
     /// anything was, and what the service answered.
     Saved {
@@ -209,6 +213,9 @@ impl SettingsBox {
         self.look(ctx, reach);
         let checking = self.checking.is_some();
         let mut answer = None;
+        // Asked for on the local helper's row, and done by the pane, which
+        // owns the thread: the box only says what the person pressed.
+        let mut asked: Option<Closed> = None;
         egui::Modal::new(egui::Id::new(ID))
             .frame(dialog::frame(ctx))
             .show(ctx, |ui| {
@@ -222,6 +229,9 @@ impl SettingsBox {
                     ui.add_enabled_ui(!checking, |ui| {
                         self.helpers(ui);
                         match self.draft.helper {
+                            Some(Choice::Local) => {
+                                asked = self.on_this_computer(ui, reach);
+                            }
                             Some(Choice::Claude) => self.claude(ui, spent, cents),
                             Some(Choice::Ollama) => self.ollama(ui, spent, cents),
                             Some(Choice::Service) => self.service(ui, spent, cents),
@@ -260,6 +270,9 @@ impl SettingsBox {
                     answer = pressed.or_else(|| dialog::answered(ui));
                 });
             });
+        if asked.is_some() {
+            return asked;
+        }
         match answer {
             // Cancel is always a way out, a check under way included: its
             // answer is simply not waited for.
@@ -313,10 +326,7 @@ impl SettingsBox {
                 self.refused = Some("Choose a helper first.".into());
                 None
             }
-            Some(Choice::Local) if !LOCAL_READY => {
-                self.refused = Some(LOCAL_NOT_READY.into());
-                None
-            }
+
             _ if !needs_check(&merged, &current) => Some(Closed::Saved {
                 settings: Box::new(merged),
                 checked: None,
@@ -346,12 +356,8 @@ impl SettingsBox {
 
     fn helpers(&mut self, ui: &mut egui::Ui) {
         dialog::section(ui, "Helper");
-        let local = match LOCAL_READY {
-            true => "A helper on this computer".to_owned(),
-            false => "A helper on this computer — not ready yet".to_owned(),
-        };
         for (choice, words) in [
-            (Choice::Local, local.as_str()),
+            (Choice::Local, "A helper on this computer"),
             (Choice::Claude, "Claude, over the internet"),
             (Choice::Ollama, "Ollama"),
             (Choice::Service, "Another service (advanced)"),
@@ -363,6 +369,69 @@ impl SettingsBox {
                 self.refused = None;
             }
         }
+    }
+
+    /// The helper on this computer: what it is, what it costs in disk, and
+    /// the one button — download it, or take it off again.
+    ///
+    /// **What it will download is said before it downloads.** The model's
+    /// name, its licence and its size are on the row, from the same constant
+    /// the download checks what arrives against.
+    fn on_this_computer(&mut self, ui: &mut egui::Ui, reach: &Arc<dyn Reach>) -> Option<Closed> {
+        dialog::section(ui, "The helper on this computer");
+        let model = ::assist::local::MODEL;
+        let had = reach.downloaded();
+        let words = match had {
+            Some(bytes) => format!(
+                "{} ({}) is downloaded, and takes {}. {}.",
+                model.name,
+                model.licence,
+                ::assist::local::size_of(bytes),
+                ::assist::local::GOOD_AT
+            ),
+            None => format!(
+                "{} ({}) — {} to download, about {} of memory while it runs. {}.",
+                model.name,
+                model.licence,
+                ::assist::local::size_of(model.bytes()),
+                ::assist::local::size_of(model.memory),
+                ::assist::local::GOOD_AT
+            ),
+        };
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(words)
+                    .size(theme::TEXT_SMALL)
+                    .color(theme::INK_SOFT),
+            )
+            .wrap(),
+        );
+        let mut closed = None;
+        ui.horizontal(|ui| match had {
+            Some(bytes) => {
+                if ui
+                    .button(format!(
+                        "Remove the downloaded helper (frees {})",
+                        ::assist::local::size_of(bytes)
+                    ))
+                    .clicked()
+                {
+                    closed = Some(Closed::Remove);
+                }
+            }
+            None => {
+                if ui
+                    .button(format!(
+                        "Download it ({})",
+                        ::assist::local::size_of(model.bytes())
+                    ))
+                    .clicked()
+                {
+                    closed = Some(Closed::Download);
+                }
+            }
+        });
+        closed
     }
 
     fn claude(&mut self, ui: &mut egui::Ui, spent: Usage, cents: Option<f64>) {

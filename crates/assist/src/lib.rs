@@ -26,6 +26,7 @@ pub mod compatible;
 mod conversation;
 mod event;
 mod http;
+pub mod local;
 pub mod machine;
 pub mod models;
 pub mod offline;
@@ -47,8 +48,8 @@ pub use event::{Ending, Event, Failure, FailureKind, Usage};
 pub use machine::{ladder, size_words, Installed, Machine, Row, ThisComputer};
 pub use models::{ClaudeModel, CLAUDE_MODELS, DEFAULT_CLAUDE_MODEL};
 pub use provider::{
-    check, connect, destination, stream, Answer, Effort, Provider, Request, StopFlag,
-    LOCAL_NOT_READY, LOCAL_READY,
+    check, check_in, connect, connect_in, destination, stream, Answer, Effort, Provider, Request,
+    StopFlag, LOCAL_NOT_READY, LOCAL_READY,
 };
 pub use scripted::{Heard, Scripted, Turn};
 pub use session::{Host, Session, MOST_STEPS};

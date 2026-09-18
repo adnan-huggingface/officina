@@ -50,6 +50,8 @@ pub(crate) struct Http {
 pub(crate) struct Response {
     pub status: u16,
     pub retry_after: Option<Duration>,
+    /// `Content-Range`, for a download that asked for part of a file.
+    pub content_range: Option<String>,
     pub body: BufReader<ureq::BodyReader<'static>>,
 }
 
@@ -57,6 +59,29 @@ impl Http {
     /// A client for the helper at `address`.
     pub fn new(address: &str) -> Http {
         Http::build(address, CONNECT, FIRST_WORD, WHOLE_ANSWER)
+    }
+
+    /// A client for a download: hours rather than minutes to read what comes
+    /// over it, because what comes is a gigabyte — and the one client that
+    /// follows a redirect.
+    ///
+    /// **The rule is about keys, and a download carries none.** Every other
+    /// client refuses a redirect, because ureq keeps a header like
+    /// `x-api-key` when it follows one and a key may only ever go to the
+    /// address it belongs to. What is fetched here is a public file asked for
+    /// with no credential at all, and the place it is published redirects to
+    /// the machine that actually holds it; a client that refused would be a
+    /// download that could never finish. What arrives is checked against the
+    /// hash the constant names, so where it came from cannot change what it
+    /// is.
+    pub fn for_download(address: &str) -> Http {
+        Http::built(
+            address,
+            CONNECT,
+            Duration::from_secs(60),
+            Duration::from_secs(6 * 60 * 60),
+            5,
+        )
     }
 
     /// A client for a quick question — whether a server is there at all —
@@ -67,6 +92,16 @@ impl Http {
     }
 
     fn build(address: &str, connect: Duration, first_word: Duration, whole: Duration) -> Http {
+        Http::built(address, connect, first_word, whole, 0)
+    }
+
+    fn built(
+        address: &str,
+        connect: Duration,
+        first_word: Duration,
+        whole: Duration,
+        redirects: u32,
+    ) -> Http {
         let tls = TlsConfig::builder()
             .provider(TlsProvider::Rustls)
             .root_certs(RootCerts::PlatformVerifier)
@@ -80,7 +115,7 @@ impl Http {
             // A redirect is not followed. ureq drops only `Authorization` when
             // it follows one, so a key in `x-api-key` would go to wherever the
             // redirect pointed; a helper's address is where its key may go.
-            .max_redirects(0)
+            .max_redirects(redirects)
             .user_agent(concat!("officina-assist/", env!("CARGO_PKG_VERSION")))
             .timeout_connect(Some(connect))
             .timeout_recv_response(Some(first_word))
@@ -139,14 +174,30 @@ fn respond(
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.trim().parse::<u64>().ok())
         .map(Duration::from_secs);
+    let content_range = response
+        .headers()
+        .get("content-range")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
     Ok(Response {
         status: response.status().as_u16(),
         retry_after,
+        content_range,
         body: BufReader::new(response.into_body().into_reader()),
     })
 }
 
 impl Response {
+    /// Which byte a partial answer starts at, as `Content-Range` says:
+    /// `bytes 40000-99999/100000`. `None` when the header is missing or is
+    /// not one of these.
+    pub fn range_from(&self) -> Option<u64> {
+        let value = self.content_range.as_ref()?;
+        let rest = value.trim().strip_prefix("bytes ")?;
+        let first = rest.split('-').next()?;
+        first.trim().parse().ok()
+    }
+
     /// What an error response says, in the service's own words when it gives
     /// them: `{"error": {"message": …}}`, `{"error": "…"}`, or the text itself.
     pub fn error_message(self) -> String {

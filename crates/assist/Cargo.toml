@@ -15,3 +15,17 @@ toml = "1.1.6"
 # Mozilla's store into the binary, and nothing is bundled.
 ureq = { version = "3.4.2", default-features = false, features = ["rustls-no-provider", "platform-verifier"] }
 rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
+# The helper on this computer: a quantized model read straight from a GGUF
+# file and run on the CPU. Pure Rust — no C++ toolchain, no CUDA, nothing to
+# install before a build — which is what keeps the gate buildable everywhere.
+# `tokenizers` takes its regexes from `fancy-regex` rather than the default
+# `onig`, whose `onig_sys` is C.
+candle-core = "0.9"
+candle-transformers = "0.9"
+tokenizers = { version = "0.21", default-features = false, features = ["fancy-regex"] }
+# The download names the file it wants by its hash, and checks what arrived.
+sha2 = "0.10"
+
+[dev-dependencies]
+# The tests build a tokenizer in memory, whose vocabulary is an ahash map.
+ahash = "0.8"

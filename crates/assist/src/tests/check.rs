@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 use super::*;
 use crate::anthropic::{Anthropic, Login};
 use crate::event::FailureKind;
-use crate::provider::{check, LOCAL_READY};
+use crate::provider::check;
 use crate::settings::{Choice, Settings};
 
 fn claude_at(address: &str, key: &str, model: &str) -> Settings {
@@ -265,7 +265,9 @@ fn a_key_is_checked_with_a_request_that_costs_nothing() {
         "Give the service's address."
     );
 
-    // Nothing, and the helper that is not built yet, are said at once.
+    // Nothing chosen, and the helper on this computer with nothing downloaded
+    // yet, are said at once — the second as a thing to do rather than a
+    // refusal.
     assert_eq!(
         check(&Settings::default()).expect_err("no helper").kind,
         FailureKind::NotReady
@@ -274,7 +276,15 @@ fn a_key_is_checked_with_a_request_that_costs_nothing() {
         helper: Some(Choice::Local),
         ..Settings::default()
     };
-    assert_eq!(check(&local).is_ok(), LOCAL_READY);
+    let not_yet = check(&local).expect_err("nothing is downloaded in a test");
+    assert_eq!(not_yet.kind, FailureKind::NotReady);
+    assert!(
+        not_yet.sentence.contains("downloaded"),
+        "{}",
+        not_yet.sentence
+    );
+    // The row is one a person can choose now — choosing it downloads what it
+    // needs rather than saying "later" — which the ladder's own test holds.
 }
 
 /// A model Ollama passes on to another server — one of its cloud models, or

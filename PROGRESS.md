@@ -6987,6 +6987,93 @@ Test: `lines_pasted_at_a_headings_end_and_rejected_leave_it_a_heading`. Three
 mutations, one rule broken at a time, were each caught. A fourth, which applies
 the rule to pastes within one paragraph too, changes nothing a test can see.
 
+## Assist, phase 5: the helper on this computer (2026-09-17)
+
+The fifth of Assist's six phases, and `PLAN.md` is its plan. The first row of the
+first-run card — "The helper on this computer — free, private, no account" — has said
+"not ready yet" since phase 1. It is true now: `assist::local` reads a quantized GGUF
+with `candle`, runs it on the CPU, and answers in the same events every other helper
+answers in, so the pane, the tools and both applications cannot tell it apart.
+
+**What is pinned.** Qwen3 1.7B at Q4_K_M, from the llama.cpp project's own conversion,
+with Qwen's own tokenizer: Apache-2.0 both, 1.3 GB and 11 MB, each with its SHA-256 in
+one constant (`local::MODEL`). Nothing is bundled and nothing is discovered: the download
+refuses a file whose hash is not the one named.
+
+**The download.** On a thread of its own, reporting bytes as they arrive, with Stop; an
+interrupted download keeps what came and asks for the rest with a range request; what is
+whole and right is never fetched twice; the weights live in the cache directory, never in
+the repository and never beside the settings, and Settings removes them and says how much
+space came back. It is the one client in the suite that follows a redirect, because what
+it fetches is a public file asked for with no key at all and the place it is published
+redirects to the machine that holds it — with the hash as the check that where it came
+from cannot change what it is.
+
+**The runtime.** The request is built in the model's own chat template with thinking off;
+tokens are made to the end token, the model's context, or a thousand, whichever comes
+first; Stop is read between them; and `<tool_call>{…}</tool_call>` becomes the same
+`ToolCall` every other helper's answer does, with anything that will not parse left as
+the words it is.
+
+**Measured, on this workstation** (`cargo xtask assist-spike`, hand-run, never in the
+gate): the model reads in 1.4 seconds, the first word of an answer comes 15.4 seconds
+after a 523-token request, and after that it writes 7.2 tokens a second, with 2.9 GB of
+memory at its highest. Decode is about what the spec hoped for; reading the request is
+what makes it feel slow. **Built with `-C target-cpu=native` the same request takes 4.2
+seconds rather than 15.4** — a fourfold difference in the wait before the first word,
+from a compiler flag alone. The shipped build stays portable; what baseline to build for
+is a decision for the release, and it is worth taking deliberately.
+
+**A test downloads nothing and loads nothing.** The runtime's tests write a Qwen3-shaped
+GGUF of 56 kB — two layers of arbitrary weights, a vocabulary of a hundred — and run it,
+so the whole suite still finishes in a moment on a machine that has never downloaded
+anything. `download_model` refuses under `cfg(test)` in its own crate as well as through
+`offline` everywhere else, because this crate's own tests deliberately stay online to
+serve themselves on loopback.
+
+Found by those tiny-model tests, before any of it ran on the real weights: generation ran
+past the model's context and panicked inside candle; and the keys and values of one
+answer were still in the model when the next request began, which fails on the shapes
+when it does not quietly answer a question nobody asked. Both are fixed, and each has a
+test.
+
+**What an independent review of the phase found**, and what each cost:
+
+- **A server could fill the disk.** The download read to the end of whatever was served
+  and only then checked the hash: a mirror with the wrong file, or a proxy with a login
+  page, wrote unboundedly first. The constant says how big the file is, so anything past
+  that stops the download at the chunk that goes over.
+- **A part answer that started again was added to what was kept.** A server answering 206
+  and then sending the whole file doubled the download and threw it away at the hash.
+  `Content-Range` is read now, and an answer that does not start where it was asked to
+  starts the file afresh.
+- **The person read the model's tool-call syntax.** Every other helper keeps its calls out
+  of its words; this one streamed `<tool_call>{…}</tool_call>` into the transcript as it
+  wrote it. What goes to the transcript is the answer with the calls taken out, and
+  nothing at all while one is being written (`next_words`).
+- **A letter that arrived in two halves was dropped from the transcript**: the answer was
+  right and what the person read kept the broken half for good. The words handed over are
+  now the difference from where the two first differ.
+- **The sentence about a bigger helper came before the failure it was about**, which reads
+  as a verdict on the request rather than on the failure, and it **survived a cleared
+  conversation**, so it could fire on the first failure a person saw in a new document and
+  then never again. It comes after, and a new conversation is a new chance.
+- **A half-download could not be reclaimed**: Remove took the finished files and left the
+  `.part`, said how much came back as though it had taken it, and left the folder behind.
+  A 416 answer left the part file to be asked about for ever; it is removed now.
+- **Stop threw the model away.** Stopping a request let go of the session, so the next one
+  read the gigabyte again — the very thing a person does most on a slow helper. The
+  weights are read once and kept (`local::READ`), and let go of when they are removed or
+  another helper is chosen (`local::forget`).
+- **The settings check loaded the whole model to answer a yes-or-no**, holding the box for
+  as long as the first request takes. It asks whether the files are there.
+- **Two windows could download into one part file.** Calx and Scriva share the cache; one
+  download at a time now holds the folder, and the other is told so.
+- **Half a model said the wrong thing**: weights with no tokenizer beside them read as
+  "could not answer" rather than "it is not all there — download it again".
+
+Thirty-six mutations, one rule broken at a time, were each caught.
+
 ## Assist, phase 4: the assistant in Calx (2026-09-17)
 
 The fourth of Assist's six phases, and `PLAN.md` is its plan: the pane phase 2 built is

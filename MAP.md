@@ -38,7 +38,7 @@ Every source file, its size, and the first sentence of its module doc.
 
 - `crates/app-calx/src/assistant/tests.rs` (709) 
 - `crates/app-calx/src/assistant.rs` (992) What Calx's helper is shown, and what its tools do to a workbook.
-- `crates/app-calx/src/assisting/tests.rs` (777) Assist in Calx's window, driven: a scripted helper, a settings file of the test's own, and nothing reached beyond them.
+- `crates/app-calx/src/assisting/tests.rs` (914) Assist in Calx's window, driven: a scripted helper, a settings file of the test's own, and nothing reached beyond them.
 - `crates/app-calx/src/assisting.rs` (471) Assist in Calx's window: the pane on the right, where the chart inspector sits; the keys and rows that open it; the helper's tool calls, run against the workbook a frame at a time; and what a whole request leaves behi…
 - `crates/app-calx/src/clock.rs` (31) The wall clock, read in the user's own time zone.
 - `crates/app-calx/src/dialogs.rs` (1921) Calx's boxes: every dialog the grid can put up, drawn from the draft in `Calx::dialog`, and the tabs of Format Cells.
@@ -70,7 +70,7 @@ Every source file, its size, and the first sentence of its module doc.
 - `crates/app-scriva/src/app/strips.rs` (339) The row under the toolbar, and the mode strips drawn on it.
 - `crates/app-scriva/src/app/surface.rs` (981) The page surface: the scrolling desk the pages sit on, what the pointer does there — carets, selections, a picture picked, dragged and resized — and where on a page a point lands.
 - `crates/app-scriva/src/app/tables.rs` (486) Editing a table: Tab from cell to cell, the edit every table command goes through, cell margins, column widths, and Insert Table itself.
-- `crates/app-scriva/src/app/tests/assisting.rs` (1550) Assist in Scriva's window: the pane, its keys and rows, and what a helper's tool calls do to the document — driven, with a scripted helper and a settings file of the test's own, and nothing reached beyond them.
+- `crates/app-scriva/src/app/tests/assisting.rs` (1597) Assist in Scriva's window: the pane, its keys and rows, and what a helper's tool calls do to the document — driven, with a scripted helper and a settings file of the test's own, and nothing reached beyond them.
 - `crates/app-scriva/src/app/tests/bands.rs` (753) Headers, footers, watermarks and sections: the bands a page wears.
 - `crates/app-scriva/src/app/tests/desk.rs` (1196) The desk as it is painted: pages, zoom, scrolling, the caret and the pointer.
 - `crates/app-scriva/src/app/tests/editing.rs` (1127) Typing, keys in the text, lists, the clipboard, formatting and undo.
@@ -112,20 +112,22 @@ Every source file, its size, and the first sentence of its module doc.
 
 - `crates/assist/src/anthropic.rs` (559) Claude, through Anthropic's Messages API.
 - `crates/assist/src/compatible.rs` (325) Ollama, and any other service that speaks the chat-completions shape.
-- `crates/assist/src/conversation.rs` (150) A conversation with a helper: the user's words, the helper's answers, and the results of the tools it asked for.
+- `crates/assist/src/conversation.rs` (153) A conversation with a helper: the user's words, the helper's answers, and the results of the tools it asked for.
 - `crates/assist/src/event.rs` (137) What a helper says while it answers, and how an answer ends.
-- `crates/assist/src/http.rs` (349) Requests to a helper over HTTP, and what their failures say.
-- `crates/assist/src/lib.rs` (56) Assist's helpers: who answers a request, how it travels, and what a helper may ask the editor to do.
-- `crates/assist/src/machine.rs` (777) What this computer already has that could answer, and the first-run card's rows in the order they are offered.
+- `crates/assist/src/http.rs` (400) Requests to a helper over HTTP, and what their failures say.
+- `crates/assist/src/lib.rs` (57) Assist's helpers: who answers a request, how it travels, and what a helper may ask the editor to do.
+- `crates/assist/src/local/tests.rs` (1180) The helper on this computer, proved without a gigabyte or a network: a model of a few dozen kilobytes that the test writes itself, and a server on loopback for the download.
+- `crates/assist/src/local.rs` (920) The helper on this computer: a quantized model read from a GGUF file and run on the CPU, with `candle`.
+- `crates/assist/src/machine.rs` (784) What this computer already has that could answer, and the first-run card's rows in the order they are offered.
 - `crates/assist/src/models.rs` (136) The Claude models Assist offers, in words, with what a paragraph costs.
 - `crates/assist/src/offline.rs` (66) A process that must reach nothing: one under a test.
 - `crates/assist/src/prompt.rs` (128) What a helper is told before any request: the editor's instructions.
-- `crates/assist/src/provider.rs` (467) The one shape every helper answers in, and the helper the settings name.
+- `crates/assist/src/provider.rs` (531) The one shape every helper answers in, and the helper the settings name.
 - `crates/assist/src/scripted.rs` (171) A helper that plays canned turns: the only helper a test may use.
 - `crates/assist/src/session.rs` (166) A conversation with one helper, and the loop that runs its tools.
 - `crates/assist/src/settings.rs` (685) What the user chose, kept in one file both applications read.
 - `crates/assist/src/sse.rs` (147) Server-sent events, read by hand: `event:` and `data:` lines, and a blank line after each event.
-- `crates/assist/src/tests/check.rs` (468) B4: a key, checked before it is kept, with a request that costs nothing.
+- `crates/assist/src/tests/check.rs` (478) B4: a key, checked before it is kept, with a request that costs nothing.
 - `crates/assist/src/tests/claude.rs` (449) A2: Claude, over a socket.
 - `crates/assist/src/tests/compatible.rs` (119) A3: another service, over a socket.
 - `crates/assist/src/tests/failures.rs` (318) A4: failures, and Stop.
@@ -280,13 +282,13 @@ Every source file, its size, and the first sentence of its module doc.
 ### `ui-kit`
 
 - `crates/ui-kit/src/assist/choosing.rs` (280) The first-run card: which helper Assist should use, asked once, in words.
-- `crates/ui-kit/src/assist/mod.rs` (1544) Assist's pane: where a person asks for a change in their own words, sees the answer arrive, sees what the helper read and changed, and stops it — and where the helper is chosen, once, in words.
+- `crates/ui-kit/src/assist/mod.rs` (1786) Assist's pane: where a person asks for a change in their own words, sees the answer arrive, sees what the helper read and changed, and stops it — and where the helper is chosen, once, in words.
 - `crates/ui-kit/src/assist/request.rs` (188) A request on a thread of its own, and anything else the pane waits for without stopping the window.
-- `crates/ui-kit/src/assist/settings_box.rs` (615) Assist ▸ Settings: the helper, and what it needs, in one box.
-- `crates/ui-kit/src/assist/tests/card.rs` (466) B3: the first-run card.
+- `crates/ui-kit/src/assist/settings_box.rs` (684) Assist ▸ Settings: the helper, and what it needs, in one box.
+- `crates/ui-kit/src/assist/tests/card.rs` (516) B3: the first-run card.
 - `crates/ui-kit/src/assist/tests/changes.rs` (690) What the pane does when its settings change under it: in the other application, in its own box, or nowhere to keep them at all.
 - `crates/ui-kit/src/assist/tests/keeping.rs` (501) B4 and B5: the settings box, and what is said before anything leaves the computer.
-- `crates/ui-kit/src/assist/tests/mod.rs` (510) The pane, driven in an application of the tests' own.
+- `crates/ui-kit/src/assist/tests/mod.rs` (561) The pane, driven in an application of the tests' own.
 - `crates/ui-kit/src/assist/tests/requests.rs` (835) B1 and B2: a request on a thread of its own, and Stop.
 - `crates/ui-kit/src/assist/tests/window.rs` (479) B6 and B7: the pane in a window, and the download's bar.
 - `crates/ui-kit/src/assist/transcript.rs` (331) The transcript: what was asked, what the helper said and did, and the changes it made, in the order they happened.

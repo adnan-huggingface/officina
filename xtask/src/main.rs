@@ -9,6 +9,7 @@ mod dist;
 mod fidelity;
 mod map;
 mod perf;
+mod spike;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -36,6 +37,7 @@ fn main() -> ExitCode {
         "author" => author(),
         "measure" => measure(rest),
         "map" => map::write().map(|path| println!("{}", path.display())),
+        "assist-spike" => spike::run(rest),
         "check" => check(rest),
         "help" | "--help" | "-h" => {
             usage();

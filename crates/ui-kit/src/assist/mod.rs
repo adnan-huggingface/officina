@@ -91,14 +91,58 @@ pub trait Reach: Send + Sync {
 
     /// The helper `settings` name, ready to ask.
     fn connect(&self, settings: &Settings) -> Box<dyn Provider> {
-        ::assist::connect(settings)
+        ::assist::connect_in(settings, downloads().as_deref())
     }
 
     /// Whether that helper is there and takes the key. Run on a thread of
     /// its own.
     fn check(&self, settings: &Settings) -> Result<String, Failure> {
-        ::assist::check(settings)
+        ::assist::check_in(settings, downloads().as_deref())
     }
+
+    /// Downloads the helper on this computer, reporting how far along it is
+    /// and reading `stop` as it goes. Run on a thread of its own, which is
+    /// why the window never waits for it.
+    fn download(
+        &self,
+        stop: &::assist::StopFlag,
+        progress: &mut dyn FnMut(::assist::local::Progress),
+    ) -> Result<(), Failure> {
+        let Some(cache) = downloads() else {
+            return Err(Failure::new(
+                ::assist::FailureKind::NotReady,
+                "There is nowhere to keep the helper: Officina's cache directory could not \
+                 be made.",
+            ));
+        };
+        ::assist::local::download_model(&cache, stop, progress)
+    }
+
+    /// Whether the helper on this computer is downloaded already, and how
+    /// much space its files take.
+    fn downloaded(&self) -> Option<u64> {
+        let cache = downloads()?;
+        ::assist::local::have(&cache).then(|| ::assist::local::MODEL.bytes())
+    }
+
+    /// Removes the downloaded helper, and says how much space came back.
+    fn remove_download(&self) -> Result<u64, String> {
+        let Some(cache) = downloads() else {
+            return Ok(0);
+        };
+        // What is in memory goes with what is on disk: a model kept for the
+        // next request is a gigabyte held for a helper that is no longer
+        // there.
+        ::assist::local::forget();
+        ::assist::local::remove(&cache).map_err(|why| why.to_string())
+    }
+}
+
+/// Where a downloaded helper's weights live: the suite's cache directory,
+/// which under a test is a directory of the test's own and never the
+/// person's. `None` when it cannot be made, which reads as "not downloaded".
+pub fn downloads() -> Option<std::path::PathBuf> {
+    crate::paths::cache_dir(crate::OFFICINA).ok()
 }
 
 /// The computer, the helpers and the checks as they are.
@@ -245,6 +289,14 @@ pub struct Progress {
     pub total: Option<u64>,
 }
 
+/// A download under way: the thread doing it, what it has reported so far,
+/// and the flag that stops it.
+struct Downloading {
+    work: request::Background<Result<(), Failure>>,
+    said: mpsc::Receiver<::assist::local::Progress>,
+    stop: ::assist::StopFlag,
+}
+
 /// A request under way.
 struct Running {
     request: request::Request,
@@ -311,6 +363,12 @@ pub struct Assist {
     /// What Claude's part of that cost, in cents, once Claude was asked.
     cents: Option<f64>,
     download: Option<Progress>,
+    /// The download under way: the thread, and the stop that ends it.
+    downloading: Option<Downloading>,
+    /// How many requests in a row the helper on this computer has failed,
+    /// and whether the sentence about a bigger one has been said already.
+    failed_in_a_row: usize,
+    said_what_it_is_not_good_at: bool,
     /// The frame the pane was last drawn on, to tell a pane just opened.
     drawn: Option<u64>,
     /// Whether a menu was open when the pane was last drawn. egui closes a
@@ -392,6 +450,9 @@ impl Assist {
             spent: Usage::default(),
             cents: None,
             download: None,
+            downloading: None,
+            failed_in_a_row: 0,
+            said_what_it_is_not_good_at: false,
             drawn: None,
             popup_before: false,
             ctx: None,
@@ -498,6 +559,98 @@ impl Assist {
         self.download = progress;
     }
 
+    /// Starts downloading the helper on this computer, if it is not being
+    /// downloaded already.
+    ///
+    /// **On a thread, always.** A gigabyte over a slow connection is an hour,
+    /// and a window that waited for it would be a window nobody could close.
+    /// What the thread reports arrives on a channel the pane reads as it
+    /// draws; the flag it holds is what Stop sets.
+    pub fn start_download(&mut self, ctx: &egui::Context) {
+        if self.downloading.is_some() {
+            return;
+        }
+        let reach = Arc::clone(&self.reach);
+        let wake = ctx.clone();
+        let stop = ::assist::StopFlag::default();
+        let theirs = stop.clone();
+        let (tell, said) = mpsc::channel();
+        self.download = Some(Progress {
+            done: 0,
+            total: Some(::assist::local::MODEL.bytes()),
+        });
+        self.downloading = Some(Downloading {
+            work: request::Background::spawn(
+                move || {
+                    reach.download(&theirs, &mut |progress| {
+                        let _ = tell.send(progress);
+                    })
+                },
+                move || wake.request_repaint(),
+            ),
+            said,
+            stop,
+        });
+    }
+
+    /// Whether a download is under way now.
+    pub fn is_downloading(&self) -> bool {
+        self.downloading.is_some()
+    }
+
+    /// How far the download has got, for a test to wait on and for a window
+    /// to say elsewhere.
+    pub fn download_so_far(&self) -> Option<Progress> {
+        self.download
+    }
+
+    /// Stops the download, keeping what has arrived: starting it again
+    /// carries on from there.
+    pub fn stop_download(&mut self) {
+        if let Some(downloading) = &self.downloading {
+            downloading.stop.stop();
+        }
+    }
+
+    /// A frame's worth of the download: what it has reported, and what became
+    /// of it once it ends.
+    fn tend_download(&mut self, ctx: &egui::Context) {
+        let Some(downloading) = &mut self.downloading else {
+            return;
+        };
+        while let Ok(progress) = downloading.said.try_recv() {
+            self.download = Some(Progress {
+                done: progress.done,
+                total: Some(progress.total),
+            });
+        }
+        match downloading.work.poll() {
+            request::Awaited::Waiting => {
+                ctx.request_repaint_after(std::time::Duration::from_millis(200));
+            }
+            request::Awaited::Done(what) => {
+                self.downloading = None;
+                self.download = None;
+                match what {
+                    Ok(()) => {
+                        let ready =
+                            format!("{} is ready on this computer.", ::assist::local::MODEL.name);
+                        self.note(&ready, None);
+                        // The helper the settings name is made afresh, so
+                        // that the one refusing for want of weights is let go.
+                        self.renew = true;
+                    }
+                    Err(failure) => self.note(&failure.sentence, None),
+                }
+            }
+            request::Awaited::Gone => {
+                self.downloading = None;
+                self.download = None;
+                self.note("The download ended without saying why.", None);
+            }
+        }
+    }
+
     /// Sends a request. The first to a helper elsewhere waits for the person
     /// to agree to what is sent. While another request is under way, or
     /// before a helper is chosen, nothing is sent, and the words wait in the
@@ -542,6 +695,11 @@ impl Assist {
         self.transcript.clear();
         self.retries.clear();
         self.resume = None;
+        // A new conversation is a new chance: what the helper failed at
+        // before this document is not held against it, and the sentence
+        // about a bigger helper can be said again if it earns it.
+        self.failed_in_a_row = 0;
+        self.said_what_it_is_not_good_at = false;
         if let Some(session) = &mut self.session {
             session.clear();
         }
@@ -712,6 +870,7 @@ impl Assist {
         };
         self.count(spent, running.priced);
         self.session = Some(session);
+        let counted = self.count_failure(&ended);
         match ended {
             Ok(Ending::Finished) => {}
             Ok(ending) => {
@@ -728,6 +887,50 @@ impl Assist {
                 self.forget_from(running.first);
                 self.failed(&failure, &running.prepared);
             }
+        }
+        // After the failure, never before it: a verdict above the thing it is
+        // about reads as a verdict on the request the person just made.
+        if counted {
+            self.say_what_it_is_not_good_at();
+        }
+    }
+
+    /// **What the small helper is not good at is said, once.** The helper on
+    /// this computer is a fifth the size of the ones over the internet, and a
+    /// person watching it fail twice deserves to be told where a better one
+    /// is rather than left to conclude the feature is broken. It comes from
+    /// the application, never from the model, and it is said once a
+    /// conversation: a sentence repeated after every failure is nagging.
+    fn count_failure(&mut self, ended: &Result<Ending, Failure>) -> bool {
+        let local = self
+            .settings
+            .as_ref()
+            .is_ok_and(|settings| settings.helper == Some(::assist::Choice::Local));
+        // A request that was stopped, or refused because no test may reach a
+        // helper, or refused for want of a key or a download, says nothing
+        // about how good the helper is at the work.
+        let failed = local
+            && match ended {
+                Err(failure) => !matches!(
+                    failure.kind,
+                    FailureKind::Offline | FailureKind::NotReady | FailureKind::Unauthorized
+                ),
+                Ok(_) => false,
+            };
+        match failed {
+            true => self.failed_in_a_row += 1,
+            false => self.failed_in_a_row = 0,
+        }
+        failed
+    }
+
+    fn say_what_it_is_not_good_at(&mut self) {
+        if self.failed_in_a_row == 2 && !self.said_what_it_is_not_good_at {
+            self.said_what_it_is_not_good_at = true;
+            self.note(
+                "A helper over the internet would do better at this.",
+                Some(Action::Settings),
+            );
         }
     }
 
@@ -902,7 +1105,17 @@ impl Assist {
     }
 
     /// Saves `settings`, and takes them as the ones in force.
+    /// Keeps `settings`, and lets go of what the last choice held.
     fn keep(&mut self, settings: Settings) -> Result<(), String> {
+        // Another helper chosen: the model read for this one is a gigabyte
+        // of memory nothing is going to ask anything of.
+        let was_local = self
+            .settings
+            .as_ref()
+            .is_ok_and(|now| now.helper == Some(::assist::Choice::Local));
+        if was_local && settings.helper != Some(::assist::Choice::Local) {
+            ::assist::local::forget();
+        }
         let path = self
             .path
             .as_ref()
@@ -957,10 +1170,19 @@ impl Assist {
                                 settings.ollama.model = model.name.clone();
                             }
                         }
+                        let local = matches!(row, Row::Local);
                         if let Err(why) = self.keep(settings) {
                             if let Some(Choosing::Rows(rows)) = &mut self.choosing {
                                 rows.said = Some(why);
                             }
+                            return None;
+                        }
+                        // The helper on this computer is chosen and not yet
+                        // downloaded: choosing it is asking for it, and the
+                        // bar starts there and then rather than waiting for
+                        // the person to find Settings.
+                        if local && self.reach.downloaded().is_none() {
+                            self.start_download(ctx);
                         }
                     }
                 }
@@ -984,6 +1206,24 @@ impl Assist {
         }
         match shown {
             None => {}
+            // The download is the pane's to run, not the box's: the box stays
+            // open, and the bar under the transcript shows how it goes.
+            Some(Closed::Download) => self.start_download(ctx),
+            Some(Closed::Remove) => match self.reach.remove_download() {
+                Ok(0) => self.note("There was nothing downloaded to remove.", None),
+                Ok(freed) => {
+                    let said = format!(
+                        "The helper on this computer was removed: {} came back.",
+                        ::assist::local::size_of(freed)
+                    );
+                    self.note(&said, None);
+                    self.renew = true;
+                }
+                Err(why) => {
+                    let said = format!("The helper could not be removed: {why}.");
+                    self.note(&said, None);
+                }
+            },
             Some(Closed::Cancelled) => {
                 if let Some(mut open) = self.settings_box.take() {
                     self.draining.extend(open.leftovers());
@@ -1015,6 +1255,7 @@ impl Assist {
         let frame = ctx.cumulative_frame_nr();
         let just_opened = self.drawn.is_none_or(|last| last + 1 < frame);
         self.drawn = Some(frame);
+        self.tend_download(&ctx);
         if just_opened {
             // Whatever had the keyboard when the pane was put away, the
             // document has had it since.
@@ -1316,6 +1557,7 @@ impl Assist {
             && self.settings.as_ref().is_ok_and(|s| s.helper.is_some());
         if let Some(progress) = self.download {
             if download_bar(ui, progress) {
+                self.stop_download();
                 chosen = Some(Chosen::StopDownload);
             }
             ui.add_space(6.0);

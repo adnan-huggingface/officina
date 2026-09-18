@@ -116,6 +116,18 @@ pub(super) struct Fake {
     pub connected: Mutex<Vec<Settings>>,
     /// Every set of settings checked, in order.
     pub checked: Mutex<Vec<Settings>>,
+    /// How the download goes: each step's progress, and what it ends with.
+    /// The default is a download that never answers, which is what a window
+    /// must not wait for.
+    pub download_steps: Mutex<Vec<::assist::local::Progress>>,
+    pub download_ends: Mutex<Option<Result<(), Failure>>>,
+    /// Set once the download's thread has started, so a test can tell it
+    /// apart from a download that never began.
+    pub downloading: Arc<std::sync::atomic::AtomicUsize>,
+    /// What `downloaded` says: `None` for "not downloaded".
+    pub have_download: Mutex<Option<u64>>,
+    /// Every removal asked for.
+    pub removed: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl Fake {
@@ -185,6 +197,45 @@ impl Reach for Fake {
             .unwrap()
             .pop_front()
             .unwrap_or_else(|| Ok("It answered.".to_owned()))
+    }
+
+    fn download(
+        &self,
+        stop: &::assist::StopFlag,
+        progress: &mut dyn FnMut(::assist::local::Progress),
+    ) -> Result<(), Failure> {
+        self.downloading
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let steps = self.download_steps.lock().unwrap().clone();
+        for step in steps {
+            if stop.is_set() {
+                return Err(Failure::new(::assist::FailureKind::Dropped, "Stopped."));
+            }
+            progress(step);
+        }
+        // A download that says nothing and never ends: what the window must
+        // not wait for. It reads Stop, as the real one does between chunks.
+        let ends = self.download_ends.lock().unwrap().take();
+        match ends {
+            Some(ends) => ends,
+            None => {
+                while !stop.is_set() {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(Failure::new(::assist::FailureKind::Dropped, "Stopped."))
+            }
+        }
+    }
+
+    fn downloaded(&self) -> Option<u64> {
+        *self.have_download.lock().unwrap()
+    }
+
+    fn remove_download(&self) -> Result<u64, String> {
+        self.removed
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let had = self.have_download.lock().unwrap().take();
+        Ok(had.unwrap_or(0))
     }
 }
 

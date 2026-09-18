@@ -316,15 +316,18 @@ impl Row {
                                        leaves it. How quickly it answers depends on this computer."
                 .into(),
             Row::Local => {
-                let mut about = String::from(
-                    "Free and private: nothing you write leaves this computer. Downloads \
-                     about 1 GB once (Qwen3 1.7B, Apache-2.0). Slower and simpler than \
-                     Claude — good for rewording, grammar, summaries and simple sums.",
-                );
-                if !crate::provider::LOCAL_READY {
-                    about.push_str(" Not ready yet: it comes in a later version of Officina.");
-                }
-                about
+                // What will be downloaded, before anything is: the model, its
+                // licence and its size, from the one constant that also says
+                // what the download must hash to.
+                let model = crate::local::MODEL;
+                format!(
+                    "Free and private: nothing you write leaves this computer. Downloads {} \
+                     once ({}, {}). Slower and simpler than Claude — {}.",
+                    crate::local::size_of(model.bytes()),
+                    model.name,
+                    model.licence,
+                    crate::local::GOOD_AT
+                )
             }
             Row::ClaudeWithKey => format!(
                 "Needs an Anthropic API key (a Claude.ai subscription is not one). {}",
@@ -335,8 +338,12 @@ impl Row {
     }
 
     /// Whether choosing the row gives a helper that can answer now.
+    ///
+    /// The helper on this computer is ready in the sense that matters here:
+    /// choosing it does something — it downloads what it needs and then
+    /// answers — rather than being a row that says "later".
     pub fn is_ready(&self) -> bool {
-        !matches!(self, Row::Local) || crate::provider::LOCAL_READY
+        true
     }
 
     /// The settings once this row is chosen.

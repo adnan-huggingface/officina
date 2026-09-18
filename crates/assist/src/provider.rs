@@ -131,27 +131,70 @@ pub fn stream(
 /// runtime and its download are built (phase 5 of the programme): until then
 /// its row is offered, as the user asked, and choosing it says it is not ready
 /// rather than keeping a choice that cannot answer.
-pub const LOCAL_READY: bool = false;
+pub const LOCAL_READY: bool = true;
+
+/// The model in `cache`, read and ready, or why it is not.
+fn local_helper(cache: &std::path::Path) -> Result<crate::local::Local, Failure> {
+    crate::offline::check(LOCAL)?;
+    crate::local::Local::load(&crate::local::folder(cache))
+}
+
+/// A helper that is there but cannot answer, and says why in its own words.
+struct Refuses {
+    name: &'static str,
+    failure: Failure,
+}
+
+impl Provider for Refuses {
+    fn name(&self) -> &str {
+        self.name
+    }
+
+    fn answer(&mut self, _: &Request, _: &StopFlag, _: &mut dyn FnMut(&str)) -> Answer {
+        Answer::failed(self.failure.clone())
+    }
+}
 
 const NO_HELPER: &str = "No helper has been chosen yet.";
 const LOCAL: &str = "The helper on this computer";
-/// What choosing the helper on this computer says until it is ready.
-pub const LOCAL_NOT_READY: &str = "The helper on this computer is not ready yet: it comes in \
-                                   a later version of Officina. Choose Claude or Ollama for now.";
+/// What choosing the helper on this computer says before its weights are
+/// there: it is not a refusal but a thing to do, and the pane's download does
+/// it.
+pub const LOCAL_NOT_READY: &str = "The helper on this computer has not been downloaded yet. \
+                                   Assist ▸ Settings downloads it.";
 
 /// The helper the settings name, ready to ask.
 pub fn connect(settings: &Settings) -> Box<dyn Provider> {
+    connect_in(settings, None)
+}
+
+/// The same, told where downloaded weights live.
+///
+/// **`assist` does not know where the cache is.** Which directory holds a
+/// person's downloads is the suite's business, not a helper's, and the
+/// application that knows passes it: a crate that guessed would guess
+/// differently from `ui_kit::paths` on some platform and download the model
+/// twice.
+pub fn connect_in(settings: &Settings, cache: Option<&std::path::Path>) -> Box<dyn Provider> {
     match settings.helper {
         None => Box::new(NotReady {
             name: "Assist",
             sentence: NO_HELPER,
         }),
-        // Until the runtime and its download exist, the row says what it will
-        // be and the request says it is not there.
-        Some(Choice::Local) => Box::new(NotReady {
-            name: LOCAL,
-            sentence: LOCAL_NOT_READY,
-        }),
+        // The helper on this computer, if its weights have been downloaded.
+        // The model is read here, on the request's own thread, because it is
+        // a second of reading and a window must not stop for it.
+        Some(Choice::Local) => match cache.map(local_helper) {
+            Some(Ok(local)) => Box::new(local),
+            Some(Err(failure)) => Box::new(Refuses {
+                name: LOCAL,
+                failure,
+            }),
+            None => Box::new(NotReady {
+                name: LOCAL,
+                sentence: LOCAL_NOT_READY,
+            }),
+        },
         Some(Choice::Claude) => Box::new(claude(settings)),
         Some(Choice::Ollama) => Box::new(OllamaHere {
             answers: ollama(settings),
@@ -212,6 +255,11 @@ impl Provider for OllamaHere {
 /// sends nothing of the document and costs nothing. `Ok` says what the service
 /// answered; a key is kept only after it.
 pub fn check(settings: &Settings) -> Result<String, Failure> {
+    check_in(settings, None)
+}
+
+/// The same, told where downloaded weights live.
+pub fn check_in(settings: &Settings, cache: Option<&std::path::Path>) -> Result<String, Failure> {
     match settings.helper {
         None => {
             crate::offline::check("Assist")?;
@@ -219,7 +267,23 @@ pub fn check(settings: &Settings) -> Result<String, Failure> {
         }
         Some(Choice::Local) => {
             crate::offline::check(LOCAL)?;
-            Err(Failure::new(FailureKind::NotReady, LOCAL_NOT_READY))
+            let Some(cache) = cache else {
+                return Err(Failure::new(FailureKind::NotReady, LOCAL_NOT_READY));
+            };
+            // Whether the files are there, not whether they load: a check is
+            // a question about the settings, and reading a gigabyte to answer
+            // it would hold the settings box for as long as the first request
+            // takes. What the files are is settled by the hash they were
+            // downloaded under, and a file that will not load is said when
+            // the first request asks it to.
+            if !crate::local::have(cache) {
+                return Err(Failure::new(FailureKind::NotReady, LOCAL_NOT_READY));
+            }
+            Ok(format!(
+                "{} is ready on this computer: {}.",
+                crate::local::MODEL.name,
+                crate::local::GOOD_AT
+            ))
         }
         Some(Choice::Claude) => claude(settings).check(),
         Some(Choice::Ollama) => {

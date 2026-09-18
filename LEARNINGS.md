@@ -2402,3 +2402,26 @@ into a part that no reader will parse: Word offers to repair it, and Scriva
 reopens nothing. Both writers drop them as they escape
 (`write::splice::writable`), which is what Word does when it saves such text
 itself.
+
+**A quantized model's speed is two speeds, and a compiler flag moves one of
+them.** Qwen3 1.7B at Q4_K_M, read with `candle` on a recent workstation CPU,
+writes about 7 tokens a second — and takes 15 seconds to read a 523-token
+request before it writes the first one. Built with `-C target-cpu=native` the
+same request is read in 4.2 seconds and written at the same 7.4: reading the
+request is arithmetic over the whole prompt at once, which the wider vector
+instructions do four times faster, while writing is one token at a time and
+bound by how fast the weights can be fetched from memory. A portable binary
+cannot assume those instructions, so what a release is built for decides how
+long a person waits before the first word — not how fast the words then come.
+Measured with `cargo xtask assist-spike`, which is hand-run and not in the
+gate.
+
+**`candle` keeps a model's keys and values between calls, and its rope tables
+end where the model's context does.** Two requests in a row against one loaded
+model answer the second against the first's cache — a shape error when the
+lengths disagree, and a wrong answer when they happen to agree — so every
+request clears it (`clear_kv_cache`). And a model asked for one token past
+`context_length` does not refuse: it indexes past the end of its own tables
+and panics. Both were found by a test model of two layers and a vocabulary of
+a hundred, written by the test itself, long before the real weights were ever
+run.

@@ -60,6 +60,15 @@ fn here() -> Settings {
 
 /// A window on a sheet of numbers, whose pane is given `helpers`.
 fn assisted(name: &str, helpers: Vec<Box<dyn Provider>>) -> (Calx, Scratch) {
+    assisted_with(name, helpers, here())
+}
+
+/// The same, with settings of the test's own.
+fn assisted_with(
+    name: &str,
+    helpers: Vec<Box<dyn Provider>>,
+    settings: Settings,
+) -> (Calx, Scratch) {
     let mut app = Calx::new();
     for (at, typed) in [
         ("A1", "North"),
@@ -80,7 +89,7 @@ fn assisted(name: &str, helpers: Vec<Box<dyn Provider>>) -> (Calx, Scratch) {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("a scratch directory");
     let path = dir.join(::assist::settings::FILE);
-    here().save(&path).expect("settings kept");
+    settings.save(&path).expect("settings kept");
     let reach = Arc::new(Canned {
         helpers: Mutex::new(helpers.into()),
     });
@@ -774,4 +783,132 @@ fn the_panes_undo_row_follows_the_workbook_and_not_only_the_card() {
         "{}",
         app.status
     );
+}
+
+/// The helper on this computer is a small one, and a person watching it fail
+/// twice is told where a better one is — once, from the application, never
+/// from the model.
+#[test]
+fn a_local_helper_that_fails_twice_gets_the_sentence_about_a_bigger_one() {
+    let drive = Driver::new();
+    let (helper, _) = scripted(vec![
+        Turn::fails(::assist::FailureKind::Garbled, "It made no sense."),
+        Turn::fails(::assist::FailureKind::Garbled, "Nor did that."),
+        Turn::fails(::assist::FailureKind::Garbled, "Nor that."),
+    ]);
+    let (mut app, _scratch) = assisted_with("small", vec![helper], on_this_computer());
+
+    ask(&drive, &mut app, "Add a total");
+    finished(&drive, &mut app);
+    let said = notes(&app);
+    assert!(
+        !said.iter().any(|note| note.contains("over the internet")),
+        "one failure is a failure, not a verdict: {said:?}"
+    );
+
+    ask(&drive, &mut app, "Try that again");
+    finished(&drive, &mut app);
+    let said = notes(&app);
+    assert_eq!(
+        said.iter()
+            .filter(|note| note.contains("A helper over the internet would do better at this."))
+            .count(),
+        1,
+        "{said:?}"
+    );
+    // After the failure it is about, never before it: a verdict above the
+    // thing it judges reads as a verdict on the request itself.
+    let order: Vec<usize> = said
+        .iter()
+        .enumerate()
+        .filter(|(_, note)| note.contains("Nor did that.") || note.contains("over the internet"))
+        .map(|(at, _)| at)
+        .collect();
+    assert_eq!(order.len(), 2, "{said:?}");
+    assert!(
+        said[order[0]].contains("Nor did that."),
+        "the failure comes first: {said:?}"
+    );
+
+    // A new workbook is a new conversation, and a new chance: what the helper
+    // failed at before it is not held against it.
+    let fresh = {
+        // One helper, two failures: a cleared conversation keeps the helper
+        // it was talking to — only the words go — so the second failure is
+        // the same helper's, in a new conversation.
+        let (helper, _) = scripted(vec![
+            Turn::fails(::assist::FailureKind::Garbled, "It made no sense."),
+            Turn::fails(::assist::FailureKind::Garbled, "Nor did that."),
+        ]);
+        let (mut app, scratch) = assisted_with("small-again", vec![helper], on_this_computer());
+        ask(&drive, &mut app, "Add a total");
+        finished(&drive, &mut app);
+        app.new_document();
+        drive.settle(&mut app);
+        ask(&drive, &mut app, "Add a total");
+        finished(&drive, &mut app);
+        let said = notes(&app);
+        drop(scratch);
+        said
+    };
+    assert_eq!(
+        fresh,
+        ["Nor did that."],
+        "the failure before the new workbook is not counted against it"
+    );
+
+    // And a helper elsewhere, failing as often, is not judged: it is the
+    // small one on this computer the sentence is about.
+    let elsewhere = {
+        let (helper, _) = scripted(vec![
+            Turn::fails(::assist::FailureKind::Garbled, "It made no sense."),
+            Turn::fails(::assist::FailureKind::Garbled, "Nor did that."),
+        ]);
+        let (mut app, scratch) = assisted_with("not-small", vec![helper], here());
+        ask(&drive, &mut app, "Add a total");
+        finished(&drive, &mut app);
+        ask(&drive, &mut app, "And again");
+        finished(&drive, &mut app);
+        let said = notes(&app);
+        drop(scratch);
+        said
+    };
+    assert!(
+        !elsewhere
+            .iter()
+            .any(|note| note.contains("over the internet")),
+        "{elsewhere:?}"
+    );
+
+    // Said once, and not again: a sentence after every failure is nagging.
+    ask(&drive, &mut app, "And again");
+    finished(&drive, &mut app);
+    let said = notes(&app);
+    assert_eq!(
+        said.iter()
+            .filter(|note| note.contains("over the internet"))
+            .count(),
+        1,
+        "{said:?}"
+    );
+}
+
+/// The notes the pane itself has put in the transcript — what the application
+/// said, as against what a helper said.
+fn notes(app: &Calx) -> Vec<String> {
+    transcript(app)
+        .into_iter()
+        .filter_map(|entry| match entry {
+            Entry::Note { sentence, .. } => Some(sentence),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Settings that name the helper on this computer.
+fn on_this_computer() -> Settings {
+    Settings {
+        helper: Some(Choice::Local),
+        ..Settings::default()
+    }
 }

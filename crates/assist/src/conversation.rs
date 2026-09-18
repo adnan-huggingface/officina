@@ -138,7 +138,10 @@ impl Conversation {
         self.messages.clear();
     }
 
-    pub(crate) fn push(&mut self, message: Message) {
+    /// Adds a turn. Public so that a hand-run measurement outside the crate
+    /// — `cargo xtask assist-spike` — can ask a helper something without a
+    /// session around it.
+    pub fn push(&mut self, message: Message) {
         self.messages.push(message);
     }
 

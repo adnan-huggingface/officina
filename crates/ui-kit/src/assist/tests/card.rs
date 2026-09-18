@@ -1,6 +1,6 @@
 //! B3: the first-run card.
 
-use ::assist::{ClaudeLogin, Installed, LOCAL_NOT_READY, LOCAL_READY};
+use ::assist::{ClaudeLogin, Installed};
 
 use super::*;
 
@@ -34,6 +34,19 @@ fn with_first(first: Vec<Row>) -> Vec<Row> {
 /// The pane with no helper chosen, finding `rows`, its card on the screen.
 fn card(rows: Vec<Row>, scratch: &Scratch) -> (Driver, Desk, Arc<Fake>) {
     let reach = Fake::new().finds(rows);
+    let drive = Driver::new();
+    let mut desk = Desk::with(Arc::clone(&reach), scratch.settings());
+    desk.until(&drive, "the card's rows", |desk| {
+        matches!(desk.assist.choosing, Some(Choosing::Rows(_)))
+    });
+    drive.settle(&mut desk);
+    (drive, desk, reach)
+}
+
+/// The same, with a reach of the test's own — for what the rows do rather
+/// than what they say.
+fn card_with(reach: Arc<Fake>, scratch: &Scratch) -> (Driver, Desk, Arc<Fake>) {
+    *reach.rows.lock().unwrap() = always();
     let drive = Driver::new();
     let mut desk = Desk::with(Arc::clone(&reach), scratch.settings());
     desk.until(&drive, "the card's rows", |desk| {
@@ -337,60 +350,97 @@ fn the_ollama_row_lists_every_model_and_says_which_are_large() {
 }
 
 #[test]
-fn the_helper_on_this_computer_is_not_kept_as_the_choice_until_it_is_ready() {
-    const {
-        assert!(
-            !LOCAL_READY,
-            "once the helper on this computer is built, this test proves its choice is kept"
-        )
-    };
-    let scratch = Scratch::new("local-not-ready");
-    let (drive, mut desk, _) = card(always(), &scratch);
+fn the_local_row_says_what_it_will_download_before_it_downloads_anything() {
+    let scratch = Scratch::new("local-row");
+    let reach = Fake::new();
+    let (drive, mut desk, _) = card_with(Arc::clone(&reach), &scratch);
     let seen = desk.seen(&drive);
-    assert!(
-        seen.iter()
-            .any(|text| text.ends_with("Not ready yet: it comes in a later version of Officina.")),
-        "the row says so before it is chosen: {seen:?}"
-    );
-
-    desk.click(&drive, "Use this");
-    assert!(!scratch.settings().exists(), "the choice was not kept");
-    assert!(
-        matches!(&desk.assist.choosing, Some(Choosing::Rows(_))),
-        "the card is still up"
-    );
-    let painted = desk.painted(&drive);
+    let said = seen
+        .iter()
+        .find(|text| text.starts_with("Free and private"))
+        .unwrap_or_else(|| panic!("the local row's words: {seen:?}"));
+    // The model, its licence and its size, before anything is downloaded.
+    assert!(said.contains("Qwen3 1.7B"), "{said}");
+    assert!(said.contains("Apache-2.0"), "{said}");
+    assert!(said.contains("GB"), "{said}");
+    assert!(said.contains("rewording"), "{said}");
     assert_eq!(
-        painted.colour_of("Choose Claude or Ollama for now."),
-        Some(theme::INK_ERROR),
-        "and says why, where the choice was made"
-    );
-    assert!(desk.assist.transcript().is_empty());
-    assert!(!desk.assist.is_working());
-
-    // Another row, then, is kept.
-    desk.click(&drive, "Claude, over the internet");
-    let seen = desk.seen(&drive);
-    assert!(
-        !seen.iter().any(|text| text == LOCAL_NOT_READY),
-        "picking another row takes the sentence away: {seen:?}"
+        reach.downloading.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "and nothing has been downloaded to say it"
     );
 
-    // Nor does the settings box keep it.
-    let scratch = Scratch::new("local-not-ready-box");
-    let drive = Driver::new();
-    let mut desk = Desk::with(Fake::new(), scratch.holding(&ollama_here()));
-    drive.settle(&mut desk);
-    desk.assist.open_settings();
-    desk.click(&drive, "A helper on this computer — not ready yet");
-    desk.click(&drive, "Save");
-    assert!(desk.assist.box_up(), "the box stays up");
-    let seen = desk.everywhere(&drive);
-    assert!(seen.iter().any(|text| text == LOCAL_NOT_READY), "{seen:?}");
+    // Chosen, the choice is kept — and the download begins, since the weights
+    // are not there.
+    desk.click(&drive, "Use this");
+    desk.until(&drive, "the download to begin", |desk| {
+        desk.assist.is_downloading()
+    });
     assert_eq!(
         Settings::read(&scratch.settings()).unwrap().helper,
-        Some(Choice::Ollama),
-        "the file still names the helper that was chosen"
+        Some(Choice::Local),
+        "the choice was kept"
+    );
+    desk.assist.stop_download();
+    desk.until(&drive, "the download to let go", |desk| {
+        !desk.assist.is_downloading()
+    });
+}
+
+/// A download that never answers does not hold the window: the frames go on,
+/// the bar shows what has arrived, and Stop lets go of it.
+#[test]
+fn a_download_that_never_answers_does_not_hold_the_window() {
+    let scratch = Scratch::new("download-waits");
+    let reach = Fake::new();
+    *reach.download_steps.lock().unwrap() = vec![
+        ::assist::local::Progress {
+            done: 1_000_000,
+            total: 1_282_439_264,
+        },
+        ::assist::local::Progress {
+            done: 500_000_000,
+            total: 1_282_439_264,
+        },
+    ];
+    let (drive, mut desk, _) = card_with(Arc::clone(&reach), &scratch);
+    desk.click(&drive, "Use this");
+
+    // The window keeps drawing while the download hangs: a frame takes a
+    // moment, not a minute.
+    desk.until(&drive, "the bar to show what arrived", |desk| {
+        desk.assist
+            .download_so_far()
+            .is_some_and(|progress| progress.done >= 500_000_000)
+    });
+    let seen = desk.everywhere(&drive);
+    assert!(
+        seen.iter()
+            .any(|text| text.contains("500 MB") && text.contains("1.3 GB")),
+        "the bar says how much of how much: {seen:?}"
+    );
+    let started = std::time::Instant::now();
+    for _ in 0..5 {
+        drive.settle(&mut desk);
+    }
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "five frames took {:?}",
+        started.elapsed()
+    );
+    assert!(desk.assist.is_downloading(), "and it is still going");
+
+    // Stop lets go of it, and the bar goes with it.
+    desk.click(&drive, "Stop");
+    desk.until(&drive, "the download to let go", |desk| {
+        !desk.assist.is_downloading()
+    });
+    let seen = desk.everywhere(&drive);
+    assert!(
+        !seen
+            .iter()
+            .any(|text| text.contains("Downloading the helper")),
+        "{seen:?}"
     );
 }
 
