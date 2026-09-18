@@ -1,4 +1,4 @@
-//! Assist ▸ Settings: the helper, and what it needs, in one box.
+//! Assist's ⋯ menu ▸ Settings: the helper, and what it needs, in one box.
 //!
 //! The same choices as the first-run card, in its words, and under the one
 //! chosen what that helper needs: for Claude how it signs in, the key, which

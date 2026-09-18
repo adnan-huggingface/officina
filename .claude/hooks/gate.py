@@ -107,40 +107,51 @@ def items():
     for line in PLAN.read_text(encoding="utf-8").splitlines():
         heading = PLAN_ITEM.match(line)
         if heading:
-            current = [heading.group(1), heading.group(2).strip(), None]
+            current = [heading.group(1), heading.group(2).strip(), []]
             out.append(current)
             continue
         verify = PLAN_VERIFY.match(line)
-        if verify and current is not None and current[2] is None:
-            current[2] = verify.group(1).strip()
-    return [tuple(item) for item in out]
+        if verify and current is not None:
+            # Every `verify:` line, not only the first: an item whose later
+            # lines were never run is an item proved by its weakest check,
+            # and that is how a plan comes to say more than it holds.
+            current[2].append(verify.group(1).strip())
+    return [(ident, what, tuple(commands)) for ident, what, commands in out]
 
 
 def unproven():
     """The plan items whose own command does not pass, and what it said."""
     out = []
-    for ident, what, command in items():
-        if command is None:
+    for ident, what, commands in items():
+        if not commands:
             out.append((ident, what, "no `verify:` line — nothing can prove this"))
             continue
-        try:
-            done = subprocess.run(
-                command,
-                cwd=ROOT,
-                shell=True,
-                capture_output=True,
-                text=True,
-                timeout=3600,
-                env=toolchain_env(),
-            )
-        except subprocess.TimeoutExpired:
-            out.append((ident, what, "its verify command timed out"))
-            continue
-        if done.returncode != 0:
-            said = (done.stdout + done.stderr).strip().splitlines()
-            tail = chr(10).join(said[-8:]) or f"exit {done.returncode}"
-            out.append((ident, what, tail))
+        for command in commands:
+            why = ran(command)
+            if why is not None:
+                out.append((ident, what, why))
+                break
     return out
+
+
+def ran(command):
+    """Why `command` did not pass, or `None` if it did."""
+    try:
+        done = subprocess.run(
+            command,
+            cwd=ROOT,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=3600,
+            env=toolchain_env(),
+        )
+    except subprocess.TimeoutExpired:
+        return f"`{command}` timed out"
+    if done.returncode != 0:
+        said = (done.stdout + done.stderr).strip().splitlines()
+        return chr(10).join(said[-8:]) or f"`{command}` exited {done.returncode}"
+    return None
 
 
 def failing(quick):
@@ -192,10 +203,10 @@ def main():
     quick = "--quick" in sys.argv
     if "--items" in sys.argv:
         outstanding = {ident for ident, _, _ in unproven()}
-        for ident, what, command in items():
+        for ident, what, commands in items():
             mark = "no " if ident in outstanding else "yes"
             print(f"  {mark}  {ident}  {what}")
-            if command is None:
+            if not commands:
                 print("        (no verify: line)")
         return 1 if outstanding else 0
     outstanding = report(quick)

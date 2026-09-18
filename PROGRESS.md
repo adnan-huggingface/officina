@@ -6987,6 +6987,92 @@ Test: `lines_pasted_at_a_headings_end_and_rejected_leave_it_a_heading`. Three
 mutations, one rule broken at a time, were each caught. A fourth, which applies
 the rule to pastes within one paragraph too, changes nothing a test can see.
 
+## Assist, phase 6: the record (2026-09-18)
+
+The last of Assist's six phases, and `PLAN.md` is its plan: what was built is now written
+down where a person looks for it, and shown working where no test can reach.
+
+**The decision.** `adr/0004-the-model-proposes-the-editor-disposes.md` — why an
+assistant's edit is a tracked change in Scriva and one labelled, washed change in Calx;
+why the helper on this computer is the default and no free hosted service is offered; why
+the document is data and the tool surface is what makes that true rather than the prompt;
+and why no test may reach a helper or the network. It says what each of those cost, what
+was rejected, and what the six reviews found.
+
+**What a person reads.** GUIDE.md has an Assist section in each application's half — the
+key, what a request is about, what happens to what it changes, and what it will not do —
+and a section of its own on what the assistant costs and what leaves the computer, down to
+where the key is kept and where the weights live. README.md says, under the vibe-first
+opening, that the documents are the person's to vibe as well. Two tests hold the guide to
+the code: every key its Assist sections name is one the applications read, the verbs and
+scope chips are the ones the code offers, and the download's size and licence are the
+constant's own.
+
+**What the suite ships.** `THIRD-PARTY-NOTICES.yml` is regenerated: 500 crates, the
+assistant's runtime included — candle, tokenizers, gemm and their tree, all permissively
+licensed. A test reads every manifest in the workspace and fails if a dependency is named
+there and not in the notices, so the next one cannot be forgotten quietly.
+
+**And it works outside a test.** Three tours of the real binaries on the hidden display,
+with the shots kept in the story at `bugs/evidence/assist/`: Scriva's pane against a fake
+helper on loopback, proposing a redline with Accept and Reject; Calx's, writing a Total
+column and filling it, one entry in the undo history with Undo on its card; and the helper
+on this computer, with the fake helper stopped and no address configured, answering from
+the weights Officina downloaded itself.
+
+That third tour is the one worth keeping. It worked — the proposal landed as a tracked
+change, on the page, with Accept and Reject — and it took about ninety seconds for the
+change to appear and four minutes for the turn to finish, sharing the machine with the
+window it was answering in. Asked to make a sentence shorter, the model proposed the same
+sentence back and then reported that the change had been accepted and the headings
+updated, none of which was true. That is a 1.7-billion-parameter model behaving like one,
+and it is the argument for the whole design: the person reads a proposal rather than a
+result, the card says what was actually done rather than what the model claims, and after
+two failures the pane says that a helper over the internet would do better.
+
+**What an independent review of the phase found.** Almost all of it was prose claiming
+what the code does not do, which is the fault this phase was most likely to have:
+
+- **"The helper on this computer is the default" was false** on any machine with a Claude
+  login in the environment or Ollama installed — the ladder offers what the computer
+  already has first, and the repo's own test says so. The record and the README say what
+  is true: it is the first row where nothing else is found, which is the case the person
+  without an account is in.
+- **The guide said the local helper takes "a few seconds" to read a request.** It takes
+  about fifteen on this machine, and the tour took ninety seconds to land a change. The
+  guide says a quarter of a minute and a minute or two for a paragraph.
+- **The guide sent people to an "Assist ▸ Settings" menu that does not exist** — Assist is
+  a row under View, and Settings is a row of the pane's ⋯ menu. Three sentences the code
+  itself says had the same fault, and they are fixed too.
+- **It named two lossy formats where there are three** (plain text as well), promised the
+  right-click menu all five verbs where it offers the four that need no words, and said
+  the pane keeps a running cost where the count is in Settings.
+- **The tests that were supposed to hold the guide to the code did not.** One checked both
+  applications' sections against Scriva's key table — a Calx section naming a key nothing
+  reads passed — and its verb check exempted any label ending in an ellipsis, so
+  `Translate…` could be renamed in the code with the guide none the wiser, and its scope
+  check matched the word "whole" anywhere in the file. Each half is now checked against
+  its own application, in that application's tests, by the labels the pane paints.
+- **The notices test never read `xtask/Cargo.toml`**, a workspace member; it reads every
+  member now, and says so if the tools' manifest goes missing from its walk.
+
+Two faults in the code came out of reading the prose against it: Calx's card named at most
+twelve overwritten cells and silently dropped the rest, and `fill` could never be told to
+overwrite — its schema declared no such property while the refusal told the helper to pass
+one, and the tools are sent strict.
+
+And the hook that runs the plan's own checks **kept only the first `verify:` line of each
+item**, so every item was proved by its weakest check and the tests listed under it were
+never run as its proof. It runs all of them now. The one item that cannot be proved
+anywhere but this machine is F4, whose evidence is a folder in the story workspace outside
+the repository — which is where that evidence belongs, and is written down here rather
+than quietly left.
+
+Assist is finished. What is left for it is written in the story's handoff: the bigger local
+helper the spec offers, a shorter brief for the small one, formatting and chart tools in
+Calx, headers and notes in Scriva — and the release decision about which CPU baseline to
+build for, which is worth eleven seconds of every request.
+
 ## Assist, phase 5: the helper on this computer (2026-09-17)
 
 The fifth of Assist's six phases, and `PLAN.md` is its plan. The first row of the

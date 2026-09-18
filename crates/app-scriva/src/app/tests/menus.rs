@@ -741,3 +741,140 @@ fn the_help_menu_opens_by_its_letter_and_lists_the_shortcuts() {
         "nothing was typed"
     );
 }
+
+/// The guide and the decision record say what Assist does, and say it where a
+/// person looks: an Assist section in each application's half of the guide, a
+/// record of the rule the design turns on, and a README that points at both.
+#[test]
+fn the_guide_and_the_decisions_say_what_assist_does() {
+    let top = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    // Read as prose, not as lines: a guide is wrapped where its column ends,
+    // and a sentence a test looks for is as likely as not wrapped in the
+    // middle.
+    let read = |name: &str| {
+        let text = std::fs::read_to_string(top.join(name))
+            .unwrap_or_else(|_| panic!("{name} is at the top"));
+        text.split_whitespace().collect::<Vec<_>>().join(" ")
+    };
+    let guide = read("GUIDE.md");
+    // An Assist section in each half, before that half ends.
+    for (application, next) in [("## Calx", "## Scriva"), ("## Scriva", "## The assistant")] {
+        let start = guide.find(application).expect("a section");
+        let end = guide.find(next).expect("the section after it");
+        assert!(
+            guide[start..end].contains("### Assist"),
+            "{application} has an Assist section"
+        );
+    }
+    // What a person needs to know before they use it, in the guide's own
+    // words rather than a promise nobody wrote down.
+    for said in [
+        "Ctrl+Alt+A",
+        "tracked change",
+        "Undo",
+        "on this computer",
+        "Nothing you write leaves the computer",
+        "assist.toml",
+    ] {
+        assert!(guide.contains(said), "the guide says {said:?}");
+    }
+
+    let adr = read("adr/0004-the-model-proposes-the-editor-disposes.md");
+    for said in [
+        "The model proposes; the editor disposes",
+        "the document is data",
+        "No test reaches a helper",
+    ] {
+        assert!(
+            adr.to_lowercase().contains(&said.to_lowercase()),
+            "the record says {said:?}"
+        );
+    }
+    // And the README points at both, under the vibe-first opening.
+    let readme = read("README.md");
+    assert!(readme.contains("adr/0004-the-model-proposes-the-editor-disposes.md"));
+    assert!(readme.contains("Ctrl+Alt+A"));
+}
+
+/// The part of the guide under `heading`, up to the next heading of the same
+/// rank — so that a claim about one application is checked against that
+/// application and not against the whole file.
+fn guide_section<'a>(guide: &'a str, heading: &str) -> &'a str {
+    let start = guide
+        .find(heading)
+        .unwrap_or_else(|| panic!("the guide has {heading}"));
+    let rest = &guide[start + heading.len()..];
+    // The next heading of this rank or a higher one ends it.
+    let next = format!(
+        "\n{} ",
+        "#".repeat(heading.chars().take_while(|c| *c == '#').count())
+    );
+    let shallower = "\n## ";
+    let end = [rest.find(next.as_str()), rest.find(shallower)]
+        .into_iter()
+        .flatten()
+        .min();
+    match end {
+        Some(at) => &guide[start..start + heading.len() + at],
+        None => &guide[start..],
+    }
+}
+
+/// Every key Scriva's Assist section names is one Scriva reads, and the words
+/// it uses for the pane are the words the code uses: a guide that drifts from
+/// the window is worse than no guide.
+///
+/// Calx's half is held to Calx by a test of its own, in Calx, where its keys
+/// and its chips are — which is the point: a test that read both halves
+/// against one application's table proved nothing about the other.
+#[test]
+fn every_key_the_guide_names_is_a_key_the_window_reads() {
+    let top = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let guide = std::fs::read_to_string(top.join("GUIDE.md")).expect("GUIDE.md is at the top");
+    let section = guide_section(guide_section(&guide, "## Scriva"), "### Assist");
+
+    let read_by_scriva: Vec<&str> = crate::commands::TABLE
+        .iter()
+        .map(|entry| entry.shown)
+        .filter(|shown| !shown.is_empty())
+        .collect();
+    let mut found = 0;
+    for line in section.lines() {
+        for (index, piece) in line.split('`').enumerate() {
+            let key = piece.trim();
+            // Odd pieces are inside backticks; a key has a modifier in it.
+            if index % 2 == 0 || !key.starts_with("Ctrl+") {
+                continue;
+            }
+            found += 1;
+            assert!(read_by_scriva.contains(&key), "{key} is a key Scriva reads");
+        }
+    }
+    assert!(found > 0, "the section names keys at all");
+
+    // The chips and the scopes, by the names the pane paints.
+    let prose: String = section.split_whitespace().collect::<Vec<_>>().join(" ");
+    for verb in crate::app::assisting::VERBS.iter().map(|(label, _)| *label) {
+        assert!(prose.contains(verb), "the guide names the verb {verb:?}");
+    }
+    // The chips as the guide marks them — **Selection** — rather than the
+    // bare word: "Everything" as a scope name would otherwise be satisfied by
+    // the sentence "Everything it changes arrives as a tracked change", which
+    // is not the chip and is how this check first fooled itself.
+    for scope in crate::assistant::About::ALL
+        .iter()
+        .map(|about| about.name())
+    {
+        assert!(
+            prose.contains(&format!("**{scope}**")),
+            "the guide names the scope {scope:?} as a chip"
+        );
+    }
+    // And the helper's own facts, from the constant the download checks —
+    // read as prose, since a guide wraps where its column ends.
+    let costs = guide_section(&guide, "## The assistant");
+    let costs: String = costs.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(costs.contains(&::assist::local::size_of(::assist::local::MODEL.bytes())));
+    assert!(costs.contains(::assist::local::MODEL.licence));
+    assert!(costs.contains(::assist::local::GOOD_AT));
+}

@@ -161,7 +161,7 @@ const LOCAL: &str = "The helper on this computer";
 /// there: it is not a refusal but a thing to do, and the pane's download does
 /// it.
 pub const LOCAL_NOT_READY: &str = "The helper on this computer has not been downloaded yet. \
-                                   Assist ▸ Settings downloads it.";
+                                   Assist's ⋯ menu ▸ Settings downloads it.";
 
 /// The helper the settings name, ready to ask.
 pub fn connect(settings: &Settings) -> Box<dyn Provider> {

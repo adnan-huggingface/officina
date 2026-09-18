@@ -500,7 +500,7 @@ impl Local {
                     FailureKind::NotReady,
                     format!(
                         "The helper on this computer is not all there: {} is missing or only \
-                         half downloaded. Assist ▸ Settings downloads it again.",
+                         half downloaded. Assist's ⋯ menu ▸ Settings downloads it again.",
                         piece.file
                     ),
                 ));
@@ -511,7 +511,7 @@ impl Local {
                 FailureKind::NotReady,
                 format!(
                     "The helper on this computer has not been downloaded yet ({why}). \
-                     Assist ▸ Settings downloads it."
+                     Assist's ⋯ menu ▸ Settings downloads it."
                 ),
             )
         })?;

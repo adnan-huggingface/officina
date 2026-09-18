@@ -10,6 +10,18 @@ grow.
 Under the practice sits the promise that makes it safe to point an agent at
 real files: saving never rewrites what you did not edit.
 
+**The documents are yours to vibe as well.** `Ctrl+Alt+A` opens Assist in either
+application: ask for what you want in your own words — improve this wording, add
+a column that totals the others — and a model does it through the editor's own
+functions. In Scriva what it changes arrives as tracked changes by "Assistant",
+to accept or reject; in Calx it lands at once as one labelled entry with Undo on
+its card. Where your computer has no helper of its own, the one it
+offers you downloads once and runs on your own processor, so nothing you write
+leaves the machine; Claude with your own key, or an Ollama you already run, is a
+row away. The decision behind it is
+[ADR 0004](adr/0004-the-model-proposes-the-editor-disposes.md), and
+[GUIDE.md](GUIDE.md) says how to use it.
+
 Officina is two native desktop applications, written in Rust:
 
 - **Calx** — spreadsheets. Opens and saves `.xlsx`, reads `.xls`, reads and

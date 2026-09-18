@@ -307,6 +307,49 @@ fn a_card_lists_the_cells_the_assistant_overwrote() {
         card.body
     );
 
+    // More cells than a card can name: it names as many as it can and counts
+    // the rest, rather than letting them go quietly.
+    let over: Vec<serde_json::Value> = (0..15)
+        .map(|n| json!({"at": format!("A{}", n + 1), "typed": "x"}))
+        .collect();
+    let filled = ss_formula::edit::input_many(
+        &mut app.doc.workbook,
+        0,
+        ss_model::CellRef::new(0, 0),
+        &(0..15)
+            .map(|n| ss_model::CellRef::new(n, 0))
+            .collect::<Vec<_>>(),
+        "here",
+    );
+    app.perform(filled);
+    let (helper, _) = scripted(vec![
+        Turn::calls(
+            "write_cells",
+            json!({"sheet": "Sheet1", "overwrite": true, "cells": over}),
+        ),
+        Turn::says("Done."),
+    ]);
+    let (mut many, _scratch) = assisted_with("overwrote-many", vec![helper], here());
+    let filled = ss_formula::edit::input_many(
+        &mut many.doc.workbook,
+        0,
+        ss_model::CellRef::new(0, 0),
+        &(0..15)
+            .map(|n| ss_model::CellRef::new(n, 0))
+            .collect::<Vec<_>>(),
+        "here",
+    );
+    many.perform(filled);
+    ask(&drive, &mut many, "Put x everywhere");
+    finished(&drive, &mut many);
+    let card = cards(&many).pop().expect("a card");
+    assert!(
+        card.body.contains("15 cells held something before"),
+        "{}",
+        card.body
+    );
+    assert!(card.body.contains("and 3 more"), "{}", card.body);
+
     // The person types afterwards: the card's Undo would now take back their
     // own edit, so it stops offering.
     let at = ss_model::CellRef::from_a1("A5").expect("an address");
@@ -910,5 +953,71 @@ fn on_this_computer() -> Settings {
     Settings {
         helper: Some(Choice::Local),
         ..Settings::default()
+    }
+}
+
+/// The guide's Calx half is held to Calx: the chips it advertises are the
+/// chips the pane offers, the scopes are the scopes, and the keys it names are
+/// keys this application reads.
+///
+/// **A guide is checked where the thing it describes is.** Scriva's half is
+/// checked in Scriva; reading both halves against one application's key table
+/// proves nothing about the other, and said so for a while.
+#[test]
+fn the_guides_calx_section_is_the_pane_calx_draws() {
+    let guide = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../GUIDE.md"),
+    )
+    .expect("GUIDE.md is at the top of the tree");
+    let calx = section(&guide, "## Calx");
+    let assist = section(calx, "### Assist");
+    let prose: String = assist.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    for (label, _) in crate::assisting::VERBS {
+        assert!(prose.contains(label), "the guide names the chip {label:?}");
+    }
+    // As the guide marks them, not as bare words: a scope whose name happens
+    // to appear in a sentence nearby is not the chip.
+    for scope in calx::assistant::About::ALL.iter().map(|about| about.name()) {
+        assert!(
+            prose.contains(&format!("**{scope}**")),
+            "the guide names the scope {scope:?} as a chip"
+        );
+    }
+    // Every key it names is one this application reads.
+    const READ_BY_CALX: &[&str] = &["Ctrl+Alt+A", "Ctrl+Z", "Ctrl+Y", "Ctrl+S"];
+    let mut found = 0;
+    for (index, piece) in assist.split('`').enumerate() {
+        let key = piece.trim();
+        if index % 2 == 0 || !key.starts_with("Ctrl+") {
+            continue;
+        }
+        found += 1;
+        assert!(READ_BY_CALX.contains(&key), "{key} is a key Calx reads");
+    }
+    assert!(found > 0, "the section names keys at all");
+    // And what the card says it did, which is the guide's other promise.
+    assert!(prose.contains("Undo"), "{prose}");
+    assert!(prose.contains("washed"), "{prose}");
+}
+
+/// The part of the guide under `heading`, up to the next heading of its rank
+/// or a higher one.
+fn section<'a>(guide: &'a str, heading: &str) -> &'a str {
+    let start = guide
+        .find(heading)
+        .unwrap_or_else(|| panic!("the guide has {heading}"));
+    let rest = &guide[start + heading.len()..];
+    let same = format!(
+        "\n{} ",
+        "#".repeat(heading.chars().take_while(|c| *c == '#').count())
+    );
+    let end = [rest.find(same.as_str()), rest.find("\n## ")]
+        .into_iter()
+        .flatten()
+        .min();
+    match end {
+        Some(at) => &guide[start..start + heading.len() + at],
+        None => &guide[start..],
     }
 }

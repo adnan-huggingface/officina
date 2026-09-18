@@ -454,9 +454,16 @@ fn what_it_did(wrote: &[CellRef], over: &[CellRef], did: &[String]) -> String {
         columns.join(", ")
     );
     if !over.is_empty() {
+        // Twelve addresses is as many as a card can hold and still be read;
+        // the rest are counted rather than left out silently, since "which
+        // cells did it write over" is the one question this card answers.
         let named: Vec<String> = over.iter().take(12).map(|at| at.to_a1()).collect();
+        let more = match over.len() > named.len() {
+            true => format!(" and {} more", over.len() - named.len()),
+            false => String::new(),
+        };
         said.push_str(&format!(
-            ". {} held something before: {}",
+            ". {} held something before: {}{more}",
             match over.len() {
                 1 => "One cell".to_owned(),
                 n => format!("{n} cells"),

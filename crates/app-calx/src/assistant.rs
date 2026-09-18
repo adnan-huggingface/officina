@@ -98,11 +98,13 @@ pub fn tools() -> Vec<Tool> {
             "fill",
             "Copy the cells of `from` over `to`, as dragging the fill handle does: formulas \
              move with the rows or columns they land in. `to` starts at `from` and runs down \
-             or across, like `D2:D101`.",
+             or across, like `D2:D101`. Cells that already hold something are refused unless \
+             `overwrite` is true.",
             json!({"type": "object", "additionalProperties": false,
                    "required": ["sheet", "from", "to"],
                    "properties": {"sheet": sheet(), "from": {"type": "string"},
-                                  "to": {"type": "string"}}}),
+                                  "to": {"type": "string"},
+                                  "overwrite": {"type": "boolean"}}}),
         ),
         Tool::new(
             "insert",

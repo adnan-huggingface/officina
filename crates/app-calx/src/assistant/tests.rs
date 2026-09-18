@@ -189,6 +189,16 @@ fn the_six_tools_are_strict_and_reading_answers_with_the_cells_as_shown() {
             tool.name
         );
         assert!(!tool.description.is_empty());
+        // A tool whose refusal asks for `overwrite` must allow it: tools are
+        // sent strictly, so a helper cannot pass what the schema does not
+        // name, and the refusal would be one it could never answer.
+        if tool.description.contains("overwrite") {
+            assert!(
+                tool.schema["properties"]["overwrite"].is_object(),
+                "{} allows the overwrite it asks for",
+                tool.name
+            );
+        }
     }
 
     let mut book = sheet_of_numbers();

@@ -36,10 +36,10 @@ Every source file, its size, and the first sentence of its module doc.
 
 ### `calx`
 
-- `crates/app-calx/src/assistant/tests.rs` (709) 
-- `crates/app-calx/src/assistant.rs` (992) What Calx's helper is shown, and what its tools do to a workbook.
-- `crates/app-calx/src/assisting/tests.rs` (914) Assist in Calx's window, driven: a scripted helper, a settings file of the test's own, and nothing reached beyond them.
-- `crates/app-calx/src/assisting.rs` (471) Assist in Calx's window: the pane on the right, where the chart inspector sits; the keys and rows that open it; the helper's tool calls, run against the workbook a frame at a time; and what a whole request leaves behi…
+- `crates/app-calx/src/assistant/tests.rs` (719) 
+- `crates/app-calx/src/assistant.rs` (994) What Calx's helper is shown, and what its tools do to a workbook.
+- `crates/app-calx/src/assisting/tests.rs` (1023) Assist in Calx's window, driven: a scripted helper, a settings file of the test's own, and nothing reached beyond them.
+- `crates/app-calx/src/assisting.rs` (478) Assist in Calx's window: the pane on the right, where the chart inspector sits; the keys and rows that open it; the helper's tool calls, run against the workbook a frame at a time; and what a whole request leaves behi…
 - `crates/app-calx/src/clock.rs` (31) The wall clock, read in the user's own time zone.
 - `crates/app-calx/src/dialogs.rs` (1921) Calx's boxes: every dialog the grid can put up, drawn from the draft in `Calx::dialog`, and the tabs of Format Cells.
 - `crates/app-calx/src/grid/axis.rs` (533) Where rows and columns sit, and which of them a viewport can see.
@@ -75,7 +75,7 @@ Every source file, its size, and the first sentence of its module doc.
 - `crates/app-scriva/src/app/tests/desk.rs` (1196) The desk as it is painted: pages, zoom, scrolling, the caret and the pointer.
 - `crates/app-scriva/src/app/tests/editing.rs` (1127) Typing, keys in the text, lists, the clipboard, formatting and undo.
 - `crates/app-scriva/src/app/tests/files.rs` (1366) Opening, saving, the formats between them, and what the window says about a file.
-- `crates/app-scriva/src/app/tests/menus.rs` (743) Menus, shortcuts, boxes and the toolbar, reached the way a keyboard reaches them.
+- `crates/app-scriva/src/app/tests/menus.rs` (880) Menus, shortcuts, boxes and the toolbar, reached the way a keyboard reaches them.
 - `crates/app-scriva/src/app/tests/mod.rs` (191) Scriva's window, driven: one file per area, and here what more than one of them uses.
 - `crates/app-scriva/src/app/tests/panes.rs` (604) The find bar and the panes beside the page: navigation, review and comments.
 - `crates/app-scriva/src/app/tests/pictures.rs` (518) Pictures and charts: in by paste or menu, sized, moved and taken out.
@@ -284,7 +284,7 @@ Every source file, its size, and the first sentence of its module doc.
 - `crates/ui-kit/src/assist/choosing.rs` (280) The first-run card: which helper Assist should use, asked once, in words.
 - `crates/ui-kit/src/assist/mod.rs` (1786) Assist's pane: where a person asks for a change in their own words, sees the answer arrive, sees what the helper read and changed, and stops it — and where the helper is chosen, once, in words.
 - `crates/ui-kit/src/assist/request.rs` (188) A request on a thread of its own, and anything else the pane waits for without stopping the window.
-- `crates/ui-kit/src/assist/settings_box.rs` (684) Assist ▸ Settings: the helper, and what it needs, in one box.
+- `crates/ui-kit/src/assist/settings_box.rs` (684) Assist's ⋯ menu ▸ Settings: the helper, and what it needs, in one box.
 - `crates/ui-kit/src/assist/tests/card.rs` (516) B3: the first-run card.
 - `crates/ui-kit/src/assist/tests/changes.rs` (690) What the pane does when its settings change under it: in the other application, in its own box, or nowhere to keep them at all.
 - `crates/ui-kit/src/assist/tests/keeping.rs` (501) B4 and B5: the settings box, and what is said before anything leaves the computer.
@@ -302,7 +302,7 @@ Every source file, its size, and the first sentence of its module doc.
 - `crates/ui-kit/src/fonts.rs` (1431) Real type faces, loaded from the system at startup.
 - `crates/ui-kit/src/headless.rs` (221) An application running without a person in front of it: under a test.
 - `crates/ui-kit/src/keys.rs` (105) Keyboard shortcuts, matched on every modifier.
-- `crates/ui-kit/src/lib.rs` (53) Shared application shell for Calx and Scriva.
+- `crates/ui-kit/src/lib.rs` (161) Shared application shell for Calx and Scriva.
 - `crates/ui-kit/src/menu.rs` (1094) A menu bar, and menus that look like menus.
 - `crates/ui-kit/src/paths.rs` (254) Config, state and cache directory resolution.
 - `crates/ui-kit/src/recent.rs` (205) The files that have been opened, most recent first.

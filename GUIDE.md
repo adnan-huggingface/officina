@@ -91,6 +91,29 @@ Protect Sheet are all under the menus where Excel puts them.
 range shows the marching-ants border; `Esc` cancels it. Text copied from another
 program is parsed the way it would be if you typed it.
 
+### Assist — the helper
+
+`Ctrl+Alt+A`, or View ▸ Assist, opens the assistant beside the grid. Type what
+you want done in your own words — "add a column that totals the others",
+"explain these cells" — or press one of the chips above the box: *Explain the
+selection*, *Add a total*, *Clean up this column*, *Fill in the pattern*. The
+chip under
+the box says what the request is about: **Cell**, **Selection**, **Sheet** or
+**Whole workbook**. It follows what you have selected, and you can change it.
+
+What the assistant does happens at once, as it would if you did it: the cells it
+writes are washed in green for a few seconds so you can see them, and the card
+in the pane says what it did — "Wrote 101 cells in D" — with **Undo**. The whole
+request is one entry in the undo history, so `Ctrl+Z` takes all of it back at
+once, and the card says "Undone" when you do.
+
+It will not write over a cell that already holds something unless it says so and
+you can see which cells those were: they are listed on the card by address. It
+cannot format cells, make charts, or rename a sheet — not yet.
+
+While a chart is selected the chart inspector has that side of the window, and
+the pane waits until you let the chart go.
+
 ---
 
 ## Scriva — documents
@@ -229,14 +252,69 @@ Help ▸ Keyboard Shortcuts… lists every key above, generated from the same
 table the keys are read from; Help ▸ User Guide opens this file from beside
 the program; Help ▸ About says the version and the licences.
 
+### Assist — the helper
+
+`Ctrl+Alt+A`, or View ▸ Assist, opens the assistant on the right, sharing that
+side with the reviewing pane — each is a tab of the other. Type what you want
+done in your own words, or press one of the chips: *Improve the wording*, *Fix
+spelling and grammar*, *Make it shorter*, *Summarize*, *Translate…*. The chip
+under the box says what the request is about — **Selection**, **Paragraph** (the
+one the caret is in) or **Whole document** — and follows what you have selected.
+
+**Everything it changes arrives as a tracked change by "Assistant"**, whether or
+not Track Changes is on: the old words struck through, the new ones beside them,
+and a card in the pane with **Accept** and **Reject**. Reject gives back exactly
+what was there. One `Ctrl+Z` takes a whole proposal away. Its changes are listed
+in the reviewing pane like anyone else's, and Accept All and Reject All on the
+pane's ⋯ menu settle the assistant's changes and nobody else's.
+
+A document saved with proposals still open keeps them as tracked changes, and
+the status bar says how many. Only `.docx` carries them: saved as Markdown, ODT
+or plain text, the new wording is simply in the file, and the status bar says so.
+
+The right-click menu has **Ask the Assistant**, with the four verbs that need no
+words of your own.
+
+It will not rewrite a paragraph holding a picture, a note, a field, an equation
+or a link — it says so and comments instead — and it does not reach headers,
+footers, footnotes, or the words inside a comment.
+
 ---
+
+## The assistant: what it costs, and what leaves your computer
+
+Assist asks you once, before it can do anything, which helper should answer:
+
+- **The helper on this computer** — free, private, no account. It downloads a
+  model of about 1.3 GB the first time (Qwen3 1.7B, Apache-2.0), keeps it in
+  `~/.cache/officina/`, and runs it on your processor. **Nothing you write
+  leaves the computer.** It is slower and simpler than the others — good for
+  rewording, grammar, summaries and simple sums. It reads your request before it
+  writes anything, which on a recent desktop takes something like a quarter of a
+  minute, and then writes a few words a second; a paragraph is a minute or two.
+  The pane's `⋯` menu ▸ Settings removes it again and says how much space came
+  back.
+- **Claude**, with an API key of your own (a Claude.ai subscription is not one).
+  What is sent costs you money at Anthropic's prices; what it has cost so far is
+  in the pane's `⋯` menu ▸ Settings.
+- **Ollama**, if it is running on this computer, or **another service** by
+  address and key.
+
+Before the first request goes to anything but your own computer, the pane says
+in a sentence what will be sent and where, and waits for you to say yes.
+
+Your key is kept in `~/.config/officina/assist.toml`, in a file only you can
+read, and is never written to a log or sent anywhere but the service it belongs
+to.
 
 ## Where your settings live
 
 `~/.config/calx/` and `~/.config/scriva/` — on Windows too, which is not the
 Windows convention but is what was asked for. Each holds the window geometry and
 the recent-files list, and nothing else. Deleting either directory loses nothing
-but that.
+but that. Assist's own settings are shared by both applications, in
+`~/.config/officina/assist.toml`, and the helper it downloads lives in
+`~/.cache/officina/`.
 
 ## What these cannot do
 
