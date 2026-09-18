@@ -1338,6 +1338,30 @@ impl GridView {
             }
         }
 
+        // The cells an assistant's request wrote, washed in the accent until
+        // its time is up: what a person did not do themselves is the one
+        // thing on the sheet they have no memory of, so it is shown to them
+        // and then, like a notification, gets out of the way.
+        if let Some(wash) = &self.wash {
+            let now = ui.input(|i| i.time);
+            if wash.sheet == self.sheet_index && now < wash.until {
+                let left = (wash.until - now) as f32;
+                let strength = (left / 1.5).min(1.0) * 0.22;
+                for range in &wash.ranges {
+                    let rect = super::rect_of_range(layout, *range, pane.rect, pane.scroll);
+                    if rect.intersect(pane.rect).is_positive() {
+                        painter.rect_filled(
+                            rect.intersect(pane.rect),
+                            0.0,
+                            palette.selection_edge.gamma_multiply(strength),
+                        );
+                    }
+                }
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_millis(60));
+            }
+        }
+
         // The marching ants: an animated dashed border around what was
         // copied or cut, so a pending paste has a visible source and a
         // pending cut is not a silent trap. Repainted on a short timer for

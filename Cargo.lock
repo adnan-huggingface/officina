@@ -470,10 +470,12 @@ name = "calx"
 version = "0.1.0"
 dependencies = [
  "arboard",
+ "assist",
  "brand",
  "clipboard-win",
  "image",
  "rfd",
+ "serde_json",
  "ss-csv",
  "ss-formula",
  "ss-model",

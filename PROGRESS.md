@@ -6987,6 +6987,84 @@ Test: `lines_pasted_at_a_headings_end_and_rejected_leave_it_a_heading`. Three
 mutations, one rule broken at a time, were each caught. A fourth, which applies
 the rule to pastes within one paragraph too, changes nothing a test can see.
 
+## Assist, phase 4: the assistant in Calx (2026-09-17)
+
+The fourth of Assist's six phases, and `PLAN.md` is its plan: the pane phase 2 built is
+Calx's now. View ▸ Assist and Ctrl+Alt+A open it on the right, in the place the chart
+inspector sits, and while a chart is selected the inspector has that place and the pane
+waits. A request is about the cell, the selection, the sheet or the workbook, and the
+helper answers by editing, through six tools — `read_range`, `write_cells`, `fill`,
+`insert`, `delete` and `add_sheet` — which `calx::assistant` runs against the workbook a
+call at a time, on the window's thread (`assisting`).
+
+**An edit lands at once, and a request is one thing to undo.** Calx has no tracked changes
+and grows none for this: Excel's own tools — Sort, Fill, Remove Duplicates — act at once
+and are undone, and so does the assistant. Each call applies as a `Change` like any other,
+the window keeps what takes it back, and when the request ends they go on the undo stack as
+one entry labelled with what was asked ("Assistant: Add a column that totals the…"). One
+Ctrl+Z gives back the workbook that was there; so does Undo on the card.
+
+**The engine checks the helper.** Every cell a tool writes goes back to it as the grid then
+evaluates it — the number, or `#NAME?` — so a formula that means nothing is in front of the
+helper while it can still fix it, which is what makes a small model usable here.
+
+**Nothing is overwritten by accident.** A cell that holds something is refused unless the
+call passes `overwrite`, and the refusal names the cells; the request already showed which
+cells were empty. A cell that was written over is listed on the card by address.
+
+**What changed is visible.** The cells a request wrote are washed in the accent for four
+seconds — a view state, nothing a file keeps — and the card says "Wrote 2 cells in D". A
+card whose entry is no longer the last one says "No longer the last change" rather than
+undoing somebody else's work; one undone another way says "Undone".
+
+**What the helper is sent** (`assistant::request`): the workbook's sheets and which is
+showing, what is selected, how far the used range runs, the first rows of it and the
+selection as tab-separated text with each formula beside the value it gives, and the
+workbook's defined names. Two hundred cells at most, whole rows only, with a line saying
+which rows were left out and that `read_range` will show them.
+
+Found on the way and fixed: Ctrl+Z did nothing while the pane had the keyboard, because the
+grid reads it and a pane holding the keys stops the grid — the window reads undo and redo
+itself while the pane has them, as it does Ctrl+S.
+
+**What an independent review of the phase found**, and what each cost:
+
+- **The pane's Ctrl+Z was a flag, not the keyboard.** A sticky "the pane has the keys" flag
+  survived a click back into the grid, so Ctrl+Z was taken from the cell editor being typed
+  into, from the Find box, and from a selected chart's inspector — undoing the workbook
+  behind them. It asks the pane itself now (`Assist::holds_keyboard`), and only while the
+  pane is the one in the slot and no dialog is up.
+- **An undo of the person's own was invisible to the staleness guard.** A tool call is
+  refused when the workbook changed while the helper worked; `undo` and `redo` do not go
+  through `perform`, so taking back a row insertion mid-request moved every cell under it
+  and the next call landed a row out. Both count as edits now.
+- **`fill` wrote over whatever was there.** The refusal that guards `write_cells` did not
+  guard the fill, so a helper refused one way could reach the same cells the other; and the
+  cells it reported having written were the whole of `to` rather than the lanes the fill
+  actually covers, which put untouched cells on the card and under the wash. Both are the
+  same rule in one place now (`would_lose`), and the fill's `to` must begin at `from`'s own
+  corner.
+- **The assistant's writes went round the guards a person's typing passes**: a cell inside
+  a pivot table, and one a validation rule stops, are refused for it too, before any of the
+  call's cells land.
+- **The card said "Nothing was written" for a request that took out three rows** — the one
+  thing on the sheet the person has no memory of, described as nothing at all. A request
+  that writes no cells now says what its tools did.
+- **The wash covered only the last call**, so a total column written and then filled
+  highlighted one cell of three. It is the whole request's cells now.
+- **The sample's cap had a floor under it**: a selection of the whole sheet sent one row of
+  sixteen thousand cells. The cap is the cap; what will not fit is said.
+- **A count of none put a row in**, a negative count put one in too, and a delete past the
+  sheet's last cell pushed an undo entry for a change nobody could see. Each is a sentence
+  now.
+- **A call stopped partway named cells it never reached** as written over, and said nothing
+  of what had landed.
+- **A card settled by an undo stayed settled through the redo that put its changes back**,
+  and the pane's menu row then denied there was anything to undo. The row follows the
+  workbook's own top entry.
+
+Twenty-five mutations, one rule broken at a time, were each caught.
+
 ## A wrapped Markdown paragraph is one paragraph (2026-09-17)
 
 The second thing the rig tour found: the document it opened — a `.md` file wrapped at

@@ -570,6 +570,17 @@ impl Assist {
         call
     }
 
+    /// Puts a card in the transcript on its own, rather than after a tool.
+    ///
+    /// **A request can be one thing to settle rather than several.** Scriva's
+    /// proposals are a card each, because each is accepted or rejected on its
+    /// own; Calx's edits land at once and are one entry in the undo history,
+    /// so the card that offers Undo belongs to the request, not to the tool
+    /// call that happened to be last.
+    pub fn add_card(&mut self, card: Card) {
+        self.transcript.push(Entry::Card(card));
+    }
+
     /// Gives the request that asked for `call` what came of it, and puts
     /// what the tool did in the transcript. What a tool did to the document
     /// is said even when its request was stopped meanwhile; the result goes

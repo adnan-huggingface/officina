@@ -105,14 +105,16 @@ fn family_name(plot: &Plot) -> Option<&'static str> {
 
 impl Calx {
     /// The panel, drawn before the grid so that the grid takes what is left.
-    pub(crate) fn chart_panel(&mut self, ui: &mut egui::Ui) {
+    /// Says whether it drew: the right-hand side holds one pane at a time,
+    /// and a chart being selected is the person pointing at the chart.
+    pub(crate) fn chart_panel(&mut self, ui: &mut egui::Ui) -> bool {
         let sheet = self.grid.sheet_index;
         let Some(index) = self.grid.selected_chart else {
             self.inspector.title = None;
             // A chart deselected mid-gesture — by a click on the sheet,
             // say — still owes its undo entry.
             self.settle_chart_gesture(true);
-            return;
+            return false;
         };
         if self
             .doc
@@ -121,7 +123,7 @@ impl Calx {
             .and_then(|s| s.charts.get(index))
             .is_none()
         {
-            return;
+            return false;
         }
 
         egui::Panel::right("calx-chart-inspector")
@@ -170,6 +172,7 @@ impl Calx {
                 .memory(|m| m.focused())
                 .is_some_and(|id| id != egui::Id::new("calx-chart-title"));
         self.settle_chart_gesture(!busy);
+        true
     }
 
     fn chart_controls(&mut self, ui: &mut egui::Ui, sheet: usize, index: usize) {

@@ -36,19 +36,23 @@ Every source file, its size, and the first sentence of its module doc.
 
 ### `calx`
 
+- `crates/app-calx/src/assistant/tests.rs` (709) 
+- `crates/app-calx/src/assistant.rs` (992) What Calx's helper is shown, and what its tools do to a workbook.
+- `crates/app-calx/src/assisting/tests.rs` (777) Assist in Calx's window, driven: a scripted helper, a settings file of the test's own, and nothing reached beyond them.
+- `crates/app-calx/src/assisting.rs` (471) Assist in Calx's window: the pane on the right, where the chart inspector sits; the keys and rows that open it; the helper's tool calls, run against the workbook a frame at a time; and what a whole request leaves behi…
 - `crates/app-calx/src/clock.rs` (31) The wall clock, read in the user's own time zone.
 - `crates/app-calx/src/dialogs.rs` (1921) Calx's boxes: every dialog the grid can put up, drawn from the draft in `Calx::dialog`, and the tabs of Format Cells.
 - `crates/app-calx/src/grid/axis.rs` (533) Where rows and columns sit, and which of them a viewport can see.
 - `crates/app-calx/src/grid/chart.rs` (248) Where a chart sits on the grid, and what numbers it plots.
 - `crates/app-calx/src/grid/editor.rs` (468) The cell editor: what is being typed, and how it is coloured.
-- `crates/app-calx/src/grid/mod.rs` (1771) The spreadsheet grid.
-- `crates/app-calx/src/grid/paint.rs` (5666) Drawing the grid, and the mouse and keyboard that drive it.
+- `crates/app-calx/src/grid/mod.rs` (1786) The spreadsheet grid.
+- `crates/app-calx/src/grid/paint.rs` (5690) Drawing the grid, and the mouse and keyboard that drive it.
 - `crates/app-calx/src/grid/picture.rs` (431) Anchored pictures: decoding them, drawing them, and handling them.
 - `crates/app-calx/src/grid/selection.rs` (675) What is selected, and how the keyboard and mouse change it.
 - `crates/app-calx/src/icons.rs` (590) Toolbar icons, drawn rather than typed.
-- `crates/app-calx/src/inspector.rs` (753) The chart inspector: a panel beside the grid for as long as a chart is selected.
-- `crates/app-calx/src/lib.rs` (11) Calx — the spreadsheet application.
-- `crates/app-calx/src/main.rs` (5714) Calx — spreadsheet.
+- `crates/app-calx/src/inspector.rs` (756) The chart inspector: a panel beside the grid for as long as a chart is selected.
+- `crates/app-calx/src/lib.rs` (12) Calx — the spreadsheet application.
+- `crates/app-calx/src/main.rs` (5846) Calx — spreadsheet.
 - `crates/app-calx/src/tests.rs` (1026) 
 
 ### `scriva`
@@ -115,7 +119,7 @@ Every source file, its size, and the first sentence of its module doc.
 - `crates/assist/src/machine.rs` (777) What this computer already has that could answer, and the first-run card's rows in the order they are offered.
 - `crates/assist/src/models.rs` (136) The Claude models Assist offers, in words, with what a paragraph costs.
 - `crates/assist/src/offline.rs` (66) A process that must reach nothing: one under a test.
-- `crates/assist/src/prompt.rs` (83) What a helper is told before any request: the editor's instructions.
+- `crates/assist/src/prompt.rs` (128) What a helper is told before any request: the editor's instructions.
 - `crates/assist/src/provider.rs` (467) The one shape every helper answers in, and the helper the settings name.
 - `crates/assist/src/scripted.rs` (171) A helper that plays canned turns: the only helper a test may use.
 - `crates/assist/src/session.rs` (166) A conversation with one helper, and the loop that runs its tools.
@@ -276,7 +280,7 @@ Every source file, its size, and the first sentence of its module doc.
 ### `ui-kit`
 
 - `crates/ui-kit/src/assist/choosing.rs` (280) The first-run card: which helper Assist should use, asked once, in words.
-- `crates/ui-kit/src/assist/mod.rs` (1533) Assist's pane: where a person asks for a change in their own words, sees the answer arrive, sees what the helper read and changed, and stops it — and where the helper is chosen, once, in words.
+- `crates/ui-kit/src/assist/mod.rs` (1544) Assist's pane: where a person asks for a change in their own words, sees the answer arrive, sees what the helper read and changed, and stops it — and where the helper is chosen, once, in words.
 - `crates/ui-kit/src/assist/request.rs` (188) A request on a thread of its own, and anything else the pane waits for without stopping the window.
 - `crates/ui-kit/src/assist/settings_box.rs` (615) Assist ▸ Settings: the helper, and what it needs, in one box.
 - `crates/ui-kit/src/assist/tests/card.rs` (466) B3: the first-run card.
@@ -838,6 +842,7 @@ Every row of every menu, and the keys that choose it from the document — walke
 | `Alt+T, D` | Data Validation… |
 | `Alt+T, N` | Define Names… |
 | `Alt+V, F` | Freeze Panes |
+| `Alt+V, A` | Assist |
 | `Alt+V, P` | Split |
 | `Alt+V, Z` | Zoom ▸ |
 | `Alt+V, Z, —` | 50% |

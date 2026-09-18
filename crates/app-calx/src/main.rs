@@ -18,6 +18,7 @@ use ui_kit::{dialog, egui, keys, menu, paths, AppId, DocumentApp, Recent, CALX};
 use calx::grid::{self, Action, BorderPreset, Editor, Format, GridView, Mode};
 use calx::icons::{self, Icon};
 
+mod assisting;
 mod dialogs;
 mod inspector;
 
@@ -168,6 +169,32 @@ struct Calx {
     dialog_was_up: bool,
     /// The sheet tab being dragged along the strip, if one is.
     dragging_tab: Option<usize>,
+    /// The assistant's pane, made the first time it is wanted: a window
+    /// nobody asks for help in never reads Assist's settings.
+    assist: Option<Box<ui_kit::assist::Assist>>,
+    /// Whether the pane is showing, and whether the keys are its.
+    assisting: bool,
+    assist_keyboard: bool,
+    /// Whether a request was under way last frame, so that the frame it ends
+    /// in is the one its card is made in.
+    assist_working: bool,
+    /// What the person asked, for the undo entry's label.
+    asked_words: String,
+    /// What takes the request under way back, gathered call by call.
+    assist_entry: Option<Change>,
+    assist_wrote: Vec<CellRef>,
+    assist_over: Vec<CellRef>,
+    /// What the request's tools said they did, for a card whose request wrote
+    /// no cells — rows taken out, a sheet added.
+    assist_did: Vec<String>,
+    /// Cards made, and what each takes back.
+    cards: u64,
+    carded: Vec<assisting::Carded>,
+    /// How many edits the workbook had when the helper was last shown it: a
+    /// tool call arriving after the person has edited is refused, since the
+    /// cells it names have moved.
+    assist_seen: u64,
+    edits: u64,
 }
 
 /// A window that takes over until it is answered.
@@ -410,6 +437,8 @@ enum Chosen {
 enum Command {
     /// Anything the grid already knows how to be asked for.
     Do(Action),
+    /// Show the assistant's pane, or put it away.
+    Assist,
     /// A document-level move that has to clear the unsaved-changes prompt.
     Guard(Pending),
     Save,
@@ -490,6 +519,19 @@ impl Calx {
             dialog: None,
             dialog_was_up: false,
             dragging_tab: None,
+            assist: None,
+            assisting: false,
+            assist_keyboard: false,
+            assist_working: false,
+            asked_words: String::new(),
+            assist_entry: None,
+            assist_wrote: Vec::new(),
+            assist_over: Vec::new(),
+            assist_did: Vec::new(),
+            cards: 0,
+            carded: Vec::new(),
+            assist_seen: 0,
+            edits: 0,
         }
     }
 
@@ -792,6 +834,12 @@ impl Calx {
         self.clip_text.clear();
         self.cut_from = None;
         self.edited = false;
+        // The assistant was talking about the workbook that has just gone:
+        // its cards would undo entries that are no longer there, and its
+        // transcript is about cells this document does not have.
+        self.end_assist_conversation();
+        self.edits = 0;
+        self.assist_seen = 0;
     }
 
     /// Records a finished picture drag, or drops it if nothing actually moved.
@@ -1364,6 +1412,67 @@ impl Calx {
                 how: Default::default(),
             });
         }
+        // Undo and redo while the assistant's pane has the keyboard. The grid
+        // reads Ctrl+Z itself, and does not while a pane holds the keys — but
+        // taking back what the assistant just did is the first thing a person
+        // does from the pane, and it is the workbook's command, not the
+        // grid's.
+        //
+        // **Asked of the pane, not of a flag.** Whether the composer has the
+        // keyboard *now* is what decides: a flag set when the pane opened is
+        // still true after a click back into the grid, and the key would then
+        // be taken from the cell editor, from the Find box, and from a chart's
+        // inspector — each of which has its own undo or none.
+        let pane_has_the_keys = self.assisting
+            && self.grid.selected_chart.is_none()
+            && self.dialog.is_none()
+            && self
+                .assist
+                .as_ref()
+                .is_some_and(|assist| assist.holds_keyboard(ctx));
+        if pane_has_the_keys {
+            let (undo, redo) = ctx.input_mut(|i| {
+                (
+                    keys::take(i, egui::Modifiers::COMMAND, egui::Key::Z),
+                    keys::take(i, egui::Modifiers::COMMAND, egui::Key::Y)
+                        || keys::take(
+                            i,
+                            egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+                            egui::Key::Z,
+                        ),
+                )
+            });
+            if undo {
+                self.undo();
+            }
+            if redo {
+                self.redo();
+            }
+        }
+        // Ctrl+Alt+A shows the assistant, and puts it away again from its own
+        // composer. Read here, before the grid: the grid's Ctrl+A is Select
+        // All, and `keys::take` eats the letter so that neither happens twice.
+        if ctx.input_mut(|i| {
+            keys::take(
+                i,
+                egui::Modifiers::COMMAND | egui::Modifiers::ALT,
+                egui::Key::A,
+            )
+        }) {
+            self.toggle_assist();
+        }
+        // F6 walks the keyboard between the grid and the pane, and Escape in
+        // the pane gives it back, as the redesign's rule 5 has it.
+        if self.assisting && ctx.input_mut(|i| keys::take(i, egui::Modifiers::NONE, egui::Key::F6))
+        {
+            match self.assist_keyboard {
+                true => self.assist_keyboard = false,
+                false => {
+                    self.assist_keyboard = true;
+                    self.assist_mut().focus();
+                }
+            }
+        }
         if ctx.input_mut(|i| keys::take(i, egui::Modifiers::COMMAND, egui::Key::Num1)) {
             self.open_format_cells();
         }
@@ -1760,6 +1869,7 @@ impl Calx {
         self.undo.push(undo);
         self.redo.clear();
         self.edited = true;
+        self.edits += 1;
         self.recalculate();
     }
 
@@ -1773,134 +1883,9 @@ impl Calx {
     /// Undo and redo deliberately do not come through here: they apply their
     /// changes directly. Protecting a sheet must stay undoable, and nothing can
     /// be undone that protection did not already allow to happen.
+    /// Why a protected sheet will not take this change, or `None` if it will.
     fn protection_refuses(&self, change: &Change) -> Option<String> {
-        for patch in &change.patches {
-            let refusal = match patch {
-                Patch::Cells { sheet, cells } => self.cells_refusal(*sheet, cells),
-                // A formula's *text* rewritten in place: the cells that hold
-                // it are what protection is about, and the sheet's own
-                // permission to be edited at all is the closest question.
-                Patch::Formulas { sheet, .. } => self.refuse(*sheet, |p| p.format_cells, "edited"),
-                Patch::Permute { sheet, .. } => self.refuse(*sheet, |p| p.sort, "sorted"),
-                Patch::Shift { sheet, shift } => {
-                    let inserting = shift.count > 0;
-                    match (shift.axis, inserting) {
-                        (Axis::Rows, true) => self.refuse(*sheet, |p| p.insert_rows, "added"),
-                        (Axis::Rows, false) => self.refuse(*sheet, |p| p.delete_rows, "deleted"),
-                        (Axis::Columns, true) => self.refuse(*sheet, |p| p.insert_columns, "added"),
-                        (Axis::Columns, false) => {
-                            self.refuse(*sheet, |p| p.delete_columns, "deleted")
-                        }
-                    }
-                }
-                // A move is an insert and a delete at once, and needs both.
-                Patch::Rearrange { sheet, rearrange } => match rearrange.axis {
-                    Axis::Rows => self.refuse(*sheet, |p| p.insert_rows && p.delete_rows, "moved"),
-                    Axis::Columns => {
-                        self.refuse(*sheet, |p| p.insert_columns && p.delete_columns, "moved")
-                    }
-                },
-                Patch::Geometry { sheet, geometry } => self.geometry_refusal(*sheet, geometry),
-                Patch::AxisStyles { sheet, axis, .. } => match axis {
-                    Axis::Rows => self.refuse(*sheet, |p| p.format_rows, "formatted"),
-                    Axis::Columns => self.refuse(*sheet, |p| p.format_columns, "formatted"),
-                },
-                Patch::Validations { sheet, .. } | Patch::ConditionalFormats { sheet, .. } => {
-                    self.refuse(*sheet, |p| p.format_cells, "formatted")
-                }
-                Patch::Pictures { sheet, .. }
-                | Patch::Charts { sheet, .. }
-                | Patch::ChartTitle { sheet, .. }
-                | Patch::ChartPlot { sheet, .. } => self.refuse(*sheet, |p| p.objects, "changed"),
-                Patch::Filter { sheet, .. } => self.refuse(*sheet, |p| p.filter, "filtered"),
-                // Protecting and unprotecting, and everything that belongs to
-                // the workbook rather than to a sheet: a protected sheet can
-                // still be renamed, hidden, or dragged to another position,
-                // because sheet protection is about the cells in it.
-                _ => None,
-            };
-            if refusal.is_some() {
-                return refusal;
-            }
-        }
-        None
-    }
-
-    /// Whether protection stands in the way — `Some` when it does.
-    fn forbidden(
-        &self,
-        sheet: usize,
-        allowed: impl Fn(&ss_model::Protection) -> bool,
-    ) -> Option<()> {
-        let protection = self.doc.workbook.sheet(sheet)?.protection.as_ref()?;
-        (!allowed(protection)).then_some(())
-    }
-
-    fn refuse(
-        &self,
-        sheet: usize,
-        allowed: impl Fn(&ss_model::Protection) -> bool,
-        verb: &str,
-    ) -> Option<String> {
-        self.forbidden(sheet, allowed)
-            .map(|()| format!("A protected sheet cannot have that {verb}"))
-    }
-
-    /// Whether a protected sheet takes these cells.
-    ///
-    /// A cell's *value* may only change when the cell is unlocked, and its
-    /// *look* only when the sheet allows formatting — which are different
-    /// permissions on the same patch, so the two are told apart by comparing
-    /// with what is there now.
-    fn cells_refusal(
-        &self,
-        sheet: usize,
-        cells: &[(CellRef, Option<ss_model::Cell>)],
-    ) -> Option<String> {
-        let target = self.doc.workbook.sheet(sheet)?;
-        let protection = target.protection.as_ref()?;
-        for (at, after) in cells {
-            let before = target.get(*at);
-            let value_changed = match (before, after) {
-                (Some(a), Some(b)) => a.value != b.value || a.formula != b.formula,
-                (None, Some(b)) => !b.value.is_blank() || b.formula.is_some(),
-                (Some(a), None) => !a.value.is_blank() || a.formula.is_some(),
-                (None, None) => false,
-            };
-            if value_changed {
-                if !self.doc.workbook.styles.locked(target.style_at(*at)) {
-                    continue;
-                }
-                return Some(format!(
-                    "{} is locked, and the sheet is protected",
-                    at.to_a1()
-                ));
-            }
-            if !protection.format_cells {
-                return Some("A protected sheet cannot have its cells formatted".to_string());
-            }
-        }
-        None
-    }
-
-    /// Whether a protected sheet takes this geometry.
-    fn geometry_refusal(&self, sheet: usize, wanted: &Geometry) -> Option<String> {
-        let target = self.doc.workbook.sheet(sheet)?;
-        let now = Geometry::of(target);
-        // A division is a way of looking at the sheet rather than a change to
-        // it, and Excel lets a protected sheet be frozen and split freely.
-        if now.row_heights != wanted.row_heights || now.row_outlines != wanted.row_outlines {
-            self.refuse(sheet, |p| p.format_rows, "resized")?;
-        }
-        if now.column_widths != wanted.column_widths
-            || now.column_outlines != wanted.column_outlines
-        {
-            self.refuse(sheet, |p| p.format_columns, "resized")?;
-        }
-        if now.merges != wanted.merges {
-            self.refuse(sheet, |p| p.format_cells, "merged")?;
-        }
-        None
+        protection_refusal(&self.doc.workbook, change)
     }
 
     fn recalculate(&mut self) {
@@ -1915,6 +1900,10 @@ impl Calx {
             let label = change.label.clone();
             let redo = edit::apply(&mut self.doc.workbook, change);
             self.redo.push(redo);
+            // An undo moves cells as surely as typing does — a row insertion
+            // taken back moves everything under it — so it counts as an edit
+            // the assistant has not been shown.
+            self.edits += 1;
             self.recalculate();
             self.status = format!("Undo {label}");
         }
@@ -1925,6 +1914,7 @@ impl Calx {
             let label = change.label.clone();
             let undo = edit::apply(&mut self.doc.workbook, change);
             self.undo.push(undo);
+            self.edits += 1;
             self.recalculate();
             self.status = format!("Redo {label}");
         }
@@ -3228,6 +3218,7 @@ impl Calx {
         let panes = sheet.and_then(|s| s.panes);
         let frozen = panes.is_some_and(|p| p.frozen);
         let split = panes.is_some_and(|p| !p.frozen);
+        let assisting = self.assisting;
         let protected = sheet.is_some_and(|s| s.protection.is_some());
         let filtering = sheet.and_then(|s| s.filter.as_ref());
         let has_filter = filtering.is_some();
@@ -3342,6 +3333,10 @@ impl Calx {
                 if menu::check(ui, "&Freeze Panes", "", frozen).clicked() {
                     command = Some(Command::Do(Action::Freeze(!frozen)));
                 }
+                if menu::check(ui, "&Assist", "Ctrl+Alt+A", assisting).clicked() {
+                    command = Some(Command::Assist);
+                }
+                menu::sep(ui);
                 if menu::check(ui, "S&plit", "", split).clicked() {
                     command = Some(Command::Do(Action::Split(!split)));
                 }
@@ -3605,6 +3600,7 @@ impl Calx {
     fn run(&mut self, ui: &egui::Ui, command: Command) {
         match command {
             Command::Do(action) => self.act(ui, action),
+            Command::Assist => self.toggle_assist(),
             Command::Guard(what) => self.guard(what),
             Command::Save => self.save(),
             Command::SaveAs => self.save_as(),
@@ -4532,6 +4528,13 @@ impl Calx {
                 .weak()
                 .small(),
         );
+        menu::sep(ui);
+        // The assistant, about what is selected: the pane opens with the
+        // scope on the selection and the composer ready for the words.
+        if menu::item(ui, "Ask the assistant…", "Ctrl+Alt+A").clicked() {
+            self.show_assist();
+            ui.close();
+        }
         menu::sep(ui);
         for (label, action) in [
             ("Cut", Action::Copy { cut: true }),
@@ -5505,7 +5508,7 @@ impl DocumentApp for Calx {
         // as its own, and deselected the chart whose title had just been
         // typed.
         let elsewhere_before = keys_belong_elsewhere(ui.ctx());
-        self.chart_panel(ui);
+        self.right_side(ui);
         self.last_body = ui.available_size();
         self.grid.blocked = self.dialog.is_some()
             || self.dialog_was_up
@@ -5514,6 +5517,7 @@ impl DocumentApp for Calx {
             || egui::Popup::is_any_open(ui.ctx())
             || elsewhere_before
             || keys_belong_elsewhere(ui.ctx());
+        self.tend_assist(&ctx);
         let response = self.grid.show(ui, &mut self.doc.workbook);
         menu::context(&response, |ui| self.context_menu(ui));
 
@@ -5708,6 +5712,134 @@ fn delimiter_name(byte: u8) -> &'static str {
         b'|' => "pipe-separated",
         _ => "comma-separated",
     }
+}
+
+pub(crate) fn protection_refusal(book: &ss_model::Workbook, change: &Change) -> Option<String> {
+    for patch in &change.patches {
+        let refusal = match patch {
+            Patch::Cells { sheet, cells } => cells_refusal(book, *sheet, cells),
+            // A formula's *text* rewritten in place: the cells that hold
+            // it are what protection is about, and the sheet's own
+            // permission to be edited at all is the closest question.
+            Patch::Formulas { sheet, .. } => refuse(book, *sheet, |p| p.format_cells, "edited"),
+            Patch::Permute { sheet, .. } => refuse(book, *sheet, |p| p.sort, "sorted"),
+            Patch::Shift { sheet, shift } => {
+                let inserting = shift.count > 0;
+                match (shift.axis, inserting) {
+                    (Axis::Rows, true) => refuse(book, *sheet, |p| p.insert_rows, "added"),
+                    (Axis::Rows, false) => refuse(book, *sheet, |p| p.delete_rows, "deleted"),
+                    (Axis::Columns, true) => refuse(book, *sheet, |p| p.insert_columns, "added"),
+                    (Axis::Columns, false) => refuse(book, *sheet, |p| p.delete_columns, "deleted"),
+                }
+            }
+            // A move is an insert and a delete at once, and needs both.
+            Patch::Rearrange { sheet, rearrange } => match rearrange.axis {
+                Axis::Rows => refuse(book, *sheet, |p| p.insert_rows && p.delete_rows, "moved"),
+                Axis::Columns => refuse(
+                    book,
+                    *sheet,
+                    |p| p.insert_columns && p.delete_columns,
+                    "moved",
+                ),
+            },
+            Patch::Geometry { sheet, geometry } => geometry_refusal(book, *sheet, geometry),
+            Patch::AxisStyles { sheet, axis, .. } => match axis {
+                Axis::Rows => refuse(book, *sheet, |p| p.format_rows, "formatted"),
+                Axis::Columns => refuse(book, *sheet, |p| p.format_columns, "formatted"),
+            },
+            Patch::Validations { sheet, .. } | Patch::ConditionalFormats { sheet, .. } => {
+                refuse(book, *sheet, |p| p.format_cells, "formatted")
+            }
+            Patch::Pictures { sheet, .. }
+            | Patch::Charts { sheet, .. }
+            | Patch::ChartTitle { sheet, .. }
+            | Patch::ChartPlot { sheet, .. } => refuse(book, *sheet, |p| p.objects, "changed"),
+            Patch::Filter { sheet, .. } => refuse(book, *sheet, |p| p.filter, "filtered"),
+            // Protecting and unprotecting, and everything that belongs to
+            // the workbook rather than to a sheet: a protected sheet can
+            // still be renamed, hidden, or dragged to another position,
+            // because sheet protection is about the cells in it.
+            _ => None,
+        };
+        if refusal.is_some() {
+            return refusal;
+        }
+    }
+    None
+}
+
+/// Whether protection stands in the way — `Some` when it does.
+fn forbidden(
+    book: &ss_model::Workbook,
+    sheet: usize,
+    allowed: impl Fn(&ss_model::Protection) -> bool,
+) -> Option<()> {
+    let protection = book.sheet(sheet)?.protection.as_ref()?;
+    (!allowed(protection)).then_some(())
+}
+
+fn refuse(
+    book: &ss_model::Workbook,
+    sheet: usize,
+    allowed: impl Fn(&ss_model::Protection) -> bool,
+    verb: &str,
+) -> Option<String> {
+    forbidden(book, sheet, allowed).map(|()| format!("A protected sheet cannot have that {verb}"))
+}
+
+/// Whether a protected sheet takes these cells.
+///
+/// A cell's *value* may only change when the cell is unlocked, and its
+/// *look* only when the sheet allows formatting — which are different
+/// permissions on the same patch, so the two are told apart by comparing
+/// with what is there now.
+fn cells_refusal(
+    book: &ss_model::Workbook,
+    sheet: usize,
+    cells: &[(CellRef, Option<ss_model::Cell>)],
+) -> Option<String> {
+    let target = book.sheet(sheet)?;
+    let protection = target.protection.as_ref()?;
+    for (at, after) in cells {
+        let before = target.get(*at);
+        let value_changed = match (before, after) {
+            (Some(a), Some(b)) => a.value != b.value || a.formula != b.formula,
+            (None, Some(b)) => !b.value.is_blank() || b.formula.is_some(),
+            (Some(a), None) => !a.value.is_blank() || a.formula.is_some(),
+            (None, None) => false,
+        };
+        if value_changed {
+            if !book.styles.locked(target.style_at(*at)) {
+                continue;
+            }
+            return Some(format!(
+                "{} is locked, and the sheet is protected",
+                at.to_a1()
+            ));
+        }
+        if !protection.format_cells {
+            return Some("A protected sheet cannot have its cells formatted".to_string());
+        }
+    }
+    None
+}
+
+/// Whether a protected sheet takes this geometry.
+fn geometry_refusal(book: &ss_model::Workbook, sheet: usize, wanted: &Geometry) -> Option<String> {
+    let target = book.sheet(sheet)?;
+    let now = Geometry::of(target);
+    // A division is a way of looking at the sheet rather than a change to
+    // it, and Excel lets a protected sheet be frozen and split freely.
+    if now.row_heights != wanted.row_heights || now.row_outlines != wanted.row_outlines {
+        refuse(book, sheet, |p| p.format_rows, "resized")?;
+    }
+    if now.column_widths != wanted.column_widths || now.column_outlines != wanted.column_outlines {
+        refuse(book, sheet, |p| p.format_columns, "resized")?;
+    }
+    if now.merges != wanted.merges {
+        refuse(book, sheet, |p| p.format_cells, "merged")?;
+    }
+    None
 }
 
 #[cfg(test)]

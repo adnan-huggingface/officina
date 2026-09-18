@@ -879,11 +879,25 @@ pub struct GridView {
     /// Set by the application on copy, dismissed by Escape, any edit, or the
     /// paste that spends a cut.
     pub marquee: Option<(usize, CellRange)>,
+    /// Cells an assistant's request has just written, washed in the accent
+    /// until `wash_until`. A view state and nothing else: no file keeps it,
+    /// undo does not know about it, and it goes by itself. It is the whole of
+    /// how a person sees what an edit they did not make touched.
+    pub wash: Option<Wash>,
     /// Where the open editor was drawn last frame, which is not its cell: it
     /// grows over the neighbours to hold what is being typed. Kept so that a
     /// click in the part hanging over column D counts as a click in the
     /// editor rather than a click on D.
     pub(crate) editor_box: Option<egui::Rect>,
+}
+
+/// Cells washed in the accent for a few seconds, and until when.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Wash {
+    pub sheet: usize,
+    pub ranges: Vec<CellRange>,
+    /// The time, on egui's clock, the wash fades out at.
+    pub until: f64,
 }
 
 /// What the status bar says about the selection.
@@ -1027,6 +1041,7 @@ impl Default for GridView {
             summarized: None,
             textures: picture::Textures::default(),
             marquee: None,
+            wash: None,
             editor_box: None,
         }
     }
