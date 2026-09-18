@@ -1512,3 +1512,39 @@ fn the_caret_follows_the_text_a_proposal_moved() {
         .collect();
     assert_eq!(texts.last().map(String::as_str), Some("twoZ"), "{texts:?}");
 }
+
+/// Ctrl+S saves while the composer has the keyboard, and the words typed
+/// into it stay there: a person who has written a request should not have to
+/// click the page to save what the assistant changed.
+#[test]
+fn the_document_is_saved_from_the_composer_and_the_request_is_not_lost() {
+    let drive = Driver::new();
+    let (mut app, _scratch) = assisted("save-from-pane", &["Title", "text"], here(), Vec::new());
+    let dir = scratch("assist-save-from-pane");
+    app.path = Some(dir.join("held.docx"));
+    drive.settle(&mut app);
+    drive.press(&mut app, "ctrl+alt+A");
+    drive.settle(&mut app);
+    drive.type_text(&mut app, "Improve the wording of");
+    drive.settle(&mut app);
+    assert_eq!(app.keyboard, Keyboard::Assist);
+    drive.press(&mut app, "ctrl+S");
+    drive.settle(&mut app);
+    assert_eq!(
+        app.notice.as_ref().map(|(said, _)| said.as_str()),
+        Some("Saved held.docx")
+    );
+    assert_eq!(app.keyboard, Keyboard::Assist, "the composer still has it");
+    assert!(
+        painted(&drive, &mut app)
+            .iter()
+            .any(|text| text == "Improve the wording of"),
+        "with the request still in it"
+    );
+    // And what belongs to the document is still the pane's.
+    let before = app.document.paragraphs()[1].text();
+    drive.type_text(&mut app, " it");
+    drive.settle(&mut app);
+    assert_eq!(app.document.paragraphs()[1].text(), before);
+    let _ = std::fs::remove_dir_all(dir);
+}

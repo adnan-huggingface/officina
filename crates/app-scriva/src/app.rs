@@ -296,6 +296,35 @@ pub enum Command {
     RejectAssistant,
 }
 
+impl Command {
+    /// Whether this is the application's command rather than the text's.
+    ///
+    /// **Word saves from anywhere.** A pane or the find bar holds what a
+    /// person types — that is what stops a search for "bug" from also typing
+    /// "bug" into the document — but Ctrl+S, Ctrl+O and Ctrl+P are not about
+    /// the text under the caret, and a person who has spent a minute writing
+    /// a request to the assistant should not have to click the page first to
+    /// save what the assistant changed. A box on top of the window still
+    /// holds every key: it is answered first.
+    pub fn is_the_applications(&self) -> bool {
+        matches!(
+            self,
+            Command::New
+                | Command::Open
+                | Command::Reopen(_)
+                | Command::Save
+                | Command::SaveAs
+                | Command::Print
+                | Command::ExportPdf
+                | Command::Close
+                | Command::Exit
+                | Command::WordCount
+                | Command::KeyboardShortcuts
+                | Command::About
+        )
+    }
+}
+
 /// Which of the three formats a path names.
 ///
 /// Decided by the extension, because that is what the user chose in the save
@@ -5732,11 +5761,13 @@ impl DocumentApp for Scriva {
 
         // While a dialog or the find bar holds the keyboard, keys belong to it:
         // without this, searching for "bug" also types "bug" into the document.
-        let blocked = self.pending.is_some()
+        // A pane or a bar holds the keys of the text; the application's own —
+        // Save, Open, Print — are read wherever the keyboard is, as Word reads
+        // them (`Command::is_the_applications`). A box on top of the window
+        // holds every key, since it is what the person is answering.
+        let boxed_in = self.pending.is_some()
             || self.asking.is_some()
             || self.message.is_some()
-            || self.pane_held
-            || self.keyboard != Keyboard::Document
             || self.page_setup.is_some()
             || self.font_draft.is_some()
             || self.goto.is_some()
@@ -5752,18 +5783,22 @@ impl DocumentApp for Scriva {
             || self.size_draft.is_some()
             || self.zoom_draft.is_some()
             || self.assist.as_ref().is_some_and(|assist| assist.box_up())
-            || bar_held
             || egui::Popup::is_any_open(ui.ctx());
-        if !blocked {
+        let elsewhere = self.pane_held || bar_held || self.keyboard != Keyboard::Document;
+        if !boxed_in {
             if let Some(command) = self.keys(ui) {
-                match command {
-                    Command::New | Command::Open | Command::Close | Command::Exit => {
+                match (elsewhere && !command.is_the_applications(), command) {
+                    (true, _) => {}
+                    (false, command @ (Command::New | Command::Open | Command::Close)) => {
                         self.guarded(command)
                     }
-                    other => self.run(other),
+                    (false, command @ Command::Exit) => self.guarded(command),
+                    (false, other) => self.run(other),
                 }
             }
-            self.typing(ui);
+            if !elsewhere {
+                self.typing(ui);
+            }
         }
         // What the keys and the typing changed is laid out before the desk
         // is painted, so that the frame a letter is typed in shows the
@@ -5783,7 +5818,7 @@ impl DocumentApp for Scriva {
         // opened a menu, whose letters then ate the words that followed —
         // struck through, bolded, realigned. The surface holds on to Tab once
         // it has the keyboard, so having it is the whole of the fix.
-        if !blocked && ui.memory(|m| m.focused().is_none()) {
+        if !boxed_in && !elsewhere && ui.memory(|m| m.focused().is_none()) {
             if let Some(id) = self.surface_id {
                 ui.memory_mut(|m| m.request_focus(id));
             }

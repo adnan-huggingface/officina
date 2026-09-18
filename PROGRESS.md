@@ -6987,6 +6987,33 @@ Test: `lines_pasted_at_a_headings_end_and_rejected_leave_it_a_heading`. Three
 mutations, one rule broken at a time, were each caught. A fourth, which applies
 the rule to pastes within one paragraph too, changes nothing a test can see.
 
+## The application's keys work from a pane (2026-09-17)
+
+Found by driving the real binary on the rig, the first time Assist was used outside a
+test: Ctrl+S did nothing. The composer had the keyboard, and the window blocked every
+command key whenever the keyboard was not the document's — one condition for a dialog on
+top and for a pane beside, though only the first should hold Save. The reviewing pane and
+the find bar had always swallowed it too; the assistant made it easy to meet, because the
+composer holds the keyboard for as long as it takes to write a request, and what a person
+wants to save is what the assistant just changed.
+
+Two conditions now. A box on top of the window — a dialog, a message, a draft, Assist's
+settings, an open menu — still holds every key, because it is what the person is
+answering. A pane or a bar holds only what belongs to the text: the letters, the caret
+keys, the formatting. The application's own commands go through from wherever the keyboard
+is, as Word's do — New, Open, a recent file, Save, Save As, Print, Export as PDF, Close,
+Exit, Word Count, Keyboard Shortcuts, About (`Command::is_the_applications`).
+
+Tests: `the_application_keys_work_while_a_pane_has_the_keyboard` — the find bar and the
+reviewing pane each save, keep what was being written, and still take the letters typed
+into them — and `the_document_is_saved_from_the_composer_and_the_request_is_not_lost`.
+Three mutations, each caught. The rig tour is `bugs/evidence/rig/assist_tour.py` in the
+story, with a fake helper on loopback; the story's note is
+`bugs/shortcuts-dead-while-a-pane-has-the-keyboard.md`.
+
+Left as it is: saving from a comment being drafted puts the keyboard back in the document,
+though the draft is kept. The Assist composer holds on to it.
+
 ## Assist, phase 3: the assistant in Scriva (2026-09-17)
 
 The third of Assist's six phases, and `PLAN.md` is its plan: the pane phase 2

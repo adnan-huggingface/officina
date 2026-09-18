@@ -66,20 +66,20 @@ Every source file, its size, and the first sentence of its module doc.
 - `crates/app-scriva/src/app/strips.rs` (339) The row under the toolbar, and the mode strips drawn on it.
 - `crates/app-scriva/src/app/surface.rs` (981) The page surface: the scrolling desk the pages sit on, what the pointer does there — carets, selections, a picture picked, dragged and resized — and where on a page a point lands.
 - `crates/app-scriva/src/app/tables.rs` (486) Editing a table: Tab from cell to cell, the edit every table command goes through, cell margins, column widths, and Insert Table itself.
-- `crates/app-scriva/src/app/tests/assisting.rs` (1514) Assist in Scriva's window: the pane, its keys and rows, and what a helper's tool calls do to the document — driven, with a scripted helper and a settings file of the test's own, and nothing reached beyond them.
+- `crates/app-scriva/src/app/tests/assisting.rs` (1550) Assist in Scriva's window: the pane, its keys and rows, and what a helper's tool calls do to the document — driven, with a scripted helper and a settings file of the test's own, and nothing reached beyond them.
 - `crates/app-scriva/src/app/tests/bands.rs` (753) Headers, footers, watermarks and sections: the bands a page wears.
 - `crates/app-scriva/src/app/tests/desk.rs` (1196) The desk as it is painted: pages, zoom, scrolling, the caret and the pointer.
 - `crates/app-scriva/src/app/tests/editing.rs` (1127) Typing, keys in the text, lists, the clipboard, formatting and undo.
 - `crates/app-scriva/src/app/tests/files.rs` (1366) Opening, saving, the formats between them, and what the window says about a file.
 - `crates/app-scriva/src/app/tests/menus.rs` (743) Menus, shortcuts, boxes and the toolbar, reached the way a keyboard reaches them.
 - `crates/app-scriva/src/app/tests/mod.rs` (191) Scriva's window, driven: one file per area, and here what more than one of them uses.
-- `crates/app-scriva/src/app/tests/panes.rs` (538) The find bar and the panes beside the page: navigation, review and comments.
+- `crates/app-scriva/src/app/tests/panes.rs` (604) The find bar and the panes beside the page: navigation, review and comments.
 - `crates/app-scriva/src/app/tests/pictures.rs` (518) Pictures and charts: in by paste or menu, sized, moved and taken out.
 - `crates/app-scriva/src/app/tests/tables.rs` (776) Tables: inserting, filling, merging, borders, rows and columns.
 - `crates/app-scriva/src/app/tests/tracking.rs` (780) Track Changes, driven by the keys a person presses.
 - `crates/app-scriva/src/app/watermark.rs` (424) The watermark: the box that asks for one, and the shape it becomes in a header, written the way Word writes its own so that Word finds it again.
 - `crates/app-scriva/src/app/word_count.rs` (158) The Word Count box, from the status bar's count: pages, words, characters with and without spaces, paragraphs and lines — and, with a selection, the selection beside the document.
-- `crates/app-scriva/src/app.rs` (5885) The application: the window, the commands, and the keys.
+- `crates/app-scriva/src/app.rs` (5920) The application: the window, the commands, and the keys.
 - `crates/app-scriva/src/assistant/tests.rs` (1223) The words, the tools and the proposals, against documents built here.
 - `crates/app-scriva/src/assistant.rs` (1474) What the assistant is shown of a document and what it may do to it: the words a request is sent in, the four tools, and the proposals they leave.
 - `crates/app-scriva/src/author.rs` (536) A document written by the application itself, from a script of its own commands.
@@ -427,9 +427,9 @@ Every comment that says an application was *measured* — the rules this code ke
 - `crates/app-scriva/src/app/bands.rs:349` **Breaking it copies rather than empties.** Word's own answer, measured over COM: unlink a second section's header and the words are still there, while the first section keeps a copy of its own — so the two can then b…
 - `crates/app-scriva/src/app/tables.rs:460` Measured: a cell that states none is laid to its *content* by Word, whatever the grid says — a 468pt table came back 28pt wide, its second column as wide as "B1", and an empty column under a point.
 - `crates/app-scriva/src/app/watermark.rs:272` measured against a watermark Word wrote itself, which put the shape in the default header and left the other two parts empty.
-- `crates/app-scriva/src/app.rs:510` Word's own Page Setup keeps those last two on the same sheet, under "From edge", and they belong with the margins because they are measured against the same four edges.
-- `crates/app-scriva/src/app.rs:5045` 96 pixels to the inch: what a screen snippet is measured in, and what Word assumes of an image that does not say otherwise.
-- `crates/app-scriva/src/app.rs:5179` What a new document is in Word today, measured on the reference machine (Word 16.0.20326, 2026-09-13): twelve points, eight points after every paragraph, and a line of 278 to 240 — the document defaults Word writes in…
+- `crates/app-scriva/src/app.rs:539` Word's own Page Setup keeps those last two on the same sheet, under "From edge", and they belong with the margins because they are measured against the same four edges.
+- `crates/app-scriva/src/app.rs:5074` 96 pixels to the inch: what a screen snippet is measured in, and what Word assumes of an image that does not say otherwise.
+- `crates/app-scriva/src/app.rs:5208` What a new document is in Word today, measured on the reference machine (Word 16.0.20326, 2026-09-13): twelve points, eight points after every paragraph, and a line of 278 to 240 — the document defaults Word writes in…
 - `crates/app-scriva/src/author.rs:5` Nothing measured what it *writes* — and the faults that cost a week of afternoons were all there: a new document that stated no defaults and came back from Word a third taller, an inserted table whose cells stated no …
 - `crates/app-scriva/src/edit.rs:692` Measured on Word, not designed: a page break *inside* a cell is nothing to Word's layout, wherever in the cell it is, and the layout here ignores one too.
 - `crates/app-scriva/src/edit.rs:2376` Measured on Word 16 (`bugs/page-break-in-table-cell.md` in the story):

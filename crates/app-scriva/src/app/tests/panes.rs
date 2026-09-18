@@ -536,3 +536,69 @@ fn the_find_bar_is_drawn_where_it_can_be_seen() {
         );
     }
 }
+
+/// Saving works from wherever the keyboard is. A pane or the find bar holds
+/// the keys a person types — that is what stops a search for "bug" from also
+/// typing "bug" into the document — but Ctrl+S is the application's, not the
+/// document's, and Word saves from anywhere.
+#[test]
+fn the_application_keys_work_while_a_pane_has_the_keyboard() {
+    let drive = Driver::new();
+    let dir = scratch("keys-from-a-pane");
+    let path = dir.join("held.docx");
+    let mut app = app_with(&["Title", "text"]);
+    app.path = Some(path.clone());
+    drive.settle(&mut app);
+
+    // The find bar, then the reviewing pane: the keyboard is theirs, and
+    // Ctrl+S still saves.
+    for (what, open, kept) in [
+        (
+            "the find bar",
+            Command::Find,
+            (|app: &Scriva| app.keyboard == Keyboard::Find) as fn(&Scriva) -> bool,
+        ),
+        (
+            "the reviewing pane",
+            Command::AddComment,
+            (|app: &Scriva| app.draft.is_some()) as fn(&Scriva) -> bool,
+        ),
+    ] {
+        app.notice = None;
+        app.document
+            .body
+            .push(Block::Paragraph(Paragraph::of("more")));
+        app.run(open);
+        drive.settle(&mut app);
+        assert_ne!(app.keyboard, Keyboard::Document, "{what} has the keyboard");
+        drive.press(&mut app, "ctrl+S");
+        drive.settle(&mut app);
+        assert_eq!(
+            app.notice.as_ref().map(|(said, _)| said.as_str()),
+            Some("Saved held.docx"),
+            "{what}"
+        );
+        assert!(kept(&app), "{what} keeps what was being written");
+        // What belongs to the document is still the holder's: a letter typed
+        // while it has the keyboard is not typed into the text.
+        let before = app.document.paragraphs()[1].text();
+        drive.type_text(&mut app, "z");
+        drive.settle(&mut app);
+        assert_eq!(app.document.paragraphs()[1].text(), before, "{what}");
+    }
+
+    // The reviewing pane holding the keyboard with no field in it — a card
+    // list, walked by the arrows — is the case no text field covers: a letter
+    // typed there is the pane's, and the page keeps its hands off it.
+    drive.type_text(&mut app, "a comment");
+    drive.press(&mut app, "ctrl+Return");
+    drive.settle(&mut app);
+    assert_eq!(app.document.comments.len(), 1, "posted");
+    app.keyboard = Keyboard::Review;
+    app.pane_held = true;
+    let before = app.document.paragraphs()[1].text();
+    drive.type_text(&mut app, "z");
+    drive.settle(&mut app);
+    assert_eq!(app.document.paragraphs()[1].text(), before, "the card list");
+    let _ = std::fs::remove_dir_all(dir);
+}
