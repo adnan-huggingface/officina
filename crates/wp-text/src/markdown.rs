@@ -23,6 +23,19 @@
 //! punctuation, so that what is written reads back as the same text. A line
 //! break inside a paragraph is written, and read, as `<br>`.
 //!
+//! **A paragraph is the lines up to the next blank one.** Markdown's source
+//! is wrapped where its writer's editor wrapped it, and those lines are one
+//! paragraph; a reader that made each line a paragraph of its own turned
+//! every hand-written file into a column of short paragraphs with a
+//! paragraph's space between them. A line that ends in two spaces is
+//! Markdown's hard break, and stays a break inside the paragraph. What
+//! starts a block of its own — a heading, a list item, a rule, a quote, a
+//! fence — ends the paragraph before it.
+//!
+//! **An empty paragraph cannot be written.** A blank line is what separates
+//! paragraphs, so a paragraph with no words in it is gone when the file is
+//! read again. `.docx` and `.odt` keep it.
+//!
 //! **Stated limits.** Not implemented on import: reference links, footnotes,
 //! tables, block quotes beyond one level, setext headings, and HTML. Each is
 //! carried through as the literal text it is, which is what a Markdown reader
@@ -95,14 +108,43 @@ pub fn read(source: &str) -> Document {
             .strip_prefix("> ")
             .or_else(|| trimmed.strip_prefix('>'))
         {
-            let mut paragraph = spans(text.trim_start());
+            let mut quoted = text.trim_start().to_owned();
+            while let Some(more) = lines
+                .get(index)
+                .map(|line| line.trim_start())
+                .and_then(|line| {
+                    line.strip_prefix("> ")
+                        .or_else(|| line.strip_prefix('>'))
+                        .map(str::trim_start)
+                        .or_else(|| flows_on(line).then_some(line))
+                })
+            {
+                join(&mut quoted, more);
+                index += 1;
+            }
+            let mut paragraph = spans(&quoted);
             paragraph.props.indent.start = Some(wp_model::Twips(720));
             paragraph.props.justify = None;
             body.push(Block::Paragraph(paragraph));
             continue;
         }
 
-        body.push(Block::Paragraph(spans(trimmed)));
+        // **A paragraph is the lines up to the next blank one.** Markdown
+        // wraps its source where the writer's editor wrapped it, and the
+        // lines of one paragraph are one paragraph — a reader that made each
+        // line its own turned every hand-written file into a column of short
+        // paragraphs, each with a paragraph's space above it. A line ending
+        // in two spaces is Markdown's hard break, and stays a break.
+        let mut text = trimmed.to_owned();
+        while let Some(more) = lines
+            .get(index)
+            .map(|line| line.trim_start())
+            .filter(|line| flows_on(line))
+        {
+            join(&mut text, more);
+            index += 1;
+        }
+        body.push(Block::Paragraph(spans(&text)));
     }
 
     if body.is_empty() {
@@ -110,6 +152,31 @@ pub fn read(source: &str) -> Document {
     }
     document.body = body;
     document
+}
+
+/// Whether `line` carries on the paragraph before it, rather than starting
+/// a block of its own: anything but a blank line, a heading, a list item, a
+/// rule, a quote or a fence. Markdown's "lazy continuation".
+fn flows_on(line: &str) -> bool {
+    !line.is_empty()
+        && !is_rule(line)
+        && heading_of(line).is_none()
+        && bullet_of(line).is_none()
+        && fence_of(line).is_none()
+        && !line.starts_with('>')
+}
+
+/// Adds a line to the paragraph being read: a space between them, or a line
+/// break where the line before ended in Markdown's two spaces.
+fn join(text: &mut String, line: &str) {
+    match text.ends_with("  ") {
+        true => {
+            let kept = text.trim_end().to_owned();
+            *text = format!("{kept}<br>");
+        }
+        false => text.push(' '),
+    }
+    text.push_str(line);
 }
 
 /// Writes a document as Markdown.
@@ -902,6 +969,94 @@ mod tests {
 
     /// The numbered lines' own shapes: an empty paragraph is `<empty>`,
     /// blank lines part nothing, and a heading's level comes back.
+    /// A paragraph wrapped over several lines is one paragraph, as every
+    /// Markdown reader reads it; a blank line, a heading, a list, a rule or a
+    /// quote starts the next one; and two spaces at a line's end are
+    /// Markdown's hard break.
+    #[test]
+    fn text_wrapped_over_lines_is_one_paragraph() {
+        let source = [
+            "The thing about the situation",
+            "is that it is one",
+            "we have to deal with.",
+            "",
+            "Sales were up.",
+            "# A heading",
+            "followed by its own line",
+            "- one",
+            "  two",
+            "",
+            "> quoted over",
+            "> two lines",
+            "",
+            "first line  ",
+            "second line",
+            "",
+            "a line",
+            "> and a quote under it",
+            "",
+            "before a rule",
+            "---",
+            "after it",
+        ]
+        .join("\n");
+        let document = read(&source);
+        let texts: Vec<String> = document
+            .paragraphs()
+            .iter()
+            .map(|paragraph| paragraph.text())
+            .collect();
+        assert_eq!(
+            texts,
+            [
+                "The thing about the situation is that it is one we have to deal with.",
+                "Sales were up.",
+                "A heading",
+                "followed by its own line",
+                "one",
+                "two",
+                "quoted over two lines",
+                "first line\nsecond line",
+                "a line",
+                "and a quote under it",
+                "before a rule",
+                "",
+                "after it",
+            ]
+        );
+        assert_eq!(
+            wp_model::outline::heading_level(document.paragraphs()[2], &document.styles),
+            Some(1)
+        );
+        assert!(document.paragraphs()[4].props.numbering.is_some(), "a list");
+        assert!(
+            document.paragraphs()[3].props.numbering.is_none(),
+            "not one"
+        );
+        assert!(
+            document.paragraphs()[9].props.indent.start.is_some(),
+            "a quote of its own, under the line before"
+        );
+
+        // What Scriva writes reads back as what it wrote — the writer gives
+        // each paragraph a line and never wraps one — but for a paragraph
+        // with no words: a blank line is what separates paragraphs in
+        // Markdown, so an empty one has nothing to be written as, and is
+        // gone when the file is read again.
+        let again = read(&write(&document));
+        let back: Vec<String> = again
+            .paragraphs()
+            .iter()
+            .map(|paragraph| paragraph.text())
+            .collect();
+        let with_words: Vec<String> = texts
+            .iter()
+            .filter(|text| !text.is_empty())
+            .cloned()
+            .collect();
+        assert_eq!(back, with_words);
+    }
+
     #[test]
     fn lines_read_a_paragraph_a_line() {
         let lines = read_lines("## Part\n\n<empty>\nplain **bold**<br/>next\n- item\n---\n");

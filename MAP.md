@@ -415,7 +415,7 @@ Every source file, its size, and the first sentence of its module doc.
 
 - `crates/wp-text/src/encoding.rs` (339) Deciding what bytes a text file is written in.
 - `crates/wp-text/src/lib.rs` (14) Plain text and Markdown, read and written.
-- `crates/wp-text/src/markdown.rs` (1062) Markdown, both ways.
+- `crates/wp-text/src/markdown.rs` (1217) Markdown, both ways.
 
 ## Measured
 

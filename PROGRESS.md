@@ -6987,6 +6987,29 @@ Test: `lines_pasted_at_a_headings_end_and_rejected_leave_it_a_heading`. Three
 mutations, one rule broken at a time, were each caught. A fourth, which applies
 the rule to pastes within one paragraph too, changes nothing a test can see.
 
+## A wrapped Markdown paragraph is one paragraph (2026-09-17)
+
+The second thing the rig tour found: the document it opened — a `.md` file wrapped at
+about 75 columns, as `.md` files are written — came up as a column of one-line
+paragraphs, each with a paragraph's space above it. `wp_text::markdown::read` pushed a
+paragraph for every line of the source.
+
+A plain line now takes the lines after it while they carry it on — not blank, not a
+heading, a list item, a rule, a quote or a fence (`flows_on`) — joined with a space, as
+CommonMark, Word's import and GitHub all join them. A line ending in Markdown's two
+spaces joins with a line break instead. A quote does the same, lazy continuation
+included. Scriva's own files are unaffected: the writer gives each paragraph a line and
+never wraps one.
+
+Found with it and stated rather than fixed: **an empty paragraph cannot be written as
+Markdown** — a blank line is what separates paragraphs, so a paragraph with no words is
+gone when the file is read again; `.docx` and `.odt` keep it. A list item wrapped over
+lines is still one paragraph per line.
+
+Test: `text_wrapped_over_lines_is_one_paragraph`, which also holds the round trip. Six
+mutations, each caught. The story's note is
+`bugs/markdown-import-breaks-wrapped-paragraphs.md`.
+
 ## The application's keys work from a pane (2026-09-17)
 
 Found by driving the real binary on the rig, the first time Assist was used outside a
