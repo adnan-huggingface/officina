@@ -833,3 +833,115 @@ fn a_call_answered_twice_reaches_the_helper_once() {
     assert_eq!(results(1), ["PARAGRAPH ONE"]);
     assert_eq!(results(2), ["PARAGRAPH TWO"]);
 }
+
+/// **A helper that says it changed something it did not is not the last
+/// word.** The small helper does this: asked to improve a paragraph it
+/// answers "I have improved the wording of paragraph 1" and calls no tool,
+/// and a person reading the transcript believes their document was edited.
+/// Every change is a card, so a request that asked for one and left no card
+/// changed nothing, and the pane says so.
+#[test]
+fn a_request_that_changed_nothing_says_so_rather_than_leaving_the_helper_to_say_it_did() {
+    let scratch = Scratch::new("changed-nothing");
+    let scripted = Scripted::new([
+        Turn::says("I have improved the wording of paragraph 1."),
+        Turn::says("It says the same as before."),
+    ]);
+    let heard = scripted.heard();
+    let reach = Fake::new().helpers(vec![Box::new(scripted)]);
+    let drive = Driver::new();
+    let mut desk = Desk::with(reach, scratch.holding(&ollama_here()));
+    desk.verbs = vec![("Improve the wording", "Improve the wording.")];
+    drive.settle(&mut desk);
+
+    desk.click(&drive, "Improve the wording");
+    // The verdict is given on the frame after the request ends — Calx makes
+    // its card after the pane is drawn — so the frame that makes the note
+    // must ask for the one that shows it, or in Calx the note waits for the
+    // person to move the mouse. (The transcript's own scroll asks for a frame
+    // here too, so this says the requirement holds, not which line holds it.)
+    desk.until(&drive, "the request to end", |desk| {
+        !desk.assist.is_working()
+    });
+    assert!(
+        drive.frame_wants_repaint(&mut desk, Vec::new()),
+        "the frame that said nothing was changed asks to be drawn again"
+    );
+    desk.finished(&drive);
+    assert_eq!(
+        desk.assist.transcript(),
+        [
+            Entry::Asked("Improve the wording.".into()),
+            Entry::Said {
+                words: "I have improved the wording of paragraph 1.".into(),
+                kept: false,
+            },
+            Entry::Note {
+                sentence: "Nothing was changed.".into(),
+                action: Some(Action::Retry),
+            },
+        ],
+        "the pane says what happened, whatever the helper claims"
+    );
+    let seen = desk.seen(&drive);
+    assert!(
+        seen.iter().any(|text| text == "Nothing was changed."),
+        "{seen:?}"
+    );
+    assert!(seen.iter().any(|text| text == "Try Again"), "{seen:?}");
+    assert_eq!(
+        seen.iter().filter(|text| **text == NOT_KEPT).count(),
+        1,
+        "the screen says the claim is not kept: {seen:?}"
+    );
+
+    // And it is not kept: the next request is not sent a helper's word that
+    // it had already done the work. Try Again, which the note offers, would
+    // be the first to suffer.
+    desk.ask(&drive, "Did you change anything?");
+    desk.finished(&drive);
+    let heard = heard.lock().unwrap();
+    let said: Vec<String> = heard
+        .last()
+        .unwrap()
+        .conversation
+        .messages()
+        .iter()
+        .map(Message::text)
+        .collect();
+    assert_eq!(
+        said,
+        ["Context: paragraph 1.\n\nRequest: Did you change anything?"],
+        "nothing of the request that changed nothing was sent again"
+    );
+}
+
+/// **A question answered is not a request that failed.** Words the person
+/// typed are as often a question as an order, and only the application's own
+/// verbs say a change was asked for: a pane that called every answered
+/// question a failure — and forgot the answer — would be worse than the claim
+/// it is there to catch.
+#[test]
+fn a_question_the_person_typed_is_answered_without_a_word_about_what_changed() {
+    let scratch = Scratch::new("a-question");
+    let scripted = Scripted::new([Turn::says("Paragraphs 1 and 3 say the same thing.")]);
+    let reach = Fake::new().helpers(vec![Box::new(scripted)]);
+    let drive = Driver::new();
+    let mut desk = Desk::with(reach, scratch.holding(&ollama_here()));
+    desk.verbs = vec![("Improve the wording", "Improve the wording.")];
+    drive.settle(&mut desk);
+
+    desk.ask(&drive, "Do any paragraphs repeat?");
+    desk.finished(&drive);
+    assert_eq!(
+        desk.assist.transcript(),
+        [
+            Entry::Asked("Do any paragraphs repeat?".into()),
+            Entry::Said {
+                words: "Paragraphs 1 and 3 say the same thing.".into(),
+                kept: true,
+            },
+        ],
+        "the answer stands, and the next request builds on it"
+    );
+}

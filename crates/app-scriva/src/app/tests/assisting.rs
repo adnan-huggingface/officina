@@ -10,7 +10,7 @@ use ::assist::{
     Answer, Choice, Failure, Heard, Provider, Request, Row, Scripted, Settings, StopFlag, Turn,
 };
 use serde_json::json;
-use ui_kit::assist::{Assist, Entry, Reach};
+use ui_kit::assist::{Action, Assist, Entry, Reach};
 
 use super::*;
 use crate::assistant::AUTHOR;
@@ -1031,6 +1031,17 @@ fn the_right_click_menu_asks_the_assistant_about_the_selection() {
         "{words}"
     );
     assert_eq!(sent.effort, ::assist::Effort::Low);
+    // A right-click verb is one of the application's own words too: this
+    // helper only talked, so the pane says what came of it.
+    assert_eq!(
+        transcript(&app).last(),
+        Some(&Entry::Note {
+            sentence: "Nothing was changed.".into(),
+            action: Some(Action::Retry),
+        }),
+        "{:?}",
+        transcript(&app)
+    );
 
     // Ask… opens the pane for words of the person's own.
     app.run(Command::Assist);
@@ -1593,5 +1604,108 @@ fn no_test_reaches_a_helper() {
     assert!(
         ui_kit::headless::helpers_refused() > before,
         "and every one of them was counted"
+    );
+}
+
+/// **The fault a person found on their own desk.** Asked, by the chip, to
+/// improve the wording, the small helper wrote "I have improved the wording
+/// of paragraph 1" and called no tool: the document was untouched and the
+/// pane's last word was the helper's claim. Now the pane has the last word.
+/// Summarize is the verb that answers in the reply, and says nothing.
+#[test]
+fn a_verb_that_changed_nothing_says_so_and_summarize_says_nothing() {
+    let drive = Driver::new();
+    let (helper, _heard) = scripted(vec![
+        // It reads the paragraph, and then says it changed it. Reading is not
+        // changing: only a card is.
+        Turn::calls("read_paragraphs", json!({"first": 2, "last": 2})),
+        Turn::says("I have improved the wording of paragraph 1."),
+        Turn::says("It is about a lamb."),
+        Turn::says("Le voici en fran\u{e7}ais."),
+        Turn::calls(
+            "replace_paragraphs",
+            json!({"first": 2, "last": 2, "markdown": "A lamb, briefly."}),
+        ),
+        Turn::says("Tightened it."),
+    ]);
+    let (mut app, _scratch) = assisted(
+        "changed-nothing",
+        &[
+            "Title words",
+            "Hello World. This is a short story about a little lamb.",
+        ],
+        here(),
+        vec![helper],
+    );
+    put(&mut app, 1, 0);
+    drive.settle(&mut app);
+    app.show_assist();
+    drive.settle(&mut app);
+
+    click(&drive, &mut app, "Improve the wording");
+    finished(&drive, &mut app);
+    assert_eq!(
+        transcript(&app).last(),
+        Some(&Entry::Note {
+            sentence: "Nothing was changed.".into(),
+            action: Some(Action::Retry),
+        }),
+        "the pane says what happened, whatever the helper claimed: {:?}",
+        transcript(&app)
+    );
+    assert!(cards(&app).is_empty(), "nothing to accept or reject");
+    assert_eq!(
+        assistants(&app),
+        Vec::new(),
+        "and nothing in the document by the assistant"
+    );
+    let seen = painted(&drive, &mut app);
+    assert!(
+        seen.iter().any(|text| text == "Nothing was changed."),
+        "{seen:?}"
+    );
+
+    // Summarize's answer is the reply itself: nothing was meant to change,
+    // and the pane does not say that nothing did.
+    click(&drive, &mut app, "Summarize");
+    finished(&drive, &mut app);
+    assert_eq!(
+        transcript(&app).last(),
+        Some(&Entry::Said {
+            words: "It is about a lamb.".into(),
+            kept: true,
+        }),
+        "{:?}",
+        transcript(&app)
+    );
+
+    // Translate… is finished in the composer, so its words are the verb's
+    // with a language after them, and it asks for a change like the rest.
+    ask(&drive, &mut app, "Translate it into French.");
+    finished(&drive, &mut app);
+    assert_eq!(
+        transcript(&app).last(),
+        Some(&Entry::Note {
+            sentence: "Nothing was changed.".into(),
+            action: Some(Action::Retry),
+        }),
+        "{:?}",
+        transcript(&app)
+    );
+
+    // And the same chip with a helper that does the work says nothing: in
+    // Scriva the card is made while the tool runs, before the request ends,
+    // which is the other way round from Calx.
+    click(&drive, &mut app, "Improve the wording");
+    finished(&drive, &mut app);
+    assert_eq!(cards(&app).len(), 1, "the proposal's card");
+    assert_eq!(
+        transcript(&app).last(),
+        Some(&Entry::Said {
+            words: "Tightened it.".into(),
+            kept: true,
+        }),
+        "{:?}",
+        transcript(&app)
     );
 }

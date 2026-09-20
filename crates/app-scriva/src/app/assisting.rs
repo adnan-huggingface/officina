@@ -15,14 +15,36 @@ use super::*;
 use crate::assistant::{self, About, Kind};
 
 /// The quick verbs: the chips above the composer, and — all but the one that
-/// needs words of the person's own — the right-click menu's rows.
-pub(crate) const VERBS: [(&str, &str); 5] = [
-    ("Improve the wording", "Improve the wording."),
-    ("Fix spelling and grammar", "Fix the spelling and grammar."),
-    ("Make it shorter", "Make it shorter."),
-    ("Summarize", "Summarize it, in your reply."),
-    ("Translate\u{2026}", "Translate it into "),
+/// needs words of the person's own — the right-click menu's rows. The flag
+/// says whether the verb asks for the document to change: Summarize answers
+/// in the reply and changes nothing, and is the one that does not.
+pub(crate) const VERBS: [(&str, &str, bool); 5] = [
+    ("Improve the wording", "Improve the wording.", true),
+    (
+        "Fix spelling and grammar",
+        "Fix the spelling and grammar.",
+        true,
+    ),
+    ("Make it shorter", "Make it shorter.", true),
+    ("Summarize", "Summarize it, in your reply.", false),
+    ("Translate\u{2026}", "Translate it into ", true),
 ];
+
+/// Marks a request made in the application's own words that asks for the
+/// document to change, so that the pane can say when it changed nothing.
+/// Words the person typed are left unmarked: they are as often a question as
+/// an order, and an answered question is not a failure.
+fn asking(prepared: Prepared, words: &str) -> Prepared {
+    // Translate… is finished in the composer, so its words are the verb's
+    // with a language after them.
+    match VERBS
+        .iter()
+        .any(|(_, asks, changes)| *changes && words.starts_with(*asks))
+    {
+        true => prepared.asks_for_a_change(),
+        false => prepared,
+    }
+}
 
 /// The pane's own rows in its menu, after its Settings and Clear.
 const MENU: [&str; 2] = [
@@ -125,13 +147,14 @@ impl Scriva {
         if !self.assist_mut().is_busy() {
             self.assist_seen = self.history.generation();
         }
-        self.assist_mut().send(Prepared::new(&asked, sent, leaves));
+        let prepared = Prepared::new(&asked, sent, leaves);
+        self.assist_mut().send(asking(prepared, &asked.words));
     }
 
     /// A quick verb from the right-click menu: sent at once, about the
     /// selection or the caret's paragraph, with the pane open to show it.
     pub(crate) fn assist_verb(&mut self, index: usize) {
-        let Some((_, asks)) = VERBS.get(index) else {
+        let Some((_, asks, _)) = VERBS.get(index) else {
             return;
         };
         self.show_assist();
@@ -449,7 +472,7 @@ impl Scriva {
         });
         let verbs: Vec<Verb> = VERBS
             .iter()
-            .map(|(label, asks)| Verb { label, asks })
+            .map(|(label, asks, _)| Verb { label, asks })
             .collect();
         let offer = Offer {
             scopes: &scopes,

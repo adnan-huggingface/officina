@@ -144,3 +144,39 @@ pane held the keyboard, and a Markdown paragraph wrapped over several lines
 opened as one paragraph per line. Both are fixed, and both were in code the
 assistant never touched: the tour found them because a person using the feature
 does ordinary things around it.
+
+## Postscript, 2026-09-20: the first fault a person found
+
+Two days after the record was written, the first request made on a real desk
+found the hole this decision had left open. Asked by the chip to improve a
+paragraph, the helper on this computer wrote *"I have improved the wording of
+paragraph 1"*, called no tool, and stopped. The pane showed the claim and
+nothing else: no card, no redline, the paragraph exactly as it was.
+
+Every rule above held — nothing reached the file, and nothing could have — and
+the design still failed the person, because **the decision said what the pane
+must never do and not what it must say instead.** A card reports what was
+actually done; nothing reported that nothing was done, so the model's sentence
+was the only account of the request, and it was false.
+
+So the rule gains its other half: *a request that asked for a change and made
+none says so.* Every change is a card, so a request whose words came from one of
+the application's own change verbs and that left no card changed nothing,
+whatever it claims — the pane says "Nothing was changed" and offers Try Again.
+
+Two things about it are worth more than the sentence itself. **The conversation
+goes back to where that request found it**, exactly as a stopped request's does:
+a claim that is not true is not something to build on, and Try Again — the very
+remedy the note offers — would otherwise ask a helper that has just read itself
+saying the work was done. And **the helper is only blamed when the helper is at
+fault**: a call the application refused, because the person typed while it
+worked or the sheet is protected, is not counted, since a bigger helper would
+have been refused in the same words. What is counted is counted against the
+helper on this computer, which is the only one the sentence about a bigger one
+is about, and two in a row earn it.
+
+The line is drawn at the application's own verbs on purpose. Words a person
+typed are as often a question as an order, and the first attempt at this — where
+any request that changed nothing said so — called an answered question a
+failure and threw the answer away. A pane that nags about every question it
+answers is worse than the claim it set out to catch.

@@ -6987,6 +6987,79 @@ Test: `lines_pasted_at_a_headings_end_and_rejected_leave_it_a_heading`. Three
 mutations, one rule broken at a time, were each caught. A fourth, which applies
 the rule to pastes within one paragraph too, changes nothing a test can see.
 
+## The assistant said it changed a paragraph, and changed nothing (2026-09-20)
+
+**The first fault in Assist found by using it.** Two days after the programme
+finished, the user pressed **Improve the wording** on a one-paragraph document.
+The helper on this computer answered "I have improved the wording of paragraph
+1", called no tool, and stopped. The paragraph was untouched: no redline, no
+card, nothing to accept or reject — and the model's claim was the last word in
+the pane. The bug note is `bugs/assistant-claims-a-change-it-did-not-make.md` in
+the story workspace, with the screen as the user sent it.
+
+Every rule in ADR 0004 held. Nothing reached the file, and with no tool call
+nothing could have. What the record had not said is what the pane must say
+*instead* of the claim: a card reports what was done, and nothing reported that
+nothing was done.
+
+So the rule gained its other half. A request that asked for a change — in the
+application's own words, from one of its verbs — and that ended having left no
+card behind changed nothing, whatever it says: the pane says **"Nothing was
+changed."**, offers Try Again, marks the helper's words as not kept so the next
+request does not build on an untruth, and counts a failure, so two in a row earn
+the sentence about a helper over the internet. A request that did change
+something ends that run.
+
+Three things about the shape of it are worth keeping:
+
+- **The verdict waits a frame.** Calx makes its card in `assist_request_ended`,
+  which runs after the frame's `poll`; a verdict taken in `ended()` would call
+  every Calx request a failure. A mutation that takes it early is caught.
+- **Typed words are never marked.** The first attempt marked them, and a test
+  showed within the minute why that is wrong: "Do any paragraphs repeat?" was
+  answered correctly, and the pane called it a failure and threw the answer out
+  of the conversation. A pane that nags about every question it answers is worse
+  than the claim it is there to catch. The honest cost is that a typed request
+  for a change that gets none still says nothing.
+- **A card is the proof of a change**, in both applications, which is what makes
+  the rule cheap. If a tool ever changes a document without a card, the pane
+  will say nothing was changed when something was — worse than the fault fixed
+  here — so that contract is now written where `Ran::card` is declared.
+
+**The review of the fix found seven faults, two of them in the fix itself**, and
+both were the same kind of fault as the one being fixed — something said that
+was not so:
+
+- **The claim was still in the conversation.** `forget_from` only greys the
+  words on the screen, and `Session::ask` keeps a finished request's turn. The
+  pane painted "Not kept: the assistant will not remember this answer" while the
+  assistant remembered it, and **Try Again** — the remedy the note offers —
+  asked a helper that had just read itself saying the work was done. The verdict
+  now carries the conversation as the request found it and rewinds the session
+  onto it, keeping the helper already connected.
+- **In Calx the note was made after the pane had painted**, and nothing asked
+  for the frame that would show it: `tend_assist` runs after `right_side`, and
+  eframe draws when something asks. The note would have waited for the person to
+  move the mouse — and only in the nothing-changed case, since a request that
+  writes cells keeps repainting for the wash.
+- **A call the application refused was counted against the helper**: the person
+  types while the helper works, Calx refuses the call against cells that have
+  moved, and the pane was ready to send them off to find a better helper for a
+  refusal of its own.
+
+The rest were a guide that promised the note for typed words too, a verdict that
+could outlive a helper switch, two stacked doc comments on Calx's verbs, and
+four test gaps — among them a pane test that asserted the `kept` flag rather
+than what the next request actually carries, which is what hid the first fault.
+
+Scriva's and Calx's `VERBS` carry the flag: every verb but Summarize and Explain
+the selection asks for a change. Seventeen mutations, all caught. Four were missed
+on the first run, and all four were weak tests rather than unreachable rules —
+one of them finding a real bug in the fix, where a request that did change
+something failed to end the run of failures. ADR 0004 has a postscript, and
+GUIDE.md a paragraph saying what the pane does when a helper claims work it did
+not do.
+
 ## Assist, phase 6: the record (2026-09-18)
 
 The last of Assist's six phases, and `PLAN.md` is its plan: what was built is now written

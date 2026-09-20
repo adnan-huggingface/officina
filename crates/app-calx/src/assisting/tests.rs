@@ -973,7 +973,7 @@ fn the_guides_calx_section_is_the_pane_calx_draws() {
     let assist = section(calx, "### Assist");
     let prose: String = assist.split_whitespace().collect::<Vec<_>>().join(" ");
 
-    for (label, _) in crate::assisting::VERBS {
+    for (label, _, _) in crate::assisting::VERBS {
         assert!(prose.contains(label), "the guide names the chip {label:?}");
     }
     // As the guide marks them, not as bare words: a scope whose name happens
@@ -1020,4 +1020,203 @@ fn section<'a>(guide: &'a str, heading: &str) -> &'a str {
         Some(at) => &guide[start..start + heading.len() + at],
         None => &guide[start..],
     }
+}
+
+/// A verb that asks for the sheet to change and changes nothing says so,
+/// whatever the helper claims — and a verb that does change it says nothing,
+/// though Calx's card for a request arrives after the request has ended.
+/// That last is the whole reason the verdict waits a frame.
+#[test]
+fn a_verb_that_changed_nothing_says_so_and_one_that_wrote_cells_does_not() {
+    let drive = Driver::new();
+    let (helper, _heard) = scripted(vec![
+        Turn::says("I have added a total for these figures."),
+        Turn::calls(
+            "write_cells",
+            json!({"sheet": "Sheet1", "cells": [{"at": "A4", "typed": "=SUM(A2:A3)"}]}),
+        ),
+        Turn::says("Added the total."),
+        Turn::says("I have added another total."),
+        Turn::says("They are the regions' figures."),
+    ]);
+    let (mut app, _scratch) = assisted("calx-changed-nothing", vec![helper]);
+    select(&mut app, "A2", "A3");
+    drive.settle(&mut app);
+    drive.press(&mut app, "ctrl+alt+A");
+    drive.settle(&mut app);
+    let chip = |drive: &Driver, app: &mut Calx, label: &str| {
+        let at = drive
+            .paint(app, Vec::new())
+            .text(label)
+            .expect("the chip")
+            .shown()
+            .center();
+        drive.click(app, at);
+    };
+    let was = app.undo.len();
+
+    chip(&drive, &mut app, "Add a total");
+    finished(&drive, &mut app);
+    assert_eq!(notes(&app), ["Nothing was changed."]);
+    assert!(cards(&app).is_empty(), "nothing to undo");
+    assert_eq!(app.undo.len(), was, "and no entry in the undo history");
+
+    // The same verb again, with a helper that writes a cell: the card comes
+    // after the request ends, and the pane waits for it before judging.
+    chip(&drive, &mut app, "Add a total");
+    finished(&drive, &mut app);
+    assert_eq!(text(&app, "A4"), "5");
+    assert_eq!(cards(&app).len(), 1, "the request's card");
+    assert_eq!(
+        notes(&app),
+        ["Nothing was changed."],
+        "nothing said about a request that changed the sheet: {:?}",
+        transcript(&app)
+    );
+
+    // And a third that changes nothing says so again: a card earlier in the
+    // conversation is not this request's card.
+    chip(&drive, &mut app, "Add a total");
+    finished(&drive, &mut app);
+    assert_eq!(
+        notes(&app),
+        ["Nothing was changed.", "Nothing was changed."],
+        "{:?}",
+        transcript(&app)
+    );
+    assert_eq!(cards(&app).len(), 1, "and still one card");
+
+    // Explain answers in the reply: nothing was meant to change, and the pane
+    // does not say that nothing did.
+    chip(&drive, &mut app, "Explain the selection");
+    finished(&drive, &mut app);
+    assert_eq!(
+        notes(&app),
+        ["Nothing was changed.", "Nothing was changed."],
+        "{:?}",
+        transcript(&app)
+    );
+    assert_eq!(ui_kit::headless::helpers_refused(), 0);
+}
+
+/// A helper that says it did the work and does none is a helper failing, and
+/// twice in a row earns the same sentence a garbled answer earns: the small
+/// helper is the one that does this, and the person is owed somewhere better
+/// to go.
+#[test]
+fn two_verbs_that_changed_nothing_earn_the_sentence_about_a_bigger_helper() {
+    let drive = Driver::new();
+    let (helper, _) = scripted(vec![
+        Turn::says("I have added a total for these figures."),
+        Turn::calls(
+            "write_cells",
+            json!({"sheet": "Sheet1", "cells": [{"at": "A5", "typed": "=SUM(A2:A3)"}]}),
+        ),
+        Turn::says("Added the total."),
+        Turn::says("I have added it."),
+        Turn::says("And again."),
+    ]);
+    let (mut app, _scratch) = assisted_with("small-nothing", vec![helper], on_this_computer());
+    select(&mut app, "A2", "A3");
+    drive.settle(&mut app);
+    drive.press(&mut app, "ctrl+alt+A");
+    drive.settle(&mut app);
+    let chip = |drive: &Driver, app: &mut Calx| {
+        let at = drive
+            .paint(app, Vec::new())
+            .text("Add a total")
+            .expect("the chip")
+            .shown()
+            .center();
+        drive.click(app, at);
+    };
+
+    chip(&drive, &mut app);
+    finished(&drive, &mut app);
+    let said = notes(&app);
+    assert_eq!(said, ["Nothing was changed."], "{said:?}");
+
+    // A request that did change the sheet ends the run: two in a row means
+    // two in a row.
+    chip(&drive, &mut app);
+    finished(&drive, &mut app);
+    assert_eq!(text(&app, "A5"), "5");
+    chip(&drive, &mut app);
+    finished(&drive, &mut app);
+    let said = notes(&app);
+    assert_eq!(
+        said,
+        ["Nothing was changed.", "Nothing was changed."],
+        "one failure either side of a request that worked is not two in a row"
+    );
+
+    chip(&drive, &mut app);
+    finished(&drive, &mut app);
+    let said = notes(&app);
+    assert_eq!(
+        said,
+        [
+            "Nothing was changed.",
+            "Nothing was changed.",
+            "Nothing was changed.",
+            "A helper over the internet would do better at this.",
+        ],
+        "the sentence comes after the second in a row, and after the failure it judges"
+    );
+}
+
+/// **A call the application refused is not the helper failing.** The person
+/// typed while the helper worked, so the call was refused against cells that
+/// had moved — a bigger helper over the internet would have been refused in
+/// the same words, and sending the person to find one would be a lie about
+/// where the trouble was. The request after it, which the helper really did
+/// fail, is the first of a run rather than the second.
+#[test]
+fn a_request_refused_because_the_person_typed_is_not_counted_against_the_helper() {
+    let drive = Driver::new();
+    let (helper, go) = gated(vec![
+        Turn::calls(
+            "write_cells",
+            json!({"sheet": "Sheet1", "cells": [{"at": "D1", "typed": "Total"}]}),
+        ),
+        Turn::says("I have put a total in D1."),
+        Turn::says("I have added it."),
+    ]);
+    let (mut app, _scratch) = assisted_with("refused", vec![helper], on_this_computer());
+    select(&mut app, "A2", "A3");
+    drive.settle(&mut app);
+    drive.press(&mut app, "ctrl+alt+A");
+    drive.settle(&mut app);
+    let chip = |drive: &Driver, app: &mut Calx| {
+        let at = drive
+            .paint(app, Vec::new())
+            .text("Add a total")
+            .expect("the chip")
+            .shown()
+            .center();
+        drive.click(app, at);
+    };
+
+    // The helper waits; the person types a cell of their own; the call it
+    // then makes is refused, because the rows it was shown have moved.
+    chip(&drive, &mut app);
+    drive.settle(&mut app);
+    let cell = ss_model::CellRef::from_a1("A6").expect("an address");
+    let change = ss_formula::edit::input(&mut app.doc.workbook, 0, cell, "later");
+    app.perform(change);
+    drive.settle(&mut app);
+    go.send(()).expect("the helper is waiting");
+    finished(&drive, &mut app);
+    assert_eq!(text(&app, "D1"), "", "nothing was written");
+    assert_eq!(notes(&app), ["Nothing was changed."]);
+
+    // And now one the helper really did fail: the first of a run, not the
+    // second, so nothing is said about a helper over the internet yet.
+    chip(&drive, &mut app);
+    finished(&drive, &mut app);
+    assert_eq!(
+        notes(&app),
+        ["Nothing was changed.", "Nothing was changed."],
+        "a refusal of the application's own is not held against the helper"
+    );
 }

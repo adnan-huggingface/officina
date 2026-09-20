@@ -23,23 +23,29 @@ use ui_kit::egui;
 use crate::Calx;
 
 /// The quick verbs, above the composer: what people ask for without knowing
-/// how to ask. Each is a request with the scope already set.
-pub(crate) const VERBS: [(&str, &str); 4] = [
+/// how to ask. Each is a request with the scope already set, and the flag
+/// says whether it asks for the sheet to change — Explain answers in the
+/// reply and changes nothing, and is the one that does not.
+pub(crate) const VERBS: [(&str, &str, bool); 4] = [
     (
         "Explain the selection",
         "Explain what these cells hold and what the formulas do.",
+        false,
     ),
     (
         "Add a total",
         "Add a total for these figures, in the first empty cell after them, and label it.",
+        true,
     ),
     (
         "Clean up this column",
         "Make the values in this column consistent with one another, and say what you changed.",
+        true,
     ),
     (
         "Fill in the pattern",
         "Carry on the pattern in these cells for the rows that are still empty.",
+        true,
     ),
 ];
 
@@ -48,6 +54,20 @@ pub(crate) const MENU: [&str; 1] = ["&Undo the assistant's changes"];
 
 /// How long the cells a request wrote stay washed, in seconds.
 pub(crate) const WASH: f64 = 4.0;
+
+/// Marks a request made in the application's own words that asks for the
+/// sheet to change, so that the pane can say when it changed nothing. Words
+/// the person typed are left unmarked: they are as often a question as an
+/// order, and an answered question is not a failure.
+fn asking(prepared: Prepared, words: &str) -> Prepared {
+    match VERBS
+        .iter()
+        .any(|(_, asks, changes)| *changes && words == *asks)
+    {
+        true => prepared.asks_for_a_change(),
+        false => prepared,
+    }
+}
 
 /// A card in the pane, and where the change it takes back sits.
 pub(crate) struct Carded {
@@ -120,7 +140,7 @@ impl Calx {
         let (_, following) = self.assist_scope();
         let verbs: Vec<Verb> = VERBS
             .iter()
-            .map(|(label, asks)| Verb { label, asks })
+            .map(|(label, asks, _)| Verb { label, asks })
             .collect();
         let offer = Offer {
             scopes: &scopes,
@@ -172,7 +192,8 @@ impl Calx {
         self.assist_seen = self.edits;
         self.asked_words = asked.words.clone();
         if let Some(assist) = self.assist.as_mut() {
-            assist.send(Prepared::new(&asked, request, leaves));
+            let prepared = Prepared::new(&asked, request, leaves);
+            assist.send(asking(prepared, &asked.words));
         }
     }
 

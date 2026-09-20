@@ -300,6 +300,13 @@ Assist asks you once, before it can do anything, which helper should answer:
 - **Ollama**, if it is running on this computer, or **another service** by
   address and key.
 
+Whatever a helper says it did, what it actually did is what the pane shows:
+every change the assistant makes arrives as a card. Small models sometimes
+report work they did not do, so when you press one of the chips — *Improve the
+wording*, *Add a total* — and the assistant changes nothing, the pane says
+**Nothing was changed** and offers to try again. It does not say this about
+words you typed yourself, which are as often a question as an order.
+
 Before the first request goes to anything but your own computer, the pane says
 in a sentence what will be sent and where, and waits for you to say yes.
 

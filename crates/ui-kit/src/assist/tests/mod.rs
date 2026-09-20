@@ -512,8 +512,14 @@ impl DocumentApp for Desk {
             match shown.inner {
                 Some(Chosen::Ask(asked)) => {
                     let sent = format!("Context: paragraph 1.\n\nRequest: {}", asked.words);
-                    self.assist
-                        .send(Prepared::new(&asked, sent, self.leaves.clone()));
+                    let prepared = Prepared::new(&asked, sent, self.leaves.clone());
+                    // A chip's words ask for a change, as an application's own
+                    // verbs do; typed words say nothing either way.
+                    let prepared = match self.verbs.iter().any(|(_, asks)| asked.words == *asks) {
+                        true => prepared.asks_for_a_change(),
+                        false => prepared,
+                    };
+                    self.assist.send(prepared);
                     self.asked.push(asked);
                 }
                 Some(Chosen::Leave) => {

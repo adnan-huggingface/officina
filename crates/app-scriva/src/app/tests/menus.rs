@@ -854,7 +854,10 @@ fn every_key_the_guide_names_is_a_key_the_window_reads() {
 
     // The chips and the scopes, by the names the pane paints.
     let prose: String = section.split_whitespace().collect::<Vec<_>>().join(" ");
-    for verb in crate::app::assisting::VERBS.iter().map(|(label, _)| *label) {
+    for verb in crate::app::assisting::VERBS
+        .iter()
+        .map(|(label, _, _)| *label)
+    {
         assert!(prose.contains(verb), "the guide names the verb {verb:?}");
     }
     // The chips as the guide marks them — **Selection** — rather than the

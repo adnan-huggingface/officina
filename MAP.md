@@ -38,8 +38,8 @@ Every source file, its size, and the first sentence of its module doc.
 
 - `crates/app-calx/src/assistant/tests.rs` (719) 
 - `crates/app-calx/src/assistant.rs` (994) What Calx's helper is shown, and what its tools do to a workbook.
-- `crates/app-calx/src/assisting/tests.rs` (1023) Assist in Calx's window, driven: a scripted helper, a settings file of the test's own, and nothing reached beyond them.
-- `crates/app-calx/src/assisting.rs` (478) Assist in Calx's window: the pane on the right, where the chart inspector sits; the keys and rows that open it; the helper's tool calls, run against the workbook a frame at a time; and what a whole request leaves behi…
+- `crates/app-calx/src/assisting/tests.rs` (1222) Assist in Calx's window, driven: a scripted helper, a settings file of the test's own, and nothing reached beyond them.
+- `crates/app-calx/src/assisting.rs` (499) Assist in Calx's window: the pane on the right, where the chart inspector sits; the keys and rows that open it; the helper's tool calls, run against the workbook a frame at a time; and what a whole request leaves behi…
 - `crates/app-calx/src/clock.rs` (31) The wall clock, read in the user's own time zone.
 - `crates/app-calx/src/dialogs.rs` (1921) Calx's boxes: every dialog the grid can put up, drawn from the draft in `Calx::dialog`, and the tabs of Format Cells.
 - `crates/app-calx/src/grid/axis.rs` (533) Where rows and columns sit, and which of them a viewport can see.
@@ -57,7 +57,7 @@ Every source file, its size, and the first sentence of its module doc.
 
 ### `scriva`
 
-- `crates/app-scriva/src/app/assisting.rs` (509) Assist in Scriva's window: the pane on the right, in the place Review takes, a tab of it; the keys and rows that open it; the helper's tool calls, run against the document a frame at a time; and what the window says a…
+- `crates/app-scriva/src/app/assisting.rs` (532) Assist in Scriva's window: the pane on the right, in the place Review takes, a tab of it; the keys and rows that open it; the helper's tool calls, run against the document a frame at a time; and what the window says a…
 - `crates/app-scriva/src/app/bands.rs` (590) Headers and footers — the bands above and below the text of a page: which one the caret is in, making one a section does not have yet, first-page and odd/even kinds, linking to the previous section, the band bar, and …
 - `crates/app-scriva/src/app/context.rs` (228) The page's right-click menu: what a click or Shift+F10 on the document offers, drawn on the same card as every other menu.
 - `crates/app-scriva/src/app/dialogs.rs` (919) Scriva's boxes: Insert Table, colour, paragraph, column width, picture size, fonts and zoom.
@@ -70,12 +70,12 @@ Every source file, its size, and the first sentence of its module doc.
 - `crates/app-scriva/src/app/strips.rs` (339) The row under the toolbar, and the mode strips drawn on it.
 - `crates/app-scriva/src/app/surface.rs` (981) The page surface: the scrolling desk the pages sit on, what the pointer does there — carets, selections, a picture picked, dragged and resized — and where on a page a point lands.
 - `crates/app-scriva/src/app/tables.rs` (486) Editing a table: Tab from cell to cell, the edit every table command goes through, cell margins, column widths, and Insert Table itself.
-- `crates/app-scriva/src/app/tests/assisting.rs` (1597) Assist in Scriva's window: the pane, its keys and rows, and what a helper's tool calls do to the document — driven, with a scripted helper and a settings file of the test's own, and nothing reached beyond them.
+- `crates/app-scriva/src/app/tests/assisting.rs` (1711) Assist in Scriva's window: the pane, its keys and rows, and what a helper's tool calls do to the document — driven, with a scripted helper and a settings file of the test's own, and nothing reached beyond them.
 - `crates/app-scriva/src/app/tests/bands.rs` (753) Headers, footers, watermarks and sections: the bands a page wears.
 - `crates/app-scriva/src/app/tests/desk.rs` (1196) The desk as it is painted: pages, zoom, scrolling, the caret and the pointer.
 - `crates/app-scriva/src/app/tests/editing.rs` (1127) Typing, keys in the text, lists, the clipboard, formatting and undo.
 - `crates/app-scriva/src/app/tests/files.rs` (1366) Opening, saving, the formats between them, and what the window says about a file.
-- `crates/app-scriva/src/app/tests/menus.rs` (880) Menus, shortcuts, boxes and the toolbar, reached the way a keyboard reaches them.
+- `crates/app-scriva/src/app/tests/menus.rs` (883) Menus, shortcuts, boxes and the toolbar, reached the way a keyboard reaches them.
 - `crates/app-scriva/src/app/tests/mod.rs` (191) Scriva's window, driven: one file per area, and here what more than one of them uses.
 - `crates/app-scriva/src/app/tests/panes.rs` (604) The find bar and the panes beside the page: navigation, review and comments.
 - `crates/app-scriva/src/app/tests/pictures.rs` (518) Pictures and charts: in by paste or menu, sized, moved and taken out.
@@ -282,14 +282,14 @@ Every source file, its size, and the first sentence of its module doc.
 ### `ui-kit`
 
 - `crates/ui-kit/src/assist/choosing.rs` (280) The first-run card: which helper Assist should use, asked once, in words.
-- `crates/ui-kit/src/assist/mod.rs` (1786) Assist's pane: where a person asks for a change in their own words, sees the answer arrive, sees what the helper read and changed, and stops it — and where the helper is chosen, once, in words.
+- `crates/ui-kit/src/assist/mod.rs` (1938) Assist's pane: where a person asks for a change in their own words, sees the answer arrive, sees what the helper read and changed, and stops it — and where the helper is chosen, once, in words.
 - `crates/ui-kit/src/assist/request.rs` (188) A request on a thread of its own, and anything else the pane waits for without stopping the window.
 - `crates/ui-kit/src/assist/settings_box.rs` (684) Assist's ⋯ menu ▸ Settings: the helper, and what it needs, in one box.
 - `crates/ui-kit/src/assist/tests/card.rs` (516) B3: the first-run card.
 - `crates/ui-kit/src/assist/tests/changes.rs` (690) What the pane does when its settings change under it: in the other application, in its own box, or nowhere to keep them at all.
 - `crates/ui-kit/src/assist/tests/keeping.rs` (501) B4 and B5: the settings box, and what is said before anything leaves the computer.
-- `crates/ui-kit/src/assist/tests/mod.rs` (561) The pane, driven in an application of the tests' own.
-- `crates/ui-kit/src/assist/tests/requests.rs` (835) B1 and B2: a request on a thread of its own, and Stop.
+- `crates/ui-kit/src/assist/tests/mod.rs` (567) The pane, driven in an application of the tests' own.
+- `crates/ui-kit/src/assist/tests/requests.rs` (947) B1 and B2: a request on a thread of its own, and Stop.
 - `crates/ui-kit/src/assist/tests/window.rs` (479) B6 and B7: the pane in a window, and the download's bar.
 - `crates/ui-kit/src/assist/transcript.rs` (331) The transcript: what was asked, what the helper said and did, and the changes it made, in the order they happened.
 - `crates/ui-kit/src/brand.rs` (31) The window icon, as the windowing system takes it.

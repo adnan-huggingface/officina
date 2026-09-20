@@ -226,6 +226,15 @@ pub struct Prepared {
     /// What is sent, in a phrase: "The selected paragraph and the two around
     /// it".
     pub leaves: String,
+    /// Whether this request asked the helper, in the application's own words,
+    /// to change the document. Such a request that changes nothing is
+    /// answered by the pane, whatever the helper says it did.
+    ///
+    /// **Only the application's own verbs set it.** Words the person typed
+    /// are as often a question as an order — "do any paragraphs repeat?" —
+    /// and a pane that called every answered question a failure would be
+    /// worse than the lie it is here to stop.
+    pub changes: bool,
 }
 
 impl Prepared {
@@ -236,7 +245,16 @@ impl Prepared {
             effort: asked.effort,
             scope: asked.scope,
             leaves: leaves.into(),
+            changes: false,
         }
+    }
+
+    /// This request is one of the application's own verbs that changes the
+    /// document — Improve the wording, Add a total — so a request that ends
+    /// having changed nothing is a request that did not do as it was asked.
+    pub fn asks_for_a_change(mut self) -> Prepared {
+        self.changes = true;
+        self
     }
 }
 
@@ -258,6 +276,13 @@ pub struct Ran {
     /// What the transcript says it did, in a line: "read paragraphs 12–14".
     pub line: Option<String>,
     /// The change it made, for the person to settle.
+    ///
+    /// **A change without a card is a change the pane cannot see.** This is
+    /// how the pane knows a request did what it was asked: a request that
+    /// asked for a change and left no card behind is told it changed nothing.
+    /// An application that changes the document without a card here — or, as
+    /// Calx does, without [`Assist::add_card`] when the request ends — will be
+    /// contradicted in front of the person.
     pub card: Option<Card>,
 }
 
@@ -297,6 +322,28 @@ struct Downloading {
     stop: ::assist::StopFlag,
 }
 
+/// A request that asked for a change and has ended, waiting to be judged by
+/// what it changed.
+struct Verdict {
+    /// The transcript's length when the request began: a card at or after it
+    /// is this request's card.
+    first: usize,
+    /// The conversation as the request found it, to go back to when the
+    /// request turns out to have changed nothing.
+    before: Conversation,
+    /// The application refused one of the request's calls — the person had
+    /// edited meanwhile, the sheet is protected — so the helper is not the
+    /// one at fault, whatever came of the request.
+    refused: bool,
+    /// Whether it was the helper on this computer that was asked. Kept here
+    /// rather than looked up when the verdict is given, because the person
+    /// may have chosen another helper in between, and a failure belongs to
+    /// the helper that failed.
+    local: bool,
+    /// The request itself, for its Try Again.
+    prepared: Prepared,
+}
+
 /// A request under way.
 struct Running {
     request: request::Request,
@@ -312,6 +359,8 @@ struct Running {
     helper: String,
     /// The Claude model it was sent to, which is what its cost is priced at.
     priced: Option<ClaudeModel>,
+    /// A call the application refused, by a result it called an error.
+    refused: bool,
     prepared: Prepared,
 }
 
@@ -365,6 +414,12 @@ pub struct Assist {
     download: Option<Progress>,
     /// The download under way: the thread, and the stop that ends it.
     downloading: Option<Downloading>,
+    /// A request that asked for a change has ended, and whether it changed
+    /// anything is settled on the next frame — not this one, because an
+    /// application whose changes are one entry — Calx — adds its card after
+    /// the frame's poll, and a verdict taken before it would call every Calx
+    /// request a failure.
+    verdict: Option<Verdict>,
     /// How many requests in a row the helper on this computer has failed,
     /// and whether the sentence about a bigger one has been said already.
     failed_in_a_row: usize,
@@ -451,6 +506,7 @@ impl Assist {
             cents: None,
             download: None,
             downloading: None,
+            verdict: None,
             failed_in_a_row: 0,
             said_what_it_is_not_good_at: false,
             drawn: None,
@@ -694,6 +750,8 @@ impl Assist {
         self.stop();
         self.transcript.clear();
         self.retries.clear();
+        // Nothing left to judge, and the entries it counted cards in are gone.
+        self.verdict = None;
         self.resume = None;
         // A new conversation is a new chance: what the helper failed at
         // before this document is not held against it, and the sentence
@@ -713,6 +771,7 @@ impl Assist {
     /// whether the pane is drawn or not.
     pub fn poll(&mut self, ctx: &egui::Context) -> Option<Call> {
         self.ctx = Some(ctx.clone());
+        self.settle_verdict();
         self.hear_the_let_go();
         self.draining.retain_mut(|thread| match thread.drained() {
             Some(refused) => {
@@ -756,6 +815,7 @@ impl Assist {
         if running.out.as_ref().map(|(number, _)| *number) != Some(call.number) {
             return;
         }
+        running.refused |= ran.result.is_error;
         running.said = None;
         if let Some((_, reply)) = running.out.take() {
             let _ = reply.send(ran.result);
@@ -765,6 +825,11 @@ impl Assist {
     // ---- the request's life --------------------------------------------
 
     fn start(&mut self, prepared: Prepared) {
+        // The request before this one is judged first: its verdict puts the
+        // conversation back where that request found it, which this request
+        // is about to take, and a note pushed after this one's words would
+        // read as a verdict on it.
+        self.settle_verdict();
         let Ok(settings) = &self.settings else {
             // No helper to ask after all: the words wait in the composer.
             self.keep_words(prepared.shown);
@@ -810,6 +875,7 @@ impl Assist {
             said: None,
             helper,
             priced,
+            refused: false,
             prepared,
         });
     }
@@ -870,9 +936,29 @@ impl Assist {
         };
         self.count(spent, running.priced);
         self.session = Some(session);
-        let counted = self.count_failure(&ended);
+        // A request that asked for a change and finished is judged by what it
+        // changed, on the next frame, rather than here by how it ended: it
+        // ended well, and may still have done nothing.
+        let judge = matches!(ended, Ok(Ending::Finished)) && running.prepared.changes;
+        let counted = match judge {
+            true => false,
+            false => self.count_failure(&ended),
+        };
         match ended {
-            Ok(Ending::Finished) => {}
+            Ok(Ending::Finished) => {
+                if judge {
+                    self.verdict = Some(Verdict {
+                        first: running.first,
+                        before: running.before.clone(),
+                        refused: running.refused,
+                        local: self.helper_is_here(),
+                        prepared: running.prepared.clone(),
+                    });
+                    if let Some(ctx) = &self.ctx {
+                        ctx.request_repaint();
+                    }
+                }
+            }
             Ok(ending) => {
                 self.forget_from(running.first);
                 if let Some(sentence) = ending.sentence(&running.helper) {
@@ -902,14 +988,10 @@ impl Assist {
     /// the application, never from the model, and it is said once a
     /// conversation: a sentence repeated after every failure is nagging.
     fn count_failure(&mut self, ended: &Result<Ending, Failure>) -> bool {
-        let local = self
-            .settings
-            .as_ref()
-            .is_ok_and(|settings| settings.helper == Some(::assist::Choice::Local));
         // A request that was stopped, or refused because no test may reach a
         // helper, or refused for want of a key or a download, says nothing
         // about how good the helper is at the work.
-        let failed = local
+        let failed = self.helper_is_here()
             && match ended {
                 Err(failure) => !matches!(
                     failure.kind,
@@ -917,11 +999,78 @@ impl Assist {
                 ),
                 Ok(_) => false,
             };
+        self.streak(failed)
+    }
+
+    /// Whether the helper is the one on this computer, which is the only one
+    /// the sentence about a bigger helper is about.
+    fn helper_is_here(&self) -> bool {
+        self.settings
+            .as_ref()
+            .is_ok_and(|settings| settings.helper == Some(::assist::Choice::Local))
+    }
+
+    /// Counts a request as failed or as a run of failures ended, and says
+    /// whether this one failed.
+    fn streak(&mut self, failed: bool) -> bool {
         match failed {
             true => self.failed_in_a_row += 1,
             false => self.failed_in_a_row = 0,
         }
         failed
+    }
+
+    /// **What a request changed is the pane's to say, not the helper's.** A
+    /// helper that writes "I have improved the wording of paragraph 1" and
+    /// calls no tool has changed nothing, and a person who is told otherwise
+    /// walks away believing their document was edited. Every change the
+    /// assistant makes is a card, so a request that asked for one and left no
+    /// card behind changed nothing, whatever its words say — and the pane
+    /// says so, offers Try Again, and counts it against the helper.
+    ///
+    /// The words themselves are marked not kept, as every other request that
+    /// came to nothing marks them: a claim that is not true is not something
+    /// the next request should build on.
+    fn settle_verdict(&mut self) {
+        let Some(verdict) = self.verdict.take() else {
+            return;
+        };
+        let changed = self
+            .transcript
+            .iter()
+            .skip(verdict.first)
+            .any(|entry| matches!(entry, Entry::Card(_)));
+        if changed {
+            // It did as it was asked: a run of failures ends here, as it does
+            // when any other request goes well.
+            self.streak(false);
+            return;
+        }
+        // The conversation goes back to where the request found it, as a
+        // stopped request's does: a claim that is not true is not something to
+        // build on, and Try Again — which this note offers — would otherwise
+        // ask a helper that has just read itself saying the work is done.
+        // `forget_from` only greys the words on the screen; this is what makes
+        // the screen's "not kept" true.
+        self.forget_from(verdict.first);
+        match self.session.take() {
+            // The helper itself is fine and stays: it is the conversation
+            // that goes back, so the next request costs no new connection.
+            Some(session) => self.session = Some(session.continuing(verdict.before)),
+            None => self.resume = Some(verdict.before),
+        }
+        self.retry_note("Nothing was changed.", verdict.prepared);
+        // A call the application refused — the person edited while the helper
+        // worked, or the sheet is protected — is not the helper failing: a
+        // bigger one would have been refused in the same words.
+        if self.streak(verdict.local && !verdict.refused) {
+            self.say_what_it_is_not_good_at();
+        }
+        // The note was made after this frame's pane was drawn, in Calx, and
+        // nothing else is going to ask for the frame that shows it.
+        if let Some(ctx) = &self.ctx {
+            ctx.request_repaint();
+        }
     }
 
     fn say_what_it_is_not_good_at(&mut self) {
@@ -1064,6 +1213,9 @@ impl Assist {
     /// another agreement; the same helper told something new — a key, the
     /// fallback — is asked afresh next time, carrying on.
     fn adopt(&mut self, settings: Settings) {
+        // What the last request did is said before anything about the new
+        // helper: the verdict belongs to the conversation that is ending.
+        self.settle_verdict();
         let place = ::assist::destination(&settings);
         let was = self.settings.as_ref().ok().cloned();
         let same_helper = was.as_ref().is_some_and(|was| was.same_helper(&settings));
