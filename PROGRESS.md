@@ -6987,6 +6987,74 @@ Test: `lines_pasted_at_a_headings_end_and_rejected_leave_it_a_heading`. Three
 mutations, one rule broken at a time, were each caught. A fourth, which applies
 the rule to pastes within one paragraph too, changes nothing a test can see.
 
+## A second graphics card closed the pipe, and the helper was withheld (2026-09-20, night)
+
+The graphics build, installed and opened on the workstation it was measured
+on, offered no "Helper on this computer" at all. Settings said Officina could
+not tell how much memory the graphics processor had. The card is a 24 GB
+RTX 3090, and phase 8's numbers had come off it an hour before.
+
+`probe::named_graphics` asks `nvidia-smi` for the card's name and memory and
+takes the first line through `first_line_within`, which reads **one line** and
+then returns the line only if the child exited cleanly. `nvidia-smi` prints a
+line for every card, and this machine has two. The reader returned after the
+first line, dropping the `BufReader` and closing the read end of the pipe;
+`nvidia-smi` was killed by `SIGPIPE` writing the second card's line; the
+failed status threw away the line that had already been read correctly.
+
+**The function contradicted itself**: it stopped reading early on purpose, and
+then required the command it had cut off to finish well. A command may be cut
+off or judged by its exit status, not both.
+
+It is a race, and two cards lose it. Forty runs each, on this machine: with
+both cards, 4 to 9 answered; with one card (`-i 0`), 40 of 40. Creating the
+CUDA context first — which the probe does — slows the parent enough to lose
+most of the time. On every one-card machine phase 8 was measured on, the fault
+was invisible.
+
+The reader now drains what is left into `io::sink()`, so the pipe stays open
+until the command finishes on its own. The deadline still bounds it: a command
+that will not end is killed by the loop below, which closes the pipe and ends
+the thread. The success check stays, because a command that fails on its own
+account must still give nothing.
+
+Test `a_command_with_more_to_say_than_is_read_is_not_failed_for_the_closing_pipe`
+asserts both halves. Four mutations caught: the drain removed, the status check
+removed, the whole output read instead of the first line, and the deadline
+unbounded. After the fix, forty looks at the real hardware all read the card's
+memory, and the tier offers the 8B.
+
+`first_line_within` is shared: the `ant` token probe and the macOS `sysctl`
+memory probe were exposed to the same fault and happen to print one line.
+
+The independent review of the fix found five more faults, two of them older
+and larger than the bug itself. The comment claiming the deadline bounded the
+drain was false — a process the command leaves behind keeps the pipe open, and
+`ant` may leave one — so the drain is bounded at `DRAIN_MOST` and the comment
+now says the thread lives as long as any writer does. **`nvidia-smi` reports
+MiB and the code multiplied by a million**, understating every card by a
+twentieth: a card sold as 8 GB reports 8192 MiB, which became 8.19 GB, under
+the 8.5 GB the 8B needs, where the true 8.59 GB clears it — so a common class
+of card was offered the smaller helper for a rounding error. The test proved
+only that the pipe stayed open, not that anything was read, because three
+short lines fit in the pipe's buffer; a case writing 200 kB covers it. A card
+name with a comma lost its memory to `split_once`, now `rsplit_once`. And a
+command that succeeded silently returned `Some("")` where the description
+promised a line with something on it. The parsing is a pure `card_in_line` so
+that what it makes of a line is testable without a card.
+
+Two findings are recorded and not fixed, both older than this bug.
+`CUDA_DEVICE_ORDER=PCI_BUS_ID` overrides CUDA's `FASTEST_FIRST`, which ranks
+by the compute capability that decides whether the kernels load at all:
+`Device::new_cuda(0)` succeeds on a Pascal card and only the launch fails, so
+a machine whose older card sits on the lower bus would be offered the 8B and
+die with `CUDA_ERROR_INVALID_PTX`. This workstation escapes by bus order
+alone. Matching the device by UUID, or reading the memory from the CUDA device
+and not asking `nvidia-smi`, answers that and the older gap where a working
+card is refused because the driver's tool is not installed. Separately,
+`std::env::set_var` is called from the look's background thread, which is
+unsound in a multithreaded process and becomes `unsafe` in edition 2024.
+
 ## Assist, phase 8: the helper on the graphics processor (2026-09-20, evening)
 
 Phase 7 measured the bar and found no model meets its wait on a processor;

@@ -119,7 +119,7 @@ Every source file, its size, and the first sentence of its module doc.
 - `crates/assist/src/local/qwen3.rs` (471) Qwen3 with quantized weights, as `candle-transformers` 0.9.2 has it (`models/quantized_qwen3.rs`, MIT OR Apache-2.0, © the candle authors), brought in for one thing the original does not offer: **keeping part of the k…
 - `crates/assist/src/local/tests.rs` (1468) The helper on this computer, proved without a gigabyte or a network: a model of a few dozen kilobytes that the test writes itself, and a server on loopback for the download.
 - `crates/assist/src/local.rs` (1272) The helper on this computer: a quantized model read from a GGUF file and run on the CPU, with `candle`.
-- `crates/assist/src/machine.rs` (1575) What this computer already has that could answer, and the first-run card's rows in the order they are offered.
+- `crates/assist/src/machine.rs` (1711) What this computer already has that could answer, and the first-run card's rows in the order they are offered.
 - `crates/assist/src/models.rs` (136) The Claude models Assist offers, in words, with what a paragraph costs.
 - `crates/assist/src/offline.rs` (66) A process that must reach nothing: one under a test.
 - `crates/assist/src/prompt.rs` (138) What a helper is told before any request: the editor's instructions.

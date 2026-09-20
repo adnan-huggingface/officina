@@ -408,10 +408,17 @@ pub(crate) fn where_ollama_runs(address: &str, model: &str) -> Result<Option<Str
     )
 }
 
-/// The first line a command prints, trimmed, if it prints one and succeeds
-/// within `wait`. The command is killed when the time is up, and a process it
-/// left behind holding its output open does not hold this up: the line is
-/// waited for on a thread of its own, for no longer than the command is.
+/// How much of a command's output is read and thrown away after the line that
+/// was wanted. Far above what any probe of a machine prints — `nvidia-smi`
+/// gives about sixty bytes a graphics card — and there so that a command
+/// which will not stop talking cannot be read for ever.
+const DRAIN_MOST: u64 = 1 << 20;
+
+/// The first line a command prints, trimmed, if it prints a line with
+/// something on it and succeeds within `wait`. The command is killed when the
+/// time is up, and a process it left behind holding its output open does not
+/// hold this up: the line is waited for on a thread of its own, for no longer
+/// than the command is.
 fn first_line_within(mut command: Command, wait: Duration) -> Option<String> {
     command
         .stdin(Stdio::null())
@@ -430,9 +437,24 @@ fn first_line_within(mut command: Command, wait: Duration) -> Option<String> {
     let stdout = child.stdout.take()?;
     let (tell, told) = mpsc::channel();
     std::thread::spawn(move || {
+        let mut reader = BufReader::new(stdout);
         let mut line = String::new();
-        let read = BufReader::new(stdout).read_line(&mut line);
+        let read = reader.read_line(&mut line);
         let _ = tell.send(read.ok().map(|_| line));
+        // Whatever else it has to say is read and thrown away. A command
+        // that prints a line for every graphics card would otherwise be
+        // killed writing the second, into a pipe that closed after the
+        // first, and then judged a failure for it — and the card's memory,
+        // which the first line already gave, would be thrown away with it.
+        //
+        // **This thread lives as long as anything holds the pipe open, not
+        // as long as the deadline.** Killing the command closes its own end,
+        // but a process it left behind keeps its inherited end open, and
+        // this waits on that. The bound below is on what is read, not on how
+        // long: it is there so that a command which will not stop talking
+        // cannot be read for ever, and it is far above anything a probe of a
+        // machine prints.
+        let _ = std::io::copy(&mut (&mut reader).take(DRAIN_MOST), &mut std::io::sink());
     });
     let status = loop {
         match child.try_wait() {
@@ -449,7 +471,8 @@ fn first_line_within(mut command: Command, wait: Duration) -> Option<String> {
     };
     let left = deadline.saturating_duration_since(Instant::now());
     let line = told.recv_timeout(left).ok().flatten()?;
-    status.success().then(|| line.trim().to_owned())
+    let line = line.trim().to_owned();
+    (status.success() && !line.is_empty()).then_some(line)
 }
 
 /// A row of the first-run card.
@@ -705,17 +728,34 @@ mod probe {
             "--format=csv,noheader,nounits",
         ]);
         let line = super::first_line_within(command, std::time::Duration::from_secs(5))?;
-        let (name, megabytes) = line.split_once(',')?;
-        let memory = megabytes
+        Some(card_in_line(&line, usable))
+    }
+
+    /// The card in one line of `nvidia-smi --query-gpu=name,memory.total
+    /// --format=csv,noheader,nounits`, which is `NVIDIA GeForce RTX 3090,
+    /// 24576`. Kept apart from the running of the command so that what it
+    /// makes of a line can be tested without a graphics card.
+    ///
+    /// **The number is MiB**, as the tool's own header says. Read as millions
+    /// it understated every card by a twentieth — enough, on a card of 8 GB,
+    /// to put the 8B out of reach of memory that in fact holds it. A card
+    /// whose memory cannot be read is still a card: the sentence for that
+    /// says the memory is unknown rather than judging the processor instead.
+    pub fn card_in_line(line: &str, usable: bool) -> Graphics {
+        // The memory is the last field, so that a card with a comma in its
+        // name loses none of it; `--format=csv` does not quote, and the two
+        // fields asked for are all there are.
+        let (name, mebibytes) = line.rsplit_once(',').unwrap_or((line, ""));
+        let memory = mebibytes
             .trim()
             .parse::<u64>()
             .ok()
-            .map(|mb| mb * 1_000_000);
-        Some(Graphics {
+            .map(|mib| mib * (1 << 20));
+        Graphics {
             name: name.trim().to_owned(),
             memory,
             usable,
-        })
+        }
     }
 }
 
@@ -879,6 +919,102 @@ mod tests {
             first_line_within(Command::new("no-such-command-anywhere"), wait),
             None
         );
+    }
+
+    /// A command with more to say than is read must not be judged a failure
+    /// for the pipe that closed under it. `nvidia-smi` prints a line for
+    /// every graphics card, and on a computer with two it was killed writing
+    /// the second — so the card's memory came back unknown, and the helper on
+    /// this computer was withheld from a machine that could run it. Found on
+    /// a workstation with an RTX 3090 and a Tesla P40, where the probe failed
+    /// about three times in four.
+    #[cfg(unix)]
+    #[test]
+    fn a_command_with_more_to_say_than_is_read_is_not_failed_for_the_closing_pipe() {
+        let shell = |script: &str| {
+            let mut command = Command::new("sh");
+            command.args(["-c", script]);
+            command
+        };
+        let wait = Duration::from_secs(5);
+        assert_eq!(
+            first_line_within(
+                shell("echo first; sleep 0.2; echo second; echo third"),
+                wait
+            )
+            .as_deref(),
+            Some("first"),
+            "the first line is the answer, and the lines after it are not an error"
+        );
+        // The rule it must not swallow: a command that fails still gives
+        // nothing, however many lines it printed first.
+        assert_eq!(
+            first_line_within(shell("echo first; sleep 0.2; echo second; exit 1"), wait),
+            None,
+            "a command that fails on its own account is still a failure"
+        );
+        // More than a pipe holds. Three short lines fit in the pipe's own
+        // buffer, so they prove only that the pipe stayed open; a command
+        // with more to write than that blocks unless the rest is truly read,
+        // and then never exits, and then dies at the deadline.
+        assert_eq!(
+            first_line_within(
+                shell("echo first; head -c 200000 /dev/zero | tr '\\0' x; echo"),
+                wait
+            )
+            .as_deref(),
+            Some("first"),
+            "the rest is read, not merely left open"
+        );
+        assert_eq!(
+            first_line_within(shell("echo; echo second"), wait),
+            None,
+            "a line with nothing on it is not an answer"
+        );
+        // And the limit of it, said plainly: what is read after the line is
+        // bounded, so a command that will not stop talking is cut off after
+        // `DRAIN_MOST` and fails with the pipe, as it did before. No probe
+        // of a machine comes near it — this writes a megabyte more than the
+        // bound to reach it at all.
+        let over = format!(
+            "echo first; head -c {} /dev/zero | tr '\\0' x; echo",
+            DRAIN_MOST + (1 << 20)
+        );
+        assert_eq!(
+            first_line_within(shell(&over), wait),
+            None,
+            "past the bound it is cut off, and a cut-off command gives nothing"
+        );
+    }
+
+    /// What one line of `nvidia-smi` says about a card. The number is
+    /// **MiB** — read as millions it understates every card by a twentieth,
+    /// which on a card of 8 GB is the difference between the 8B being
+    /// offered and not.
+    #[test]
+    fn a_cards_line_gives_its_name_and_its_memory_in_mebibytes() {
+        let card = probe::card_in_line("NVIDIA GeForce RTX 3090, 24576", true);
+        assert_eq!(card.name, "NVIDIA GeForce RTX 3090");
+        assert_eq!(card.memory, Some(24_576 * 1024 * 1024));
+        assert!(card.usable);
+        // 8 GB is 8192 MiB, and the 8B needs its memory and the room over.
+        let eight = probe::card_in_line("NVIDIA GeForce RTX 3070, 8192", true);
+        let needed = crate::local::QWEN3_8B.memory + CARD_ROOM;
+        assert!(
+            eight.memory.unwrap_or(0) >= needed,
+            "a card of 8 GB holds the 8B: {:?} against {needed}",
+            eight.memory
+        );
+        // A comma in the name loses none of the memory.
+        let comma = probe::card_in_line("Some Card, Special Edition, 16384", false);
+        assert_eq!(comma.name, "Some Card, Special Edition");
+        assert_eq!(comma.memory, Some(16_384 * 1024 * 1024));
+        assert!(!comma.usable);
+        // A card whose memory will not read is still a card, with the memory
+        // unknown — the sentence for that says so.
+        let unreadable = probe::card_in_line("Tesla P40, [N/A]", false);
+        assert_eq!(unreadable.name, "Tesla P40");
+        assert_eq!(unreadable.memory, None);
     }
 
     #[test]
