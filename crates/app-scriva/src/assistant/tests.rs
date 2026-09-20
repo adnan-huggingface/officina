@@ -1194,13 +1194,7 @@ fn the_helpers_markdown_is_read_a_paragraph_a_line() {
     );
     let summary: Vec<(Option<u8>, String)> = lines
         .iter()
-        .map(|line| {
-            let paragraph = Paragraph {
-                content: line.content.clone(),
-                ..Paragraph::new()
-            };
-            (line.heading, paragraph.text())
-        })
+        .map(|line| (line.heading, line.text()))
         .collect();
     assert_eq!(
         summary,
@@ -1220,4 +1214,68 @@ fn a_proposals_time_is_written_as_word_writes_one() {
     assert_eq!(time_of(951_782_400), "2000-02-29T00:00:00Z");
     assert_eq!(time_of(1_789_646_400), "2026-09-17T12:00:00Z");
     assert_eq!(time_of(1_789_646_400 + 3_661), "2026-09-17T13:01:01Z");
+}
+
+/// **A card shows the change, not the Markdown the helper typed.** The small
+/// helper echoes the `[1] ` the request numbered the paragraph with, and any
+/// helper writes `**bold**`; neither reaches the document, so a card that
+/// shows them is showing something that did not happen. Found on a real desk:
+/// the card read "[1] This is a story about a dog." and the page did not.
+#[test]
+fn a_cards_words_are_the_words_that_landed_not_the_markdown_that_was_sent() {
+    let mut word = document(&["Title words", "The old wording."], true);
+    let mut history = History::new();
+    let done = rewrite(
+        &mut word,
+        &mut history,
+        2,
+        2,
+        "[2] This is a **story** about a dog.",
+        FIRST,
+    );
+    let proposal = done.proposal.expect("a proposal");
+    assert_eq!(
+        proposal.body, "This is a story about a dog.",
+        "the card says what the page says"
+    );
+    assert_eq!(
+        texts(&word)[1],
+        "This is a story about a dog.",
+        "which is what the page says: paragraph 2 ends the document, and a \
+         rewrite of the last paragraph puts the new words inside it after the \
+         struck ones, because its mark cannot go"
+    );
+
+    // And the same for paragraphs put in rather than rewritten.
+    let mut word = document(&["Title words", "The old wording."], true);
+    let mut history = History::new();
+    let put = call(
+        "insert_paragraphs",
+        json!({"after": 2, "markdown": "[3] A *new* one."}),
+    );
+    let done = run(&mut word, &mut history, &put, &author_at(FIRST));
+    assert_eq!(
+        done.proposal.expect("a proposal").body,
+        "A new one.",
+        "the card says what the page says"
+    );
+    assert_eq!(texts(&word)[2], "A new one.", "which is what the page says");
+
+    // A paragraph with no words in it is said, not shown as nothing: a card
+    // with a title and two buttons and nothing between them proposes nothing
+    // a person can read.
+    let mut word = document(&["Title words", "The old wording."], true);
+    let mut history = History::new();
+    let done = rewrite(&mut word, &mut history, 2, 2, "---", FIRST);
+    assert_eq!(
+        done.proposal.expect("a proposal").body,
+        "An empty paragraph."
+    );
+    let mut word = document(&["Title words", "The old wording."], true);
+    let mut history = History::new();
+    let done = rewrite(&mut word, &mut history, 2, 2, "---\n\n---", FIRST);
+    assert_eq!(
+        done.proposal.expect("a proposal").body,
+        "2 empty paragraphs."
+    );
 }

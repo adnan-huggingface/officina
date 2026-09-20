@@ -6987,6 +6987,27 @@ Test: `lines_pasted_at_a_headings_end_and_rejected_leave_it_a_heading`. Three
 mutations, one rule broken at a time, were each caught. A fourth, which applies
 the rule to pastes within one paragraph too, changes nothing a test can see.
 
+## A card showed the Markdown the helper typed, not the change (2026-09-20)
+
+Found in the same sitting as the fault below, and the same kind: the pane's
+account of what happened was not what happened. Asked to write a story about a
+dog, the helper proposed new wording and the card read "[1] This is a story
+about a dog." The page had no "[1]" — the request numbers the paragraphs it
+shows the helper, small helpers echo the number back, and `unnumbered` strips it
+before the line becomes a paragraph. The card was built from the raw Markdown
+instead, so it also showed `**bold**` as stars and `# Heading` as a hash, none
+of which reach the page.
+
+`what_lands` builds a card's body from the parsed lines — the ones actually
+written into the document — and both `replace_call` and `insert_call` use it.
+The review of the fix found six things, one a real gap (the insert half of the
+test never checked the page; a `println!` stood where the assertion belonged)
+and one a new fault of the fix's own (a proposal of empty paragraphs left the
+card with no body; it says "An empty paragraph." now, as a taking-out says
+"Taken out."). `Line::text()` is the one spelling of the paragraph-to-words
+idiom. Six mutations caught in all, and the bug note is
+`bugs/card-shows-the-markdown-not-the-change.md`.
+
 ## The assistant said it changed a paragraph, and changed nothing (2026-09-20)
 
 **The first fault in Assist found by using it.** Two days after the programme

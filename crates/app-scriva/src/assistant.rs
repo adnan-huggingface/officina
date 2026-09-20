@@ -603,7 +603,7 @@ fn replace_call(
         ),
         false => (
             format!("proposed new wording for {}", short(from, to)),
-            preview(markdown),
+            what_lands(&lines),
         ),
     };
     let mut said = proposed(to, moved.by);
@@ -676,7 +676,7 @@ fn insert_call(
         proposal: Some(Proposal {
             kind: Kind::Changes(date),
             title: capital(&where_),
-            body: preview(markdown),
+            body: what_lands(&lines),
         }),
         moved,
     })
@@ -790,6 +790,28 @@ fn refused(why: &str, from: usize, to: usize) -> String {
     }
 }
 
+/// What a card shows for new wording: the words as they land on the page,
+/// not the Markdown the helper typed.
+///
+/// **A card that shows the Markdown is not showing the change.** The `[1] `
+/// the request numbered a paragraph with is echoed back by small helpers and
+/// is not part of the text; `**bold**` lands as bold, not as stars. A person
+/// reading the card is reading the account of what was done to their
+/// document, and it has to be the same words the page has. A heading's level
+/// and a list's marker are styles, not words, and the card shows words: the
+/// page, a Show away, shows the style. Paragraphs with no words in them are
+/// said in a sentence, as a taking-out is, rather than shown as nothing.
+fn what_lands(lines: &[Line]) -> String {
+    let words = lines.iter().map(Line::text).collect::<Vec<_>>().join("\n");
+    match words.trim().is_empty() {
+        true => match lines.len() {
+            1 => "An empty paragraph.".to_owned(),
+            n => format!("{n} empty paragraphs."),
+        },
+        false => preview(&words),
+    }
+}
+
 /// The first words of what a card shows.
 fn preview(text: &str) -> String {
     const MOST: usize = 280;
@@ -808,6 +830,18 @@ fn preview(text: &str) -> String {
 pub struct Line {
     pub heading: Option<u8>,
     pub content: Vec<Inline>,
+}
+
+impl Line {
+    /// The line's words as the page will show them: emphasis kept as
+    /// emphasis rather than as marks, a line break a newline, a tab a tab.
+    pub fn text(&self) -> String {
+        Paragraph {
+            content: self.content.clone(),
+            ..Paragraph::new()
+        }
+        .text()
+    }
 }
 
 /// The helper's Markdown as paragraphs, a line each, as the request shows
