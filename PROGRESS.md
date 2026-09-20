@@ -7035,6 +7035,12 @@ through Ollama: **17 of 20, 4.2 s median first word, 9.4 s median total, no
 false claims** — the bar met, by the model in the catalogue, on a graphics
 processor. A GPU is the hardware requirement for a local assistant.
 
+The user, trying the build: Settings' list of Ollama's models read as text,
+with an empty Model box beside it and nothing to say which to pick. They are
+radios now, as the helpers above them are, with the first that is not large
+marked *recommended* and chosen when the settings name none; the bare field
+stays only while Ollama has not answered.
+
 ## The helper on this computer, asked for a story, wrote one sentence (2026-09-20)
 
 The user's third fault from their own desk, and the first about what the

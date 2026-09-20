@@ -285,8 +285,8 @@ Every source file, its size, and the first sentence of its module doc.
 - `crates/ui-kit/src/assist/choosing.rs` (281) The first-run card: which helper Assist should use, asked once, in words.
 - `crates/ui-kit/src/assist/mod.rs` (1951) Assist's pane: where a person asks for a change in their own words, sees the answer arrive, sees what the helper read and changed, and stops it — and where the helper is chosen, once, in words.
 - `crates/ui-kit/src/assist/request.rs` (188) A request on a thread of its own, and anything else the pane waits for without stopping the window.
-- `crates/ui-kit/src/assist/settings_box.rs` (720) Assist's ⋯ menu ▸ Settings: the helper, and what it needs, in one box.
-- `crates/ui-kit/src/assist/tests/card.rs` (562) B3: the first-run card.
+- `crates/ui-kit/src/assist/settings_box.rs` (741) Assist's ⋯ menu ▸ Settings: the helper, and what it needs, in one box.
+- `crates/ui-kit/src/assist/tests/card.rs` (582) B3: the first-run card.
 - `crates/ui-kit/src/assist/tests/changes.rs` (694) What the pane does when its settings change under it: in the other application, in its own box, or nowhere to keep them at all.
 - `crates/ui-kit/src/assist/tests/keeping.rs` (679) B4 and B5: the settings box, and what is said before anything leaves the computer.
 - `crates/ui-kit/src/assist/tests/mod.rs` (576) The pane, driven in an application of the tests' own.

@@ -564,9 +564,6 @@ impl SettingsBox {
         dialog::labelled(ui, "Address:", |ui| {
             dialog::field(ui, &mut ollama.address, 260.0);
         });
-        dialog::labelled(ui, "Model:", |ui| {
-            dialog::field(ui, &mut ollama.model, 260.0);
-        });
         if self.looking.is_some() {
             note(ui, "Looking for Ollama's models…");
         }
@@ -574,19 +571,43 @@ impl SettingsBox {
             Row::OllamaHere { models } => Some(models),
             _ => None,
         });
-        for model in found.into_iter().flatten() {
-            dialog::labelled(ui, "", |ui| {
-                let on = ollama.model == model.name;
-                if ui
-                    .selectable_label(
-                        on,
-                        egui::RichText::new(model_words(model)).size(theme::TEXT_SMALL),
-                    )
-                    .clicked()
-                {
-                    ollama.model = model.name.clone();
+        match found {
+            // Ollama answered: its models are a choice, as the helpers above
+            // are, with the one the card would offer — the first that is not
+            // large — recommended and already chosen when nothing is.
+            Some(models) if !models.is_empty() => {
+                let recommended = models
+                    .iter()
+                    .find(|model| !model.is_large())
+                    .or(models.first())
+                    .map(|model| model.name.clone());
+                if ollama.model.trim().is_empty() {
+                    if let Some(name) = &recommended {
+                        ollama.model = name.clone();
+                    }
                 }
-            });
+                dialog::labelled(ui, "Model:", |ui| {
+                    ui.vertical(|ui| {
+                        for model in models {
+                            let mut words = model_words(model);
+                            if recommended.as_deref() == Some(model.name.as_str()) {
+                                words.push_str(" — recommended");
+                            }
+                            ui.radio_value(&mut ollama.model, model.name.clone(), words);
+                        }
+                    });
+                });
+            }
+            // Nothing listed yet, or Ollama not answering: a name can be typed.
+            _ => {
+                dialog::labelled(ui, "Model:", |ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut ollama.model)
+                            .hint_text("the model's name, as ollama list shows it")
+                            .desired_width(260.0),
+                    );
+                });
+            }
         }
         spent_line(ui, spent, cents);
     }

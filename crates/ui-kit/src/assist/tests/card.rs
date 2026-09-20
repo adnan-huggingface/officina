@@ -341,8 +341,11 @@ fn the_ollama_row_lists_every_model_and_says_which_are_large() {
         "qwen3.6:27b-q5_k_m · 19 GB — large: needs a powerful computer",
     );
     let seen = desk.everywhere(&drive);
+    // In the box the models are a choice, and the one the card would offer
+    // says it is the recommended one.
     assert!(
-        seen.iter().any(|text| text == "qwen3:1.7b · 1.4 GB"),
+        seen.iter()
+            .any(|text| text == "qwen3:1.7b · 1.4 GB — recommended"),
         "{seen:?}"
     );
     desk.click(&drive, "llama3.2:latest · 2.0 GB");
@@ -351,6 +354,23 @@ fn the_ollama_row_lists_every_model_and_says_which_are_large() {
     assert_eq!(
         Settings::read(&scratch.settings()).unwrap().ollama.model,
         "llama3.2:latest"
+    );
+
+    // Ollama chosen with no model named yet: the recommended one is chosen
+    // for the person, and Save keeps it without a click on the list.
+    let scratch = Scratch::new("ollama-recommended");
+    let reach = Fake::new().finds(with_first(vec![ollama_row()]));
+    let mut unnamed = ollama_here();
+    unnamed.ollama.model.clear();
+    let mut desk = Desk::with(Arc::clone(&reach), scratch.holding(&unnamed));
+    drive.settle(&mut desk);
+    desk.assist.open_settings();
+    desk.until_seen(&drive, "qwen3:1.7b · 1.4 GB — recommended");
+    desk.click(&drive, "Save");
+    desk.until(&drive, "the box to close", |desk| !desk.assist.box_up());
+    assert_eq!(
+        Settings::read(&scratch.settings()).unwrap().ollama.model,
+        "qwen3:1.7b"
     );
 }
 
