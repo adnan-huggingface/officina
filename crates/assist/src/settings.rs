@@ -87,6 +87,21 @@ impl Default for ClaudeSettings {
     }
 }
 
+/// The helper on this computer: which model of the catalogue.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LocalSettings {
+    /// The model's folder name, as `assist::local::MODELS` has it; empty
+    /// means the smallest.
+    pub model: String,
+}
+
+impl LocalSettings {
+    /// The model these settings name, or the catalogue's smallest.
+    pub fn model(&self) -> &'static crate::local::Model {
+        crate::local::model(self.model.trim()).unwrap_or(&crate::local::MODELS[0])
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OllamaSettings {
     pub address: String,
@@ -126,6 +141,7 @@ pub struct Settings {
     /// `None` until the user has chosen, which is what brings up the first-run
     /// card.
     pub helper: Option<Choice>,
+    pub local: LocalSettings,
     pub claude: ClaudeSettings,
     pub ollama: OllamaSettings,
     pub service: ServiceSettings,
@@ -141,7 +157,9 @@ impl Settings {
         };
         match self.helper {
             None => "No helper chosen".to_owned(),
-            Some(Choice::Local) => "Helper on this computer".to_owned(),
+            Some(Choice::Local) => {
+                named("Helper on this computer", self.local.model().short_name())
+            }
             Some(Choice::Claude) => match claude_model(&self.claude.model) {
                 Some(model) => named("Claude", model.name()),
                 None => named("Claude", &self.claude.model),
@@ -179,6 +197,7 @@ impl Settings {
         }
         Settings {
             helper: pick(&self.helper, &opened.helper, &current.helper),
+            local: pick(&self.local, &opened.local, &current.local),
             claude: ClaudeSettings {
                 login,
                 key,
@@ -262,6 +281,9 @@ impl Settings {
             .unwrap_or(defaults.claude.fallback);
         Settings {
             helper,
+            local: LocalSettings {
+                model: text("local", "model", ""),
+            },
             claude: ClaudeSettings {
                 login,
                 key: text("claude", "key", ""),
@@ -339,6 +361,11 @@ impl Settings {
                 }
             }
         };
+        set(
+            &mut table,
+            "local",
+            vec![("model", self.local.model.clone().into())],
+        );
         let claude = &self.claude;
         set(
             &mut table,

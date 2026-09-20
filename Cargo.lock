@@ -149,6 +149,7 @@ version = "0.1.0"
 dependencies = [
  "ahash",
  "candle-core",
+ "candle-nn",
  "candle-transformers",
  "rustls",
  "serde_json",
@@ -156,6 +157,7 @@ dependencies = [
  "tokenizers",
  "toml",
  "ureq",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5271,8 +5273,10 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "assist",
+ "calx",
  "ooxml",
  "scriva",
+ "serde_json",
  "ss-formula",
  "ss-model",
  "ss-xlsx",

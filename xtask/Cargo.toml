@@ -10,6 +10,9 @@ publish = false
 assist.workspace = true
 ui-kit.workspace = true
 scriva.workspace = true
+calx.workspace = true
+# For the deck's scripted tool calls, in its test.
+serde_json = "1"
 ooxml.workspace = true
 ss-model.workspace = true
 ss-xlsx.workspace = true

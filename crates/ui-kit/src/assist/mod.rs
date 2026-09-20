@@ -105,6 +105,7 @@ pub trait Reach: Send + Sync {
     /// why the window never waits for it.
     fn download(
         &self,
+        model: &::assist::local::Model,
         stop: &::assist::StopFlag,
         progress: &mut dyn FnMut(::assist::local::Progress),
     ) -> Result<(), Failure> {
@@ -115,14 +116,20 @@ pub trait Reach: Send + Sync {
                  be made.",
             ));
         };
-        ::assist::local::download_model(&cache, stop, progress)
+        ::assist::local::download_model(&cache, model, stop, progress)
     }
 
-    /// Whether the helper on this computer is downloaded already, and how
-    /// much space its files take.
-    fn downloaded(&self) -> Option<u64> {
-        let cache = downloads()?;
-        ::assist::local::have(&cache).then(|| ::assist::local::MODEL.bytes())
+    /// Whether `model` is downloaded already.
+    fn have(&self, model: &::assist::local::Model) -> bool {
+        downloads().is_some_and(|cache| ::assist::local::have(&cache, model))
+    }
+
+    /// How much space every downloaded model's files take, the withdrawn
+    /// ones included — what Remove would give back. Zero when nothing is.
+    fn downloaded(&self) -> u64 {
+        downloads()
+            .map(|cache| ::assist::local::downloaded(&cache))
+            .unwrap_or(0)
     }
 
     /// Removes the downloaded helper, and says how much space came back.
@@ -631,14 +638,15 @@ impl Assist {
         let stop = ::assist::StopFlag::default();
         let theirs = stop.clone();
         let (tell, said) = mpsc::channel();
+        let model = *self.on_file().local.model();
         self.download = Some(Progress {
             done: 0,
-            total: Some(::assist::local::MODEL.bytes()),
+            total: Some(model.bytes()),
         });
         self.downloading = Some(Downloading {
             work: request::Background::spawn(
                 move || {
-                    reach.download(&theirs, &mut |progress| {
+                    reach.download(&model, &theirs, &mut |progress| {
                         let _ = tell.send(progress);
                     })
                 },
@@ -689,8 +697,10 @@ impl Assist {
                 self.download = None;
                 match what {
                     Ok(()) => {
-                        let ready =
-                            format!("{} is ready on this computer.", ::assist::local::MODEL.name);
+                        let ready = format!(
+                            "{} is ready on this computer.",
+                            self.on_file().local.model().name
+                        );
                         self.note(&ready, None);
                         // The helper the settings name is made afresh, so
                         // that the one refusing for want of weights is let go.
@@ -1303,7 +1313,9 @@ impl Assist {
                 };
                 let row = rows.rows.get(rows.picked).cloned()?;
                 if !row.is_ready() {
-                    rows.said = Some(::assist::LOCAL_NOT_READY.to_owned());
+                    // The row that says this computer cannot run a helper of
+                    // its own: pressing it says so again, and nothing else.
+                    rows.said = Some(row.about());
                     return None;
                 }
                 let model = rows.model;
@@ -1322,7 +1334,8 @@ impl Assist {
                                 settings.ollama.model = model.name.clone();
                             }
                         }
-                        let local = matches!(row, Row::Local);
+                        let local = matches!(row, Row::Local(_));
+                        let chosen = *settings.local.model();
                         if let Err(why) = self.keep(settings) {
                             if let Some(Choosing::Rows(rows)) = &mut self.choosing {
                                 rows.said = Some(why);
@@ -1333,7 +1346,7 @@ impl Assist {
                         // downloaded: choosing it is asking for it, and the
                         // bar starts there and then rather than waiting for
                         // the person to find Settings.
-                        if local && self.reach.downloaded().is_none() {
+                        if local && !self.reach.have(&chosen) {
                             self.start_download(ctx);
                         }
                     }

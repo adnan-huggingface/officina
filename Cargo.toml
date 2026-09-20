@@ -58,6 +58,7 @@ ui-kit = { path = "crates/ui-kit" }
 # The applications themselves, so that the fidelity comparator can measure a
 # page with the very shaper the screen paints with rather than a stand-in.
 scriva = { path = "crates/app-scriva" }
+calx = { path = "crates/app-calx" }
 
 # Release profile: optimize for a small, fast, self-contained binary.
 [profile.release]

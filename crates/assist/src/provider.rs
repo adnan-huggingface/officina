@@ -134,9 +134,23 @@ pub fn stream(
 pub const LOCAL_READY: bool = true;
 
 /// The model in `cache`, read and ready, or why it is not.
-fn local_helper(cache: &std::path::Path) -> Result<crate::local::Local, Failure> {
+fn local_helper(
+    cache: &std::path::Path,
+    model: &crate::local::Model,
+    machine: &dyn crate::Machine,
+) -> Result<crate::local::Local, Failure> {
     crate::offline::check(LOCAL)?;
-    crate::local::Local::load(&crate::local::folder(cache))
+    // What is on the disk answers: a person who downloaded it chose it. What
+    // is not there is not offered for download on a computer that cannot run
+    // it within the bar — a helper chosen under an earlier version, or on
+    // another computer — and the answer is the card's sentence, not a download
+    // the settings box will not offer.
+    if !crate::local::have(cache, model) {
+        if let Some(why) = crate::machine::cannot_run_local(machine) {
+            return Err(Failure::new(FailureKind::NotReady, why));
+        }
+    }
+    crate::local::Local::load(cache, model)
 }
 
 /// A helper that is there but cannot answer, and says why in its own words.
@@ -184,7 +198,9 @@ pub fn connect_in(settings: &Settings, cache: Option<&std::path::Path>) -> Box<d
         // The helper on this computer, if its weights have been downloaded.
         // The model is read here, on the request's own thread, because it is
         // a second of reading and a window must not stop for it.
-        Some(Choice::Local) => match cache.map(local_helper) {
+        Some(Choice::Local) => match cache
+            .map(|cache| local_helper(cache, settings.local.model(), &crate::ThisComputer))
+        {
             Some(Ok(local)) => Box::new(local),
             Some(Err(failure)) => Box::new(Refuses {
                 name: LOCAL,
@@ -276,12 +292,16 @@ pub fn check_in(settings: &Settings, cache: Option<&std::path::Path>) -> Result<
             // takes. What the files are is settled by the hash they were
             // downloaded under, and a file that will not load is said when
             // the first request asks it to.
-            if !crate::local::have(cache) {
+            let model = settings.local.model();
+            if !crate::local::have(cache, model) {
+                if let Some(why) = crate::machine::cannot_run_local(&crate::ThisComputer) {
+                    return Err(Failure::new(FailureKind::NotReady, why));
+                }
                 return Err(Failure::new(FailureKind::NotReady, LOCAL_NOT_READY));
             }
             Ok(format!(
                 "{} is ready on this computer: {}.",
-                crate::local::MODEL.name,
+                model.name,
                 crate::local::GOOD_AT
             ))
         }

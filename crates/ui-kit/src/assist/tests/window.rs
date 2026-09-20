@@ -386,7 +386,11 @@ fn every_part_of_the_pane_is_painted_where_it_can_be_seen() {
 
     // The first-run card, too, and in a small window.
     let scratch = Scratch::new("painted-card");
-    let reach = Fake::new().finds(vec![Row::Local, Row::ClaudeWithKey, Row::Service]);
+    let reach = Fake::new().finds(vec![
+        Row::Local(::assist::local::MODELS[0]),
+        Row::ClaudeWithKey,
+        Row::Service,
+    ]);
     let drive = Driver::sized(egui::vec2(900.0, 600.0));
     let mut desk = Desk::with(reach, scratch.settings());
     desk.until(&drive, "the card's rows", |desk| {
@@ -396,11 +400,11 @@ fn every_part_of_the_pane_is_painted_where_it_can_be_seen() {
     let painted = desk.painted(&drive);
     for words in [
         QUESTION,
-        "A helper on this computer",
         "Claude, over the internet",
         "Use this",
         "Not now",
         "Choose a helper first",
+        "A helper on this computer (Qwen3 4B)",
     ] {
         let text = painted
             .text(words)

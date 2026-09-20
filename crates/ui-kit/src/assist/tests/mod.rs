@@ -126,6 +126,9 @@ pub(super) struct Fake {
     pub downloading: Arc<std::sync::atomic::AtomicUsize>,
     /// What `downloaded` says: `None` for "not downloaded".
     pub have_download: Mutex<Option<u64>>,
+    /// Bytes of downloaded helpers other than the chosen one — a withdrawn
+    /// model's, say — for Remove to count.
+    pub other_downloads: Mutex<u64>,
     /// Every removal asked for.
     pub removed: Arc<std::sync::atomic::AtomicUsize>,
 }
@@ -201,6 +204,7 @@ impl Reach for Fake {
 
     fn download(
         &self,
+        _: &::assist::local::Model,
         stop: &::assist::StopFlag,
         progress: &mut dyn FnMut(::assist::local::Progress),
     ) -> Result<(), Failure> {
@@ -227,15 +231,20 @@ impl Reach for Fake {
         }
     }
 
-    fn downloaded(&self) -> Option<u64> {
-        *self.have_download.lock().unwrap()
+    fn have(&self, _: &::assist::local::Model) -> bool {
+        self.have_download.lock().unwrap().is_some()
+    }
+
+    fn downloaded(&self) -> u64 {
+        self.have_download.lock().unwrap().unwrap_or(0) + *self.other_downloads.lock().unwrap()
     }
 
     fn remove_download(&self) -> Result<u64, String> {
         self.removed
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let had = self.have_download.lock().unwrap().take();
-        Ok(had.unwrap_or(0))
+        let other = std::mem::take(&mut *self.other_downloads.lock().unwrap());
+        Ok(had.unwrap_or(0) + other)
     }
 }
 

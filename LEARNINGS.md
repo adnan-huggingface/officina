@@ -2448,3 +2448,32 @@ the helper on this computer took the likeliest token every time, out of
 ignorance rather than choice; it samples now. On the story above sampling
 changed nothing, which is the honest measure of how much it matters against a
 brief that asks for the wrong thing.
+
+**A cache of keys and values can be cut, not only cleared, and a tiny model
+proves it exactly.** candle's `ConcatKvCache` gives out `k_mut`/`v_mut`; a
+`narrow` on the sequence dimension to the length of the shared prefix, in
+every layer, leaves a model that reads the rest of a prompt from that offset
+and answers — decoding greedily — token for token as one that read the whole.
+That equality is the test, on the two-layer model the tests write themselves:
+an optimisation whose correctness is "the same answer" needs no weights to be
+proved. What made it necessary: a request here is a thousand tokens in and a
+hundred out, and seven hundred of the thousand never change in a session.
+
+**A model's size shows first in what it does with tools, not in its prose.**
+Asked for a story through Scriva's brief and tools: the 1.7B wrote one
+sentence; the 4B wrote a hundred words, plainly; the 8B wrote a titled story
+in two paragraphs with a named child and an autumn evening. The same brief,
+the same request. Prose alone had hidden the gap — the 1.7B writes a fair
+paragraph when nothing but words is asked of it.
+
+**A request-reading workload on a processor is bounded by the prompt, and no
+size of model makes it fast.** Twenty requests, one loaded 4B, a release build
+tuned to a Ryzen 9700X: median 39 s before the first word, and that with the
+brief and the tools already in the kept cache. Portable, the first request took
+106 s. The only sub-five-second waits were requests whose *document* was
+already in the cache too — 1.7 s, 1.0 s — which says where the time goes:
+reading the thousand tokens of a request is arithmetic over all of them, and a
+processor does it at ten to twenty tokens a second. A graphics processor does
+the same in a fraction of a second. That is the whole of the hardware question
+for a local helper, and it is not answered by a smaller model.
+

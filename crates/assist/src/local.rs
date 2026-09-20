@@ -9,7 +9,7 @@
 //! the first row of the first-run card.
 //!
 //! **Nothing is bundled.** The weights are a download the person asks for,
-//! having seen the model's name, its licence and its size ([`MODEL`]), and
+//! having seen the model's name, its licence and its size ([`MODELS`]), and
 //! they live in the cache directory, never in the repository and never beside
 //! the settings. [`download`] checks what arrives against the hash the
 //! constant names, so a half-download or a mirror's mistake cannot be run.
@@ -28,7 +28,7 @@ use candle_core::quantized::gguf_file;
 use candle_core::{Device, Tensor};
 use candle_transformers::generation::LogitsProcessor;
 pub use candle_transformers::generation::Sampling;
-use candle_transformers::models::quantized_qwen3::ModelWeights;
+use qwen3::ModelWeights;
 use serde_json::{json, Value};
 use tokenizers::Tokenizer;
 
@@ -43,7 +43,9 @@ pub const NAME: &str = "Helper on this computer";
 
 /// What it is good at, said on the card and in the header rather than left
 /// for the person to discover.
-pub const GOOD_AT: &str = "good for rewording, grammar, summaries and simple sums";
+pub const GOOD_AT: &str =
+    "it reworks a paragraph, answers about a document, writes a passage, and \
+                           puts formulas in cells";
 
 /// One file of the model, and what it must be.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,6 +68,9 @@ pub struct Piece {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Model {
     pub name: &'static str,
+    /// The folder it is kept in under `<cache>/models/`, and how the settings
+    /// name it.
+    pub folder: &'static str,
     /// Its licence, said before anything is downloaded.
     pub licence: &'static str,
     /// Where the licence and the model card can be read.
@@ -74,6 +79,12 @@ pub struct Model {
     pub tokenizer: Piece,
     /// How much memory it wants while it runs, in bytes, for the card.
     pub memory: u64,
+    /// About how many seconds pass before the first word — or, when the
+    /// answer is a change, the change — of a paragraph request on a recent
+    /// processor alone, in a portable build, with the brief and the tools
+    /// already read: what the card says the wait will feel like. Measured,
+    /// in `bugs/assist-bar.md`.
+    pub first_word: u32,
 }
 
 impl Model {
@@ -87,30 +98,78 @@ impl Model {
     pub fn bytes(&self) -> u64 {
         self.weights.bytes + self.tokenizer.bytes
     }
+
+    /// "Qwen3 4B": the name without the quantization a card need not say.
+    pub fn short_name(&self) -> &'static str {
+        self.name.split(" (").next().unwrap_or(self.name)
+    }
 }
 
-/// Qwen3 1.7B, quantized to Q4_K_M, from the llama.cpp project's own
-/// conversion; the tokenizer from Qwen's own repository. Apache-2.0, which is
-/// what a suite that promises its users nothing they cannot redistribute can
-/// ship a pointer to.
-pub const MODEL: Model = Model {
-    name: "Qwen3 1.7B (Q4_K_M)",
+/// Qwen3 4B, quantized to Q4_K_M, from Qwen's own GGUF repository; the
+/// tokenizer from the model's repository (the same file for every Qwen3
+/// size). Apache-2.0, which is what a suite that promises its users nothing
+/// they cannot redistribute can ship a pointer to.
+///
+/// **The floor.** The smallest model that does the six things the bar asks
+/// (`PLAN.md`, phase 7): the 1.7B before it claimed work it had not done,
+/// made the smallest edit it could call by the name asked for, and is no
+/// longer offered.
+pub const QWEN3_4B: Model = Model {
+    name: "Qwen3 4B (Q4_K_M)",
+    folder: "qwen3-4b-q4-k-m",
     licence: "Apache-2.0",
-    about: "https://huggingface.co/Qwen/Qwen3-1.7B",
+    about: "https://huggingface.co/Qwen/Qwen3-4B-GGUF",
     weights: Piece {
-        file: "Qwen3-1.7B-Q4_K_M.gguf",
-        url: "https://huggingface.co/ggml-org/Qwen3-1.7B-GGUF/resolve/main/Qwen3-1.7B-Q4_K_M.gguf",
-        bytes: 1_282_439_264,
-        sha256: "d2387ca2dbfee2ffabce7120d3770dadca0b293052bc2f0e138fdc940d9bc7b5",
+        file: "Qwen3-4B-Q4_K_M.gguf",
+        url: "https://huggingface.co/Qwen/Qwen3-4B-GGUF/resolve/main/Qwen3-4B-Q4_K_M.gguf",
+        bytes: 2_497_280_256,
+        sha256: "7485fe6f11af29433bc51cab58009521f205840f5b4ae3a32fa7f92e8534fdf5",
     },
-    tokenizer: Piece {
-        file: "tokenizer.json",
-        url: "https://huggingface.co/Qwen/Qwen3-1.7B/resolve/main/tokenizer.json",
-        bytes: 11_422_654,
-        sha256: "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4",
-    },
-    memory: 2_500_000_000,
+    tokenizer: TOKENIZER,
+    memory: 4_500_000_000,
+    // The deck's median, portable build, Ryzen 7 9700X: 40.8 s.
+    first_word: 40,
 };
+
+/// Qwen3 8B, the same way. The first size at which most people stop noticing
+/// the model.
+pub const QWEN3_8B: Model = Model {
+    name: "Qwen3 8B (Q4_K_M)",
+    folder: "qwen3-8b-q4-k-m",
+    licence: "Apache-2.0",
+    about: "https://huggingface.co/Qwen/Qwen3-8B-GGUF",
+    weights: Piece {
+        file: "Qwen3-8B-Q4_K_M.gguf",
+        url: "https://huggingface.co/Qwen/Qwen3-8B-GGUF/resolve/main/Qwen3-8B-Q4_K_M.gguf",
+        bytes: 5_027_783_488,
+        sha256: "d98cdcbd03e17ce47681435b5150e34c1417f50b5c0019dd560e4882c5745785",
+    },
+    tokenizer: TOKENIZER,
+    memory: 7_500_000_000,
+    // The deck's median, native build, the same processor: 47.7 s; portable
+    // would be a little more, and was not run.
+    first_word: 50,
+};
+
+/// Qwen3's tokenizer, one file for every size of the model.
+const TOKENIZER: Piece = Piece {
+    file: "tokenizer.json",
+    url: "https://huggingface.co/Qwen/Qwen3-4B/resolve/main/tokenizer.json",
+    bytes: 11_422_654,
+    sha256: "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4",
+};
+
+/// The models Officina offers to run on this computer, smallest first.
+pub const MODELS: [Model; 2] = [QWEN3_4B, QWEN3_8B];
+
+/// Folders of models once offered and withdrawn, removed along with the rest
+/// when a person presses Remove: the 1.7B, below the bar.
+pub const WITHDRAWN: [&str; 1] = ["qwen3-1.7b-q4-k-m"];
+
+/// The model of the catalogue kept in `folder`, if any is.
+pub fn model(folder: &str) -> Option<&'static Model> {
+    MODELS.iter().find(|model| model.folder == folder)
+}
 
 /// How many tokens one answer may be. A helper that never stops is worse
 /// than one that stops early: the person can ask again.
@@ -133,9 +192,9 @@ pub const SAMPLING: Sampling = Sampling::TopKThenTopP {
     temperature: 0.7,
 };
 
-/// Where the weights live: `<cache>/models/<model>/`.
-pub fn folder(cache: &Path) -> PathBuf {
-    cache.join("models").join("qwen3-1.7b-q4-k-m")
+/// Where a model's weights live: `<cache>/models/<model>/`.
+pub fn folder(cache: &Path, model: &Model) -> PathBuf {
+    cache.join("models").join(model.folder)
 }
 
 /// Whether both of the model's files are there.
@@ -145,33 +204,59 @@ pub fn folder(cache: &Path) -> PathBuf {
 /// there is what was asked for; a half-download is a part file, which this
 /// does not count. Whether the weights then load is a question for the first
 /// request, which says so in words a person can act on.
-pub fn have(cache: &Path) -> bool {
-    let folder = folder(cache);
-    MODEL
+pub fn have(cache: &Path, model: &Model) -> bool {
+    let folder = folder(cache, model);
+    model
         .pieces()
         .iter()
         .all(|piece| folder.join(piece.file).exists())
 }
 
-/// Removes the downloaded weights, and says how many bytes came back.
+/// How many bytes of downloaded weights there are on this computer, whole or
+/// half, of every model offered or withdrawn: what Remove would give back.
+pub fn downloaded(cache: &Path) -> u64 {
+    folders(cache)
+        .iter()
+        .flat_map(|folder| std::fs::read_dir(folder).into_iter().flatten().flatten())
+        .filter_map(|entry| entry.metadata().ok())
+        .filter(|found| found.is_file())
+        .map(|found| found.len())
+        .sum()
+}
+
+/// Every folder a model of ours may be in: the catalogue's and the withdrawn.
+fn folders(cache: &Path) -> Vec<PathBuf> {
+    let models = cache.join("models");
+    MODELS
+        .iter()
+        .map(|model| model.folder)
+        .chain(WITHDRAWN)
+        .map(|name| models.join(name))
+        .collect()
+}
+
+/// Removes every downloaded model, and says how many bytes came back.
+///
+/// **A withdrawn model goes too.** The 1.7B is no longer offered, but a
+/// person who downloaded it under an earlier version has a gigabyte of it,
+/// and "Remove" that left it behind would give back less than it said.
 pub fn remove(cache: &Path) -> std::io::Result<u64> {
-    let folder = folder(cache);
     let mut freed = 0;
-    for piece in MODEL.pieces() {
+    for folder in folders(cache) {
+        let Ok(entries) = std::fs::read_dir(&folder) else {
+            continue;
+        };
         // The half-downloaded file counts too: it is space the person has
-        // spent, and leaving it behind means "Remove" gives back less than
-        // it said and a folder that will not go.
-        for path in [
-            folder.join(piece.file),
-            folder.join(format!("{}.part", piece.file)),
-        ] {
-            if let Ok(found) = std::fs::metadata(&path) {
+        // spent, and leaving it behind means a folder that will not go.
+        for entry in entries.flatten() {
+            let found = entry.metadata()?;
+            if found.is_file() {
                 freed += found.len();
-                std::fs::remove_file(&path)?;
+                std::fs::remove_file(entry.path())?;
             }
         }
+        let _ = std::fs::remove_dir(&folder);
     }
-    let _ = std::fs::remove_dir(&folder);
     Ok(freed)
 }
 
@@ -213,6 +298,7 @@ pub struct Progress {
 /// starting again. What is whole and right is never fetched twice.
 pub fn download_model(
     cache: &Path,
+    model: &Model,
     stop: &StopFlag,
     progress: &mut dyn FnMut(Progress),
 ) -> Result<(), Failure> {
@@ -224,7 +310,7 @@ pub fn download_model(
     // a server of their own.
     #[cfg(test)]
     {
-        let _ = (cache, stop, progress);
+        let _ = (cache, model, stop, progress);
         Err(Failure::new(
             FailureKind::Offline,
             "A test does not download the helper.",
@@ -235,8 +321,8 @@ pub fn download_model(
         crate::offline::check(NAME)?;
         // A client of its own: a gigabyte is not a chat, and the timeouts that
         // suit a helper's first word would cut this off every time.
-        let http = crate::http::Http::for_download(MODEL.weights.url);
-        download(&http, &MODEL, cache, stop, progress)
+        let http = crate::http::Http::for_download(model.weights.url);
+        download(&http, model, cache, stop, progress)
     }
 }
 
@@ -247,7 +333,7 @@ pub(crate) fn download(
     stop: &StopFlag,
     progress: &mut dyn FnMut(Progress),
 ) -> Result<(), Failure> {
-    let folder = folder(cache);
+    let folder = folder(cache, model);
     std::fs::create_dir_all(&folder).map_err(|why| cannot(&folder, why))?;
     // **One download at a time, whichever window started it.** Calx and
     // Scriva share this folder; two of them writing one part file interleave
@@ -484,7 +570,17 @@ struct Ready {
     /// How the next token is chosen: [`SAMPLING`], but a test that has to
     /// know what the model will say first may make it greedy.
     sampling: Sampling,
+    /// The tokens whose keys and values the model's cache holds, in order:
+    /// the last request's prompt and answer. A request that begins the same
+    /// way reads only what follows.
+    held: Vec<u32>,
+    /// How many tokens the last request made the model read, for a test.
+    read: usize,
 }
+
+/// The shortest shared beginning worth keeping. Below it, cutting the cache
+/// costs about what reading the tokens would.
+const KEEP_FROM: usize = 16;
 
 /// The model read from disk, kept for as long as the helper is the chosen
 /// one.
@@ -509,15 +605,28 @@ pub struct Local {
 }
 
 impl Local {
-    /// Reads the model in `folder`. A minute on a cold cache, and the window
-    /// is not held: the pane asks on the request's own thread.
-    pub fn load(folder: &Path) -> Result<Local, Failure> {
-        let weights = folder.join(MODEL.weights.file);
-        let tokenizer = folder.join(MODEL.tokenizer.file);
-        // Half a download is not a helper: whichever file is missing, the
-        // answer is the same one, and it says what to do about it.
-        for piece in MODEL.pieces() {
-            if !folder.join(piece.file).exists() {
+    /// Reads `model` from its folder in `cache`. A minute on a cold cache,
+    /// and the window is not held: the pane asks on the request's own thread.
+    pub fn load(cache: &Path, model: &Model) -> Result<Local, Failure> {
+        let folder = &folder(cache, model);
+        let weights = folder.join(model.weights.file);
+        let tokenizer = folder.join(model.tokenizer.file);
+        // Nothing there is a helper not downloaded; half of it is a download
+        // that did not finish. Each says what to do about it.
+        let there: Vec<bool> = model
+            .pieces()
+            .iter()
+            .map(|piece| folder.join(piece.file).exists())
+            .collect();
+        if there.iter().all(|found| !found) {
+            return Err(Failure::new(
+                FailureKind::NotReady,
+                "The helper on this computer has not been downloaded yet. Assist's ⋯ menu ▸ \
+                 Settings downloads it.",
+            ));
+        }
+        for (piece, found) in model.pieces().iter().zip(there) {
+            if !found {
                 return Err(Failure::new(
                     FailureKind::NotReady,
                     format!(
@@ -531,10 +640,7 @@ impl Local {
         let mut file = std::fs::File::open(&weights).map_err(|why| {
             Failure::new(
                 FailureKind::NotReady,
-                format!(
-                    "The helper on this computer has not been downloaded yet ({why}). \
-                     Assist's ⋯ menu ▸ Settings downloads it."
-                ),
+                format!("The helper on this computer could not be opened ({why})."),
             )
         })?;
         // Read once: the same folder read again is the model already in
@@ -582,6 +688,8 @@ impl Local {
                 ends,
                 context,
                 sampling: SAMPLING,
+                held: Vec::new(),
+                read: 0,
             })),
         })
     }
@@ -624,12 +732,41 @@ impl Ready {
             .map_err(|why| garbled(format!("the request could not be tokenized ({why})")))?;
         let mut tokens: Vec<u32> = encoded.get_ids().to_vec();
         let input = tokens.len();
-        // **Every request starts the model afresh.** The keys and values of
-        // the last answer are still in the model's cache, and a second
-        // request read against them is a model answering a question nobody
-        // asked — when it does not simply fail on the shapes. The whole
-        // conversation is in the prompt, so nothing is lost by clearing it.
-        self.model.clear_kv_cache();
+        // **What never changes is read once.** The model's cache holds the
+        // keys and values of the last request's prompt and answer, token by
+        // token in `held`. As far as this prompt begins the same way — the
+        // brief and the tools always, and the conversation so far when it is
+        // the same session — those are kept and the model reads only what
+        // follows, at the positions it follows at. Anything past the shared
+        // beginning is cut, since keys and values for tokens this prompt does
+        // not have would be a model answering a question nobody asked. At
+        // least one token is always read: the logits come from reading.
+        // `held` is the account and the cache is the fact; where they
+        // disagree — a request that failed part way — neither is trusted.
+        if self.model.kv_len() != self.held.len() {
+            self.model.clear_kv_cache();
+            self.held.clear();
+        }
+        let shared = self
+            .held
+            .iter()
+            .zip(&tokens)
+            .take_while(|(held, token)| held == token)
+            .count()
+            .min(tokens.len().saturating_sub(1));
+        let kept = match shared >= KEEP_FROM {
+            true => shared,
+            false => 0,
+        };
+        match kept {
+            0 => self.model.clear_kv_cache(),
+            kept => self
+                .model
+                .truncate_kv_cache(kept)
+                .map_err(|why| garbled(format!("the model's cache would not be cut ({why})")))?,
+        }
+        self.held.truncate(kept);
+        self.read = tokens.len() - kept;
         let mut said = String::new();
         // What has been handed to `text` so far: the answer without its tool
         // calls.
@@ -664,10 +801,11 @@ impl Ready {
                 ending = Ending::TooLong;
                 break;
             }
-            // The first pass reads the whole prompt; after that, one token at
-            // a time against the keys and values already worked out.
+            // The first pass reads what the prompt adds to the kept
+            // beginning; after that, one token at a time against the keys
+            // and values already worked out.
             let (window, offset) = match step {
-                0 => (&tokens[..], 0),
+                0 => (&tokens[kept..], kept),
                 _ => (&tokens[tokens.len() - 1..], tokens.len() - 1),
             };
             let input_tensor = Tensor::new(window, &self.device)
@@ -677,6 +815,7 @@ impl Ready {
                 .model
                 .forward(&input_tensor, offset)
                 .map_err(|why| garbled(format!("the model stopped part way ({why})")))?;
+            self.held.extend_from_slice(window);
             let next = next_token(&logits, &mut choose)
                 .map_err(|why| garbled(format!("the model's answer could not be read ({why})")))?;
             if self.ends.contains(&next) {
@@ -710,6 +849,7 @@ impl Local {
     fn said_first(&self, prompt: &str) -> Vec<u32> {
         let mut ready = self.ready.lock().unwrap_or_else(|held| held.into_inner());
         ready.model.clear_kv_cache();
+        ready.held.clear();
         let encoded = ready.tokenizer.encode(prompt, false).expect("encoded");
         let tokens: Vec<u32> = encoded.get_ids().to_vec();
         let input = Tensor::new(&tokens[..], &ready.device)
@@ -724,6 +864,15 @@ impl Local {
     /// that has to know what it will say.
     fn decides_greedily(&self) {
         self.choosing(Sampling::ArgMax);
+    }
+
+    /// How many tokens the last request made the model read: the prompt
+    /// less the beginning it shared with the request before.
+    fn last_read(&self) -> usize {
+        self.ready
+            .lock()
+            .unwrap_or_else(|held| held.into_inner())
+            .read
     }
 
     /// Whether two helpers are the same model in memory — the rule that the
@@ -968,5 +1117,6 @@ pub fn read_answer(said: &str) -> (Vec<Block>, bool) {
     (blocks, calls > 0)
 }
 
+mod qwen3;
 #[cfg(test)]
 mod tests;

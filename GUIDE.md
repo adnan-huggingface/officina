@@ -285,15 +285,22 @@ footers, footnotes, or the words inside a comment.
 
 Assist asks you once, before it can do anything, which helper should answer:
 
-- **The helper on this computer** — free, private, no account. It downloads a
-  model of about 1.3 GB the first time (Qwen3 1.7B, Apache-2.0), keeps it in
-  `~/.cache/officina/`, and runs it on your processor. **Nothing you write
-  leaves the computer.** It is slower and simpler than the others — good for
-  rewording, grammar, summaries and simple sums. It reads your request before it
-  writes anything, which on a recent desktop takes something like a quarter of a
-  minute, and then writes a few words a second; a paragraph is a minute or two.
-  The pane's `⋯` menu ▸ Settings removes it again and says how much space came
-  back.
+- **The helper on this computer** — free, private, no account. Officina looks
+  at how much memory this computer has and what its processor can do, and
+  offers the largest helper it can run: Qwen3 4B (2.5 GB to download, about
+  4.5 GB of memory while it works) or Qwen3 8B (5.0 GB, about 7.5 GB), both
+  Apache-2.0, kept in `~/.cache/officina/`. **Nothing you write leaves the
+  computer.** It is slower than the others — it reworks a paragraph, answers
+  about a document, writes a passage, and puts formulas in cells — and it reads
+  your request before it writes anything, so the first word takes a while on a
+  processor alone. **What it needs of a computer:** 8.5 GB of memory
+  for the smaller helper and 12 GB for the larger, with room over for your
+  documents, a processor from about 2015 on — and, measured, a wait before the
+  first word that no processor alone yet meets: about a minute on a fast
+  desktop. So until Officina's own helper can use a graphics processor, the
+  first-run card says so, in words, and offers Ollama or Claude instead — never
+  a helper too small or too slow to trust. The pane's `⋯` menu ▸ Settings
+  removes the downloaded helpers again and says how much space came back.
 - **Claude**, with an API key of your own (a Claude.ai subscription is not one).
   What is sent costs you money at Anthropic's prices; what it has cost so far is
   in the pane's `⋯` menu ▸ Settings.

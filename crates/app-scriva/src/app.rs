@@ -5193,7 +5193,9 @@ pub fn font_names(document: &Document) -> Vec<String> {
     names.into_iter().collect()
 }
 
-fn blank() -> Document {
+/// A new document as Scriva opens one: one empty paragraph, and the styles
+/// a document from Word would have, so that a heading can be a heading.
+pub fn blank() -> Document {
     let mut document = Document {
         body: vec![Block::Paragraph(Paragraph::new())],
         ..Document::new()

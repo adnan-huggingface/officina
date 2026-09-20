@@ -14,8 +14,9 @@ use std::time::Instant;
 use assist::local::{self, Local, Sampling};
 use assist::{Block, Conversation, Effort, Message, Provider, Request, StopFlag};
 
-/// Runs the model and says how it went. An optional argument is the folder
-/// the weights are in; the default is where Officina itself puts them. An
+/// Runs the model and says how it went. An optional argument is a `.gguf`
+/// file to read with `tokenizer.json` beside it, or the cache directory to
+/// read the catalogue's smallest model from; the default is Officina's own. An
 /// argument `--ask=<words>` is the request to make instead of the standard
 /// one, for hearing how the model does at something a person asked;
 /// `--scriva` sends it the way Scriva does, with Scriva's tools and an empty
@@ -32,14 +33,22 @@ pub fn run(args: &[String]) -> Result<(), String> {
         .collect();
     let as_scriva = flags.iter().any(|flag| *flag == "--scriva");
     let greedy = flags.iter().any(|flag| *flag == "--greedy");
+    // A second request in the same process, after the first: what a session's
+    // second request costs once the brief and the tools are already read.
+    let again: Option<&str> = flags
+        .iter()
+        .find(|flag| flag.starts_with("--again="))
+        .map(|flag| flag.trim_start_matches("--again="));
     // A flag mistyped is a condition not measured, and a difference that is
     // no difference would go into the record as fact.
     if let Some(unknown) = flags.iter().find(|flag| {
-        !["--scriva", "--greedy"].contains(&flag.as_str()) && !flag.starts_with("--ask=")
+        !["--scriva", "--greedy"].contains(&flag.as_str())
+            && !flag.starts_with("--ask=")
+            && !flag.starts_with("--again=")
     }) {
         return Err(format!(
-            "assist-spike does not know {unknown}: it takes a folder, --ask=<words>, --scriva \
-             and --greedy"
+            "assist-spike does not know {unknown}: it takes a folder, --ask=<words>, \
+             --again=<words>, --scriva and --greedy"
         ));
     }
     if asks.len() > 1 {
@@ -47,17 +56,25 @@ pub fn run(args: &[String]) -> Result<(), String> {
     }
     let folder = match folders.first() {
         Some(given) => PathBuf::from(given),
-        None => {
-            let cache = ui_kit::paths::cache_dir(ui_kit::OFFICINA)
-                .map_err(|why| format!("the cache directory: {why}"))?;
-            local::folder(&cache)
-        }
+        None => ui_kit::paths::cache_dir(ui_kit::OFFICINA)
+            .map_err(|why| format!("the cache directory: {why}"))?,
     };
     println!("Reading {}", folder.display());
     let started = Instant::now();
-    let mut local = Local::load(&folder).map_err(|failure| failure.sentence)?;
+    // A `.gguf` given by name is read as it is, with `tokenizer.json` beside
+    // it: how a candidate model is heard before it is in the catalogue.
+    let mut local = match folder.extension().is_some_and(|ext| ext == "gguf") {
+        true => {
+            let mut file = std::fs::File::open(&folder).map_err(|why| why.to_string())?;
+            let tokenizer = folder.with_file_name("tokenizer.json");
+            Local::read(&mut file, &tokenizer).map_err(|failure| failure.sentence)?
+        }
+        // A folder is the cache directory, and the model the catalogue's
+        // smallest — what a person's own Officina would run there.
+        false => Local::load(&folder, &local::MODELS[0]).map_err(|failure| failure.sentence)?,
+    };
     let read = started.elapsed();
-    println!("  {} read in {:.1}s", local::MODEL.name, read.as_secs_f64());
+    println!("  read in {:.1}s", read.as_secs_f64());
 
     let standard = "Rewrite this sentence so that it is plainer, and say nothing else: \
                     The thing about the situation is that it is one which we have to deal \
@@ -71,68 +88,75 @@ pub fn run(args: &[String]) -> Result<(), String> {
         println!("  choosing greedily");
     }
     let document = wp_model::doc::Document::blank();
-    let sent = match as_scriva {
-        true => scriva::assistant::request(
-            &document,
-            scriva::edit::Selection::default(),
-            scriva::assistant::About::Paragraph,
-            asked,
-            0,
-        ),
-        false => asked.to_owned(),
-    };
-    let tools = match as_scriva {
-        true => scriva::assistant::tools(),
-        false => Vec::new(),
-    };
-    let mut conversation = Conversation::default();
-    conversation.push(Message::user(&sent));
-    let system = assist::prompt::scriva();
-    let request = Request {
-        system: &system,
-        tools: &tools,
-        conversation: &conversation,
-        effort: Effort::Low,
-    };
-    let started = Instant::now();
-    let mut said = String::new();
-    let mut first: Option<std::time::Duration> = None;
-    let answer = local.answer(&request, &StopFlag::default(), &mut |words| {
-        first.get_or_insert_with(|| started.elapsed());
-        said.push_str(words)
-    });
-    let took = started.elapsed();
-    // Reading the request and writing the answer are different speeds, and
-    // only the second is what a person watches: the first word tells them
-    // apart.
-    if let Some(first) = first {
+    let asks: Vec<&str> = std::iter::once(asked).chain(again).collect();
+    for (round, asked) in asks.iter().enumerate() {
+        let asked = *asked;
+        if round > 0 {
+            println!("Again, in the same process: {asked:?}");
+        }
+        let sent = match as_scriva {
+            true => scriva::assistant::request(
+                &document,
+                scriva::edit::Selection::default(),
+                scriva::assistant::About::Paragraph,
+                asked,
+                0,
+            ),
+            false => asked.to_owned(),
+        };
+        let tools = match as_scriva {
+            true => scriva::assistant::tools(),
+            false => Vec::new(),
+        };
+        let mut conversation = Conversation::default();
+        conversation.push(Message::user(&sent));
+        let system = assist::prompt::scriva();
+        let request = Request {
+            system: &system,
+            tools: &tools,
+            conversation: &conversation,
+            effort: Effort::Low,
+        };
+        let started = Instant::now();
+        let mut said = String::new();
+        let mut first: Option<std::time::Duration> = None;
+        let answer = local.answer(&request, &StopFlag::default(), &mut |words| {
+            first.get_or_insert_with(|| started.elapsed());
+            said.push_str(words)
+        });
+        let took = started.elapsed();
+        // Reading the request and writing the answer are different speeds, and
+        // only the second is what a person watches: the first word tells them
+        // apart.
+        if let Some(first) = first {
+            println!(
+                "  first word after {:.1}s ({} tokens of request)",
+                first.as_secs_f64(),
+                answer.usage.input
+            );
+            let after = (took - first).as_secs_f64().max(0.001);
+            println!(
+                "  then {:.1} tokens a second",
+                (answer.usage.output.saturating_sub(1)) as f64 / after
+            );
+        }
+        match &answer.ending {
+            Ok(ending) => println!("  ended: {ending:?}"),
+            Err(failure) => return Err(failure.sentence.clone()),
+        }
+        let rate = answer.usage.output as f64 / took.as_secs_f64().max(0.001);
         println!(
-            "  first word after {:.1}s ({} tokens of request)",
-            first.as_secs_f64(),
-            answer.usage.input
+            "  {} tokens in, {} out, {:.1}s — {rate:.1} tokens a second",
+            answer.usage.input,
+            answer.usage.output,
+            took.as_secs_f64()
         );
-        let after = (took - first).as_secs_f64().max(0.001);
-        println!(
-            "  then {:.1} tokens a second",
-            (answer.usage.output.saturating_sub(1)) as f64 / after
-        );
-    }
-    match &answer.ending {
-        Ok(ending) => println!("  ended: {ending:?}"),
-        Err(failure) => return Err(failure.sentence.clone()),
-    }
-    let rate = answer.usage.output as f64 / took.as_secs_f64().max(0.001);
-    println!(
-        "  {} tokens in, {} out, {:.1}s — {rate:.1} tokens a second",
-        answer.usage.input,
-        answer.usage.output,
-        took.as_secs_f64()
-    );
-    println!("  it said: {}", said.trim());
-    for block in &answer.message.content {
-        if let Block::ToolCall(call) = block {
-            println!("  it called {}:", call.name);
-            println!("{:#}", call.input);
+        println!("  it said: {}", said.trim());
+        for block in &answer.message.content {
+            if let Block::ToolCall(call) = block {
+                println!("  it called {}:", call.name);
+                println!("{:#}", call.input);
+            }
         }
     }
     if let Some(peak) = peak_memory() {

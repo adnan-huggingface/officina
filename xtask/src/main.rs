@@ -6,6 +6,7 @@
 //! the rest of the workspace does not build.
 
 mod dist;
+mod eval;
 mod fidelity;
 mod map;
 mod perf;
@@ -38,6 +39,7 @@ fn main() -> ExitCode {
         "measure" => measure(rest),
         "map" => map::write().map(|path| println!("{}", path.display())),
         "assist-spike" => spike::run(rest),
+        "assist-eval" => eval::run(rest),
         "check" => check(rest),
         "help" | "--help" | "-h" => {
             usage();

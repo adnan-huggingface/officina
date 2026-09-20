@@ -129,7 +129,11 @@ fn a_key_is_kept_only_once_the_service_has_accepted_it_and_is_never_painted() {
     );
     let accepted = "Claude accepted the key, and Opus 5 is there to answer.";
     let reach = Fake::new()
-        .finds(vec![Row::Local, Row::ClaudeWithKey, Row::Service])
+        .finds(vec![
+            Row::Local(::assist::local::MODELS[0]),
+            Row::ClaudeWithKey,
+            Row::Service,
+        ])
         .checks(vec![Err(refused.clone()), Ok(accepted.to_owned())]);
     let drive = Driver::new();
     let mut desk = Desk::with(Arc::clone(&reach), scratch.settings());
@@ -462,7 +466,7 @@ fn a_key_typed_then_left_for_another_sign_in_is_not_kept() {
     let reach = Fake::new()
         .finds(vec![
             Row::ClaudeHere(::assist::ClaudeLogin::Environment),
-            Row::Local,
+            Row::Local(::assist::local::MODELS[0]),
             Row::ClaudeWithKey,
             Row::Service,
         ])
@@ -498,4 +502,178 @@ fn a_key_typed_then_left_for_another_sign_in_is_not_kept() {
         "",
         "and the check was of the computer's key"
     );
+}
+
+/// The Settings box says which model of the catalogue the helper on this
+/// computer is, and Remove takes every downloaded model's folder — the
+/// withdrawn one included, since the size it says is the size it frees.
+#[test]
+fn settings_say_which_model_on_this_computer_and_remove_takes_every_folder() {
+    let scratch = Scratch::new("box-local");
+    let reach = Fake::new();
+    *reach.have_download.lock().unwrap() = Some(6_400_000_000);
+    let mut settings = Settings {
+        helper: Some(Choice::Local),
+        ..Settings::default()
+    };
+    settings.local.model = ::assist::local::QWEN3_8B.folder.to_owned();
+    let drive = Driver::new();
+    let mut desk = Desk::with(Arc::clone(&reach), scratch.holding(&settings));
+    drive.settle(&mut desk);
+
+    desk.assist.open_settings();
+    let seen = desk.everywhere(&drive);
+    for words in [
+        "A helper on this computer",
+        "Qwen3 8B (Q4_K_M) (Apache-2.0) is downloaded; the downloaded helpers take 6.4 GB together.",
+        "Remove the downloaded helpers (frees 6.4 GB)",
+    ] {
+        assert!(seen.iter().any(|text| text == words), "{words}: {seen:?}");
+    }
+    assert!(
+        !seen
+            .iter()
+            .any(|text| text.contains("1.7B") || text.contains("Qwen3 4B")),
+        "only the model the settings name: {seen:?}"
+    );
+    desk.click(&drive, "Remove the downloaded helpers (frees 6.4 GB)");
+    desk.until(&drive, "the removal", |_| {
+        reach.removed.load(std::sync::atomic::Ordering::SeqCst) == 1
+    });
+    drive.settle(&mut desk);
+    assert!(reach.have_download.lock().unwrap().is_none());
+
+    // With nothing downloaded and no model named, the box offers the one the
+    // computer was found able to run, and says what it would download.
+    let scratch = Scratch::new("box-local-none");
+    let reach = Fake::new().finds(vec![
+        Row::Local(::assist::local::QWEN3_4B),
+        Row::ClaudeWithKey,
+        Row::Service,
+    ]);
+    let settings = Settings {
+        helper: Some(Choice::Local),
+        ..Settings::default()
+    };
+    let mut desk = Desk::with(Arc::clone(&reach), scratch.holding(&settings));
+    drive.settle(&mut desk);
+    desk.assist.open_settings();
+    box_shows(&mut desk, &drive, |text| text.starts_with("Qwen3 4B"));
+    let seen = desk.everywhere(&drive);
+    assert!(
+        seen.iter().any(|text| text
+            == "Qwen3 4B (Q4_K_M) (Apache-2.0) — 2.5 GB to download, about 4.5 GB of memory while it runs."),
+        "{seen:?}"
+    );
+    assert!(
+        seen.iter().any(|text| text == "Download it (2.5 GB)"),
+        "{seen:?}"
+    );
+    assert!(
+        !seen
+            .iter()
+            .any(|text| text.starts_with("Remove the downloaded")),
+        "nothing to remove: {seen:?}"
+    );
+    desk.click(&drive, "Cancel");
+
+    // Only a withdrawn model on disk — the 1.7B a person downloaded under an
+    // earlier version: the box offers the download and, beside it, Remove
+    // for the space that is spent, whether or not the chosen model is there.
+    let scratch = Scratch::new("box-local-withdrawn");
+    let reach = Fake::new().finds(vec![
+        Row::Local(::assist::local::QWEN3_4B),
+        Row::ClaudeWithKey,
+        Row::Service,
+    ]);
+    *reach.other_downloads.lock().unwrap() = 1_300_000_000;
+    let mut desk = Desk::with(Arc::clone(&reach), scratch.holding(&settings));
+    drive.settle(&mut desk);
+    desk.assist.open_settings();
+    box_shows(&mut desk, &drive, |text| text.starts_with("Qwen3 4B"));
+    let seen = desk.everywhere(&drive);
+    assert!(
+        seen.iter().any(|text| text == "Download it (2.5 GB)"),
+        "{seen:?}"
+    );
+    assert!(
+        seen.iter()
+            .any(|text| text == "Remove the downloaded helpers (frees 1.3 GB)"),
+        "{seen:?}"
+    );
+    desk.click(&drive, "Remove the downloaded helpers (frees 1.3 GB)");
+    desk.until(&drive, "the removal", |_| {
+        reach.removed.load(std::sync::atomic::Ordering::SeqCst) == 1
+    });
+    assert_eq!(*reach.other_downloads.lock().unwrap(), 0);
+}
+
+/// A computer the look found unable to run a helper of its own is not offered
+/// one in Settings either: where the choice would be, the box says why.
+#[test]
+fn a_computer_that_cannot_run_a_helper_is_not_offered_one_in_settings_either() {
+    let scratch = Scratch::new("box-no-local");
+    let because = "This computer has 8.0 GB of memory; a helper worth having needs 8.5 GB to run beside your documents.";
+    let reach = Fake::new().finds(vec![
+        Row::NoLocal {
+            because: because.to_owned(),
+        },
+        Row::ClaudeWithKey,
+        Row::Service,
+    ]);
+    let drive = Driver::new();
+    let mut desk = Desk::with(Arc::clone(&reach), scratch.holding(&claude_with_key()));
+    drive.settle(&mut desk);
+    desk.assist.open_settings();
+    box_shows(&mut desk, &drive, |text| text == because);
+    let seen = desk.everywhere(&drive);
+    assert!(
+        !seen.iter().any(|text| text == "A helper on this computer"),
+        "the choice is not offered: {seen:?}"
+    );
+    for words in [
+        "Claude, over the internet",
+        "Ollama",
+        "Another service (advanced)",
+    ] {
+        assert!(seen.iter().any(|text| text == words), "{words}: {seen:?}");
+    }
+    desk.click(&drive, "Cancel");
+
+    // The settings on file say local — chosen under an earlier version, or on
+    // another computer: the box takes the choice back where the person can
+    // see why, and says the same sentence as its refusal, so that Save without
+    // another choice is not met with "Choose a helper first".
+    let scratch = Scratch::new("box-no-local-saved");
+    let saved = Settings {
+        helper: Some(Choice::Local),
+        ..Settings::default()
+    };
+    let mut desk = Desk::with(Arc::clone(&reach), scratch.holding(&saved));
+    drive.settle(&mut desk);
+    desk.assist.open_settings();
+    box_shows(&mut desk, &drive, |text| text == because);
+    let seen = desk.everywhere(&drive);
+    assert_eq!(
+        seen.iter().filter(|text| *text == because).count(),
+        2,
+        "said where the choice was, and as the refusal: {seen:?}"
+    );
+    desk.click(&drive, "Cancel");
+    let kept = Settings::read(&scratch.settings()).unwrap();
+    assert_eq!(kept.helper, Some(Choice::Local), "nothing was written over");
+}
+
+/// Paints frames until the box shows a text `found` accepts: the look at the
+/// computer runs on a thread of its own, and the box takes what it found on
+/// the frame after it arrives.
+fn box_shows(desk: &mut Desk, drive: &Driver, found: impl Fn(&str) -> bool) {
+    for _ in 0..200 {
+        if desk.everywhere(drive).iter().any(|text| found(text)) {
+            return;
+        }
+        drive.settle(desk);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    panic!("the box never showed it: {:?}", desk.everywhere(drive));
 }

@@ -799,6 +799,33 @@ fn the_guide_and_the_decisions_say_what_assist_does() {
 /// The part of the guide under `heading`, up to the next heading of the same
 /// rank — so that a claim about one application is checked against that
 /// application and not against the whole file.
+/// The guide says what the assistant needs of a computer — the memory each
+/// helper of the catalogue needs with room over, from the same constants the
+/// first-run card decides by — and that a computer with less is told so.
+#[test]
+fn the_guide_says_what_the_assistant_needs_of_a_computer() {
+    let guide = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../GUIDE.md"))
+        .expect("GUIDE.md");
+    let costs = guide_section(&guide, "## The assistant");
+    let costs: String = costs.split_whitespace().collect::<Vec<_>>().join(" ");
+    for model in &::assist::local::MODELS {
+        let needs = ::assist::local::size_of(model.memory + ::assist::machine::ROOM);
+        assert!(
+            costs.contains(&format!("{needs} of memory"))
+                || costs.contains(&format!("and {needs} for")),
+            "the guide says {} needs {needs}: {costs}",
+            model.name
+        );
+    }
+    assert!(costs.contains("processor"), "{costs}");
+    assert!(
+        costs.contains("no processor alone yet meets"),
+        "the measured wait: {costs}"
+    );
+    assert!(costs.contains("says so"), "{costs}");
+    assert!(costs.contains("Ollama or Claude"), "{costs}");
+}
+
 fn guide_section<'a>(guide: &'a str, heading: &str) -> &'a str {
     let start = guide
         .find(heading)
@@ -877,7 +904,21 @@ fn every_key_the_guide_names_is_a_key_the_window_reads() {
     // read as prose, since a guide wraps where its column ends.
     let costs = guide_section(&guide, "## The assistant");
     let costs: String = costs.split_whitespace().collect::<Vec<_>>().join(" ");
-    assert!(costs.contains(&::assist::local::size_of(::assist::local::MODEL.bytes())));
-    assert!(costs.contains(::assist::local::MODEL.licence));
+    for model in &::assist::local::MODELS {
+        assert!(
+            costs.contains(&::assist::local::size_of(model.bytes())),
+            "the guide says what {} downloads",
+            model.name
+        );
+        assert!(
+            costs.contains(&::assist::local::size_of(model.memory)),
+            "and the memory it takes"
+        );
+        assert!(costs.contains(model.licence));
+    }
     assert!(costs.contains(::assist::local::GOOD_AT));
+    assert!(
+        !costs.contains("1.7B"),
+        "the withdrawn model is not in the guide"
+    );
 }

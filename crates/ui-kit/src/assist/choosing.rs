@@ -39,9 +39,12 @@ pub(crate) struct Rows {
 
 impl Rows {
     pub fn new(rows: Vec<Row>) -> Rows {
+        // Lit first: the first row that can be chosen. A row that only says
+        // why this computer has no helper of its own is not a choice.
+        let picked = rows.iter().position(Row::is_ready).unwrap_or(0);
         Rows {
             rows,
-            picked: 0,
+            picked,
             model: 0,
             said: None,
         }
@@ -78,13 +81,11 @@ pub(crate) fn card(
                 *refused += times;
                 *choosing = Choosing::Rows(Rows::new(rows));
             }
-            // Nothing found is still a card: the rows that are always offered.
+            // A look that never answered is still a card: the rows that are
+            // always offered — and not a helper on this computer, which the
+            // look alone can vouch for.
             Awaited::Gone => {
-                *choosing = Choosing::Rows(Rows::new(vec![
-                    Row::Local,
-                    Row::ClaudeWithKey,
-                    Row::Service,
-                ]))
+                *choosing = Choosing::Rows(Rows::new(vec![Row::ClaudeWithKey, Row::Service]))
             }
         }
     }

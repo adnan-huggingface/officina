@@ -6987,6 +6987,50 @@ Test: `lines_pasted_at_a_headings_end_and_rejected_leave_it_a_heading`. Three
 mutations, one rule broken at a time, were each caught. A fourth, which applies
 the rule to pastes within one paragraph too, changes nothing a test can see.
 
+## Assist, phase 7: the bar, and the hardware under it (2026-09-20)
+
+The user's judgement after two days at their own desk — *"My complaint is
+with the quality of the assistant's output"* — and their decision: the
+assistant is not a toy, it must do six things, and Officina must look at the
+computer and say whether a local helper is even an option. ADR 0005 writes the
+six down and the rule that follows: **a helper below the bar is not offered.**
+
+- **The catalogue** (`assist::local::MODELS`): Qwen3 4B and 8B at Q4_K_M from
+  Qwen's own GGUF repositories, pinned by size and hash; the 1.7B withdrawn,
+  its folder removed with the others by Remove. Every path that named the one
+  model takes a model; the settings say which (`[local] model`).
+- **The computer decides** (`assist::machine::Hardware`, `tier`, `why_not`):
+  memory from the system, AVX2 from the processor, a graphics processor from
+  its driver's tool; the largest model that fits with 4 GB of room over, or
+  none. A computer below the floor gets a row that says why and cannot be
+  chosen, and no local choice in Settings; a graphics processor Officina cannot
+  use yet is named, because Ollama on that computer would.
+- **What never changes is read once**: candle's Qwen3 vendored into
+  `assist::local::qwen3` (MIT OR Apache-2.0, unchanged but for
+  `truncate_kv_cache` and `kv_len`), and `Local` keeps the shared beginning of
+  consecutive prompts — the brief and the tools, seven hundred tokens — reading
+  only what follows. Proved on the tiny model: token for token the same answer,
+  and the count of tokens read is what the request added.
+- **The deck** (`cargo xtask assist-eval`): twenty requests against documents
+  and a workbook built in memory, one mechanical check per item of the bar,
+  timed; the gate proves the checks against the scripted helper. Measured in
+  the story's `bugs/assist-bar.md`.
+- The spike takes `--again=` for a second request in one process, and refuses a
+  mistyped flag. `scriva::app::blank()` is public, for a document with styles.
+
+**Measured** (`bugs/assist-bar.md`), the deck against the three: the 1.7B 6 of
+20 with six false claims; the 4B 12 of 20 native, 10 portable; the 8B 14 of 20
+with none. Medians before the first word: 10 s, 39 s, 48 s — on a Ryzen 9700X.
+**No model meets the bar's wait on a processor alone**, so `tier` now also
+holds a model's measured `first_word` against `FIRST_WORD_BAR` (5 s), and
+today Officina's own helper is offered nowhere: the card says so with the
+number and points at Ollama on a computer with a graphics processor, or
+Claude; weights on the disk keep answering. The review of the phase found
+twelve things, three of them dead ends for a person — the card lighting a row
+that cannot be chosen, a saved `local` pointed at a download Settings would
+not offer, Remove hidden while the withdrawn model sat on the disk — all
+fixed and tested; thirty-one mutations caught.
+
 ## The helper on this computer, asked for a story, wrote one sentence (2026-09-20)
 
 The user's third fault from their own desk, and the first about what the

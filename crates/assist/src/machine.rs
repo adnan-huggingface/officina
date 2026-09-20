@@ -94,6 +94,138 @@ pub trait Machine {
     /// The models an Ollama server on this computer has, when one answers,
     /// most recently pulled first.
     fn ollama_models(&self) -> Option<Vec<Installed>>;
+    /// What the computer is made of, as far as a helper's room and speed
+    /// go.
+    fn hardware(&self) -> Hardware;
+}
+
+/// What a computer has that decides whether a helper can run on it, and
+/// which.
+///
+/// **Nothing is run to find out.** Memory is read from the system, the
+/// processor's vector instructions asked of the processor, and a graphics
+/// processor looked for by the tool its driver ships; a model is never
+/// loaded to see whether it fits.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Hardware {
+    /// Memory in bytes, the whole of it.
+    pub memory: u64,
+    /// Whether the processor has the wide vector instructions a model is
+    /// read with at any speed: AVX2 on x86-64 (roughly 2015 on), always on
+    /// arm64.
+    pub fast_vectors: bool,
+    /// A graphics processor with its own memory, when one is there. Officina's
+    /// own helper does not use it yet; Ollama on the same computer would.
+    pub graphics: Option<Graphics>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Graphics {
+    pub name: String,
+    /// Its memory in bytes, when the driver says.
+    pub memory: Option<u64>,
+}
+
+/// What the rest of the computer needs while a model runs: the applications,
+/// the document, the system. A model is offered only where it and this fit
+/// in memory together.
+pub const ROOM: u64 = 4_000_000_000;
+
+/// The bar's sixth item, in seconds: about how long a person waits before
+/// the first word of an answer. A model whose measured wait on a processor
+/// alone is longer is not offered on one.
+pub const FIRST_WORD_BAR: u32 = 5;
+
+/// The largest model of the catalogue this computer can hold and run within
+/// the bar, or none.
+///
+/// **Where the answer is none, no local helper is offered.** A person is told
+/// what the computer lacks rather than given a helper below the bar, which
+/// the first release did and the user judged a toy. Three things decide it:
+/// the processor's vector instructions, without which no size reads a
+/// request in any useful time; memory — a model's weights read in plus what
+/// it works in, with [`ROOM`] over for everything else; and the measured
+/// wait before the first word on a processor alone, against
+/// [`FIRST_WORD_BAR`]. As measured (`bugs/assist-bar.md`), no model of the
+/// catalogue meets that wait on a processor alone, so today the answer is
+/// none on every computer — until Officina's helper can use a graphics
+/// processor. The machinery is kept, and tested, for that day.
+pub fn tier(hardware: &Hardware) -> Option<&'static crate::local::Model> {
+    tier_of(hardware, &crate::local::MODELS)
+}
+
+/// The same, over any catalogue — the measured one, or a test's.
+pub fn tier_of<'a>(
+    hardware: &Hardware,
+    models: &'a [crate::local::Model],
+) -> Option<&'a crate::local::Model> {
+    if !hardware.fast_vectors {
+        return None;
+    }
+    models.iter().rev().find(|model| {
+        model.memory.saturating_add(ROOM) <= hardware.memory && model.first_word <= FIRST_WORD_BAR
+    })
+}
+
+/// Why `machine` is offered no helper of its own, when it is not — for a
+/// helper chosen under an earlier version, or on another computer, whose
+/// settings name one that is not on this computer's disk and that this
+/// computer cannot run within the bar. One that is on the disk answers
+/// regardless: the person downloaded it, and it is theirs. Under a test the
+/// computer is not examined, and the answer is that it can.
+pub fn cannot_run_local(machine: &dyn Machine) -> Option<String> {
+    if crate::offline::active() {
+        return None;
+    }
+    let hardware = machine.hardware();
+    match tier(&hardware) {
+        Some(_) => None,
+        None => Some(why_not(&hardware)),
+    }
+}
+
+/// Why this computer is offered no helper of its own, in words a person can
+/// act on.
+pub fn why_not(hardware: &Hardware) -> String {
+    why_not_of(hardware, &crate::local::MODELS)
+}
+
+/// The same, over any catalogue.
+pub fn why_not_of(hardware: &Hardware, models: &[crate::local::Model]) -> String {
+    let smallest = &models[0];
+    let needs = crate::local::size_of(smallest.memory + ROOM);
+    let has = crate::local::size_of(hardware.memory);
+    let fits = hardware.memory >= smallest.memory.saturating_add(ROOM);
+    let mut why = match (hardware.fast_vectors, hardware.memory, fits) {
+        (false, _, _) => {
+            "This computer's processor is too old to run a helper worth having.".to_owned()
+        }
+        (true, 0, _) => format!(
+            "Officina could not tell how much memory this computer has; a helper worth having \
+             needs {needs} to run beside your documents."
+        ),
+        (true, _, false) => format!(
+            "This computer has {has} of memory; a helper worth having needs {needs} to run beside \
+             your documents."
+        ),
+        // Room enough, and still no: the wait. Said with the measured number,
+        // so that the sentence changes when the number does.
+        (true, _, true) => format!(
+            "On this computer's processor alone, Officina's own helper would take about {} \
+             before its first word; a helper worth having takes a few seconds.",
+            seconds(smallest.first_word)
+        ),
+    };
+    match &hardware.graphics {
+        Some(_) => why.push_str(
+            " It has a graphics processor that Officina's own helper cannot use yet — Ollama on \
+             this computer would.",
+        ),
+        None => {
+            why.push_str(" Ollama on a computer with a graphics processor, or Claude, can answer.")
+        }
+    }
+    why
 }
 
 /// The computer the application runs on. Under a test it has nothing: no
@@ -102,6 +234,25 @@ pub trait Machine {
 pub struct ThisComputer;
 
 impl Machine for ThisComputer {
+    fn hardware(&self) -> Hardware {
+        if crate::offline::active() {
+            crate::offline::count();
+            // A test's computer has nothing: no memory is read and no
+            // command run, and the rows that follow are the ones a computer
+            // that can run nothing gets.
+            return Hardware {
+                memory: 0,
+                fast_vectors: false,
+                graphics: None,
+            };
+        }
+        Hardware {
+            memory: probe::memory().unwrap_or(0),
+            fast_vectors: probe::fast_vectors(),
+            graphics: probe::graphics(),
+        }
+    }
+
     fn var(&self, name: &str) -> Option<String> {
         if crate::offline::active() {
             crate::offline::count();
@@ -266,12 +417,27 @@ pub enum Row {
     /// The Ollama server on this computer, with every model it has: the first
     /// is the one the row offers.
     OllamaHere { models: Vec<Installed> },
-    /// The helper on this computer, downloaded once.
-    Local,
+    /// The helper on this computer, downloaded once: the largest model of
+    /// the catalogue the computer can run.
+    Local(crate::local::Model),
+    /// No helper on this computer: what it lacks, and what would answer
+    /// instead. Shown, not choosable.
+    NoLocal { because: String },
     /// Claude, with a key the person pastes.
     ClaudeWithKey,
     /// Another service, by address and key.
     Service,
+}
+
+/// A wait in words: "a few seconds", "half a minute", "a minute".
+fn seconds(n: u32) -> String {
+    match n {
+        0..=9 => "a few seconds".to_owned(),
+        10..=19 => "a quarter of a minute".to_owned(),
+        20..=44 => "half a minute".to_owned(),
+        45..=89 => "a minute".to_owned(),
+        _ => format!("{} minutes", n.div_ceil(60)),
+    }
 }
 
 impl Row {
@@ -285,7 +451,8 @@ impl Row {
                 Some(model) => format!("Ollama on this computer ({})", model.name),
                 None => "Ollama on this computer".into(),
             },
-            Row::Local => "A helper on this computer".into(),
+            Row::Local(model) => format!("A helper on this computer ({})", model.short_name()),
+            Row::NoLocal { .. } => "No helper on this computer".into(),
             Row::ClaudeWithKey => "Claude, over the internet".into(),
             Row::Service => "Another service (advanced)".into(),
         }
@@ -315,20 +482,22 @@ impl Row {
             Row::OllamaHere { .. } => "Ollama runs on this computer, so nothing you write \
                                        leaves it. How quickly it answers depends on this computer."
                 .into(),
-            Row::Local => {
+            Row::Local(model) => {
                 // What will be downloaded, before anything is: the model, its
-                // licence and its size, from the one constant that also says
-                // what the download must hash to.
-                let model = crate::local::MODEL;
+                // licence and its size, from the constant that also says what
+                // the download must hash to.
                 format!(
                     "Free and private: nothing you write leaves this computer. Downloads {} \
-                     once ({}, {}). Slower and simpler than Claude — {}.",
+                     once ({}, {}), and uses about {} of memory while it works. Slower than \
+                     Claude: the first word of an answer takes about {} on a processor alone.",
                     crate::local::size_of(model.bytes()),
-                    model.name,
+                    model.short_name(),
                     model.licence,
-                    crate::local::GOOD_AT
+                    crate::local::size_of(model.memory),
+                    seconds(model.first_word),
                 )
             }
+            Row::NoLocal { because } => because.clone(),
             Row::ClaudeWithKey => format!(
                 "Needs an Anthropic API key (a Claude.ai subscription is not one). {}",
                 claude()
@@ -343,7 +512,7 @@ impl Row {
     /// choosing it does something — it downloads what it needs and then
     /// answers — rather than being a row that says "later".
     pub fn is_ready(&self) -> bool {
-        true
+        !matches!(self, Row::NoLocal { .. })
     }
 
     /// The settings once this row is chosen.
@@ -364,7 +533,11 @@ impl Row {
                     settings.ollama.model = model.name.clone();
                 }
             }
-            Row::Local => settings.helper = Some(Choice::Local),
+            Row::Local(model) => {
+                settings.helper = Some(Choice::Local);
+                settings.local.model = model.folder.to_owned();
+            }
+            Row::NoLocal { .. } => {}
             Row::ClaudeWithKey => {
                 settings.helper = Some(Choice::Claude);
                 settings.claude.login = ClaudeLogin::Key;
@@ -375,8 +548,105 @@ impl Row {
     }
 }
 
+/// How the computer is examined, one platform at a time.
+mod probe {
+    use super::Graphics;
+
+    /// The computer's memory in bytes.
+    pub fn memory() -> Option<u64> {
+        #[cfg(target_os = "linux")]
+        {
+            let info = std::fs::read_to_string("/proc/meminfo").ok()?;
+            let line = info.lines().find(|line| line.starts_with("MemTotal:"))?;
+            let kilobytes: u64 = line.split_whitespace().nth(1)?.parse().ok()?;
+            Some(kilobytes * 1024)
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let mut command = std::process::Command::new("sysctl");
+            command.args(["-n", "hw.memsize"]);
+            super::first_line_within(command, std::time::Duration::from_secs(3))?
+                .trim()
+                .parse()
+                .ok()
+        }
+        #[cfg(target_os = "windows")]
+        {
+            let mut status = windows_sys::Win32::System::SystemInformation::MEMORYSTATUSEX {
+                dwLength: std::mem::size_of::<
+                    windows_sys::Win32::System::SystemInformation::MEMORYSTATUSEX,
+                >() as u32,
+                dwMemoryLoad: 0,
+                ullTotalPhys: 0,
+                ullAvailPhys: 0,
+                ullTotalPageFile: 0,
+                ullAvailPageFile: 0,
+                ullTotalVirtual: 0,
+                ullAvailVirtual: 0,
+                ullAvailExtendedVirtual: 0,
+            };
+            // SAFETY: a valid, correctly sized structure is passed, as the
+            // call requires.
+            let ok = unsafe {
+                windows_sys::Win32::System::SystemInformation::GlobalMemoryStatusEx(&mut status)
+            };
+            (ok != 0).then_some(status.ullTotalPhys)
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        {
+            None
+        }
+    }
+
+    /// Whether the processor has the vector instructions a model is read
+    /// with at any speed.
+    pub fn fast_vectors() -> bool {
+        #[cfg(target_arch = "x86_64")]
+        {
+            std::arch::is_x86_feature_detected!("avx2")
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            true
+        }
+        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+        {
+            false
+        }
+    }
+
+    /// A graphics processor, as its driver's own tool reports one. Only
+    /// NVIDIA's is asked for now: it is the one candle could use, and the one
+    /// most likely to be running an Ollama.
+    pub fn graphics() -> Option<Graphics> {
+        // Asked the way `ant` is: no console window on Windows, and a
+        // deadline, since a driver asleep can take seconds to answer.
+        let mut command = std::process::Command::new("nvidia-smi");
+        command.args([
+            "--query-gpu=name,memory.total",
+            "--format=csv,noheader,nounits",
+        ]);
+        let line = super::first_line_within(command, std::time::Duration::from_secs(5))?;
+        let (name, megabytes) = line.split_once(',')?;
+        let memory = megabytes
+            .trim()
+            .parse::<u64>()
+            .ok()
+            .map(|mb| mb * 1_000_000);
+        Some(Graphics {
+            name: name.trim().to_owned(),
+            memory,
+        })
+    }
+}
+
 /// The card's rows, first the preselected one.
 pub fn ladder(machine: &dyn Machine) -> Vec<Row> {
+    ladder_of(machine, &crate::local::MODELS)
+}
+
+/// The same, over any catalogue — the measured one, or a test's.
+pub fn ladder_of(machine: &dyn Machine, models: &[crate::local::Model]) -> Vec<Row> {
     let mut rows = Vec::new();
     // A key in the environment is what the Anthropic SDKs would use before a
     // login, and asking for it costs nothing; `ant` is only run without one.
@@ -406,7 +676,16 @@ pub fn ladder(machine: &dyn Machine) -> Vec<Row> {
             models: small.into_iter().chain(large).collect(),
         });
     }
-    rows.extend([Row::Local, Row::ClaudeWithKey, Row::Service]);
+    // The helper on this computer: the largest model the computer can hold,
+    // or a row that says why there is none — never a helper below the bar.
+    let hardware = machine.hardware();
+    match tier_of(&hardware, models) {
+        Some(model) => rows.push(Row::Local(*model)),
+        None => rows.push(Row::NoLocal {
+            because: why_not_of(&hardware, models),
+        }),
+    }
+    rows.extend([Row::ClaudeWithKey, Row::Service]);
     rows
 }
 
@@ -415,6 +694,20 @@ mod tests {
     use super::*;
     use std::cell::Cell;
 
+    /// The catalogue as it would be on a computer that reads a request fast
+    /// enough — what the ladder's own tests run over, since the measured one
+    /// is offered on no processor alone.
+    const FAST: [crate::local::Model; 2] = [
+        crate::local::Model {
+            first_word: 3,
+            ..crate::local::QWEN3_4B
+        },
+        crate::local::Model {
+            first_word: 4,
+            ..crate::local::QWEN3_8B
+        },
+    ];
+
     #[derive(Default)]
     struct Fake {
         vars: Vec<(&'static str, &'static str)>,
@@ -422,6 +715,7 @@ mod tests {
         /// Each model's name and size in gigabytes.
         ollama: Option<Vec<(&'static str, f64)>>,
         ant_asked: Cell<bool>,
+        hardware: Option<Hardware>,
     }
 
     impl Machine for Fake {
@@ -448,6 +742,21 @@ mod tests {
                     })
                     .collect()
             })
+        }
+
+        fn hardware(&self) -> Hardware {
+            self.hardware.clone().unwrap_or_else(ample)
+        }
+    }
+
+    /// A computer that can hold the smallest model of the catalogue and no
+    /// more: what most of these tests assume about the computer, so that the
+    /// row they expect is the smallest.
+    fn ample() -> Hardware {
+        Hardware {
+            memory: FAST[0].memory + ROOM,
+            fast_vectors: true,
+            graphics: None,
         }
     }
 
@@ -485,9 +794,9 @@ mod tests {
 
     #[test]
     fn the_ladder_offers_what_the_machine_has_in_the_order_the_card_shows() {
-        let always = [Row::Local, Row::ClaudeWithKey, Row::Service];
+        let always = [Row::Local(FAST[0]), Row::ClaudeWithKey, Row::Service];
         assert_eq!(
-            ladder(&Fake::default()),
+            ladder_of(&Fake::default(), &FAST),
             always,
             "nothing found: the helper here first"
         );
@@ -497,7 +806,7 @@ mod tests {
             ..Fake::default()
         };
         assert_eq!(
-            ladder(&empty_key),
+            ladder_of(&empty_key, &FAST),
             always,
             "a variable set to nothing is not a key"
         );
@@ -507,7 +816,7 @@ mod tests {
             ant: Some("token"),
             ..Fake::default()
         };
-        let rows = ladder(&key);
+        let rows = ladder_of(&key, &FAST);
         assert_eq!(rows[0], Row::ClaudeHere(ClaudeLogin::Environment));
         assert_eq!(rows[1..], always);
         assert!(
@@ -519,19 +828,22 @@ mod tests {
             vars: vec![("ANTHROPIC_AUTH_TOKEN", "tok")],
             ..Fake::default()
         };
-        assert_eq!(ladder(&token)[0], Row::ClaudeHere(ClaudeLogin::Environment));
+        assert_eq!(
+            ladder_of(&token, &FAST)[0],
+            Row::ClaudeHere(ClaudeLogin::Environment)
+        );
 
         let ant = Fake {
             ant: Some("token"),
             ..Fake::default()
         };
-        assert_eq!(ladder(&ant)[0], Row::ClaudeHere(ClaudeLogin::Ant));
+        assert_eq!(ladder_of(&ant, &FAST)[0], Row::ClaudeHere(ClaudeLogin::Ant));
 
         let ollama = Fake {
             ollama: Some(vec![("qwen3:1.7b", 1.4), ("llama3.2:latest", 2.0)]),
             ..Fake::default()
         };
-        let rows = ladder(&ollama);
+        let rows = ladder_of(&ollama, &FAST);
         assert_eq!(rows[0].title(), "Ollama on this computer (qwen3:1.7b)");
         assert_eq!(rows[1..], always);
 
@@ -540,7 +852,7 @@ mod tests {
             ..Fake::default()
         };
         assert_eq!(
-            ladder(&empty_ollama),
+            ladder_of(&empty_ollama, &FAST),
             always,
             "an Ollama with no models has nothing to offer"
         );
@@ -550,7 +862,7 @@ mod tests {
             ollama: Some(vec![("qwen3:1.7b", 1.4)]),
             ..Fake::default()
         };
-        let rows = ladder(&both);
+        let rows = ladder_of(&both, &FAST);
         assert_eq!(rows.len(), 5);
         assert_eq!(
             rows[0],
@@ -578,7 +890,7 @@ mod tests {
             }
         }
         assert_eq!(
-            Row::Local.is_ready(),
+            Row::Local(FAST[0]).is_ready(),
             crate::provider::LOCAL_READY,
             "the helper on this computer is ready when its runtime is"
         );
@@ -597,6 +909,9 @@ mod tests {
         }
         fn ollama_models(&self) -> Option<Vec<Installed>> {
             Some(self.0.clone())
+        }
+        fn hardware(&self) -> Hardware {
+            ample()
         }
     }
 
@@ -646,15 +961,15 @@ mod tests {
             assert_eq!(is_cloud_name(name), cloud, "{name}");
         }
 
-        let rows = ladder(&Here(models.clone()));
+        let rows = ladder_of(&Here(models.clone()), &FAST);
         let Row::OllamaHere { models: offered } = &rows[0] else {
             panic!("Ollama first: {rows:?}");
         };
         let names: Vec<&str> = offered.iter().map(|model| model.name.as_str()).collect();
         assert_eq!(names, ["qwen3:1.7b"], "only the model on this computer");
         assert_eq!(
-            ladder(&Here(models[..3].to_vec())),
-            [Row::Local, Row::ClaudeWithKey, Row::Service],
+            ladder_of(&Here(models[..3].to_vec()), &FAST),
+            [Row::Local(FAST[0]), Row::ClaudeWithKey, Row::Service],
             "an Ollama with nothing of its own has nothing to offer"
         );
     }
@@ -746,7 +1061,7 @@ mod tests {
         assert_eq!(ollama_models_at(&nobody_home()), None);
 
         // The row offers the small one, though the large one is more recent.
-        let rows = ladder(&Here(models.clone()));
+        let rows = ladder_of(&Here(models.clone()), &FAST);
         let Row::OllamaHere { models: offered } = &rows[0] else {
             panic!("Ollama first: {rows:?}");
         };
@@ -763,7 +1078,7 @@ mod tests {
         // Only large models: the most recent is still offered.
         let large_only: Vec<Installed> = models.into_iter().take(1).collect();
         assert_eq!(
-            ladder(&Here(large_only))[0].title(),
+            ladder_of(&Here(large_only), &FAST)[0].title(),
             "Ollama on this computer (qwen3.6:27b-q5_k_m)"
         );
 
@@ -780,5 +1095,188 @@ mod tests {
         ] {
             assert_eq!(size_words(bytes), words, "{bytes} bytes");
         }
+    }
+
+    /// A computer that cannot hold the smallest model, or whose processor
+    /// lacks the vector instructions, is offered no helper of its own: the
+    /// card says what it lacks and what would answer instead, and the row
+    /// cannot be chosen.
+    #[test]
+    fn a_computer_below_the_floor_is_not_offered_a_local_helper_and_is_told_why() {
+        let small = Hardware {
+            memory: 8_000_000_000,
+            fast_vectors: true,
+            graphics: None,
+        };
+        assert_eq!(
+            tier(&small),
+            None,
+            "8 GB holds no model beside the documents"
+        );
+        let rows = ladder_of(
+            &Fake {
+                hardware: Some(small.clone()),
+                ..Fake::default()
+            },
+            &FAST,
+        );
+        let Some(Row::NoLocal { because }) = rows.first() else {
+            panic!("{rows:?}");
+        };
+        assert!(because.contains("8.0 GB of memory"), "{because}");
+        assert!(because.contains("needs 8.5 GB"), "{because}");
+        assert!(!rows[0].is_ready(), "the row cannot be chosen");
+        let mut settings = Settings::default();
+        rows[0].choose(&mut settings);
+        assert_eq!(settings.helper, None, "and choosing it changes nothing");
+        assert_eq!(rows[0].title(), "No helper on this computer");
+        assert_eq!(rows[0].about(), *because);
+        assert_eq!(&rows[1..], [Row::ClaudeWithKey, Row::Service]);
+
+        // An old processor: memory is not the question.
+        let old = Hardware {
+            memory: 64_000_000_000,
+            fast_vectors: false,
+            graphics: None,
+        };
+        assert_eq!(tier_of(&old, &FAST), None);
+        assert!(
+            why_not(&old).contains("processor is too old"),
+            "{}",
+            why_not(&old)
+        );
+        let unknown = Hardware {
+            memory: 0,
+            fast_vectors: true,
+            graphics: None,
+        };
+        assert!(
+            why_not(&unknown).contains("could not tell how much memory"),
+            "{}",
+            why_not(&unknown)
+        );
+
+        // A saved choice of the helper on this computer, on a computer that
+        // cannot run one, is refused with the same sentence.
+        let cannot = cannot_run_local(&Fake {
+            hardware: Some(small.clone()),
+            ..Fake::default()
+        });
+        assert_eq!(cannot.as_deref(), Some(why_not(&small).as_str()));
+
+        // A graphics processor Officina's helper cannot use yet is named, so
+        // that the person knows Ollama on this computer would.
+        let card = Hardware {
+            memory: 8_000_000_000,
+            fast_vectors: true,
+            graphics: Some(Graphics {
+                name: "NVIDIA GeForce RTX 3090".into(),
+                memory: Some(24_000_000_000),
+            }),
+        };
+        assert!(
+            why_not(&card).ends_with("Ollama on this computer would."),
+            "{}",
+            why_not(&card)
+        );
+        assert!(
+            why_not(&small).ends_with(
+                "Ollama on a computer with a graphics processor, or Claude, can answer."
+            ),
+            "{}",
+            why_not(&small)
+        );
+    }
+
+    /// The helper offered is the largest of the catalogue the computer can
+    /// hold with room over for everything else, and its row says what the
+    /// wait before the first word will feel like.
+    #[test]
+    fn the_tier_is_the_largest_model_the_computer_can_hold_and_says_how_it_will_feel() {
+        let with = |memory: u64| Hardware {
+            memory,
+            fast_vectors: true,
+            graphics: None,
+        };
+        let (small, large) = (&FAST[0], &FAST[1]);
+        assert_eq!(tier_of(&with(small.memory + ROOM - 1), &FAST), None);
+        assert_eq!(tier_of(&with(small.memory + ROOM), &FAST), Some(small));
+        assert_eq!(tier_of(&with(large.memory + ROOM - 1), &FAST), Some(small));
+        assert_eq!(tier_of(&with(large.memory + ROOM), &FAST), Some(large));
+        assert_eq!(
+            tier_of(&with(64_000_000_000), &FAST),
+            Some(large),
+            "nothing above the catalogue"
+        );
+
+        // The catalogue as measured: on a processor alone, no size meets the
+        // bar's wait, however much memory there is — and the row says so with
+        // the number, and where the answer lies.
+        for model in &crate::local::MODELS {
+            assert!(
+                model.first_word > FIRST_WORD_BAR,
+                "{}: {}s",
+                model.name,
+                model.first_word
+            );
+        }
+        let plenty = with(64_000_000_000);
+        assert_eq!(tier(&plenty), None);
+        let why = why_not(&plenty);
+        assert!(why.contains("before its first word"), "{why}");
+        assert!(
+            why.contains(&seconds(crate::local::MODELS[0].first_word)),
+            "{why}"
+        );
+        assert!(
+            why.contains("Ollama on a computer with a graphics processor, or Claude"),
+            "{why}"
+        );
+        assert!(matches!(ladder(&Fake::default())[0], Row::NoLocal { .. }));
+        assert_eq!(
+            cannot_run_local(&Fake::default()).as_deref(),
+            Some(why.as_str())
+        );
+        let mut card = plenty.clone();
+        card.graphics = Some(Graphics {
+            name: "NVIDIA GeForce RTX 3090".into(),
+            memory: Some(24_000_000_000),
+        });
+        assert!(
+            why_not(&card).ends_with("Ollama on this computer would."),
+            "{}",
+            why_not(&card)
+        );
+
+        let rows = ladder_of(
+            &Fake {
+                hardware: Some(with(16_000_000_000)),
+                ..Fake::default()
+            },
+            &FAST,
+        );
+        assert_eq!(rows[0], Row::Local(*large), "16 GB holds the 8B: {rows:?}");
+        assert_eq!(rows[0].title(), "A helper on this computer (Qwen3 8B)");
+        let about = rows[0].about();
+        assert!(about.contains("5.0 GB"), "{about}");
+        assert!(about.contains("7.5 GB of memory"), "{about}");
+        assert!(
+            about.contains("the first word of an answer takes about"),
+            "{about}"
+        );
+        assert!(about.contains(&seconds(large.first_word)), "{about}");
+        assert!(rows[0].is_ready());
+        let mut settings = Settings::default();
+        rows[0].choose(&mut settings);
+        assert_eq!(settings.helper, Some(Choice::Local));
+        assert_eq!(settings.local.model, large.folder);
+        assert_eq!(settings.local.model().folder, large.folder);
+
+        // The words for a wait.
+        assert_eq!(seconds(4), "a few seconds");
+        assert_eq!(seconds(15), "a quarter of a minute");
+        assert_eq!(seconds(30), "half a minute");
+        assert_eq!(seconds(60), "a minute");
+        assert_eq!(seconds(150), "3 minutes");
     }
 }

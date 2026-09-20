@@ -136,6 +136,10 @@ fn scratch(name: &str) -> PathBuf {
     dir
 }
 
+fn asked_words(words: &str) -> Conversation {
+    asked(words)
+}
+
 fn asked(words: &str) -> Conversation {
     let mut conversation = Conversation::default();
     conversation.push(Message::user(words));
@@ -344,6 +348,121 @@ fn the_helper_samples_its_words_rather_than_taking_the_likeliest_every_time() {
     );
 }
 
+/// The brief and the tools open every request and never change within a
+/// session, so the model keeps their keys and values: a request that begins
+/// as the last one did reads only what follows, and answers — decoding
+/// greedily — token for token as it would have reading the whole.
+#[test]
+fn a_request_that_shares_the_last_ones_prefix_reads_only_what_follows_it_and_answers_the_same() {
+    let dir = scratch("prefix");
+    let path = dir.join("tiny.gguf");
+    tiny_model(&path, 2, 64, 96);
+    let words: Vec<String> = (0..80).map(|n| format!("w{n}")).collect();
+    let words: Vec<&str> = words.iter().map(String::as_str).collect();
+    let fresh = || {
+        let mut file = std::fs::File::open(&path).expect("it opens");
+        let local = Local::with(&mut file, tiny_tokenizer(&words)).expect("it loads");
+        local.decides_greedily();
+        // A dozen tokens of answer and then an end: enough to compare.
+        local.ends_at(vec![local.said_first("w7 w8 w9 w10 w11 w12")[0]]);
+        local
+    };
+    // A brief long enough to be worth keeping: forty tokens the tiny
+    // tokenizer knows.
+    let brief: String = (0..40)
+        .map(|n| format!("w{n}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let request = |asked: &'static str| Request {
+        system: Box::leak(brief.clone().into_boxed_str()),
+        tools: &[],
+        conversation: Box::leak(Box::new(asked_words(asked))),
+        effort: Effort::Low,
+    };
+    let answer = |local: &mut Local, asked: &'static str| {
+        let mut said = String::new();
+        let answer = local.answer(&request(asked), &StopFlag::default(), &mut |words| {
+            said.push_str(words)
+        });
+        assert!(answer.ending.is_ok(), "{:?}", answer.ending);
+        (said, answer.usage.input as usize)
+    };
+
+    // The same model asked twice: the second time it reads what the second
+    // request adds — not the brief again — and says the same as a model
+    // that read the whole.
+    let mut kept = fresh();
+    let (first, input) = answer(&mut kept, "w41 w42");
+    assert_eq!(kept.last_read(), input, "the first request is read whole");
+    let (second, input) = answer(&mut kept, "w43 w44 w45");
+    let read = kept.last_read();
+    assert!(
+        read < input,
+        "{read} of {input} tokens read: the brief was kept"
+    );
+    assert!(read >= 3, "{read}: at least what the request added");
+    let mut whole = fresh();
+    let (alone, _) = answer(&mut whole, "w43 w44 w45");
+    assert_eq!(
+        second, alone,
+        "the same answer, read against the kept beginning"
+    );
+    assert_ne!(
+        first, second,
+        "and a different request got a different answer"
+    );
+
+    // The very same request again: everything but one token is held, and
+    // one token is still read, since the logits come from reading.
+    let (again, input) = answer(&mut kept, "w43 w44 w45");
+    assert_eq!(again, second);
+    assert_eq!(kept.last_read(), 1, "of {input}");
+}
+
+/// A prompt that begins differently — a new session, the other application's
+/// brief — shares too little with the last to be worth keeping, and the model
+/// reads it whole.
+#[test]
+fn a_request_with_a_different_prefix_starts_afresh() {
+    let dir = scratch("afresh");
+    let path = dir.join("tiny.gguf");
+    tiny_model(&path, 2, 64, 96);
+    let words: Vec<String> = (0..80).map(|n| format!("w{n}").to_owned()).collect();
+    let words: Vec<&str> = words.iter().map(String::as_str).collect();
+    let mut file = std::fs::File::open(&path).expect("it opens");
+    let mut local = Local::with(&mut file, tiny_tokenizer(&words)).expect("it loads");
+    local.decides_greedily();
+    local.ends_at(vec![local.said_first("w7 w8 w9")[0]]);
+    let brief_a: String = (0..40)
+        .map(|n| format!("w{n}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let brief_b: String = (40..80)
+        .map(|n| format!("w{n}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut ask = |brief: &String| {
+        let request = Request {
+            system: brief,
+            tools: &[],
+            conversation: &asked("w1 w2"),
+            effort: Effort::Low,
+        };
+        let answer = local.answer(&request, &StopFlag::default(), &mut |_| {});
+        assert!(answer.ending.is_ok(), "{:?}", answer.ending);
+        (local.last_read(), answer.usage.input as usize)
+    };
+    let (read, input) = ask(&brief_a);
+    assert_eq!(read, input);
+    let (read, input) = ask(&brief_b);
+    assert_eq!(
+        read, input,
+        "a different brief shares only the template's opening: read whole"
+    );
+    let (read, input) = ask(&brief_b);
+    assert!(read < input, "and the second time with it, kept");
+}
+
 /// What the model writes becomes the same events every other helper's answer
 /// does: words are words, `<tool_call>` is a call, and something that looks
 /// like a call but is not stays as the text it is.
@@ -535,7 +654,7 @@ fn serving(body: Vec<u8>, cut: Option<usize>) -> (String, std::thread::JoinHandl
 #[test]
 fn a_download_whose_hash_does_not_match_is_refused_and_removed() {
     let dir = scratch("hash");
-    let folder = folder(&dir);
+    let folder = folder(&dir, &QWEN3_4B);
     std::fs::create_dir_all(&folder).expect("a folder");
     let body = b"these are not the weights you are looking for".to_vec();
     let (address, _server) = serving(body.clone(), None);
@@ -570,7 +689,7 @@ fn a_download_whose_hash_does_not_match_is_refused_and_removed() {
 #[test]
 fn an_interrupted_download_resumes_where_it_stopped() {
     let dir = scratch("resume");
-    let folder = folder(&dir);
+    let folder = folder(&dir, &QWEN3_4B);
     std::fs::create_dir_all(&folder).expect("a folder");
     let body: Vec<u8> = (0..200_000u32).map(|n| (n % 251) as u8).collect();
     let sha = {
@@ -625,56 +744,114 @@ fn an_interrupted_download_resumes_where_it_stopped() {
 fn the_weights_are_in_the_cache_directory_and_removing_them_says_what_came_back() {
     let dir = scratch("cache");
     assert!(
-        folder(&dir).starts_with(&dir) && folder(&dir).ends_with("qwen3-1.7b-q4-k-m"),
+        folder(&dir, &QWEN3_4B).starts_with(&dir)
+            && folder(&dir, &QWEN3_4B).ends_with("qwen3-4b-q4-k-m"),
         "{:?}",
-        folder(&dir)
+        folder(&dir, &QWEN3_4B)
     );
-    assert!(!have(&dir), "nothing is downloaded yet");
+    assert!(!have(&dir, &QWEN3_4B), "nothing is downloaded yet");
 
     // Files of the right names and sizes: what `have` looks for.
-    let folder = folder(&dir);
+    let folder = folder(&dir, &QWEN3_4B);
     std::fs::create_dir_all(&folder).expect("a folder");
-    for piece in MODEL.pieces() {
+    for piece in QWEN3_4B.pieces() {
         let file = std::fs::File::create(folder.join(piece.file)).expect("a file");
         file.set_len(piece.bytes).expect("sized");
     }
-    assert!(have(&dir), "and now it is there");
+    assert!(have(&dir, &QWEN3_4B), "and now it is there");
+
+    // A model no longer offered, downloaded under an earlier version, is
+    // space the person spent: Remove gives it back too, and counts it.
+    let old = dir.join("models").join(WITHDRAWN[0]);
+    std::fs::create_dir_all(&old).expect("an old folder");
+    std::fs::write(old.join("old.gguf"), [0u8; 1000]).expect("written");
+    assert_eq!(
+        downloaded(&dir),
+        QWEN3_4B.bytes() + 1000,
+        "what Remove would free"
+    );
 
     let freed = remove(&dir).expect("removed");
-    assert_eq!(freed, MODEL.bytes());
-    assert!(!have(&dir));
-    assert!(!folder.exists(), "and the folder goes with them");
+    assert_eq!(freed, QWEN3_4B.bytes() + 1000);
+    assert!(!have(&dir, &QWEN3_4B));
+    assert!(
+        !folder.exists() && !old.exists(),
+        "and the folders go with them"
+    );
     assert_eq!(remove(&dir).expect("nothing to remove"), 0);
+    assert_eq!(downloaded(&dir), 0);
 
     // The words the card uses for a size.
-    assert_eq!(size_of(MODEL.weights.bytes), "1.3 GB");
+    assert_eq!(size_of(QWEN3_4B.weights.bytes), "2.5 GB");
+    assert_eq!(size_of(QWEN3_8B.weights.bytes), "5.0 GB");
     assert_eq!(size_of(11_422_654), "11 MB");
     assert_eq!(size_of(999), "1.0 kB");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The pinned model is named, licensed and sized, and its files are asked for
-/// by hash — the facts the card shows before anything is downloaded.
+/// Every model of the catalogue is pinned — licence, source, size and hash —
+/// before anything is downloaded, the sizes go up the catalogue, and the one
+/// the user judged a toy is withdrawn rather than quietly kept.
 #[test]
-fn the_pinned_model_says_what_it_is_before_anything_is_downloaded() {
-    assert_eq!(MODEL.licence, "Apache-2.0");
-    assert!(MODEL.name.contains("Qwen3"));
-    assert!(MODEL.about.starts_with("https://"));
-    for piece in MODEL.pieces() {
-        assert!(piece.url.starts_with("https://"), "{}", piece.url);
-        assert_eq!(piece.sha256.len(), 64, "{}", piece.file);
+fn the_catalogue_pins_every_model_by_size_hash_and_licence_and_the_small_one_is_gone() {
+    assert_eq!(MODELS.len(), 2);
+    for model in &MODELS {
+        assert_eq!(model.licence, "Apache-2.0", "{}", model.name);
+        assert!(model.name.contains("Qwen3"));
+        assert!(model.about.starts_with("https://huggingface.co/Qwen/"));
         assert!(
-            piece.sha256.chars().all(|c| c.is_ascii_hexdigit()),
+            !model.folder.is_empty()
+                && model
+                    .folder
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.'),
             "{}",
-            piece.sha256
+            model.folder
         );
-        assert!(piece.bytes > 0);
+        assert_eq!(model, super::model(model.folder).expect("found by folder"));
+        for piece in model.pieces() {
+            assert!(
+                piece.url.starts_with("https://huggingface.co/Qwen/"),
+                "{}",
+                piece.url
+            );
+            assert_eq!(piece.sha256.len(), 64, "{}", piece.file);
+            assert!(
+                piece.sha256.chars().all(|c| c.is_ascii_hexdigit()),
+                "{}",
+                piece.sha256
+            );
+            assert!(piece.bytes > 0);
+        }
+        assert!(
+            model.bytes() > model.weights.bytes,
+            "both files are counted"
+        );
+        assert!(
+            model.memory > model.weights.bytes,
+            "a model works in more than its weights"
+        );
     }
-    assert!(
-        MODEL.bytes() > MODEL.weights.bytes,
-        "both files are counted"
+    for pair in MODELS.windows(2) {
+        assert!(
+            pair[0].weights.bytes < pair[1].weights.bytes && pair[0].memory < pair[1].memory,
+            "the catalogue goes up: {} before {}",
+            pair[0].name,
+            pair[1].name
+        );
+    }
+    assert_ne!(QWEN3_4B.folder, QWEN3_8B.folder);
+    assert_eq!(
+        QWEN3_4B.tokenizer, QWEN3_8B.tokenizer,
+        "one tokenizer for every Qwen3"
     );
-    assert!(GOOD_AT.contains("rewording"), "{GOOD_AT}");
+    // The 1.7B: below the bar, withdrawn, and not in the catalogue under any name.
+    assert!(WITHDRAWN.contains(&"qwen3-1.7b-q4-k-m"));
+    assert!(MODELS
+        .iter()
+        .all(|model| !model.name.contains("1.7B") && !WITHDRAWN.contains(&model.folder)));
+    assert!(super::model("qwen3-1.7b-q4-k-m").is_none());
+    assert!(GOOD_AT.contains("writes a passage"), "{GOOD_AT}");
 }
 
 /// No test downloads the real weights — in this crate either, whose tests
@@ -684,10 +861,10 @@ fn the_pinned_model_says_what_it_is_before_anything_is_downloaded() {
 #[test]
 fn a_test_never_downloads_the_helper() {
     let dir = scratch("offline");
-    let failed = download_model(&dir, &StopFlag::default(), &mut |_| {})
+    let failed = download_model(&dir, &QWEN3_4B, &StopFlag::default(), &mut |_| {})
         .expect_err("no test downloads anything");
     assert!(matches!(failed.kind, FailureKind::Offline), "{failed:?}");
-    assert!(!have(&dir), "and nothing landed");
+    assert!(!have(&dir, &QWEN3_4B), "and nothing landed");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -731,13 +908,13 @@ fn only_the_download_follows_a_redirect() {
 #[test]
 fn the_local_helper_answers_a_request_as_any_other_provider_does() {
     let dir = scratch("provider");
-    let folder = folder(&dir);
+    let folder = folder(&dir, &QWEN3_4B);
     std::fs::create_dir_all(&folder).expect("a folder");
-    tiny_model(&folder.join(MODEL.weights.file), 2, 64, 96);
+    tiny_model(&folder.join(QWEN3_4B.weights.file), 2, 64, 96);
     let words: Vec<String> = (0..80).map(|n| format!("w{n}")).collect();
     let words: Vec<&str> = words.iter().map(String::as_str).collect();
     tiny_tokenizer(&words)
-        .save(folder.join(MODEL.tokenizer.file), false)
+        .save(folder.join(QWEN3_4B.tokenizer.file), false)
         .expect("a tokenizer on disk");
 
     let settings = crate::Settings {
@@ -774,8 +951,8 @@ fn the_local_helper_answers_a_request_as_any_other_provider_does() {
 
     // And the check says it is ready, in words that name the model.
     let said = crate::check_in(&settings, Some(&dir)).expect("ready");
-    assert!(said.contains(MODEL.name), "{said}");
-    assert!(said.contains("rewording"), "{said}");
+    assert!(said.contains(QWEN3_4B.name), "{said}");
+    assert!(said.contains("writes a passage"), "{said}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -796,6 +973,7 @@ fn the_download_fetches_what_is_missing_and_no_more() {
     );
     let model = Model {
         name: "A tiny helper",
+        folder: "tiny",
         licence: "Apache-2.0",
         about: "https://example.invalid/about",
         weights: Piece {
@@ -811,6 +989,7 @@ fn the_download_fetches_what_is_missing_and_no_more() {
             sha256: Box::leak(hash_bytes(&tokenizer).into_boxed_str()),
         },
         memory: 1,
+        first_word: 1,
     };
     let http = crate::http::Http::new(&address);
 
@@ -819,7 +998,7 @@ fn the_download_fetches_what_is_missing_and_no_more() {
         seen.push(progress)
     })
     .expect("both files");
-    let folder = folder(&dir);
+    let folder = folder(&dir, &model);
     assert_eq!(
         std::fs::read(folder.join("weights.gguf")).expect("there"),
         weights
@@ -922,7 +1101,7 @@ fn serving_files(
 #[test]
 fn a_file_longer_than_it_should_be_is_stopped_rather_than_written() {
     let dir = scratch("too-long");
-    let folder = folder(&dir);
+    let folder = folder(&dir, &QWEN3_4B);
     std::fs::create_dir_all(&folder).expect("a folder");
     let body: Vec<u8> = vec![7u8; 4 * 1024 * 1024];
     let (address, _server) = serving(body, None);
@@ -955,7 +1134,7 @@ fn a_file_longer_than_it_should_be_is_stopped_rather_than_written() {
 #[test]
 fn a_part_answer_that_starts_again_is_not_added_to_what_was_kept() {
     let dir = scratch("bad-range");
-    let folder = folder(&dir);
+    let folder = folder(&dir, &QWEN3_4B);
     std::fs::create_dir_all(&folder).expect("a folder");
     let body: Vec<u8> = (0..100_000u32).map(|n| (n % 251) as u8).collect();
     let sha = hash_bytes(&body);
@@ -1005,15 +1184,15 @@ fn a_part_answer_that_starts_again_is_not_added_to_what_was_kept() {
 #[test]
 fn removing_takes_a_half_download_too() {
     let dir = scratch("half");
-    let folder = folder(&dir);
+    let folder = folder(&dir, &QWEN3_4B);
     std::fs::create_dir_all(&folder).expect("a folder");
-    std::fs::write(folder.join(MODEL.tokenizer.file), b"a tokenizer").expect("written");
+    std::fs::write(folder.join(QWEN3_4B.tokenizer.file), b"a tokenizer").expect("written");
     std::fs::write(
-        folder.join(format!("{}.part", MODEL.weights.file)),
+        folder.join(format!("{}.part", QWEN3_4B.weights.file)),
         vec![0u8; 5_000],
     )
     .expect("written");
-    assert!(!have(&dir), "half a download is not a helper");
+    assert!(!have(&dir, &QWEN3_4B), "half a download is not a helper");
     let freed = remove(&dir).expect("removed");
     assert_eq!(
         freed,
@@ -1029,12 +1208,13 @@ fn removing_takes_a_half_download_too() {
 #[test]
 fn two_downloads_at_once_are_one_download() {
     let dir = scratch("two");
-    let folder = folder(&dir);
+    let folder = dir.join("models").join("tiny");
     std::fs::create_dir_all(&folder).expect("a folder");
     let body = b"the file".to_vec();
     let (address, _server) = serving_files([("/tokenizer.json", body.clone())].into());
     let model = Model {
         name: "A tiny helper",
+        folder: "tiny",
         licence: "Apache-2.0",
         about: "https://example.invalid/about",
         weights: Piece {
@@ -1050,6 +1230,7 @@ fn two_downloads_at_once_are_one_download() {
             sha256: Box::leak(hash_bytes(&body).into_boxed_str()),
         },
         memory: 1,
+        first_word: 1,
     };
     let http = crate::http::Http::new(&address);
     // The first has the folder; the second is told to wait rather than
@@ -1165,10 +1346,10 @@ fn the_words_streamed_are_the_answer_without_its_tool_calls() {
 #[test]
 fn half_a_download_says_to_download_it_again() {
     let dir = scratch("half-load");
-    let folder = folder(&dir);
+    let folder = folder(&dir, &QWEN3_4B);
     std::fs::create_dir_all(&folder).expect("a folder");
-    tiny_model(&folder.join(MODEL.weights.file), 2, 64, 96);
-    let failed = match Local::load(&folder) {
+    tiny_model(&folder.join(QWEN3_4B.weights.file), 2, 64, 96);
+    let failed = match Local::load(&dir, &QWEN3_4B) {
         Err(failure) => failure,
         Ok(_) => panic!("the tokenizer is missing"),
     };
@@ -1184,6 +1365,21 @@ fn half_a_download_says_to_download_it_again() {
         failed.sentence
     );
     let _ = std::fs::remove_dir_all(&dir);
+
+    // Nothing there at all is a helper not downloaded, and the sentence says
+    // so — not that it is half there.
+    let none = scratch("none");
+    let failed = match Local::load(&none, &QWEN3_4B) {
+        Err(failed) => failed,
+        Ok(_) => panic!("nothing to load"),
+    };
+    assert!(
+        failed.sentence.contains("has not been downloaded yet"),
+        "{}",
+        failed.sentence
+    );
+    assert!(!failed.sentence.contains("not all there"));
+    let _ = std::fs::remove_dir_all(&none);
 }
 
 /// The model is read once and kept: a helper made again — after Stop, after
@@ -1193,17 +1389,17 @@ fn half_a_download_says_to_download_it_again() {
 #[test]
 fn the_model_is_read_once_and_kept() {
     let dir = scratch("kept");
-    let folder = folder(&dir);
+    let folder = folder(&dir, &QWEN3_4B);
     std::fs::create_dir_all(&folder).expect("a folder");
-    tiny_model(&folder.join(MODEL.weights.file), 2, 64, 96);
+    tiny_model(&folder.join(QWEN3_4B.weights.file), 2, 64, 96);
     let words: Vec<String> = (0..80).map(|n| format!("w{n}")).collect();
     let words: Vec<&str> = words.iter().map(String::as_str).collect();
     tiny_tokenizer(&words)
-        .save(folder.join(MODEL.tokenizer.file), false)
+        .save(folder.join(QWEN3_4B.tokenizer.file), false)
         .expect("a tokenizer on disk");
 
-    let first = Local::load(&folder).expect("it loads");
-    let second = Local::load(&folder).expect("it loads");
+    let first = Local::load(&dir, &QWEN3_4B).expect("it loads");
+    let second = Local::load(&dir, &QWEN3_4B).expect("it loads");
     assert!(
         first.is_the_same_model_as(&second),
         "the second request is the model the first read"
@@ -1211,13 +1407,13 @@ fn the_model_is_read_once_and_kept() {
     // Dropping one helper does not take the model with it: the next request
     // after a Stop makes a helper afresh and finds it still there.
     drop(first);
-    let third = Local::load(&folder).expect("it loads");
+    let third = Local::load(&dir, &QWEN3_4B).expect("it loads");
     assert!(third.is_the_same_model_as(&second));
 
     // Let go of — the weights removed, or another helper chosen — and the
     // next one is read from disk.
     forget();
-    let after = Local::load(&folder).expect("it loads");
+    let after = Local::load(&dir, &QWEN3_4B).expect("it loads");
     assert!(
         !after.is_the_same_model_as(&second),
         "what was let go of is not handed out again"

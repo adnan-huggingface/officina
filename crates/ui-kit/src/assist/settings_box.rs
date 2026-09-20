@@ -131,8 +131,8 @@ impl SettingsBox {
         self.arrived.take()
     }
 
-    /// Looks at the computer, once, when the Ollama part is shown with none of
-    /// Ollama's models known.
+    /// Looks at the computer, once: for Ollama's models, and for whether a
+    /// helper of its own can run on it.
     fn look(&mut self, ctx: &egui::Context, reach: &Arc<dyn Reach>) {
         if let Some(looking) = &self.looking {
             match looking.poll() {
@@ -149,7 +149,10 @@ impl SettingsBox {
             }
             return;
         }
-        if self.looked || self.draft.helper != Some(Choice::Ollama) {
+        // Whatever helper is chosen: the look also says whether this computer
+        // can run a helper of its own, which decides whether that row is
+        // offered at all.
+        if self.looked {
             return;
         }
         self.looked = true;
@@ -356,12 +359,37 @@ impl SettingsBox {
 
     fn helpers(&mut self, ui: &mut egui::Ui) {
         dialog::section(ui, "Helper");
+        // A computer that cannot run a helper worth having is not offered
+        // one here either: the row says why, where the choice would be.
+        let cannot = self.found.iter().find_map(|row| match row {
+            Row::NoLocal { because } => Some(because.clone()),
+            _ => None,
+        });
         for (choice, words) in [
             (Choice::Local, "A helper on this computer"),
             (Choice::Claude, "Claude, over the internet"),
             (Choice::Ollama, "Ollama"),
             (Choice::Service, "Another service (advanced)"),
         ] {
+            if choice == Choice::Local {
+                if let Some(because) = &cannot {
+                    // A saved choice this computer cannot honour: taken back
+                    // where the person can see why, not written over.
+                    if self.draft.helper == Some(Choice::Local) {
+                        self.draft.helper = None;
+                        self.refused = Some(because.clone());
+                    }
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(because.as_str())
+                                .size(theme::TEXT_SMALL)
+                                .color(theme::INK_SOFT),
+                        )
+                        .wrap(),
+                    );
+                    continue;
+                }
+            }
             if ui
                 .radio_value(&mut self.draft.helper, Some(choice), words)
                 .changed()
@@ -379,23 +407,31 @@ impl SettingsBox {
     /// the download checks what arrives against.
     fn on_this_computer(&mut self, ui: &mut egui::Ui, reach: &Arc<dyn Reach>) -> Option<Closed> {
         dialog::section(ui, "The helper on this computer");
-        let model = ::assist::local::MODEL;
-        let had = reach.downloaded();
-        let words = match had {
-            Some(bytes) => format!(
-                "{} ({}) is downloaded, and takes {}. {}.",
+        // The model: the one the settings name, or the one the look found
+        // this computer can run.
+        if self.draft.local.model.trim().is_empty() {
+            if let Some(Row::Local(offered)) =
+                self.found.iter().find(|row| matches!(row, Row::Local(_)))
+            {
+                self.draft.local.model = offered.folder.to_owned();
+            }
+        }
+        let model = *self.draft.local.model();
+        let have = reach.have(&model);
+        let taken = reach.downloaded();
+        let words = match have {
+            true => format!(
+                "{} ({}) is downloaded; the downloaded helpers take {} together.",
                 model.name,
                 model.licence,
-                ::assist::local::size_of(bytes),
-                ::assist::local::GOOD_AT
+                ::assist::local::size_of(taken),
             ),
-            None => format!(
-                "{} ({}) — {} to download, about {} of memory while it runs. {}.",
+            false => format!(
+                "{} ({}) — {} to download, about {} of memory while it runs.",
                 model.name,
                 model.licence,
                 ::assist::local::size_of(model.bytes()),
                 ::assist::local::size_of(model.memory),
-                ::assist::local::GOOD_AT
             ),
         };
         ui.add(
@@ -407,28 +443,28 @@ impl SettingsBox {
             .wrap(),
         );
         let mut closed = None;
-        ui.horizontal(|ui| match had {
-            Some(bytes) => {
-                if ui
-                    .button(format!(
-                        "Remove the downloaded helper (frees {})",
-                        ::assist::local::size_of(bytes)
-                    ))
-                    .clicked()
-                {
-                    closed = Some(Closed::Remove);
-                }
-            }
-            None => {
-                if ui
+        // Remove takes every downloaded helper — a withdrawn one a person no
+        // longer sees offered included — so it is there whenever anything is.
+        ui.horizontal(|ui| {
+            if !have
+                && ui
                     .button(format!(
                         "Download it ({})",
                         ::assist::local::size_of(model.bytes())
                     ))
                     .clicked()
-                {
-                    closed = Some(Closed::Download);
-                }
+            {
+                closed = Some(Closed::Download);
+            }
+            if taken > 0
+                && ui
+                    .button(format!(
+                        "Remove the downloaded helpers (frees {})",
+                        ::assist::local::size_of(taken)
+                    ))
+                    .clicked()
+            {
+                closed = Some(Closed::Remove);
             }
         });
         closed

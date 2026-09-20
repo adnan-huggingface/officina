@@ -181,14 +181,18 @@ mod tests {
         }
         assert_eq!(super::helpers_refused() - before, count);
 
-        // The computer is not searched: not the environment, not `ant`, and
-        // not an Ollama that may well be running on it.
-        assert_eq!(
-            ladder(&ThisComputer),
-            [Row::Local, Row::ClaudeWithKey, Row::Service]
+        // The computer is not searched: not the environment, not `ant`, not
+        // an Ollama that may well be running on it, and not its own memory
+        // and processor — so, told nothing, the ladder offers no helper on
+        // this computer and says why, rather than one it cannot vouch for.
+        let rows = ladder(&ThisComputer);
+        assert!(
+            matches!(rows.first(), Some(Row::NoLocal { .. })),
+            "{rows:?}"
         );
-        // Two variables, `ant`, and Ollama.
-        assert_eq!(super::helpers_refused() - before, count + 4);
+        assert_eq!(&rows[1..], [Row::ClaudeWithKey, Row::Service]);
+        // Two variables, `ant`, Ollama, and the hardware.
+        assert_eq!(super::helpers_refused() - before, count + 5);
         assert_eq!(
             connections.load(Ordering::SeqCst),
             0,
@@ -206,7 +210,7 @@ mod tests {
             );
         }
         let checks = every_choice.len();
-        assert_eq!(super::helpers_refused() - before, count + 4 + checks);
+        assert_eq!(super::helpers_refused() - before, count + 5 + checks);
         assert_eq!(
             connections.load(Ordering::SeqCst),
             0,
@@ -216,6 +220,6 @@ mod tests {
         // The scripted helper plays, and is not counted.
         let scripted = Box::new(Scripted::new([Turn::says("Hello to you.")]));
         assert_eq!(ask(scripted), Ok(Ending::Finished));
-        assert_eq!(super::helpers_refused() - before, count + 4 + checks);
+        assert_eq!(super::helpers_refused() - before, count + 5 + checks);
     }
 }

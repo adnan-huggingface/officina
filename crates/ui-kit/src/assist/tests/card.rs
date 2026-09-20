@@ -24,7 +24,11 @@ fn ollama_row() -> Row {
 }
 
 fn always() -> Vec<Row> {
-    vec![Row::Local, Row::ClaudeWithKey, Row::Service]
+    vec![
+        Row::Local(::assist::local::MODELS[0]),
+        Row::ClaudeWithKey,
+        Row::Service,
+    ]
 }
 
 fn with_first(first: Vec<Row>) -> Vec<Row> {
@@ -95,10 +99,11 @@ fn the_first_run_card_preselects_the_first_thing_found_and_the_local_helper_when
         matches!(desk.assist.choosing, Some(Choosing::Rows(_)))
     });
 
-    // Nothing found: the helper on this computer, first and lit.
+    // Nothing found: the helper on this computer, first and lit, named for
+    // the model the computer was judged able to run.
     assert_eq!(
         lit_row(&mut desk, &drive, &always()),
-        "A helper on this computer"
+        "A helper on this computer (Qwen3 4B)"
     );
     let seen = desk.seen(&drive);
     for words in [
@@ -359,11 +364,12 @@ fn the_local_row_says_what_it_will_download_before_it_downloads_anything() {
         .iter()
         .find(|text| text.starts_with("Free and private"))
         .unwrap_or_else(|| panic!("the local row's words: {seen:?}"));
-    // The model, its licence and its size, before anything is downloaded.
-    assert!(said.contains("Qwen3 1.7B"), "{said}");
+    // The model, its licence, its size and the memory it will take, before
+    // anything is downloaded.
+    assert!(said.contains("Qwen3 4B"), "{said}");
     assert!(said.contains("Apache-2.0"), "{said}");
-    assert!(said.contains("GB"), "{said}");
-    assert!(said.contains("rewording"), "{said}");
+    assert!(said.contains("2.5 GB"), "{said}");
+    assert!(said.contains("of memory"), "{said}");
     assert_eq!(
         reach.downloading.load(std::sync::atomic::Ordering::SeqCst),
         0,
@@ -513,4 +519,44 @@ fn settings_that_cannot_be_read_are_said_in_place_of_the_card_and_set_aside_when
         "{:?}",
         desk.assist.transcript()
     );
+}
+
+/// A computer below the floor: the row that says why is first and cannot be
+/// chosen, so the card lights the first row that can, and pressing Use this
+/// on the other says the sentence again rather than pointing at a download
+/// Settings will not offer.
+#[test]
+fn a_computer_that_cannot_run_a_helper_has_the_first_choosable_row_lit() {
+    let scratch = Scratch::new("card-no-local");
+    let because = "This computer has 8.0 GB of memory; a helper worth having needs 8.5 GB to run beside your documents.";
+    let rows = vec![
+        Row::NoLocal {
+            because: because.to_owned(),
+        },
+        Row::ClaudeWithKey,
+        Row::Service,
+    ];
+    let reach = Fake::new().finds(rows.clone());
+    let drive = Driver::new();
+    let mut desk = Desk::with(Arc::clone(&reach), scratch.settings());
+    drive.settle(&mut desk);
+    desk.until(&drive, "the card's rows", |desk| {
+        matches!(desk.assist.choosing, Some(Choosing::Rows(_)))
+    });
+    assert_eq!(
+        lit_row(&mut desk, &drive, &rows),
+        "Claude, over the internet"
+    );
+    let seen = desk.seen(&drive);
+    assert!(seen.iter().any(|text| text == because), "{seen:?}");
+
+    // Picked by hand and pressed: the sentence, and no settings written.
+    desk.click(&drive, "No helper on this computer");
+    desk.click(&drive, "Use this");
+    drive.settle(&mut desk);
+    let Some(Choosing::Rows(shown)) = &desk.assist.choosing else {
+        panic!("the card stays up");
+    };
+    assert_eq!(shown.said.as_deref(), Some(because));
+    assert!(!scratch.settings().exists(), "nothing was kept");
 }

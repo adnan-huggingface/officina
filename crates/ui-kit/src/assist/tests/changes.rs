@@ -282,7 +282,11 @@ fn a_box_saves_its_edit_onto_what_the_other_window_saved_since() {
 /// a choice fails with the reason rather than being written somewhere shared.
 #[test]
 fn a_pane_with_nowhere_to_keep_settings_says_why() {
-    let reach = Fake::new().finds(vec![Row::Local, Row::ClaudeWithKey, Row::Service]);
+    let reach = Fake::new().finds(vec![
+        Row::Local(::assist::local::MODELS[0]),
+        Row::ClaudeWithKey,
+        Row::Service,
+    ]);
     let drive = Driver::new();
     let mut desk = Desk::new(Assist::at(
         setup(),
@@ -662,7 +666,7 @@ fn a_look_put_away_by_a_choice_made_elsewhere_is_still_counted() {
                 let _ = gate.recv_timeout(PATIENCE);
             }
             ::assist::offline::count();
-            vec![Row::Local]
+            vec![Row::Local(::assist::local::MODELS[0])]
         }
     }
     let scratch = Scratch::new("look-put-away");

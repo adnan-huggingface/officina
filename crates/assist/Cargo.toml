@@ -22,6 +22,7 @@ rustls = { version = "0.23.45", default-features = false, features = ["ring", "s
 # `onig`, whose `onig_sys` is C.
 candle-core = "0.9"
 candle-transformers = "0.9"
+candle-nn = "0.9"
 tokenizers = { version = "0.21", default-features = false, features = ["fancy-regex"] }
 # The download names the file it wants by its hash, and checks what arrived.
 sha2 = "0.10"
@@ -29,3 +30,7 @@ sha2 = "0.10"
 [dev-dependencies]
 # The tests build a tokenizer in memory, whose vocabulary is an ahash map.
 ahash = "0.8"
+
+# For the memory probe of the computer the first-run card examines.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_SystemInformation"] }

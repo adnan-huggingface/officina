@@ -324,18 +324,25 @@ fn a_refusal_on_the_requests_thread_is_counted_on_the_windows() {
     );
 
     // The real look is refused too, on its own thread, and counted here: two
-    // variables, `ant`, and Ollama.
+    // variables, `ant`, Ollama, and the computer's own hardware.
     let scratch = Scratch::new("refusal-look");
     let mut desk = Desk::new(Assist::with(setup(), Arc::new(Real), scratch.settings()));
     let before = crate::headless::helpers_refused();
     desk.until(&drive, "the card's rows", |desk| {
         matches!(desk.assist.choosing, Some(Choosing::Rows(_)))
     });
-    assert_eq!(crate::headless::helpers_refused() - before, 4);
+    assert_eq!(crate::headless::helpers_refused() - before, 5);
     let Some(Choosing::Rows(rows)) = &desk.assist.choosing else {
         unreachable!()
     };
-    assert_eq!(rows.rows, [Row::Local, Row::ClaudeWithKey, Row::Service]);
+    // Told nothing about the computer, the card offers no helper on it and
+    // says why, rather than one it cannot vouch for.
+    assert!(
+        matches!(rows.rows.first(), Some(Row::NoLocal { .. })),
+        "{:?}",
+        rows.rows
+    );
+    assert_eq!(&rows.rows[1..], [Row::ClaudeWithKey, Row::Service]);
 
     // And a real check, from the settings box.
     let scratch = Scratch::new("refusal-check");
