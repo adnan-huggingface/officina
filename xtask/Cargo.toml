@@ -9,6 +9,7 @@ publish = false
 # For `assist-spike`, the hand-run measurement of the helper on this computer.
 assist.workspace = true
 ui-kit.workspace = true
+scriva.workspace = true
 ooxml.workspace = true
 ss-model.workspace = true
 ss-xlsx.workspace = true

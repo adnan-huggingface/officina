@@ -2425,3 +2425,26 @@ request clears it (`clear_kv_cache`). And a model asked for one token past
 and panics. Both were found by a test model of two layers and a vocabulary of
 a hundred, written by the test itself, long before the real weights were ever
 run.
+
+**A small model given an editor's brief, the editing tools and a document
+makes the smallest edit it can call by the name asked for.** Qwen3 1.7B,
+given the brief alone and asked to write a story about a dog, wrote a
+159-token story in its reply. Given the same brief with Scriva's tools and an
+empty document shown as `[1] ` — that is, what Scriva sends — it called
+`replace_paragraphs` with `"[1] This is a story about a dog."` and stopped,
+greedy or sampled alike (the identical 68 tokens: the model was that
+certain). One line in the brief — that new writing is a whole piece, at the
+length the request calls for, and one sentence is not a story — and the same
+model, the same request, wrote a 120–160-token story four times out of four.
+The prose was never missing; shown a paragraph and a tool that replaces it,
+the model made an edit. Measured with `cargo xtask assist-spike --scriva`,
+which sends what Scriva sends; without `--scriva` the brief still goes, and
+the tools and document do not.
+
+**Qwen3 is not to be decoded greedily.** Its model card says so — "it can
+lead to performance degradation and endless repetitions" — and recommends,
+with thinking off, temperature 0.7, top-p 0.8, top-k 20. The first release of
+the helper on this computer took the likeliest token every time, out of
+ignorance rather than choice; it samples now. On the story above sampling
+changed nothing, which is the honest measure of how much it matters against a
+brief that asks for the wrong thing.

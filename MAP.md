@@ -84,8 +84,8 @@ Every source file, its size, and the first sentence of its module doc.
 - `crates/app-scriva/src/app/watermark.rs` (424) The watermark: the box that asks for one, and the shape it becomes in a header, written the way Word writes its own so that Word finds it again.
 - `crates/app-scriva/src/app/word_count.rs` (158) The Word Count box, from the status bar's count: pages, words, characters with and without spaces, paragraphs and lines — and, with a selection, the selection beside the document.
 - `crates/app-scriva/src/app.rs` (5920) The application: the window, the commands, and the keys.
-- `crates/app-scriva/src/assistant/tests.rs` (1223) The words, the tools and the proposals, against documents built here.
-- `crates/app-scriva/src/assistant.rs` (1474) What the assistant is shown of a document and what it may do to it: the words a request is sent in, the four tools, and the proposals they leave.
+- `crates/app-scriva/src/assistant/tests.rs` (1281) The words, the tools and the proposals, against documents built here.
+- `crates/app-scriva/src/assistant.rs` (1508) What the assistant is shown of a document and what it may do to it: the words a request is sent in, the four tools, and the proposals they leave.
 - `crates/app-scriva/src/author.rs` (536) A document written by the application itself, from a script of its own commands.
 - `crates/app-scriva/src/clip.rs` (955) The formatted halves of a copy: CF_HTML and Rich Text Format.
 - `crates/app-scriva/src/commands.rs` (413) Every command with a name and a key, in one table.
@@ -116,12 +116,12 @@ Every source file, its size, and the first sentence of its module doc.
 - `crates/assist/src/event.rs` (137) What a helper says while it answers, and how an answer ends.
 - `crates/assist/src/http.rs` (400) Requests to a helper over HTTP, and what their failures say.
 - `crates/assist/src/lib.rs` (57) Assist's helpers: who answers a request, how it travels, and what a helper may ask the editor to do.
-- `crates/assist/src/local/tests.rs` (1180) The helper on this computer, proved without a gigabyte or a network: a model of a few dozen kilobytes that the test writes itself, and a server on loopback for the download.
-- `crates/assist/src/local.rs` (920) The helper on this computer: a quantized model read from a GGUF file and run on the CPU, with `candle`.
+- `crates/assist/src/local/tests.rs` (1227) The helper on this computer, proved without a gigabyte or a network: a model of a few dozen kilobytes that the test writes itself, and a server on loopback for the download.
+- `crates/assist/src/local.rs` (972) The helper on this computer: a quantized model read from a GGUF file and run on the CPU, with `candle`.
 - `crates/assist/src/machine.rs` (784) What this computer already has that could answer, and the first-run card's rows in the order they are offered.
 - `crates/assist/src/models.rs` (136) The Claude models Assist offers, in words, with what a paragraph costs.
 - `crates/assist/src/offline.rs` (66) A process that must reach nothing: one under a test.
-- `crates/assist/src/prompt.rs` (128) What a helper is told before any request: the editor's instructions.
+- `crates/assist/src/prompt.rs` (138) What a helper is told before any request: the editor's instructions.
 - `crates/assist/src/provider.rs` (531) The one shape every helper answers in, and the helper the settings name.
 - `crates/assist/src/scripted.rs` (171) A helper that plays canned turns: the only helper a test may use.
 - `crates/assist/src/session.rs` (166) A conversation with one helper, and the loop that runs its tools.

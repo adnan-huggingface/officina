@@ -6987,6 +6987,23 @@ Test: `lines_pasted_at_a_headings_end_and_rejected_leave_it_a_heading`. Three
 mutations, one rule broken at a time, were each caught. A fourth, which applies
 the rule to pastes within one paragraph too, changes nothing a test can see.
 
+## The helper on this computer, asked for a story, wrote one sentence (2026-09-20)
+
+The user's third fault from their own desk, and the first about what the
+helper writes: *"write a story about a dog"* got `"This is a story about a
+dog."` Measured against the real weights with the spike, which now sends
+what Scriva sends (`--scriva`, `--ask=`, `--greedy`): the same model given
+the brief alone wrote a 159-token story in its reply; given the brief with
+Scriva's tools and the empty document it wrote the one sentence, greedy or
+sampled alike, to the character. One line in `assist::prompt::EDITOR` — new writing is a whole
+piece at the length asked for, and one sentence is not a story — and it
+wrote 163 tokens of story through `insert_paragraphs`. The prompt test pins
+the line. Besides: the local helper samples the next token as Qwen's card
+says (top-k 20, top-p 0.8, temperature 0.7, seeded from the clock) instead of
+decoding greedily, which the card says degrades and repeats; a test proves
+two answers to one request differ, and two mutations are caught. Note:
+`bugs/the-story-was-one-sentence.md`; lessons in LEARNINGS.md.
+
 ## A card showed the Markdown the helper typed, not the change (2026-09-20)
 
 Found in the same sitting as the fault below, and the same kind: the pane's

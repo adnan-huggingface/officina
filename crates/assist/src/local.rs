@@ -26,6 +26,8 @@ use std::sync::{Arc, Mutex};
 
 use candle_core::quantized::gguf_file;
 use candle_core::{Device, Tensor};
+use candle_transformers::generation::LogitsProcessor;
+pub use candle_transformers::generation::Sampling;
 use candle_transformers::models::quantized_qwen3::ModelWeights;
 use serde_json::{json, Value};
 use tokenizers::Tokenizer;
@@ -113,6 +115,23 @@ pub const MODEL: Model = Model {
 /// How many tokens one answer may be. A helper that never stops is worse
 /// than one that stops early: the person can ask again.
 pub const MOST_TOKENS: usize = 1_024;
+
+/// How the next token is chosen: Qwen's own recommendation for Qwen3 with
+/// thinking off, from the model's card.
+///
+/// **Taking the likeliest token every time is what the model's authors say
+/// not to do** — "it can lead to performance degradation and endless
+/// repetitions" — and it is what the first release did, out of ignorance
+/// rather than choice. Sampling from the twenty likeliest tokens, within the
+/// top 80% of probability, at a temperature of 0.7, is what the model was
+/// tuned to be read with. It also means Try Again asks again rather than
+/// replaying the same answer. (It is not what fixed the one-sentence story
+/// in LEARNINGS.md: on that request the two decodings agreed to the token.)
+pub const SAMPLING: Sampling = Sampling::TopKThenTopP {
+    k: 20,
+    p: 0.8,
+    temperature: 0.7,
+};
 
 /// Where the weights live: `<cache>/models/<model>/`.
 pub fn folder(cache: &Path) -> PathBuf {
@@ -462,6 +481,9 @@ struct Ready {
     /// past the end of its own tables — so the request and the answer
     /// together are kept inside it.
     context: usize,
+    /// How the next token is chosen: [`SAMPLING`], but a test that has to
+    /// know what the model will say first may make it greedy.
+    sampling: Sampling,
 }
 
 /// The model read from disk, kept for as long as the helper is the chosen
@@ -559,8 +581,19 @@ impl Local {
                 device,
                 ends,
                 context,
+                sampling: SAMPLING,
             })),
         })
+    }
+
+    /// Chooses the next token some other way than [`SAMPLING`] — greedily,
+    /// for the spike to hear the difference, or for a test that has to know
+    /// what the model will say first.
+    pub fn choosing(&self, sampling: Sampling) {
+        self.ready
+            .lock()
+            .unwrap_or_else(|held| held.into_inner())
+            .sampling = sampling;
     }
 
     /// Generates, with the model locked for as long as it takes: one request
@@ -603,6 +636,13 @@ impl Ready {
         let mut shown = String::new();
         let mut made: Vec<u32> = Vec::new();
         let mut ending = Ending::TooLong;
+        // Seeded from the clock: two requests with the same words are two
+        // requests, and the second is a person asking again.
+        let seed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|since| since.as_nanos() as u64)
+            .unwrap_or(0);
+        let mut choose = LogitsProcessor::from_sampling(seed, self.sampling.clone());
         if input >= self.context {
             return Err(Failure::new(
                 FailureKind::Rejected { status: 0 },
@@ -637,7 +677,7 @@ impl Ready {
                 .model
                 .forward(&input_tensor, offset)
                 .map_err(|why| garbled(format!("the model stopped part way ({why})")))?;
-            let next = last_token(&logits)
+            let next = next_token(&logits, &mut choose)
                 .map_err(|why| garbled(format!("the model's answer could not be read ({why})")))?;
             if self.ends.contains(&next) {
                 ending = Ending::Finished;
@@ -676,7 +716,14 @@ impl Local {
             .and_then(|t| t.unsqueeze(0))
             .expect("a tensor");
         let logits = ready.model.forward(&input, 0).expect("a forward pass");
-        vec![last_token(&logits).expect("a token")]
+        let mut greedy = LogitsProcessor::from_sampling(0, Sampling::ArgMax);
+        vec![next_token(&logits, &mut greedy).expect("a token")]
+    }
+
+    /// Makes this helper take the likeliest token every time, for a test
+    /// that has to know what it will say.
+    fn decides_greedily(&self) {
+        self.choosing(Sampling::ArgMax);
     }
 
     /// Whether two helpers are the same model in memory — the rule that the
@@ -750,14 +797,19 @@ fn words_of(said: &str) -> String {
     out
 }
 
-/// The most likely token of the last position of a model's answer.
-fn last_token(logits: &Tensor) -> candle_core::Result<u32> {
+/// The next token of the answer, chosen by `choose` from the logits of the
+/// last position, whatever shape the model handed back.
+fn next_token(logits: &Tensor, choose: &mut LogitsProcessor) -> candle_core::Result<u32> {
+    choose.sample(&last_logits(logits)?)
+}
+
+/// The logits for the next token alone, whatever shape the model handed back.
+fn last_logits(logits: &Tensor) -> candle_core::Result<Tensor> {
     let logits = logits.squeeze(0)?;
-    let logits = match logits.dims().len() {
-        2 => logits.get(logits.dim(0)? - 1)?,
-        _ => logits,
-    };
-    logits.argmax(candle_core::D::Minus1)?.to_scalar::<u32>()
+    match logits.dims().len() {
+        2 => logits.get(logits.dim(0)? - 1),
+        _ => Ok(logits),
+    }
 }
 
 fn garbled(why: String) -> Failure {

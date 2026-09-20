@@ -11,13 +11,41 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
-use assist::local::{self, Local};
-use assist::{Conversation, Effort, Message, Provider, Request, StopFlag};
+use assist::local::{self, Local, Sampling};
+use assist::{Block, Conversation, Effort, Message, Provider, Request, StopFlag};
 
 /// Runs the model and says how it went. An optional argument is the folder
-/// the weights are in; the default is where Officina itself puts them.
+/// the weights are in; the default is where Officina itself puts them. An
+/// argument `--ask=<words>` is the request to make instead of the standard
+/// one, for hearing how the model does at something a person asked;
+/// `--scriva` sends it the way Scriva does, with Scriva's tools and an empty
+/// document of one paragraph, so that what is heard is what a person would
+/// see; and `--greedy` takes the likeliest token every time, as the first
+/// release did, to hear the difference sampling makes.
 pub fn run(args: &[String]) -> Result<(), String> {
-    let folder = match args.first() {
+    let (flags, folders): (Vec<&String>, Vec<&String>) =
+        args.iter().partition(|arg| arg.starts_with("--"));
+    let asks: Vec<&String> = flags
+        .iter()
+        .copied()
+        .filter(|flag| flag.starts_with("--ask="))
+        .collect();
+    let as_scriva = flags.iter().any(|flag| *flag == "--scriva");
+    let greedy = flags.iter().any(|flag| *flag == "--greedy");
+    // A flag mistyped is a condition not measured, and a difference that is
+    // no difference would go into the record as fact.
+    if let Some(unknown) = flags.iter().find(|flag| {
+        !["--scriva", "--greedy"].contains(&flag.as_str()) && !flag.starts_with("--ask=")
+    }) {
+        return Err(format!(
+            "assist-spike does not know {unknown}: it takes a folder, --ask=<words>, --scriva \
+             and --greedy"
+        ));
+    }
+    if asks.len() > 1 {
+        return Err("assist-spike takes one --ask=".to_owned());
+    }
+    let folder = match folders.first() {
         Some(given) => PathBuf::from(given),
         None => {
             let cache = ui_kit::paths::cache_dir(ui_kit::OFFICINA)
@@ -31,15 +59,38 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let read = started.elapsed();
     println!("  {} read in {:.1}s", local::MODEL.name, read.as_secs_f64());
 
-    let asked = "Rewrite this sentence so that it is plainer, and say nothing else: \
-                 The thing about the situation is that it is one which we have to deal \
-                 with in a manner that is timely.";
+    let standard = "Rewrite this sentence so that it is plainer, and say nothing else: \
+                    The thing about the situation is that it is one which we have to deal \
+                    with in a manner that is timely.";
+    let asked = match asks.first() {
+        Some(ask) => ask.trim_start_matches("--ask="),
+        None => standard,
+    };
+    if greedy {
+        local.choosing(Sampling::ArgMax);
+        println!("  choosing greedily");
+    }
+    let document = wp_model::doc::Document::blank();
+    let sent = match as_scriva {
+        true => scriva::assistant::request(
+            &document,
+            scriva::edit::Selection::default(),
+            scriva::assistant::About::Paragraph,
+            asked,
+            0,
+        ),
+        false => asked.to_owned(),
+    };
+    let tools = match as_scriva {
+        true => scriva::assistant::tools(),
+        false => Vec::new(),
+    };
     let mut conversation = Conversation::default();
-    conversation.push(Message::user(asked));
+    conversation.push(Message::user(&sent));
     let system = assist::prompt::scriva();
     let request = Request {
         system: &system,
-        tools: &[],
+        tools: &tools,
         conversation: &conversation,
         effort: Effort::Low,
     };
@@ -78,6 +129,12 @@ pub fn run(args: &[String]) -> Result<(), String> {
         took.as_secs_f64()
     );
     println!("  it said: {}", said.trim());
+    for block in &answer.message.content {
+        if let Block::ToolCall(call) = block {
+            println!("  it called {}:", call.name);
+            println!("{:#}", call.input);
+        }
+    }
     if let Some(peak) = peak_memory() {
         println!("  memory: {} at its highest", local::size_of(peak));
     }

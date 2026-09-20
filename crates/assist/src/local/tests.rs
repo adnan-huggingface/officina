@@ -195,6 +195,7 @@ fn a_tiny_random_model_generates_tokens_stops_at_the_end_token_and_honours_stop(
         conversation: &asked("w3 w4"),
         effort: Effort::Low,
     };
+    local.decides_greedily();
     local.ends_at(local.said_first(&prompt_for(&request)));
     let answer = local.answer(&request, &StopFlag::default(), &mut |_| {});
     assert!(
@@ -295,6 +296,52 @@ fn a_tiny_random_model_generates_tokens_stops_at_the_end_token_and_honours_stop(
     let failed = Local::with(&mut file, tiny_tokenizer(&words));
     assert!(failed.is_err());
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The next token is sampled the way the model's card says, not taken
+/// greedily: asked the same thing twice, a model of arbitrary weights says
+/// two different things. (Greedy decoding says the same thing every time —
+/// and, in a small model, the dullest thing it can.)
+#[test]
+fn the_helper_samples_its_words_rather_than_taking_the_likeliest_every_time() {
+    assert_eq!(
+        SAMPLING,
+        Sampling::TopKThenTopP {
+            k: 20,
+            p: 0.8,
+            temperature: 0.7
+        },
+        "Qwen's recommendation for thinking off"
+    );
+    let dir = scratch("sampled");
+    let path = dir.join("tiny.gguf");
+    tiny_model(&path, 2, 64, 96);
+    let words: Vec<String> = (0..80).map(|n| format!("w{n}")).collect();
+    let words: Vec<&str> = words.iter().map(String::as_str).collect();
+    let mut file = std::fs::File::open(&path).expect("it opens");
+    let mut local = Local::with(&mut file, tiny_tokenizer(&words)).expect("it loads");
+    // No end token to reach, so each answer runs to the room the model has.
+    local.ends_at(Vec::new());
+    let request = Request {
+        system: "You are a helper.",
+        tools: &[],
+        conversation: &asked("w3 w4"),
+        effort: Effort::Low,
+    };
+    let mut answers = Vec::new();
+    for _ in 0..2 {
+        let mut said = String::new();
+        let answer = local.answer(&request, &StopFlag::default(), &mut |words| {
+            said.push_str(words)
+        });
+        assert!(answer.ending.is_ok(), "{:?}", answer.ending);
+        assert!(answer.usage.output > 20, "{} tokens", answer.usage.output);
+        answers.push(said);
+    }
+    assert_ne!(
+        answers[0], answers[1],
+        "two answers to one request are two answers"
+    );
 }
 
 /// What the model writes becomes the same events every other helper's answer

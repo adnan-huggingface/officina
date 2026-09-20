@@ -5272,6 +5272,7 @@ version = "0.1.0"
 dependencies = [
  "assist",
  "ooxml",
+ "scriva",
  "ss-formula",
  "ss-model",
  "ss-xlsx",
