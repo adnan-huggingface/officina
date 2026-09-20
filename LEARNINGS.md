@@ -2477,3 +2477,11 @@ processor does it at ten to twenty tokens a second. A graphics processor does
 the same in a fraction of a second. That is the whole of the hardware question
 for a local helper, and it is not answered by a smaller model.
 
+**The bar is met by hardware, not by a smaller model.** The 8B that took 48 s
+to its first word on a Ryzen 9700X took 4.2 s on an RTX 3090 through Ollama,
+the same twenty requests, and passed 17 of 20 against 14 — the extra three
+are what a model does when it is not being stopped for taking too long. The
+2,500-token report was read in four seconds. A local assistant's minimum
+hardware is a graphics processor that holds an 8B model; below that, the
+honest offer is a helper somewhere else.
+

@@ -7030,6 +7030,10 @@ twelve things, three of them dead ends for a person — the card lighting a row
 that cannot be chosen, a saved `local` pointed at a download Settings would
 not offer, Remove hidden while the withdrawn model sat on the disk — all
 fixed and tested; thirty-one mutations caught.
+The deck then took `--ollama=<model>` and ran the same 8B on the RTX 3090
+through Ollama: **17 of 20, 4.2 s median first word, 9.4 s median total, no
+false claims** — the bar met, by the model in the catalogue, on a graphics
+processor. A GPU is the hardware requirement for a local assistant.
 
 ## The helper on this computer, asked for a story, wrote one sentence (2026-09-20)
 

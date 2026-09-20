@@ -1,5 +1,6 @@
-//! `cargo xtask assist-eval [<cache folder> | <model.gguf>]` — the deck: the
-//! bar's six items as some twenty requests, run against real weights by hand.
+//! `cargo xtask assist-eval [<cache folder> | <model.gguf> | --ollama=<model>]`
+//! — the deck: the bar's six items as some twenty requests, run against real
+//! weights by hand, on this processor or through an Ollama on this computer.
 //!
 //! **Hand-run, never in the gate.** It reads a model as the spike does and puts
 //! it through the requests a person makes in the first ten minutes, each
@@ -31,15 +32,20 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let given = args.iter().find(|arg| !arg.starts_with("--"));
     // A flag mistyped is a condition not measured, and a difference that is
     // no difference would go into the record as fact.
-    if let Some(unknown) = args
-        .iter()
-        .find(|arg| arg.starts_with("--") && !arg.starts_with("--patience="))
-    {
+    if let Some(unknown) = args.iter().find(|arg| {
+        arg.starts_with("--") && !arg.starts_with("--patience=") && !arg.starts_with("--ollama=")
+    }) {
         return Err(format!(
-            "assist-eval does not know {unknown}: it takes a folder or a .gguf, and \
-             --patience=<seconds>"
+            "assist-eval does not know {unknown}: it takes a folder or a .gguf, or \
+             --ollama=<model>, and --patience=<seconds>"
         ));
     }
+    // Through an Ollama on this computer — the way a model reaches the
+    // graphics processor that Officina's own helper cannot use yet.
+    let ollama = args
+        .iter()
+        .find_map(|arg| arg.strip_prefix("--ollama="))
+        .map(str::to_owned);
     let patience = args
         .iter()
         .find_map(|arg| arg.strip_prefix("--patience="))
@@ -54,24 +60,37 @@ pub fn run(args: &[String]) -> Result<(), String> {
         None => ui_kit::paths::cache_dir(ui_kit::OFFICINA)
             .map_err(|why| format!("the cache directory: {why}"))?,
     };
-    println!("Reading {}", folder.display());
-    let started = Instant::now();
-    let model = match folder.extension().is_some_and(|ext| ext == "gguf") {
-        true => {
-            let mut file = std::fs::File::open(&folder).map_err(|why| why.to_string())?;
-            let tokenizer = folder.with_file_name("tokenizer.json");
-            Local::read(&mut file, &tokenizer).map_err(|failure| failure.sentence)?
+    let mut helper: Box<dyn FnMut() -> Box<dyn Provider>> = match ollama {
+        Some(model) => {
+            println!("Asking Ollama at 127.0.0.1:11434 for {model}");
+            Box::new(move || {
+                Box::new(assist::Compatible::new(
+                    "Ollama",
+                    "http://127.0.0.1:11434/v1",
+                    None,
+                    &model,
+                ))
+            })
         }
-        false => Local::load(&folder, &local::MODELS[0]).map_err(|failure| failure.sentence)?,
+        None => {
+            println!("Reading {}", folder.display());
+            let started = Instant::now();
+            let model = match folder.extension().is_some_and(|ext| ext == "gguf") {
+                true => {
+                    let mut file = std::fs::File::open(&folder).map_err(|why| why.to_string())?;
+                    let tokenizer = folder.with_file_name("tokenizer.json");
+                    Local::read(&mut file, &tokenizer).map_err(|failure| failure.sentence)?
+                }
+                false => {
+                    Local::load(&folder, &local::MODELS[0]).map_err(|failure| failure.sentence)?
+                }
+            };
+            println!("  read in {:.1}s", started.elapsed().as_secs_f64());
+            let shared = Arc::new(Mutex::new(model));
+            Box::new(move || Box::new(Shared(Arc::clone(&shared))))
+        }
     };
-    println!("  read in {:.1}s", started.elapsed().as_secs_f64());
-    let shared = Arc::new(Mutex::new(model));
-    let outcomes = play(
-        &deck(),
-        &mut || Box::new(Shared(Arc::clone(&shared))),
-        Duration::from_secs(patience),
-        true,
-    );
+    let outcomes = play(&deck(), &mut *helper, Duration::from_secs(patience), true);
     println!("{}", table(&outcomes));
     println!("\nFor a person to judge:");
     for outcome in outcomes.iter().filter(|outcome| outcome.case.judged) {

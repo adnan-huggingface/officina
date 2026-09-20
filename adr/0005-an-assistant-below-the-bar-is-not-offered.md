@@ -121,3 +121,10 @@ private and worth having. The alternative — offering the 4B with an honest
 (`FIRST_WORD_BAR`), and it was the user's decision that a helper below the bar
 is not an assistant.
 
+**The same evening, the other half of the measurement.** The same 8B, run on
+this workstation's graphics processor through Ollama and asked the same twenty
+requests: 17 of 20, 4.2 s to the first word at the median, 9.4 s a request, no
+claim without a card. The bar is met — by the model the catalogue already
+names, on the hardware the card already points at. What is missing is only
+Officina's own runtime on that hardware.
+
