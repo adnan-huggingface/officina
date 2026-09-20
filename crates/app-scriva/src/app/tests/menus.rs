@@ -811,7 +811,7 @@ fn the_guide_says_what_the_assistant_needs_of_a_computer() {
     for model in &::assist::local::MODELS {
         let needs = ::assist::local::size_of(model.memory + ::assist::machine::ROOM);
         assert!(
-            costs.contains(&format!("{needs} of memory"))
+            costs.contains(&format!("{needs} of the computer's memory"))
                 || costs.contains(&format!("and {needs} for")),
             "the guide says {} needs {needs}: {costs}",
             model.name
@@ -819,11 +819,43 @@ fn the_guide_says_what_the_assistant_needs_of_a_computer() {
     }
     assert!(costs.contains("processor"), "{costs}");
     assert!(
-        costs.contains("no processor alone yet meets"),
+        costs.contains("no processor alone meets"),
         "the measured wait: {costs}"
     );
-    assert!(costs.contains("says so"), "{costs}");
+    assert!(
+        costs.contains("On a graphics processor it is a few seconds"),
+        "{costs}"
+    );
+    assert!(costs.contains("is not offered"), "{costs}");
     assert!(costs.contains("Ollama or Claude"), "{costs}");
+}
+
+/// The guide says which of the two builds to take for a computer with a
+/// graphics processor, what the card memory each model needs is, and what
+/// happens without the driver.
+#[test]
+fn the_guide_says_which_build_to_take_for_a_graphics_processor() {
+    let guide = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../GUIDE.md"))
+        .expect("GUIDE.md");
+    let costs = guide_section(&guide, "## The assistant");
+    let costs: String = costs.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(costs.contains("`-nvidia` archive"), "{costs}");
+    // The driver alone is not enough, and the guide must not say it is.
+    assert!(costs.contains("CUDA 12 runtime libraries"), "{costs}");
+    assert!(costs.contains("`libcublas`"), "{costs}");
+    assert!(costs.contains("will not start without them"), "{costs}");
+    assert!(
+        costs.contains("2020"),
+        "the oldest card it runs on: {costs}"
+    );
+    for model in &::assist::local::MODELS {
+        let needs = ::assist::local::size_of(model.memory + ::assist::machine::CARD_ROOM);
+        assert!(
+            costs.contains(&needs),
+            "the card memory {} needs: {needs} — {costs}",
+            model.name
+        );
+    }
 }
 
 fn guide_section<'a>(guide: &'a str, heading: &str) -> &'a str {

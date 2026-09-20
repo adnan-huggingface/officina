@@ -57,3 +57,8 @@ clipboard-win = "5"
 # wp-docx and wp-odf already read every part through it.
 [dev-dependencies]
 quick-xml = "0.41.0"
+
+[features]
+# The graphics build: the helper on this computer runs on an NVIDIA graphics
+# processor. Off by default; the portable build has none of it.
+cuda = ["ui-kit/cuda"]

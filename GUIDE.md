@@ -293,14 +293,22 @@ Assist asks you once, before it can do anything, which helper should answer:
   computer.** It is slower than the others — it reworks a paragraph, answers
   about a document, writes a passage, and puts formulas in cells — and it reads
   your request before it writes anything, so the first word takes a while on a
-  processor alone. **What it needs of a computer:** 8.5 GB of memory
-  for the smaller helper and 12 GB for the larger, with room over for your
-  documents, a processor from about 2015 on — and, measured, a wait before the
-  first word that no processor alone yet meets: about a minute on a fast
-  desktop. So until Officina's own helper can use a graphics processor, the
-  first-run card says so, in words, and offers Ollama or Claude instead — never
-  a helper too small or too slow to trust. The pane's `⋯` menu ▸ Settings
-  removes the downloaded helpers again and says how much space came back.
+  processor alone. **What it needs of a computer:** 8.5 GB of the
+  computer's memory for the smaller helper and 12 GB for the larger, with room
+  over for your documents, a processor from about 2015 on — and, measured, a wait before the
+  first word that no processor alone meets: about a minute on a fast desktop.
+  **On a graphics processor it is a few seconds.** So Officina comes in two
+  builds: the plain archive, for every computer, whose first-run card says the
+  helper on this computer is not offered and points at Ollama or Claude; and
+  the **`-nvidia` archive**, for a computer with an NVIDIA graphics processor,
+  which runs the helper there — the larger where the card has 8.5 GB of its
+  own memory, the smaller from 5.5 GB. Take the `-nvidia` one if you have such
+  a card from 2020 on (the GeForce RTX 30 series or later). It needs NVIDIA's driver **and its CUDA 12 runtime libraries**
+  (`libcublas` and `libcurand`, from the CUDA toolkit or your distribution's
+  `libcublas12`/`libcurand10` packages): it will not start without them, and
+  the plain one names the card it could have used. The pane's `⋯` menu ▸
+  Settings removes the downloaded helpers again and says how much space came
+  back.
 - **Claude**, with an API key of your own (a Claude.ai subscription is not one).
   What is sent costs you money at Anthropic's prices; what it has cost so far is
   in the pane's `⋯` menu ▸ Settings.

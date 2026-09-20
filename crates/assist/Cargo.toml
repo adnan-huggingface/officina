@@ -34,3 +34,10 @@ ahash = "0.8"
 # For the memory probe of the computer the first-run card examines.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_System_SystemInformation"] }
+
+[features]
+# The helper on this computer's graphics processor: candle's CUDA kernels,
+# compiled with the CUDA toolkit on the build machine and linked against the
+# driver on the running one. Off by default: the portable build has none of
+# it, and the gate builds without it.
+cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]

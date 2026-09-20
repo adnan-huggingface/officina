@@ -410,8 +410,10 @@ impl SettingsBox {
         // The model: the one the settings name, or the one the look found
         // this computer can run.
         if self.draft.local.model.trim().is_empty() {
-            if let Some(Row::Local(offered)) =
-                self.found.iter().find(|row| matches!(row, Row::Local(_)))
+            if let Some(Row::Local { model: offered, .. }) = self
+                .found
+                .iter()
+                .find(|row| matches!(row, Row::Local { .. }))
             {
                 self.draft.local.model = offered.folder.to_owned();
             }

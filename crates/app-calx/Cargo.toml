@@ -44,3 +44,8 @@ arboard = { version = "3", default-features = false }
 # crate arboard itself uses underneath, not a new dependency.
 [target.'cfg(windows)'.dependencies]
 clipboard-win = "5"
+
+[features]
+# The graphics build: the helper on this computer runs on an NVIDIA graphics
+# processor. Off by default; the portable build has none of it.
+cuda = ["ui-kit/cuda"]

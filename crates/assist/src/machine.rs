@@ -114,8 +114,8 @@ pub struct Hardware {
     /// read with at any speed: AVX2 on x86-64 (roughly 2015 on), always on
     /// arm64.
     pub fast_vectors: bool,
-    /// A graphics processor with its own memory, when one is there. Officina's
-    /// own helper does not use it yet; Ollama on the same computer would.
+    /// A graphics processor with its own memory, when one is there, and
+    /// whether this build can use it.
     pub graphics: Option<Graphics>,
 }
 
@@ -124,7 +124,14 @@ pub struct Graphics {
     pub name: String,
     /// Its memory in bytes, when the driver says.
     pub memory: Option<u64>,
+    /// Whether this build of Officina can run a model on it: the kernels
+    /// are in the build and the driver answered for the device. A card that
+    /// is there but not usable is named, and the other build pointed at.
+    pub usable: bool,
 }
+
+/// What a card keeps for itself beside a model: the context, the display.
+pub const CARD_ROOM: u64 = 1_000_000_000;
 
 /// What the rest of the computer needs while a model runs: the applications,
 /// the document, the system. A model is offered only where it and this fit
@@ -147,9 +154,9 @@ pub const FIRST_WORD_BAR: u32 = 5;
 /// it works in, with [`ROOM`] over for everything else; and the measured
 /// wait before the first word on a processor alone, against
 /// [`FIRST_WORD_BAR`]. As measured (`bugs/assist-bar.md`), no model of the
-/// catalogue meets that wait on a processor alone, so today the answer is
-/// none on every computer — until Officina's helper can use a graphics
-/// processor. The machinery is kept, and tested, for that day.
+/// catalogue meets that wait on a processor alone, so on a processor the
+/// answer is none; on a graphics processor this build can use, the card's
+/// memory and the card's measured wait decide.
 pub fn tier(hardware: &Hardware) -> Option<&'static crate::local::Model> {
     tier_of(hardware, &crate::local::MODELS)
 }
@@ -159,11 +166,22 @@ pub fn tier_of<'a>(
     hardware: &Hardware,
     models: &'a [crate::local::Model],
 ) -> Option<&'a crate::local::Model> {
+    // A graphics processor this build can use: the largest model its memory
+    // holds with room over, at the card's measured wait. The processor's
+    // memory and instructions do not come into it.
+    if let Some(card) = hardware.graphics.as_ref().filter(|card| card.usable) {
+        let memory = card.memory.unwrap_or(0);
+        return models.iter().rev().find(|model| {
+            model.memory.saturating_add(CARD_ROOM) <= memory
+                && model.waits.graphics <= FIRST_WORD_BAR
+        });
+    }
     if !hardware.fast_vectors {
         return None;
     }
     models.iter().rev().find(|model| {
-        model.memory.saturating_add(ROOM) <= hardware.memory && model.first_word <= FIRST_WORD_BAR
+        model.memory.saturating_add(ROOM) <= hardware.memory
+            && model.waits.processor <= FIRST_WORD_BAR
     })
 }
 
@@ -193,6 +211,28 @@ pub fn why_not(hardware: &Hardware) -> String {
 /// The same, over any catalogue.
 pub fn why_not_of(hardware: &Hardware, models: &[crate::local::Model]) -> String {
     let smallest = &models[0];
+    // A usable card that is not offered a model: too little memory, or a
+    // wait not yet measured — said as the card's, since the processor was
+    // not asked.
+    if let Some(card) = hardware.graphics.as_ref().filter(|card| card.usable) {
+        let needs = crate::local::size_of(smallest.memory + CARD_ROOM);
+        let mut why = match card.memory {
+            Some(memory) if memory < smallest.memory.saturating_add(CARD_ROOM) => format!(
+                "This computer's graphics processor has {} of its own memory; a helper worth \
+                 having needs {needs} of it.",
+                crate::local::size_of(memory)
+            ),
+            Some(_) => "Officina has not yet measured its helper on a graphics processor like \
+                        this one, so it does not offer one here yet."
+                .to_owned(),
+            None => format!(
+                "Officina could not tell how much memory of its own this computer's graphics \
+                 processor has; a helper worth having needs {needs} of it."
+            ),
+        };
+        why.push_str(" Ollama on this computer, or Claude, can answer.");
+        return why;
+    }
     let needs = crate::local::size_of(smallest.memory + ROOM);
     let has = crate::local::size_of(hardware.memory);
     let fits = hardware.memory >= smallest.memory.saturating_add(ROOM);
@@ -211,16 +251,19 @@ pub fn why_not_of(hardware: &Hardware, models: &[crate::local::Model]) -> String
         // Room enough, and still no: the wait. Said with the measured number,
         // so that the sentence changes when the number does.
         (true, _, true) => format!(
-            "On this computer's processor alone, Officina's own helper would take about {} \
-             before its first word; a helper worth having takes a few seconds.",
-            seconds(smallest.first_word)
+            "On this computer's processor alone, Officina's own helper would take {} before \
+             its first word; a helper worth having takes a few seconds.",
+            seconds(smallest.waits.processor)
         ),
     };
     match &hardware.graphics {
-        Some(_) => why.push_str(
-            " It has a graphics processor that Officina's own helper cannot use yet — Ollama on \
-             this computer would.",
-        ),
+        // Named, since the other build of Officina would use it — and so
+        // would Ollama.
+        Some(card) => why.push_str(&format!(
+            " It has a graphics processor ({}) that this build of Officina cannot use: the \
+             graphics build would, and so would Ollama on this computer.",
+            card.name
+        )),
         None => {
             why.push_str(" Ollama on a computer with a graphics processor, or Claude, can answer.")
         }
@@ -418,8 +461,12 @@ pub enum Row {
     /// is the one the row offers.
     OllamaHere { models: Vec<Installed> },
     /// The helper on this computer, downloaded once: the largest model of
-    /// the catalogue the computer can run.
-    Local(crate::local::Model),
+    /// the catalogue the computer can run, and where — the graphics
+    /// processor the tier judged, or the processor.
+    Local {
+        model: crate::local::Model,
+        on: crate::local::Where,
+    },
     /// No helper on this computer: what it lacks, and what would answer
     /// instead. Shown, not choosable.
     NoLocal { because: String },
@@ -429,14 +476,14 @@ pub enum Row {
     Service,
 }
 
-/// A wait in words: "a few seconds", "half a minute", "a minute".
+/// A wait in words: "a few seconds", "about half a minute", "about a minute".
 fn seconds(n: u32) -> String {
     match n {
         0..=9 => "a few seconds".to_owned(),
-        10..=19 => "a quarter of a minute".to_owned(),
-        20..=44 => "half a minute".to_owned(),
-        45..=89 => "a minute".to_owned(),
-        _ => format!("{} minutes", n.div_ceil(60)),
+        10..=19 => "about a quarter of a minute".to_owned(),
+        20..=44 => "about half a minute".to_owned(),
+        45..=89 => "about a minute".to_owned(),
+        _ => format!("about {} minutes", n.div_ceil(60)),
     }
 }
 
@@ -451,7 +498,9 @@ impl Row {
                 Some(model) => format!("Ollama on this computer ({})", model.name),
                 None => "Ollama on this computer".into(),
             },
-            Row::Local(model) => format!("A helper on this computer ({})", model.short_name()),
+            Row::Local { model, .. } => {
+                format!("A helper on this computer ({})", model.short_name())
+            }
             Row::NoLocal { .. } => "No helper on this computer".into(),
             Row::ClaudeWithKey => "Claude, over the internet".into(),
             Row::Service => "Another service (advanced)".into(),
@@ -482,19 +531,25 @@ impl Row {
             Row::OllamaHere { .. } => "Ollama runs on this computer, so nothing you write \
                                        leaves it. How quickly it answers depends on this computer."
                 .into(),
-            Row::Local(model) => {
+            Row::Local { model, on } => {
                 // What will be downloaded, before anything is: the model, its
                 // licence and its size, from the constant that also says what
-                // the download must hash to.
+                // the download must hash to — and where it will run, at what
+                // wait, from the measured numbers for that kind of device.
+                let wait = match on {
+                    crate::local::Where::Graphics => model.waits.graphics,
+                    crate::local::Where::Processor => model.waits.processor,
+                };
                 format!(
                     "Free and private: nothing you write leaves this computer. Downloads {} \
-                     once ({}, {}), and uses about {} of memory while it works. Slower than \
-                     Claude: the first word of an answer takes about {} on a processor alone.",
+                     once ({}, {}), and uses about {} of memory while it works {}. The first \
+                     word of an answer takes {}.",
                     crate::local::size_of(model.bytes()),
                     model.short_name(),
                     model.licence,
                     crate::local::size_of(model.memory),
-                    seconds(model.first_word),
+                    on.words(),
+                    seconds(wait),
                 )
             }
             Row::NoLocal { because } => because.clone(),
@@ -533,7 +588,7 @@ impl Row {
                     settings.ollama.model = model.name.clone();
                 }
             }
-            Row::Local(model) => {
+            Row::Local { model, .. } => {
                 settings.helper = Some(Choice::Local);
                 settings.local.model = model.folder.to_owned();
             }
@@ -619,6 +674,29 @@ mod probe {
     /// NVIDIA's is asked for now: it is the one candle could use, and the one
     /// most likely to be running an Ollama.
     pub fn graphics() -> Option<Graphics> {
+        let usable = crate::local::runs_on() == crate::local::Where::Graphics;
+        card_from(named_graphics(usable), usable)
+    }
+
+    /// The card, from what the driver's tool named and whether the device
+    /// answered: the tool's card when it named one; a card of unknown memory
+    /// when the device answered but the tool is not on the path — so that
+    /// the sentence for that case is said rather than the processor judged;
+    /// none otherwise.
+    pub fn card_from(named: Option<Graphics>, usable: bool) -> Option<Graphics> {
+        match (named, usable) {
+            (Some(card), _) => Some(card),
+            (None, true) => Some(Graphics {
+                name: "an NVIDIA graphics processor".to_owned(),
+                memory: None,
+                usable: true,
+            }),
+            (None, false) => None,
+        }
+    }
+
+    /// The graphics processor as its driver's own tool names it.
+    fn named_graphics(usable: bool) -> Option<Graphics> {
         // Asked the way `ant` is: no console window on Windows, and a
         // deadline, since a driver asleep can take seconds to answer.
         let mut command = std::process::Command::new("nvidia-smi");
@@ -636,6 +714,7 @@ mod probe {
         Some(Graphics {
             name: name.trim().to_owned(),
             memory,
+            usable,
         })
     }
 }
@@ -679,8 +758,12 @@ pub fn ladder_of(machine: &dyn Machine, models: &[crate::local::Model]) -> Vec<R
     // The helper on this computer: the largest model the computer can hold,
     // or a row that says why there is none — never a helper below the bar.
     let hardware = machine.hardware();
+    let on = match hardware.graphics.as_ref().is_some_and(|card| card.usable) {
+        true => crate::local::Where::Graphics,
+        false => crate::local::Where::Processor,
+    };
     match tier_of(&hardware, models) {
-        Some(model) => rows.push(Row::Local(*model)),
+        Some(model) => rows.push(Row::Local { model: *model, on }),
         None => rows.push(Row::NoLocal {
             because: why_not_of(&hardware, models),
         }),
@@ -699,11 +782,17 @@ mod tests {
     /// is offered on no processor alone.
     const FAST: [crate::local::Model; 2] = [
         crate::local::Model {
-            first_word: 3,
+            waits: crate::local::Waits {
+                processor: 3,
+                graphics: 1,
+            },
             ..crate::local::QWEN3_4B
         },
         crate::local::Model {
-            first_word: 4,
+            waits: crate::local::Waits {
+                processor: 4,
+                graphics: 1,
+            },
             ..crate::local::QWEN3_8B
         },
     ];
@@ -794,7 +883,14 @@ mod tests {
 
     #[test]
     fn the_ladder_offers_what_the_machine_has_in_the_order_the_card_shows() {
-        let always = [Row::Local(FAST[0]), Row::ClaudeWithKey, Row::Service];
+        let always = [
+            Row::Local {
+                model: FAST[0],
+                on: crate::local::Where::Processor,
+            },
+            Row::ClaudeWithKey,
+            Row::Service,
+        ];
         assert_eq!(
             ladder_of(&Fake::default(), &FAST),
             always,
@@ -890,7 +986,11 @@ mod tests {
             }
         }
         assert_eq!(
-            Row::Local(FAST[0]).is_ready(),
+            Row::Local {
+                model: FAST[0],
+                on: crate::local::Where::Processor
+            }
+            .is_ready(),
             crate::provider::LOCAL_READY,
             "the helper on this computer is ready when its runtime is"
         );
@@ -969,7 +1069,14 @@ mod tests {
         assert_eq!(names, ["qwen3:1.7b"], "only the model on this computer");
         assert_eq!(
             ladder_of(&Here(models[..3].to_vec()), &FAST),
-            [Row::Local(FAST[0]), Row::ClaudeWithKey, Row::Service],
+            [
+                Row::Local {
+                    model: FAST[0],
+                    on: crate::local::Where::Processor
+                },
+                Row::ClaudeWithKey,
+                Row::Service
+            ],
             "an Ollama with nothing of its own has nothing to offer"
         );
     }
@@ -1172,10 +1279,11 @@ mod tests {
             graphics: Some(Graphics {
                 name: "NVIDIA GeForce RTX 3090".into(),
                 memory: Some(24_000_000_000),
+                usable: false,
             }),
         };
         assert!(
-            why_not(&card).ends_with("Ollama on this computer would."),
+            why_not(&card).contains("the graphics build would, and so would Ollama"),
             "{}",
             why_not(&card)
         );
@@ -1214,10 +1322,10 @@ mod tests {
         // the number, and where the answer lies.
         for model in &crate::local::MODELS {
             assert!(
-                model.first_word > FIRST_WORD_BAR,
+                model.waits.processor > FIRST_WORD_BAR,
                 "{}: {}s",
                 model.name,
-                model.first_word
+                model.waits.processor
             );
         }
         let plenty = with(64_000_000_000);
@@ -1225,7 +1333,7 @@ mod tests {
         let why = why_not(&plenty);
         assert!(why.contains("before its first word"), "{why}");
         assert!(
-            why.contains(&seconds(crate::local::MODELS[0].first_word)),
+            why.contains(&seconds(crate::local::MODELS[0].waits.processor)),
             "{why}"
         );
         assert!(
@@ -1241,9 +1349,10 @@ mod tests {
         card.graphics = Some(Graphics {
             name: "NVIDIA GeForce RTX 3090".into(),
             memory: Some(24_000_000_000),
+            usable: false,
         });
         assert!(
-            why_not(&card).ends_with("Ollama on this computer would."),
+            why_not(&card).contains("the graphics build would, and so would Ollama"),
             "{}",
             why_not(&card)
         );
@@ -1255,16 +1364,20 @@ mod tests {
             },
             &FAST,
         );
-        assert_eq!(rows[0], Row::Local(*large), "16 GB holds the 8B: {rows:?}");
+        assert_eq!(
+            rows[0],
+            Row::Local {
+                model: *large,
+                on: crate::local::Where::Processor
+            },
+            "16 GB holds the 8B: {rows:?}"
+        );
         assert_eq!(rows[0].title(), "A helper on this computer (Qwen3 8B)");
         let about = rows[0].about();
         assert!(about.contains("5.0 GB"), "{about}");
         assert!(about.contains("7.5 GB of memory"), "{about}");
-        assert!(
-            about.contains("the first word of an answer takes about"),
-            "{about}"
-        );
-        assert!(about.contains(&seconds(large.first_word)), "{about}");
+        assert!(about.contains("first word of an answer takes"), "{about}");
+        assert!(about.contains(&seconds(large.waits.processor)), "{about}");
         assert!(rows[0].is_ready());
         let mut settings = Settings::default();
         rows[0].choose(&mut settings);
@@ -1274,9 +1387,189 @@ mod tests {
 
         // The words for a wait.
         assert_eq!(seconds(4), "a few seconds");
-        assert_eq!(seconds(15), "a quarter of a minute");
-        assert_eq!(seconds(30), "half a minute");
-        assert_eq!(seconds(60), "a minute");
-        assert_eq!(seconds(150), "3 minutes");
+        assert_eq!(seconds(15), "about a quarter of a minute");
+        assert_eq!(seconds(30), "about half a minute");
+        assert_eq!(seconds(60), "about a minute");
+        assert_eq!(seconds(150), "about 3 minutes");
+    }
+
+    /// A graphics processor this build can use is judged by its own memory
+    /// and the model's measured wait on a card: the largest that fits with
+    /// room over, whatever the processor and its memory are.
+    #[test]
+    fn a_usable_graphics_processor_offers_the_largest_model_it_holds_at_the_cards_wait() {
+        let card = |memory: u64| Hardware {
+            // A small, old processor: not what decides.
+            memory: 4_000_000_000,
+            fast_vectors: false,
+            graphics: Some(Graphics {
+                name: "NVIDIA GeForce RTX 3060".into(),
+                memory: Some(memory),
+                usable: true,
+            }),
+        };
+        let (small, large) = (&FAST[0], &FAST[1]);
+        assert_eq!(tier_of(&card(small.memory + CARD_ROOM - 1), &FAST), None);
+        assert_eq!(tier_of(&card(small.memory + CARD_ROOM), &FAST), Some(small));
+        assert_eq!(
+            tier_of(&card(large.memory + CARD_ROOM - 1), &FAST),
+            Some(small)
+        );
+        assert_eq!(tier_of(&card(large.memory + CARD_ROOM), &FAST), Some(large));
+        assert_eq!(tier_of(&card(24_000_000_000), &FAST), Some(large));
+
+        // Too little card memory, said as the card's; a card whose memory the
+        // driver did not say; and a card whose wait is not yet measured.
+        let why = why_not_of(&card(4_000_000_000), &FAST);
+        assert!(
+            why.starts_with("This computer's graphics processor has 4.0 GB of its own memory"),
+            "{why}"
+        );
+        assert!(
+            why.ends_with("Ollama on this computer, or Claude, can answer."),
+            "{why}"
+        );
+
+        // The device answered but the driver's tool is not on the path: a
+        // card of unknown memory, so that its sentence is said rather than
+        // the processor judged; and no card at all where neither says one.
+        let unnamed = probe::card_from(None, true).expect("a card");
+        assert!(unnamed.usable && unnamed.memory.is_none(), "{unnamed:?}");
+        assert_eq!(
+            tier_of(
+                &Hardware {
+                    memory: 64_000_000_000,
+                    fast_vectors: true,
+                    graphics: Some(unnamed.clone())
+                },
+                &FAST
+            ),
+            None
+        );
+        assert_eq!(probe::card_from(None, false), None);
+        let named = Graphics {
+            name: "GeForce".into(),
+            memory: Some(1),
+            usable: false,
+        };
+        assert_eq!(probe::card_from(Some(named.clone()), false), Some(named));
+        assert!(why.contains("needs 5.5 GB of it"), "{why}");
+        let mut unknown = card(0);
+        unknown.graphics.as_mut().unwrap().memory = None;
+        assert!(why_not_of(&unknown, &FAST).contains(
+            "could not tell how much memory of its own this computer's graphics processor has"
+        ));
+        let unmeasured = [crate::local::Model {
+            waits: crate::local::Waits {
+                processor: 1,
+                graphics: u32::MAX,
+            },
+            ..crate::local::QWEN3_8B
+        }];
+        assert_eq!(tier_of(&card(24_000_000_000), &unmeasured), None);
+        assert!(why_not_of(&card(24_000_000_000), &unmeasured).contains("not yet measured"));
+
+        // The ladder puts the card's model first, and the row says where.
+        let rows = ladder_of(
+            &Fake {
+                hardware: Some(card(24_000_000_000)),
+                ..Fake::default()
+            },
+            &FAST,
+        );
+        assert_eq!(
+            rows[0],
+            Row::Local {
+                model: *large,
+                on: crate::local::Where::Graphics
+            },
+            "{rows:?}"
+        );
+        let about = rows[0].about();
+        assert!(
+            about.contains("while it works on this computer's graphics processor"),
+            "{about}"
+        );
+        assert!(about.contains("takes a few seconds"), "{about}");
+    }
+
+    /// A graphics processor this build cannot use — the portable build, or a
+    /// driver that did not answer — is named where the computer is judged by
+    /// its processor, and the graphics build is pointed at, since it would.
+    #[test]
+    fn a_graphics_processor_this_build_cannot_use_is_named_and_the_other_build_pointed_at() {
+        let hardware = Hardware {
+            memory: 32_000_000_000,
+            fast_vectors: true,
+            graphics: Some(Graphics {
+                name: "NVIDIA GeForce RTX 3090".into(),
+                memory: Some(24_000_000_000),
+                usable: false,
+            }),
+        };
+        // Judged as a processor: the measured catalogue offers nothing there.
+        assert_eq!(tier(&hardware), None);
+        let why = why_not(&hardware);
+        assert!(
+            why.starts_with("On this computer's processor alone"),
+            "{why}"
+        );
+        assert!(why.contains("graphics processor (NVIDIA GeForce RTX 3090) that this build of Officina cannot use"), "{why}");
+        assert!(why.contains("the graphics build would"), "{why}");
+        // And a fast catalogue on that processor is offered as before: the
+        // card that cannot be used does not stand in the way.
+        assert_eq!(tier_of(&hardware, &FAST), Some(&FAST[1]));
+    }
+
+    /// Every model of the catalogue has its wait on a graphics processor
+    /// measured, and within the bar — so a card that holds one is offered
+    /// it: the larger from 8.5 GB of card memory, the smaller from 5.5.
+    #[test]
+    fn the_graphics_waits_are_measured_and_within_the_bar() {
+        for model in &crate::local::MODELS {
+            assert!(
+                model.waits.graphics != u32::MAX && model.waits.graphics <= FIRST_WORD_BAR,
+                "{}: {}s",
+                model.name,
+                model.waits.graphics
+            );
+            assert!(
+                model.waits.processor > FIRST_WORD_BAR,
+                "{}: the processor is another matter",
+                model.name
+            );
+        }
+        let card = |memory: u64| Hardware {
+            memory: 8_000_000_000,
+            fast_vectors: true,
+            graphics: Some(Graphics {
+                name: "NVIDIA GeForce RTX 3060".into(),
+                memory: Some(memory),
+                usable: true,
+            }),
+        };
+        use crate::local::{QWEN3_4B, QWEN3_8B};
+        assert_eq!(tier(&card(24_000_000_000)), Some(&QWEN3_8B));
+        assert_eq!(tier(&card(12_000_000_000)), Some(&QWEN3_8B));
+        assert_eq!(tier(&card(8_000_000_000)), Some(&QWEN3_4B));
+        assert_eq!(tier(&card(4_000_000_000)), None);
+        let rows = ladder(&Fake {
+            hardware: Some(card(24_000_000_000)),
+            ..Fake::default()
+        });
+        assert_eq!(
+            rows[0],
+            Row::Local {
+                model: QWEN3_8B,
+                on: crate::local::Where::Graphics
+            }
+        );
+        assert!(
+            rows[0]
+                .about()
+                .contains("first word of an answer takes a few seconds"),
+            "{}",
+            rows[0].about()
+        );
     }
 }

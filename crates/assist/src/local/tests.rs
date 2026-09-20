@@ -463,6 +463,45 @@ fn a_request_with_a_different_prefix_starts_afresh() {
     assert!(read < input, "and the second time with it, kept");
 }
 
+/// A build without the graphics feature — this one — has no graphics
+/// processor whatever the computer has: the helper reads onto the processor
+/// and says so, in the words the header and the card use.
+#[test]
+fn without_a_graphics_processor_the_helper_reads_onto_the_processor_and_says_so() {
+    #[cfg(not(feature = "cuda"))]
+    assert_eq!(runs_on(), Where::Processor);
+    let dir = scratch("where");
+    let path = dir.join("tiny.gguf");
+    tiny_model(&path, 2, 64, 96);
+    let words: Vec<String> = (0..80).map(|n| format!("w{n}")).collect();
+    let words: Vec<&str> = words.iter().map(String::as_str).collect();
+    let mut file = std::fs::File::open(&path).expect("it opens");
+    let local = Local::with(&mut file, tiny_tokenizer(&words)).expect("it loads");
+    #[cfg(not(feature = "cuda"))]
+    assert_eq!(local.on(), Where::Processor);
+    assert_eq!(Where::Processor.words(), "on this computer's processor");
+    assert_eq!(
+        Where::Graphics.words(),
+        "on this computer's graphics processor"
+    );
+    // The decision itself, apart from any device: the graphics processor
+    // only where it is and was not declined.
+    assert_eq!(placed(false, || Where::Graphics), Where::Graphics);
+    assert_eq!(placed(false, || Where::Processor), Where::Processor);
+    // Asked for the processor, the card is not even looked for.
+    assert_eq!(
+        placed(true, || panic!("the card was asked about")),
+        Where::Processor
+    );
+    // Asked for the processor, a build with the feature gives the processor
+    // too: the spike's way of hearing the difference.
+    let mut file = std::fs::File::open(&path).expect("it opens");
+    let forced = Local::with_on(&mut file, tiny_tokenizer(&words), true).expect("it loads");
+    assert_eq!(forced.on(), Where::Processor);
+    let _ = local;
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// What the model writes becomes the same events every other helper's answer
 /// does: words are words, `<tool_call>` is a call, and something that looks
 /// like a call but is not stays as the text it is.
@@ -989,7 +1028,10 @@ fn the_download_fetches_what_is_missing_and_no_more() {
             sha256: Box::leak(hash_bytes(&tokenizer).into_boxed_str()),
         },
         memory: 1,
-        first_word: 1,
+        waits: Waits {
+            processor: 1,
+            graphics: 1,
+        },
     };
     let http = crate::http::Http::new(&address);
 
@@ -1230,7 +1272,10 @@ fn two_downloads_at_once_are_one_download() {
             sha256: Box::leak(hash_bytes(&body).into_boxed_str()),
         },
         memory: 1,
-        first_word: 1,
+        waits: Waits {
+            processor: 1,
+            graphics: 1,
+        },
     };
     let http = crate::http::Http::new(&address);
     // The first has the folder; the second is told to wait rather than

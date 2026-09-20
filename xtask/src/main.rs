@@ -28,8 +28,8 @@ fn main() -> ExitCode {
     };
 
     let result = match cmd {
-        "install" => install(),
-        "dist" => build_dist(),
+        "install" => install(rest),
+        "dist" => build_both(),
         "package" => package(),
         "associate" => associate(),
         "fidelity" => fidelity(rest),
@@ -65,9 +65,13 @@ cargo xtask <command>
   check      fmt, clippy -D warnings, the test suite, and the layout of
              every corpus document against LAYOUT.md (--quick: clippy and
              the tests of the crates the working tree has changed only)
-  dist       release build of both apps
-  package    dist, then a versioned zip in target/dist/
-  install    dist, then copy binaries to ~/.local/bin
+  dist       release build of both apps — and, where the CUDA toolkit is on
+             this machine, the graphics build too (the helper on this
+             computer on an NVIDIA graphics processor), into target/graphics/
+  package    dist, then a versioned zip in target/dist/ — two where the
+             graphics build was made, the second named -nvidia
+  install    dist, then copy binaries to ~/.local/bin (--graphics: the
+             graphics build instead)
   associate  make the desktop open .docx and .xlsx with these
   fidelity   run the round-trip fidelity harness over corpus/
              (--report also writes FIDELITY.md)
@@ -205,10 +209,75 @@ fn build_dist() -> Result<(), String> {
     cargo(&["build", "--release", "-p", "calx", "-p", "scriva"])
 }
 
+/// Whether the CUDA toolkit is on this machine: the graphics build needs
+/// its compiler for candle's kernels.
+fn can_build_graphics() -> bool {
+    Command::new("nvcc")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+/// The graphics build, into its own target directory, its kernels compiled
+/// for the oldest card they can run on — Ampere, the GeForce RTX 30 series
+/// of 2020 — rather than for whatever card the build machine has, which is
+/// what candle does when nothing says otherwise and what made the Tesla P40
+/// refuse a build made beside an RTX 3090. Older is not a choice: candle's
+/// kernels do not compile for Pascal (`atomicAdd` on halves) or Turing
+/// (`__hmax_nan`), which trying showed.
+fn build_graphics() -> Result<(), String> {
+    if std::env::var_os("CUDA_COMPUTE_CAP").is_none() {
+        std::env::set_var("CUDA_COMPUTE_CAP", "80");
+    }
+    cargo_in(
+        &[
+            "build",
+            "--release",
+            "-p",
+            "calx",
+            "-p",
+            "scriva",
+            "--features",
+            "cuda",
+        ],
+        Some(&dist::Build::Graphics.target_dir()),
+    )
+}
+
+/// Both builds where the toolkit allows, the portable one always.
+fn build_both() -> Result<(), String> {
+    build_dist()?;
+    match can_build_graphics() {
+        true => build_graphics(),
+        false => {
+            println!(
+                "no graphics build: the CUDA toolkit (nvcc) is not on this machine, and candle's \
+                 kernels need it"
+            );
+            Ok(())
+        }
+    }
+}
+
+/// Both archives where the toolkit allows, the portable one always; says
+/// which was not made and why.
 fn package() -> Result<(), String> {
     build_dist()?;
-    let archive = dist::package()?;
+    let archive = dist::package_build(dist::Build::Portable)?;
     println!("packaged {}", archive.display());
+    match can_build_graphics() {
+        true => {
+            build_graphics()?;
+            let archive = dist::package_build(dist::Build::Graphics)?;
+            println!("packaged {}", archive.display());
+        }
+        false => println!(
+            "no graphics archive: the CUDA toolkit (nvcc) is not on this machine, and candle's \
+             kernels need it to build"
+        ),
+    }
     Ok(())
 }
 
@@ -246,8 +315,24 @@ fn associate() -> Result<(), String> {
     Ok(())
 }
 
-fn install() -> Result<(), String> {
-    build_dist()?;
+fn install(args: &[String]) -> Result<(), String> {
+    // `--graphics`: the build for an NVIDIA graphics processor, which runs the
+    // helper on this computer there. Only where the toolkit can build it.
+    let build = match args.iter().any(|arg| arg == "--graphics") {
+        true => {
+            if !can_build_graphics() {
+                return Err(
+                    "the graphics build needs the CUDA toolkit (nvcc) on this machine".into(),
+                );
+            }
+            build_graphics()?;
+            dist::Build::Graphics
+        }
+        false => {
+            build_dist()?;
+            dist::Build::Portable
+        }
+    };
 
     let bin_dir = home()?.join(".local").join("bin");
     std::fs::create_dir_all(&bin_dir)
@@ -255,11 +340,18 @@ fn install() -> Result<(), String> {
 
     for app in APPS {
         let exe = format!("{app}{}", std::env::consts::EXE_SUFFIX);
-        let src = workspace_root().join("target").join("release").join(&exe);
+        let src = build.target_dir().join("release").join(&exe);
         let dst = bin_dir.join(&exe);
         std::fs::copy(&src, &dst)
             .map_err(|e| format!("copy {} -> {}: {e}", src.display(), dst.display()))?;
-        println!("installed {}", dst.display());
+        println!(
+            "installed {} ({})",
+            dst.display(),
+            match build {
+                dist::Build::Graphics => "the graphics build, for an NVIDIA graphics processor",
+                dist::Build::Portable => "the portable build",
+            }
+        );
     }
 
     if !path_contains(&bin_dir) {
@@ -419,10 +511,19 @@ fn measure(args: &[String]) -> Result<(), String> {
 }
 
 fn cargo(args: &[&str]) -> Result<(), String> {
+    cargo_in(args, None)
+}
+
+/// `cargo`, with its target directory told when the graphics build asks for
+/// one of its own; otherwise cargo's own choice, and the person's, stands.
+fn cargo_in(args: &[&str], target_dir: Option<&Path>) -> Result<(), String> {
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
-    let status = Command::new(&cargo)
-        .args(args)
-        .current_dir(workspace_root())
+    let mut command = Command::new(&cargo);
+    command.args(args).current_dir(workspace_root());
+    if let Some(target_dir) = target_dir {
+        command.env("CARGO_TARGET_DIR", target_dir);
+    }
+    let status = command
         .status()
         .map_err(|e| format!("failed to run `cargo {}`: {e}", args.join(" ")))?;
     if status.success() {

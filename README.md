@@ -15,13 +15,15 @@ application: ask for what you want in your own words — improve this wording, a
 a column that totals the others — and a model does it through the editor's own
 functions. In Scriva what it changes arrives as tracked changes by "Assistant",
 to accept or reject; in Calx it lands at once as one labelled entry with Undo on
-its card. Officina looks at your computer's memory and processor and, where
-they can run a helper worth having, offers one that downloads once and runs
-there, so nothing you write leaves the machine; where they cannot, it says so
-rather than offering a helper too small to trust, and Claude with your own key,
-or an Ollama you already run, is a row away. The decisions behind it are
-[ADR 0004](adr/0004-the-model-proposes-the-editor-disposes.md) and
-[ADR 0005](adr/0005-an-assistant-below-the-bar-is-not-offered.md), and
+its card. Officina looks at your computer and, where it can run a helper worth
+having — measured, that means an NVIDIA graphics processor, in the `-nvidia`
+build — offers one that downloads once and runs there, so nothing you write
+leaves the machine; where it cannot, it says so rather than offering a helper
+too slow to trust, and Claude with your own key, or an Ollama you already run,
+is a row away. The decisions behind it are
+[ADR 0004](adr/0004-the-model-proposes-the-editor-disposes.md),
+[ADR 0005](adr/0005-an-assistant-below-the-bar-is-not-offered.md) and
+[ADR 0006](adr/0006-the-helper-runs-where-the-request-is-read-fast.md), and
 [GUIDE.md](GUIDE.md) says how to use it.
 
 Officina is two native desktop applications, written in Rust:

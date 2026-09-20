@@ -80,11 +80,21 @@ pub struct Model {
     /// How much memory it wants while it runs, in bytes, for the card.
     pub memory: u64,
     /// About how many seconds pass before the first word — or, when the
-    /// answer is a change, the change — of a paragraph request on a recent
-    /// processor alone, in a portable build, with the brief and the tools
-    /// already read: what the card says the wait will feel like. Measured,
+    /// answer is a change, the change — of a paragraph request, with the
+    /// brief and the tools already read: what the card says the wait will
+    /// feel like, on a processor alone and on a graphics processor. Measured,
     /// in `bugs/assist-bar.md`.
-    pub first_word: u32,
+    pub waits: Waits,
+}
+
+/// A model's measured waits before the first word, in seconds, on the two
+/// kinds of device a helper on this computer may run on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Waits {
+    /// A recent desktop processor alone, portable build.
+    pub processor: u32,
+    /// A graphics processor of the kind the tier offers the model on.
+    pub graphics: u32,
 }
 
 impl Model {
@@ -127,8 +137,13 @@ pub const QWEN3_4B: Model = Model {
     },
     tokenizer: TOKENIZER,
     memory: 4_500_000_000,
-    // The deck's median, portable build, Ryzen 7 9700X: 40.8 s.
-    first_word: 40,
+    waits: Waits {
+        // The deck's median, portable build, Ryzen 7 9700X: 40.8 s.
+        processor: 40,
+        // The deck's median through Officina's own runtime on an RTX 3090,
+        // release build: 1.1 s; 2.3 s a whole request.
+        graphics: 1,
+    },
 };
 
 /// Qwen3 8B, the same way. The first size at which most people stop noticing
@@ -146,9 +161,13 @@ pub const QWEN3_8B: Model = Model {
     },
     tokenizer: TOKENIZER,
     memory: 7_500_000_000,
-    // The deck's median, native build, the same processor: 47.7 s; portable
-    // would be a little more, and was not run.
-    first_word: 50,
+    waits: Waits {
+        // The deck's median, native build, the same processor: 47.7 s;
+        // portable would be a little more, and was not run.
+        processor: 50,
+        // The deck's median on the same card: 1.1 s; 2.7 s a whole request.
+        graphics: 1,
+    },
 };
 
 /// Qwen3's tokenizer, one file for every size of the model.
@@ -576,11 +595,105 @@ struct Ready {
     held: Vec<u32>,
     /// How many tokens the last request made the model read, for a test.
     read: usize,
+    /// Which kind of device the model was read onto.
+    on: Where,
 }
 
 /// The shortest shared beginning worth keeping. Below it, cutting the cache
 /// costs about what reading the tokens would.
 const KEEP_FROM: usize = 16;
+
+/// The kind of device the helper on this computer runs on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Where {
+    Processor,
+    Graphics,
+}
+
+impl Where {
+    /// "on this computer's processor" / "on this computer's graphics
+    /// processor", for a header or a row.
+    pub fn words(self) -> &'static str {
+        match self {
+            Where::Processor => "on this computer's processor",
+            Where::Graphics => "on this computer's graphics processor",
+        }
+    }
+}
+
+/// Where the helper on this computer runs, decided once and without loading
+/// a model: the first graphics processor this build was made for and the
+/// driver answers for, else the processor.
+///
+/// **A build without the feature has no graphics processor**, whatever the
+/// computer has: the kernels are not in it. A build with the feature is
+/// linked against the driver and NVIDIA's runtime libraries and asks for a
+/// device; a driver with none, or one that fails, leaves the processor. The
+/// device is kept, not asked for again: making one is a context on the card
+/// and a few hundred milliseconds, and letting it go destroys the context.
+pub fn runs_on() -> Where {
+    match graphics_device() {
+        Some(_) => Where::Graphics,
+        None => Where::Processor,
+    }
+}
+
+/// Where the helper runs, if that has been decided yet — for a header drawn
+/// every frame, which must not be the one to ask the driver.
+pub fn decided() -> Option<Where> {
+    DEVICE.get().map(|device| match device {
+        Some(_) => Where::Graphics,
+        None => Where::Processor,
+    })
+}
+
+/// The one graphics device this process uses, or none, decided once.
+static DEVICE: std::sync::OnceLock<Option<Device>> = std::sync::OnceLock::new();
+
+/// The first graphics processor the driver answers for, when this build can
+/// use one, kept for the life of the process.
+fn graphics_device() -> Option<Device> {
+    DEVICE
+        .get_or_init(|| {
+            #[cfg(feature = "cuda")]
+            {
+                // The driver's own order puts the fastest card first; the
+                // tool the card's name and memory are read from lists them
+                // by bus. Told to order by bus, both name the same card 0.
+                if std::env::var_os("CUDA_DEVICE_ORDER").is_none() {
+                    std::env::set_var("CUDA_DEVICE_ORDER", "PCI_BUS_ID");
+                }
+                Device::new_cuda(0).ok()
+            }
+            #[cfg(not(feature = "cuda"))]
+            {
+                None
+            }
+        })
+        .clone()
+}
+
+/// Where a model goes: the processor when it was asked for — without so much
+/// as looking for a card — else wherever this computer runs one, asked of
+/// `on` only then.
+fn placed(prefer_processor: bool, on: impl FnOnce() -> Where) -> Where {
+    match prefer_processor {
+        true => Where::Processor,
+        false => on(),
+    }
+}
+
+/// The device a model is read onto, as [`placed`] decides against
+/// [`runs_on`].
+fn device_for(prefer_processor: bool) -> (Device, Where) {
+    match placed(prefer_processor, runs_on) {
+        Where::Graphics => match graphics_device() {
+            Some(device) => (device, Where::Graphics),
+            None => (Device::Cpu, Where::Processor),
+        },
+        Where::Processor => (Device::Cpu, Where::Processor),
+    }
+}
 
 /// The model read from disk, kept for as long as the helper is the chosen
 /// one.
@@ -608,6 +721,12 @@ impl Local {
     /// Reads `model` from its folder in `cache`. A minute on a cold cache,
     /// and the window is not held: the pane asks on the request's own thread.
     pub fn load(cache: &Path, model: &Model) -> Result<Local, Failure> {
+        Local::load_on(cache, model, false)
+    }
+
+    /// The same, onto the processor when `prefer_processor` — the spike's
+    /// and the deck's `--cpu`, for a model given by its cache folder.
+    pub fn load_on(cache: &Path, model: &Model, prefer_processor: bool) -> Result<Local, Failure> {
         let folder = &folder(cache, model);
         let weights = folder.join(model.weights.file);
         let tokenizer = folder.join(model.tokenizer.file);
@@ -651,7 +770,7 @@ impl Local {
                 ready: Arc::clone(ready),
             });
         }
-        let local = Local::read(&mut file, &tokenizer)?;
+        let local = Local::read_on(&mut file, &tokenizer, prefer_processor)?;
         held.insert(folder.to_path_buf(), Arc::clone(&local.ready));
         Ok(local)
     }
@@ -664,9 +783,31 @@ impl Local {
         Local::with(weights, tokenizer)
     }
 
-    /// The same again, with a tokenizer already in hand.
+    /// The same, told to read onto the processor even where a graphics
+    /// processor could be used — for the spike to hear the difference.
+    pub fn read_on<R: Read + Seek>(
+        weights: &mut R,
+        tokenizer: &Path,
+        prefer_processor: bool,
+    ) -> Result<Local, Failure> {
+        let tokenizer = Tokenizer::from_file(tokenizer)
+            .map_err(|why| garbled(format!("its tokenizer could not be read ({why})")))?;
+        Local::with_on(weights, tokenizer, prefer_processor)
+    }
+
+    /// The same again, with a tokenizer already in hand, onto the device
+    /// [`runs_on`] names.
     pub fn with<R: Read + Seek>(weights: &mut R, tokenizer: Tokenizer) -> Result<Local, Failure> {
-        let device = Device::Cpu;
+        Local::with_on(weights, tokenizer, false)
+    }
+
+    /// The same, onto the processor when `prefer_processor`.
+    pub fn with_on<R: Read + Seek>(
+        weights: &mut R,
+        tokenizer: Tokenizer,
+        prefer_processor: bool,
+    ) -> Result<Local, Failure> {
+        let (device, on) = device_for(prefer_processor);
         let content = gguf_file::Content::read(weights)
             .map_err(|why| garbled(format!("its weights could not be read ({why})")))?;
         let context = content
@@ -690,8 +831,17 @@ impl Local {
                 sampling: SAMPLING,
                 held: Vec::new(),
                 read: 0,
+                on,
             })),
         })
+    }
+
+    /// Which kind of device this helper's model was read onto.
+    pub fn on(&self) -> Where {
+        self.ready
+            .lock()
+            .unwrap_or_else(|held| held.into_inner())
+            .on
     }
 
     /// Chooses the next token some other way than [`SAMPLING`] — greedily,

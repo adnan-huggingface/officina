@@ -387,7 +387,10 @@ fn every_part_of_the_pane_is_painted_where_it_can_be_seen() {
     // The first-run card, too, and in a small window.
     let scratch = Scratch::new("painted-card");
     let reach = Fake::new().finds(vec![
-        Row::Local(::assist::local::MODELS[0]),
+        Row::Local {
+            model: ::assist::local::MODELS[0],
+            on: ::assist::local::Where::Processor,
+        },
         Row::ClaudeWithKey,
         Row::Service,
     ]);

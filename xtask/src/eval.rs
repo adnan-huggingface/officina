@@ -33,15 +33,20 @@ pub fn run(args: &[String]) -> Result<(), String> {
     // A flag mistyped is a condition not measured, and a difference that is
     // no difference would go into the record as fact.
     if let Some(unknown) = args.iter().find(|arg| {
-        arg.starts_with("--") && !arg.starts_with("--patience=") && !arg.starts_with("--ollama=")
+        arg.starts_with("--")
+            && !arg.starts_with("--patience=")
+            && !arg.starts_with("--ollama=")
+            && *arg != "--cpu"
     }) {
         return Err(format!(
             "assist-eval does not know {unknown}: it takes a folder or a .gguf, or \
-             --ollama=<model>, and --patience=<seconds>"
+             --ollama=<model>, and --patience=<seconds> and --cpu"
         ));
     }
-    // Through an Ollama on this computer — the way a model reaches the
-    // graphics processor that Officina's own helper cannot use yet.
+    // The processor even where a graphics processor could be used.
+    let cpu = args.iter().any(|arg| arg == "--cpu");
+    // Through an Ollama on this computer — another runtime on the same card,
+    // for comparison.
     let ollama = args
         .iter()
         .find_map(|arg| arg.strip_prefix("--ollama="))
@@ -79,13 +84,17 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 true => {
                     let mut file = std::fs::File::open(&folder).map_err(|why| why.to_string())?;
                     let tokenizer = folder.with_file_name("tokenizer.json");
-                    Local::read(&mut file, &tokenizer).map_err(|failure| failure.sentence)?
+                    Local::read_on(&mut file, &tokenizer, cpu)
+                        .map_err(|failure| failure.sentence)?
                 }
-                false => {
-                    Local::load(&folder, &local::MODELS[0]).map_err(|failure| failure.sentence)?
-                }
+                false => Local::load_on(&folder, &local::MODELS[0], cpu)
+                    .map_err(|failure| failure.sentence)?,
             };
-            println!("  read in {:.1}s", started.elapsed().as_secs_f64());
+            println!(
+                "  read in {:.1}s, {}",
+                started.elapsed().as_secs_f64(),
+                model.on().words()
+            );
             let shared = Arc::new(Mutex::new(model));
             Box::new(move || Box::new(Shared(Arc::clone(&shared))))
         }

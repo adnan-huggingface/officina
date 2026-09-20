@@ -6987,6 +6987,38 @@ Test: `lines_pasted_at_a_headings_end_and_rejected_leave_it_a_heading`. Three
 mutations, one rule broken at a time, were each caught. A fourth, which applies
 the rule to pastes within one paragraph too, changes nothing a test can see.
 
+## Assist, phase 8: the helper on the graphics processor (2026-09-20, evening)
+
+Phase 7 measured the bar and found no model meets its wait on a processor;
+the same 8B on this workstation's RTX 3090 through Ollama met it, and the
+user's verdict was "excellent speed". A normal user has no Ollama, so this
+phase gives Officina's own helper the card (ADR 0006).
+
+- **The runtime**: `assist` feature `cuda` (candle's CUDA kernels), passed
+  through `ui-kit`, both applications and `xtask`; off by default, so the
+  portable build and the gate know nothing of it. `assist::local::runs_on`
+  chooses the device once, without loading a model — the first CUDA device the
+  driver answers for, else the processor — and `Local::with_on` / `read_on`
+  take the processor on request; the spike and the deck say where a model
+  was read and take `--cpu`.
+- **The computer with the card in view**: `Graphics::usable` (this build,
+  this driver), `Model::waits` (processor and graphics, both measured), and
+  `tier` judging a usable card by its own memory with `CARD_ROOM` over and
+  the graphics wait; a card the build cannot use is named where the
+  processor is judged, and the graphics build pointed at. The header and the
+  card's row say where the helper runs.
+- **Two builds**: `cargo xtask dist`/`package` make the portable archive and,
+  where `nvcc` is on the machine, the `-nvidia` one from `target/graphics/`;
+  `install --graphics` installs that. The guide says which to take and what
+  each model needs of a card (5.5 GB and 8.5 GB).
+
+**Measured** on the RTX 3090 through this runtime, release: the 4B 14 of 20
+at a median 1.1 s to the first word and 2.3 s a request; the 8B 16 of 20 at
+1.1 s and 2.7 s, no false claims — against 39 and 48 s on the processor, and
+Ollama's 4.2 s. `Model::waits.graphics` is 1 for both, so a card with 8.5 GB
+of its own memory is offered the 8B and one from 5.5 GB the 4B. Item 4 on the
+whole report still misses on both, on both runtimes.
+
 ## Assist, phase 7: the bar, and the hardware under it (2026-09-20)
 
 The user's judgement after two days at their own desk — *"My complaint is

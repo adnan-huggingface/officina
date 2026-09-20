@@ -75,7 +75,7 @@ Every source file, its size, and the first sentence of its module doc.
 - `crates/app-scriva/src/app/tests/desk.rs` (1196) The desk as it is painted: pages, zoom, scrolling, the caret and the pointer.
 - `crates/app-scriva/src/app/tests/editing.rs` (1127) Typing, keys in the text, lists, the clipboard, formatting and undo.
 - `crates/app-scriva/src/app/tests/files.rs` (1366) Opening, saving, the formats between them, and what the window says about a file.
-- `crates/app-scriva/src/app/tests/menus.rs` (924) Menus, shortcuts, boxes and the toolbar, reached the way a keyboard reaches them.
+- `crates/app-scriva/src/app/tests/menus.rs` (956) Menus, shortcuts, boxes and the toolbar, reached the way a keyboard reaches them.
 - `crates/app-scriva/src/app/tests/mod.rs` (191) Scriva's window, driven: one file per area, and here what more than one of them uses.
 - `crates/app-scriva/src/app/tests/panes.rs` (604) The find bar and the panes beside the page: navigation, review and comments.
 - `crates/app-scriva/src/app/tests/pictures.rs` (518) Pictures and charts: in by paste or menu, sized, moved and taken out.
@@ -117,16 +117,16 @@ Every source file, its size, and the first sentence of its module doc.
 - `crates/assist/src/http.rs` (400) Requests to a helper over HTTP, and what their failures say.
 - `crates/assist/src/lib.rs` (57) Assist's helpers: who answers a request, how it travels, and what a helper may ask the editor to do.
 - `crates/assist/src/local/qwen3.rs` (471) Qwen3 with quantized weights, as `candle-transformers` 0.9.2 has it (`models/quantized_qwen3.rs`, MIT OR Apache-2.0, © the candle authors), brought in for one thing the original does not offer: **keeping part of the k…
-- `crates/assist/src/local/tests.rs` (1423) The helper on this computer, proved without a gigabyte or a network: a model of a few dozen kilobytes that the test writes itself, and a server on loopback for the download.
-- `crates/assist/src/local.rs` (1122) The helper on this computer: a quantized model read from a GGUF file and run on the CPU, with `candle`.
-- `crates/assist/src/machine.rs` (1282) What this computer already has that could answer, and the first-run card's rows in the order they are offered.
+- `crates/assist/src/local/tests.rs` (1468) The helper on this computer, proved without a gigabyte or a network: a model of a few dozen kilobytes that the test writes itself, and a server on loopback for the download.
+- `crates/assist/src/local.rs` (1272) The helper on this computer: a quantized model read from a GGUF file and run on the CPU, with `candle`.
+- `crates/assist/src/machine.rs` (1575) What this computer already has that could answer, and the first-run card's rows in the order they are offered.
 - `crates/assist/src/models.rs` (136) The Claude models Assist offers, in words, with what a paragraph costs.
 - `crates/assist/src/offline.rs` (66) A process that must reach nothing: one under a test.
 - `crates/assist/src/prompt.rs` (138) What a helper is told before any request: the editor's instructions.
 - `crates/assist/src/provider.rs` (551) The one shape every helper answers in, and the helper the settings name.
 - `crates/assist/src/scripted.rs` (171) A helper that plays canned turns: the only helper a test may use.
 - `crates/assist/src/session.rs` (166) A conversation with one helper, and the loop that runs its tools.
-- `crates/assist/src/settings.rs` (712) What the user chose, kept in one file both applications read.
+- `crates/assist/src/settings.rs` (724) What the user chose, kept in one file both applications read.
 - `crates/assist/src/sse.rs` (147) Server-sent events, read by hand: `event:` and `data:` lines, and a blank line after each event.
 - `crates/assist/src/tests/check.rs` (478) B4: a key, checked before it is kept, with a request that costs nothing.
 - `crates/assist/src/tests/claude.rs` (449) A2: Claude, over a socket.
@@ -285,13 +285,13 @@ Every source file, its size, and the first sentence of its module doc.
 - `crates/ui-kit/src/assist/choosing.rs` (281) The first-run card: which helper Assist should use, asked once, in words.
 - `crates/ui-kit/src/assist/mod.rs` (1951) Assist's pane: where a person asks for a change in their own words, sees the answer arrive, sees what the helper read and changed, and stops it — and where the helper is chosen, once, in words.
 - `crates/ui-kit/src/assist/request.rs` (188) A request on a thread of its own, and anything else the pane waits for without stopping the window.
-- `crates/ui-kit/src/assist/settings_box.rs` (741) Assist's ⋯ menu ▸ Settings: the helper, and what it needs, in one box.
-- `crates/ui-kit/src/assist/tests/card.rs` (582) B3: the first-run card.
-- `crates/ui-kit/src/assist/tests/changes.rs` (694) What the pane does when its settings change under it: in the other application, in its own box, or nowhere to keep them at all.
-- `crates/ui-kit/src/assist/tests/keeping.rs` (679) B4 and B5: the settings box, and what is said before anything leaves the computer.
+- `crates/ui-kit/src/assist/settings_box.rs` (743) Assist's ⋯ menu ▸ Settings: the helper, and what it needs, in one box.
+- `crates/ui-kit/src/assist/tests/card.rs` (585) B3: the first-run card.
+- `crates/ui-kit/src/assist/tests/changes.rs` (700) What the pane does when its settings change under it: in the other application, in its own box, or nowhere to keep them at all.
+- `crates/ui-kit/src/assist/tests/keeping.rs` (748) B4 and B5: the settings box, and what is said before anything leaves the computer.
 - `crates/ui-kit/src/assist/tests/mod.rs` (576) The pane, driven in an application of the tests' own.
 - `crates/ui-kit/src/assist/tests/requests.rs` (954) B1 and B2: a request on a thread of its own, and Stop.
-- `crates/ui-kit/src/assist/tests/window.rs` (483) B6 and B7: the pane in a window, and the download's bar.
+- `crates/ui-kit/src/assist/tests/window.rs` (486) B6 and B7: the pane in a window, and the download's bar.
 - `crates/ui-kit/src/assist/transcript.rs` (331) The transcript: what was asked, what the helper said and did, and the changes it made, in the order they happened.
 - `crates/ui-kit/src/brand.rs` (31) The window icon, as the windowing system takes it.
 - `crates/ui-kit/src/catalogue.rs` (504) What type the machine actually has, by the name a document calls it.

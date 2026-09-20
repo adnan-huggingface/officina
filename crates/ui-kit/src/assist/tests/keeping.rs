@@ -130,7 +130,10 @@ fn a_key_is_kept_only_once_the_service_has_accepted_it_and_is_never_painted() {
     let accepted = "Claude accepted the key, and Opus 5 is there to answer.";
     let reach = Fake::new()
         .finds(vec![
-            Row::Local(::assist::local::MODELS[0]),
+            Row::Local {
+                model: ::assist::local::MODELS[0],
+                on: ::assist::local::Where::Processor,
+            },
             Row::ClaudeWithKey,
             Row::Service,
         ])
@@ -466,7 +469,10 @@ fn a_key_typed_then_left_for_another_sign_in_is_not_kept() {
     let reach = Fake::new()
         .finds(vec![
             Row::ClaudeHere(::assist::ClaudeLogin::Environment),
-            Row::Local(::assist::local::MODELS[0]),
+            Row::Local {
+                model: ::assist::local::MODELS[0],
+                on: ::assist::local::Where::Processor,
+            },
             Row::ClaudeWithKey,
             Row::Service,
         ])
@@ -547,7 +553,10 @@ fn settings_say_which_model_on_this_computer_and_remove_takes_every_folder() {
     // computer was found able to run, and says what it would download.
     let scratch = Scratch::new("box-local-none");
     let reach = Fake::new().finds(vec![
-        Row::Local(::assist::local::QWEN3_4B),
+        Row::Local {
+            model: ::assist::local::QWEN3_4B,
+            on: ::assist::local::Where::Processor,
+        },
         Row::ClaudeWithKey,
         Row::Service,
     ]);
@@ -582,7 +591,10 @@ fn settings_say_which_model_on_this_computer_and_remove_takes_every_folder() {
     // for the space that is spent, whether or not the chosen model is there.
     let scratch = Scratch::new("box-local-withdrawn");
     let reach = Fake::new().finds(vec![
-        Row::Local(::assist::local::QWEN3_4B),
+        Row::Local {
+            model: ::assist::local::QWEN3_4B,
+            on: ::assist::local::Where::Processor,
+        },
         Row::ClaudeWithKey,
         Row::Service,
     ]);
@@ -676,4 +688,61 @@ fn box_shows(desk: &mut Desk, drive: &Driver, found: impl Fn(&str) -> bool) {
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
     panic!("the box never showed it: {:?}", desk.everywhere(drive));
+}
+
+/// The header and the card say where the helper on this computer runs —
+/// "on the processor" in this build, which has no graphics processor — since
+/// the wait a person is about to have follows from it.
+#[test]
+fn the_header_and_the_card_say_where_the_helper_runs() {
+    // Where the helper runs is decided by the look or the first request, not
+    // by the header, which is drawn every frame: decided here, as the look
+    // would have, so that the header has something to say.
+    ::assist::local::runs_on();
+    let scratch = Scratch::new("where-header");
+    let reach = Fake::new();
+    *reach.have_download.lock().unwrap() = Some(2_500_000_000);
+    let settings = Settings {
+        helper: Some(Choice::Local),
+        ..Settings::default()
+    };
+    let drive = Driver::new();
+    let mut desk = Desk::with(Arc::clone(&reach), scratch.holding(&settings));
+    drive.settle(&mut desk);
+    let seen = desk.seen(&drive);
+    assert!(
+        seen.iter()
+            .any(|text| text == "Helper on this computer — Qwen3 4B, on the processor"),
+        "{seen:?}"
+    );
+
+    // The card's row for a helper on this computer says the same, with the
+    // wait the measured numbers give it there.
+    let scratch = Scratch::new("where-card");
+    let reach = Fake::new().finds(vec![
+        Row::Local {
+            model: ::assist::local::QWEN3_4B,
+            on: ::assist::local::Where::Processor,
+        },
+        Row::ClaudeWithKey,
+        Row::Service,
+    ]);
+    let mut desk = Desk::with(Arc::clone(&reach), scratch.settings());
+    drive.settle(&mut desk);
+    desk.until(&drive, "the card's rows", |desk| {
+        matches!(desk.assist.choosing, Some(Choosing::Rows(_)))
+    });
+    let seen = desk.seen(&drive);
+    let about = seen
+        .iter()
+        .find(|text| text.starts_with("Free and private"))
+        .unwrap_or_else(|| panic!("{seen:?}"));
+    assert!(
+        about.contains("while it works on this computer's processor"),
+        "{about}"
+    );
+    assert!(
+        about.contains("first word of an answer takes about half a minute"),
+        "{about}"
+    );
 }

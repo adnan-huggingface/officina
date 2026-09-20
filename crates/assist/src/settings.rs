@@ -157,9 +157,21 @@ impl Settings {
         };
         match self.helper {
             None => "No helper chosen".to_owned(),
-            Some(Choice::Local) => {
-                named("Helper on this computer", self.local.model().short_name())
-            }
+            // "Helper on this computer — Qwen3 8B, on the graphics processor":
+            // where it runs is part of what it is, since the wait follows it.
+            // Said once decided — by the look, or the first request — since a
+            // header drawn every frame must not be the one to ask the driver.
+            Some(Choice::Local) => match crate::local::decided() {
+                Some(on) => format!(
+                    "Helper on this computer — {}, {}",
+                    self.local.model().short_name(),
+                    match on {
+                        crate::local::Where::Graphics => "on the graphics processor",
+                        crate::local::Where::Processor => "on the processor",
+                    }
+                ),
+                None => named("Helper on this computer", self.local.model().short_name()),
+            },
             Some(Choice::Claude) => match claude_model(&self.claude.model) {
                 Some(model) => named("Claude", model.name()),
                 None => named("Claude", &self.claude.model),

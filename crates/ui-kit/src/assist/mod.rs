@@ -1334,7 +1334,7 @@ impl Assist {
                                 settings.ollama.model = model.name.clone();
                             }
                         }
-                        let local = matches!(row, Row::Local(_));
+                        let local = matches!(row, Row::Local { .. });
                         let chosen = *settings.local.model();
                         if let Err(why) = self.keep(settings) {
                             if let Some(Choosing::Rows(rows)) = &mut self.choosing {

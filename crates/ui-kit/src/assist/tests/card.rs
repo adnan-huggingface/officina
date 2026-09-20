@@ -25,7 +25,10 @@ fn ollama_row() -> Row {
 
 fn always() -> Vec<Row> {
     vec![
-        Row::Local(::assist::local::MODELS[0]),
+        Row::Local {
+            model: ::assist::local::MODELS[0],
+            on: ::assist::local::Where::Processor,
+        },
         Row::ClaudeWithKey,
         Row::Service,
     ]

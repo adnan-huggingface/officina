@@ -2485,3 +2485,22 @@ are what a model does when it is not being stopped for taking too long. The
 hardware is a graphics processor that holds an 8B model; below that, the
 honest offer is a helper somewhere else.
 
+**candle's CUDA build is a feature flag and a minute of compiling, and the
+same GGUF runs unchanged.** `candle-core/cuda` pulls `cudarc` linked
+dynamically against the driver; the quantized Q4_K_M kernels are there; the
+KV-cache truncation and the sampler work on device tensors as they did on the
+processor's. The 4B read a thousand-token request and wrote a story in 6.5 s
+where the processor took two minutes, and the deck's medians went from 39–48 s
+to 1.1 s. Three things to know before shipping it: the binary does not start without
+`libcuda` *and* the CUDA 12 runtime libraries `libcublas` and `libcurand` —
+`readelf -d` says so, and the driver alone does not bring them — so it is a
+second archive, not a second code path, and the guide has to say what to
+install; the kernels are compiled for one compute capability, the build
+machine's card unless `CUDA_COMPUTE_CAP` says otherwise, and an older card
+refuses them with `CUDA_ERROR_INVALID_PTX` (the Tesla P40 did) — and told to
+build for an older card, candle's kernels do not compile — Pascal wants an
+`atomicAdd` on halves it has not got, Turing a `__hmax_nan` — so the floor is
+Ampere, `80`, the RTX 30 series of 2020, and a release builds for it; and the sampler copies one
+row of logits from the card per token (`to_vec1`), which is nothing beside
+reading the request there.
+

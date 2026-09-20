@@ -33,6 +33,9 @@ pub fn run(args: &[String]) -> Result<(), String> {
         .collect();
     let as_scriva = flags.iter().any(|flag| *flag == "--scriva");
     let greedy = flags.iter().any(|flag| *flag == "--greedy");
+    // The processor even where a graphics processor could be used: to hear
+    // the difference.
+    let cpu = flags.iter().any(|flag| *flag == "--cpu");
     // A second request in the same process, after the first: what a session's
     // second request costs once the brief and the tools are already read.
     let again: Option<&str> = flags
@@ -42,13 +45,13 @@ pub fn run(args: &[String]) -> Result<(), String> {
     // A flag mistyped is a condition not measured, and a difference that is
     // no difference would go into the record as fact.
     if let Some(unknown) = flags.iter().find(|flag| {
-        !["--scriva", "--greedy"].contains(&flag.as_str())
+        !["--scriva", "--greedy", "--cpu"].contains(&flag.as_str())
             && !flag.starts_with("--ask=")
             && !flag.starts_with("--again=")
     }) {
         return Err(format!(
             "assist-spike does not know {unknown}: it takes a folder, --ask=<words>, \
-             --again=<words>, --scriva and --greedy"
+             --again=<words>, --scriva, --greedy and --cpu"
         ));
     }
     if asks.len() > 1 {
@@ -67,14 +70,20 @@ pub fn run(args: &[String]) -> Result<(), String> {
         true => {
             let mut file = std::fs::File::open(&folder).map_err(|why| why.to_string())?;
             let tokenizer = folder.with_file_name("tokenizer.json");
-            Local::read(&mut file, &tokenizer).map_err(|failure| failure.sentence)?
+            Local::read_on(&mut file, &tokenizer, cpu).map_err(|failure| failure.sentence)?
         }
         // A folder is the cache directory, and the model the catalogue's
         // smallest — what a person's own Officina would run there.
-        false => Local::load(&folder, &local::MODELS[0]).map_err(|failure| failure.sentence)?,
+        false => {
+            Local::load_on(&folder, &local::MODELS[0], cpu).map_err(|failure| failure.sentence)?
+        }
     };
     let read = started.elapsed();
-    println!("  read in {:.1}s", read.as_secs_f64());
+    println!(
+        "  read in {:.1}s, {}",
+        read.as_secs_f64(),
+        local.on().words()
+    );
 
     let standard = "Rewrite this sentence so that it is plainer, and say nothing else: \
                     The thing about the situation is that it is one which we have to deal \

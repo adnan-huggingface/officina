@@ -10,6 +10,15 @@
 //! to `~/.local/bin`, and on Linux offers to write the desktop entries that make
 //! a double-click open the right application. It never touches a system
 //! directory, a registry key, or anything outside the user's home.
+//!
+//! **Two archives per platform, since phase 8.** The graphics build carries
+//! candle's CUDA kernels and is linked against NVIDIA's driver and its CUDA 12
+//! runtime libraries (`libcublas`, `libcurand`): it runs the helper on this
+//! computer on the graphics processor, and does not start on a computer
+//! without those libraries — the driver alone is not enough. So it is a
+//! second archive, named for what it needs (`…-nvidia`), built only where the
+//! CUDA toolkit is on the build machine, and the guide says which to take and
+//! what to have installed. The portable archive is what it always was.
 
 use std::path::{Path, PathBuf};
 
@@ -34,17 +43,49 @@ pub fn target() -> String {
     format!("{}-{}", std::env::consts::ARCH, std::env::consts::OS)
 }
 
-/// Assembles a directory holding everything a user needs, and archives it.
-pub fn package() -> Result<PathBuf, String> {
+/// Which of the two builds an archive holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Build {
+    /// Every computer of the platform.
+    Portable,
+    /// A computer with an NVIDIA graphics processor and its driver.
+    Graphics,
+}
+
+impl Build {
+    /// Where cargo puts this build's binaries: the graphics build has a
+    /// target directory of its own, so that the two never overwrite each
+    /// other's `release/`.
+    pub fn target_dir(self) -> PathBuf {
+        let root = workspace_root();
+        match self {
+            Build::Portable => root.join("target"),
+            Build::Graphics => root.join("target").join("graphics"),
+        }
+    }
+
+    /// The archive's name: what it will and will not run on.
+    pub fn archive_name(self) -> String {
+        let base = format!("officina-{}-{}", version(), target());
+        match self {
+            Build::Portable => base,
+            Build::Graphics => format!("{base}-nvidia"),
+        }
+    }
+}
+
+/// Assembles a directory holding everything a user needs for one of the two
+/// builds, and archives it.
+pub fn package_build(build: Build) -> Result<PathBuf, String> {
     let root = workspace_root();
-    let name = format!("officina-{}-{}", version(), target());
+    let name = build.archive_name();
     let staging = root.join("target").join("dist").join(&name);
     let _ = std::fs::remove_dir_all(&staging);
     std::fs::create_dir_all(&staging).map_err(|e| format!("create {}: {e}", staging.display()))?;
 
     for app in APPS {
         let exe = format!("{app}{}", std::env::consts::EXE_SUFFIX);
-        let from = root.join("target").join("release").join(&exe);
+        let from = build.target_dir().join("release").join(&exe);
         if !from.exists() {
             return Err(format!(
                 "{} is missing — run `cargo xtask dist`, which builds it first",
@@ -84,12 +125,17 @@ pub fn package() -> Result<PathBuf, String> {
 fn bundle_licenses(root: &Path) -> Result<(), String> {
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
     let status = std::process::Command::new(&cargo)
+        // With the graphics feature resolved, so that one file names the
+        // whole tree either archive was built from — cudarc and candle's
+        // kernels included. Resolving a feature compiles nothing.
         .args([
             "bundle-licenses",
             "--format",
             "yaml",
             "--output",
             "THIRD-PARTY-NOTICES.yml",
+            "--features",
+            "assist/cuda",
         ])
         .current_dir(root)
         .status()
@@ -229,9 +275,19 @@ mod tests {
 
     #[test]
     fn the_archive_name_says_what_it_will_and_will_not_run_on() {
-        let name = format!("officina-{}-{}", version(), target());
+        let name = Build::Portable.archive_name();
         assert!(name.contains(std::env::consts::OS), "{name}");
         assert!(name.contains(std::env::consts::ARCH), "{name}");
+        assert!(!name.contains("nvidia"), "{name}");
+        // The graphics build says what it needs, and comes from its own
+        // target directory, so that neither build overwrites the other.
+        let graphics = Build::Graphics.archive_name();
+        assert!(
+            graphics.starts_with(&name) && graphics.ends_with("-nvidia"),
+            "{graphics}"
+        );
+        assert_ne!(Build::Portable.target_dir(), Build::Graphics.target_dir());
+        assert!(Build::Graphics.target_dir().ends_with("target/graphics"));
     }
 
     #[test]
