@@ -327,6 +327,11 @@ struct Downloading {
     work: request::Background<Result<(), Failure>>,
     said: mpsc::Receiver<::assist::local::Progress>,
     stop: ::assist::StopFlag,
+    /// **What is being fetched**, so that what is said when it lands names
+    /// it. Reading the file instead named whatever the file happened to say,
+    /// which is how a person came to be told the 4B was ready after asking
+    /// for the 8B.
+    model: &'static ::assist::local::Model,
 }
 
 /// A request that asked for a change and has ended, waiting to be judged by
@@ -629,7 +634,7 @@ impl Assist {
     /// and a window that waited for it would be a window nobody could close.
     /// What the thread reports arrives on a channel the pane reads as it
     /// draws; the flag it holds is what Stop sets.
-    pub fn start_download(&mut self, ctx: &egui::Context) {
+    pub fn start_download(&mut self, ctx: &egui::Context, model: &'static ::assist::local::Model) {
         if self.downloading.is_some() {
             return;
         }
@@ -638,15 +643,15 @@ impl Assist {
         let stop = ::assist::StopFlag::default();
         let theirs = stop.clone();
         let (tell, said) = mpsc::channel();
-        let model = *self.on_file().local.model();
         self.download = Some(Progress {
             done: 0,
             total: Some(model.bytes()),
         });
         self.downloading = Some(Downloading {
+            model,
             work: request::Background::spawn(
                 move || {
-                    reach.download(&model, &theirs, &mut |progress| {
+                    reach.download(model, &theirs, &mut |progress| {
                         let _ = tell.send(progress);
                     })
                 },
@@ -682,6 +687,7 @@ impl Assist {
         let Some(downloading) = &mut self.downloading else {
             return;
         };
+        let model = downloading.model;
         while let Ok(progress) = downloading.said.try_recv() {
             self.download = Some(Progress {
                 done: progress.done,
@@ -697,10 +703,17 @@ impl Assist {
                 self.download = None;
                 match what {
                     Ok(()) => {
-                        let ready = format!(
-                            "{} is ready on this computer.",
-                            self.on_file().local.model().name
-                        );
+                        // **What arrived is what is named**, and what is
+                        // written down: a person who asked for the 8B and was
+                        // told the 4B was ready is the fault this answers, and
+                        // a file still naming none would hand them the 4B
+                        // again at the next request.
+                        let ready = format!("{} is ready on this computer.", model.name);
+                        let mut settings = self.on_file();
+                        if settings.local.model != model.folder {
+                            settings.local.model = model.folder.to_owned();
+                            let _ = self.keep(settings);
+                        }
                         self.note(&ready, None);
                         // The helper the settings name is made afresh, so
                         // that the one refusing for want of weights is let go.
@@ -1335,7 +1348,7 @@ impl Assist {
                             }
                         }
                         let local = matches!(row, Row::Local { .. });
-                        let chosen = *settings.local.model();
+                        let chosen = settings.local.model();
                         if let Err(why) = self.keep(settings) {
                             if let Some(Choosing::Rows(rows)) = &mut self.choosing {
                                 rows.said = Some(why);
@@ -1346,8 +1359,8 @@ impl Assist {
                         // downloaded: choosing it is asking for it, and the
                         // bar starts there and then rather than waiting for
                         // the person to find Settings.
-                        if local && !self.reach.have(&chosen) {
-                            self.start_download(ctx);
+                        if local && !self.reach.have(chosen) {
+                            self.start_download(ctx, chosen);
                         }
                     }
                 }
@@ -1373,7 +1386,7 @@ impl Assist {
             None => {}
             // The download is the pane's to run, not the box's: the box stays
             // open, and the bar under the transcript shows how it goes.
-            Some(Closed::Download) => self.start_download(ctx),
+            Some(Closed::Download(model)) => self.start_download(ctx, model),
             Some(Closed::Remove) => match self.reach.remove_download() {
                 Ok(0) => self.note("There was nothing downloaded to remove.", None),
                 Ok(freed) => {

@@ -62,7 +62,12 @@ pub(crate) enum Closed {
     Cancelled,
     /// Download the helper on this computer, or take it off again — asked
     /// for from the box, done by the pane, which owns the thread.
-    Download,
+    ///
+    /// **The model comes with the asking.** The box offers the one the look
+    /// found this computer can run, which is not always the one the file
+    /// names — a file that names none falls back to the smallest in the
+    /// catalogue — and a button that says 5.0 GB must not fetch 2.5.
+    Download(&'static ::assist::local::Model),
     Remove,
     /// To be kept: the settings to write, which are what was checked when
     /// anything was, and what the service answered.
@@ -324,6 +329,21 @@ impl SettingsBox {
             edited: self.edited(),
         };
         let merged = edit.onto(&current);
+        // The helper on this computer, not downloaded yet: said here, beside
+        // the button that fetches it. The runtime's own sentence for this
+        // sends a person to Assist's ⋯ menu ▸ Settings, which is where they
+        // already are — and it would be said after a check that cannot come
+        // to anything.
+        if merged.helper == Some(Choice::Local) {
+            let model = merged.local.model();
+            if !reach.have(model) {
+                self.refused = Some(format!(
+                    "{} is not downloaded yet. Download it first, and Save then.",
+                    model.short_name()
+                ));
+                return None;
+            }
+        }
         match merged.helper {
             None => {
                 self.refused = Some("Choose a helper first.".into());
@@ -418,8 +438,19 @@ impl SettingsBox {
                 self.draft.local.model = offered.folder.to_owned();
             }
         }
-        let model = *self.draft.local.model();
-        let have = reach.have(&model);
+        let model = self.draft.local.model();
+        // **The draft says what the box drew** — but only once it names
+        // something. A name that resolves to another model, a model
+        // withdrawn since, would otherwise be merged back over the one on
+        // the screen, and Save would refuse, or keep, a model the person was
+        // never shown. Left empty it stays empty, so that the look's answer
+        // can still arrive and fill it: writing the catalogue's first model
+        // in before the look lands would settle the question against the
+        // computer, which is the whole thing the look is for.
+        if !self.draft.local.model.trim().is_empty() {
+            self.draft.local.model = model.folder.to_owned();
+        }
+        let have = reach.have(model);
         let taken = reach.downloaded();
         let words = match have {
             true => format!(
@@ -456,7 +487,13 @@ impl SettingsBox {
                     ))
                     .clicked()
             {
-                closed = Some(Closed::Download);
+                // `model` is what the words above it name, so the download is
+                // for that and not for whatever the file happens to say. And
+                // the refusal this button answers goes, rather than standing
+                // for the minutes it takes, pointing at a button that has
+                // gone.
+                self.refused = None;
+                closed = Some(Closed::Download(model));
             }
             if taken > 0
                 && ui

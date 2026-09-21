@@ -6987,6 +6987,60 @@ Test: `lines_pasted_at_a_headings_end_and_rejected_leave_it_a_heading`. Three
 mutations, one rule broken at a time, were each caught. A fourth, which applies
 the rule to pastes within one paragraph too, changes nothing a test can see.
 
+## The download button fetched a different model from the one it named (2026-09-20, night)
+
+Found by using it. The user chose "A helper on this computer" in Settings,
+pressed **Download it (5.0 GB)**, and reported that Save did not work.
+
+`AssistPane::start_download` took no model. It looked one up — `*self.on_file()
+.local.model()` — from the **file on disk** rather than from the box in front
+of the person, and `LocalSettings::model()` falls back to `MODELS[0]` when the
+file names none. Their file named none, and their card runs the 8B, so the box
+offered the 8B and the 4B was fetched. They already had the 4B, so it finished
+at once and nothing appeared to happen. The box does not write the file when it
+asks for a download, so pressing the button again did the same.
+
+Save then checked the **draft**, which is the 8B, and refused truthfully: "The
+helper on this computer has not been downloaded yet. Assist's ⋯ menu ▸ Settings
+downloads it" — which is the dialog they were standing in. The sentence belongs
+to the pane, where Settings is somewhere else to go.
+
+`Closed::Download` carries the model now, so the asking and the words above the
+button are the same thing, and `start_download` takes it as an argument; the
+first-run card passes the model it had already chosen. Save refuses before
+spending a check when the chosen helper's model is not downloaded, and says so
+beside the button that fetches it.
+
+Test `the_download_is_the_model_the_box_offered_not_the_smallest_in_the_catalogue`:
+the look offers the 8B against a file naming none, the button must read 5.0 GB,
+and the 8B must be what the download is asked for; then Save must name the
+button on the page, not the menu, leave the box open and leave the file alone.
+The test's fake records which models a download was asked for. Five mutations
+caught.
+
+The review of the fix found seven more, the first in the test itself: it waited
+on `is_downloading()`, which the main thread sets before the download's thread
+has run a line, and pinned to one core it failed 59 times in 60 while passing
+200 in 200 unpinned. It waits on the thread's own record now. The same
+words-and-deeds fault survived one screen later — the note when a download
+lands read the model from the file, so a person who asked for the 8B was told
+the 4B was ready — so the download carries its model and says that, and writes
+it to `[local] model`, because otherwise five gigabytes could arrive and the
+file still name none. "Download it below" pointed at a button drawn above it.
+The guard read the merged settings, which another window can change under the
+box, so the draft is normalised to what was drawn — but only once it names
+something, since writing the catalogue's first model in before the look lands
+settles the question against the computer, which the first attempt did and the
+test caught. The refusal stood through the whole download, pointing at a button
+that had gone. And the test's fake disk could not tell one model from another,
+so the user's actual desk could not be staged.
+
+Still open, and written down rather than changed in passing: Settings shows one
+model and offers no choice between them, so a person with the 4B on disk and a
+card that runs the 8B cannot ask for the one they have; and Settings refuses an
+undownloaded helper where the first-run card would save the choice and start
+the download.
+
 ## The card was chosen by its slot, not by what it could run (2026-09-20, night)
 
 The review of the fix above found it. `assist::local::graphics_device` set

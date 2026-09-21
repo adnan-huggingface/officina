@@ -746,3 +746,127 @@ fn the_header_and_the_card_say_where_the_helper_runs() {
         "{about}"
     );
 }
+
+/// **The button downloads what the button says.** The box offers the model
+/// the look found this computer can run; the download was asked for the model
+/// the *file* names, and a file that names none falls back to the smallest in
+/// the catalogue. So a person on a card that runs the 8B pressed "Download it
+/// (5.0 GB)", got the 4B — instantly, because it was already there — and then
+/// could not save, because Save checks the 8B and the 8B was not downloaded.
+/// Found by the user on their own desk, and staged here as their desk was:
+/// the 4B downloaded, the 8B not, and a file naming neither.
+#[test]
+fn the_download_is_the_model_the_box_offered_not_the_smallest_in_the_catalogue() {
+    let drive = Driver::new();
+    let scratch = Scratch::new("box-download-what-it-says");
+    let reach = Fake::new().finds(vec![
+        Row::Local {
+            model: ::assist::local::QWEN3_8B,
+            on: ::assist::local::Where::Graphics,
+        },
+        Row::ClaudeWithKey,
+        Row::Service,
+    ]);
+    // The small model is on this disk and the large one is not.
+    *reach.have_models.lock().unwrap() = Some(vec![::assist::local::QWEN3_4B.folder]);
+    // A file that names no model: what a person has who has never chosen one.
+    let settings = Settings {
+        helper: Some(Choice::Local),
+        ..Settings::default()
+    };
+    assert_eq!(settings.local.model, "", "the file names none");
+    let mut desk = Desk::with(Arc::clone(&reach), scratch.holding(&settings));
+    drive.settle(&mut desk);
+    desk.assist.open_settings();
+    box_shows(&mut desk, &drive, |text| text.starts_with("Qwen3 8B"));
+
+    let large = ::assist::local::size_of(::assist::local::QWEN3_8B.bytes());
+    let small = ::assist::local::size_of(::assist::local::QWEN3_4B.bytes());
+    let seen = desk.everywhere(&drive);
+    assert!(
+        !seen.iter().any(|text| text.contains(&small)),
+        "the model already on the disk is not the one offered: {seen:?}"
+    );
+
+    // Save, before it is downloaded, says so beside the button that fetches
+    // it — not by sending the person to the settings they have open — and
+    // spends no check on a question it can answer itself.
+    desk.click(&drive, "Save");
+    drive.settle(&mut desk);
+    let seen = desk.everywhere(&drive);
+    assert!(
+        seen.iter()
+            .any(|text| text == "Qwen3 8B is not downloaded yet. Download it first, and Save then."),
+        "{seen:?}"
+    );
+    assert!(
+        !seen.iter().any(|text| text.contains("menu")),
+        "not sent to the menu they are already in: {seen:?}"
+    );
+    assert!(
+        desk.assist.box_up(),
+        "and the box stays open, on the button"
+    );
+    assert!(
+        reach.checked.lock().unwrap().is_empty(),
+        "no check was spent on a question the box could answer"
+    );
+    assert_eq!(
+        Settings::read(&scratch.settings()).unwrap().local.model,
+        "",
+        "and nothing was written"
+    );
+
+    // The button fetches what it names.
+    desk.click(&drive, &format!("Download it ({large})"));
+    desk.until(&drive, "the download's thread to ask", |_| {
+        !reach.asked_to_download.lock().unwrap().is_empty()
+    });
+    assert_eq!(
+        reach.asked_to_download.lock().unwrap().as_slice(),
+        [::assist::local::QWEN3_8B.folder],
+        "the {large} the button named is the 8B, and the 8B is what is fetched"
+    );
+    // And the refusal it answers does not stand there through the download,
+    // pointing at a button that has gone.
+    let seen = desk.everywhere(&drive);
+    assert!(
+        !seen
+            .iter()
+            .any(|text| text.contains("is not downloaded yet")),
+        "{seen:?}"
+    );
+    desk.assist.stop_download();
+    desk.until(&drive, "the download to let go", |desk| {
+        !desk.assist.is_downloading()
+    });
+
+    // **What lands is what is named, and what is written down.** Told from
+    // the file instead, a person who asked for the 8B was told the 4B was
+    // ready — and the file, still naming none, would hand them the 4B at the
+    // next request, after five gigabytes of the other.
+    *reach.download_ends.lock().unwrap() = Some(Ok(()));
+    desk.assist.open_settings();
+    box_shows(&mut desk, &drive, |text| text.starts_with("Qwen3 8B"));
+    desk.click(&drive, &format!("Download it ({large})"));
+    desk.until(&drive, "the download to end", |desk| {
+        !desk.assist.is_downloading()
+    });
+    let seen = desk.everywhere(&drive);
+    assert!(
+        seen.iter()
+            .any(|text| text == "Qwen3 8B (Q4_K_M) is ready on this computer."),
+        "the model that arrived is the one named: {seen:?}"
+    );
+    assert!(
+        !seen
+            .iter()
+            .any(|text| text.contains("Qwen3 4B") && text.contains("ready")),
+        "and not the one the file would have named: {seen:?}"
+    );
+    assert_eq!(
+        Settings::read(&scratch.settings()).unwrap().local.model,
+        ::assist::local::QWEN3_8B.folder,
+        "what arrived is written down, so the next request is not handed the other"
+    );
+}

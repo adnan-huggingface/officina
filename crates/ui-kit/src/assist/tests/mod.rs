@@ -126,6 +126,14 @@ pub(super) struct Fake {
     pub downloading: Arc<std::sync::atomic::AtomicUsize>,
     /// What `downloaded` says: `None` for "not downloaded".
     pub have_download: Mutex<Option<u64>>,
+    /// Which models a download was actually asked for, by folder.
+    pub asked_to_download: Mutex<Vec<String>>,
+    /// The folders that are on this fake disk. `None` means the old
+    /// behaviour: whatever is asked for is there if `have_download` is set,
+    /// which cannot tell one model from another and so cannot stage a desk
+    /// with the small model downloaded and the large one not — the very
+    /// state that hid the fault this fake was taught about.
+    pub have_models: Mutex<Option<Vec<&'static str>>>,
     /// Bytes of downloaded helpers other than the chosen one — a withdrawn
     /// model's, say — for Remove to count.
     pub other_downloads: Mutex<u64>,
@@ -204,10 +212,14 @@ impl Reach for Fake {
 
     fn download(
         &self,
-        _: &::assist::local::Model,
+        model: &::assist::local::Model,
         stop: &::assist::StopFlag,
         progress: &mut dyn FnMut(::assist::local::Progress),
     ) -> Result<(), Failure> {
+        self.asked_to_download
+            .lock()
+            .unwrap()
+            .push(model.folder.to_owned());
         self.downloading
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let steps = self.download_steps.lock().unwrap().clone();
@@ -231,8 +243,11 @@ impl Reach for Fake {
         }
     }
 
-    fn have(&self, _: &::assist::local::Model) -> bool {
-        self.have_download.lock().unwrap().is_some()
+    fn have(&self, model: &::assist::local::Model) -> bool {
+        match self.have_models.lock().unwrap().as_ref() {
+            Some(folders) => folders.contains(&model.folder),
+            None => self.have_download.lock().unwrap().is_some(),
+        }
     }
 
     fn downloaded(&self) -> u64 {

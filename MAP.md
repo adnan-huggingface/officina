@@ -283,13 +283,13 @@ Every source file, its size, and the first sentence of its module doc.
 ### `ui-kit`
 
 - `crates/ui-kit/src/assist/choosing.rs` (281) The first-run card: which helper Assist should use, asked once, in words.
-- `crates/ui-kit/src/assist/mod.rs` (1951) Assist's pane: where a person asks for a change in their own words, sees the answer arrive, sees what the helper read and changed, and stops it — and where the helper is chosen, once, in words.
+- `crates/ui-kit/src/assist/mod.rs` (1964) Assist's pane: where a person asks for a change in their own words, sees the answer arrive, sees what the helper read and changed, and stops it — and where the helper is chosen, once, in words.
 - `crates/ui-kit/src/assist/request.rs` (188) A request on a thread of its own, and anything else the pane waits for without stopping the window.
-- `crates/ui-kit/src/assist/settings_box.rs` (743) Assist's ⋯ menu ▸ Settings: the helper, and what it needs, in one box.
+- `crates/ui-kit/src/assist/settings_box.rs` (780) Assist's ⋯ menu ▸ Settings: the helper, and what it needs, in one box.
 - `crates/ui-kit/src/assist/tests/card.rs` (585) B3: the first-run card.
 - `crates/ui-kit/src/assist/tests/changes.rs` (700) What the pane does when its settings change under it: in the other application, in its own box, or nowhere to keep them at all.
-- `crates/ui-kit/src/assist/tests/keeping.rs` (748) B4 and B5: the settings box, and what is said before anything leaves the computer.
-- `crates/ui-kit/src/assist/tests/mod.rs` (576) The pane, driven in an application of the tests' own.
+- `crates/ui-kit/src/assist/tests/keeping.rs` (872) B4 and B5: the settings box, and what is said before anything leaves the computer.
+- `crates/ui-kit/src/assist/tests/mod.rs` (591) The pane, driven in an application of the tests' own.
 - `crates/ui-kit/src/assist/tests/requests.rs` (954) B1 and B2: a request on a thread of its own, and Stop.
 - `crates/ui-kit/src/assist/tests/window.rs` (486) B6 and B7: the pane in a window, and the download's bar.
 - `crates/ui-kit/src/assist/transcript.rs` (331) The transcript: what was asked, what the helper said and did, and the changes it made, in the order they happened.
