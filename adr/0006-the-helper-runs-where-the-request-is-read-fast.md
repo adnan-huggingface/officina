@@ -35,10 +35,45 @@ on `assist`, passed through `ui-kit`, both applications and `xtask`. The gate
 builds and tests without it; the deck and the spike take `--cpu` to hear the
 processor on a build that has the card.
 
-**The device is chosen once, without loading a model** (`assist::local::runs_on`):
-the first CUDA device the driver answers for, else the processor. The pane's
-header says which — "Helper on this computer — Qwen3 8B, on the graphics
-processor" — and so does the card's row, with the wait measured there.
+**The device is chosen once, without loading a model** (`assist::local::runs_on`),
+and it is chosen **for what it can run, not by slot**. Officina asks the driver
+about every card it has — name, memory, compute capability — and takes the one
+with the most memory among those that meet the kernels' floor (`KERNEL_FLOOR`,
+Ampere, because candle 0.9.2 compiles no lower), trying the next one down when
+the driver will not open it. Describing a card is not free: the safe interface
+gives a card's numbers only through a context of its own, which is made and let
+go again for every card, because this crate forbids `unsafe` and every call
+that describes a card without a context is unsafe. Nothing is ever *run* on a
+card that is not chosen, which is the part that would fail below the floor. The pane's header says which — "Helper on this computer —
+Qwen3 8B, on the graphics processor" — and so does the card's row, with the
+wait measured there.
+
+*This was got wrong first.* The first version set `CUDA_DEVICE_ORDER=PCI_BUS_ID`
+and opened device 0, so the card in the lowest slot won, and the ordering it
+overrode was CUDA's own `FASTEST_FIRST` — which ranks by the very capability
+that decides whether the kernels load. Opening a device proves nothing:
+`Device::new_cuda` **succeeds** on a card below the floor, and only the first
+kernel launch fails, with `CUDA_ERROR_INVALID_PTX`. So a computer whose older
+card sat lower would have been offered a model and died on its first request.
+The workstation this was built on — an RTX 3090 on bus `01`, a Tesla P40 on
+bus `10` — escaped by slot order alone.
+
+**A card that is there but not used** is named where the processor is judged,
+and **which** "no" it is decides what is said. A card the graphics build's
+kernels would run, seen by a build that has none, points at the graphics build.
+A card under candle's own floor points nowhere: no archive has kernels for it,
+and sending its owner for the graphics build would send them for what they may
+already be running. A card this build could run and the driver would not open
+says that. `Graphics::runs` carries the four cases.
+
+**The driver is the source for the card's memory**, not `nvidia-smi`. The tool
+is asked only by a build with no CUDA linked into it, which needs it to name
+the card it cannot use. This makes a working card usable where the tool is not
+installed, and it removes the `set_var` that a background thread was making —
+unsound in a multithreaded process, and `unsafe` from edition 2024. What the
+driver reports is the memory the device really has, a little under the number
+on the box, so the thresholds in the guide are met by a card a size larger
+than the arithmetic suggests.
 
 **The computer is judged with the card in view.** `Hardware::graphics` says
 whether the card is usable by this build; `tier` judges a usable card by its

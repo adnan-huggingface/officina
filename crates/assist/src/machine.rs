@@ -124,10 +124,31 @@ pub struct Graphics {
     pub name: String,
     /// Its memory in bytes, when the driver says.
     pub memory: Option<u64>,
-    /// Whether this build of Officina can run a model on it: the kernels
-    /// are in the build and the driver answered for the device. A card that
-    /// is there but not usable is named, and the other build pointed at.
-    pub usable: bool,
+    /// What use Officina can make of it.
+    pub runs: Runs,
+}
+
+/// What use Officina can make of a graphics card — and so, when it can make
+/// none, which sentence the person is owed.
+///
+/// **"Not here" and "not anywhere" are different things**, and saying the
+/// first when the second is true sends a person to fetch a build they are
+/// already running. candle compiles no kernels at all below
+/// [`crate::local::KERNEL_FLOOR`], so a card under it is not a matter of
+/// which archive was downloaded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Runs {
+    /// The helper runs on this card, in this build.
+    Here,
+    /// Not in this build — its kernels are not in it — but the graphics
+    /// build's would.
+    InTheGraphicsBuild,
+    /// In no build of Officina: the card is older than any kernels candle
+    /// compiles.
+    Nowhere,
+    /// This build has kernels the card could run, and the driver would not
+    /// open it — held by another process, or not there to be opened.
+    NotOpened,
 }
 
 /// What a card keeps for itself beside a model: the context, the display.
@@ -169,7 +190,11 @@ pub fn tier_of<'a>(
     // A graphics processor this build can use: the largest model its memory
     // holds with room over, at the card's measured wait. The processor's
     // memory and instructions do not come into it.
-    if let Some(card) = hardware.graphics.as_ref().filter(|card| card.usable) {
+    if let Some(card) = hardware
+        .graphics
+        .as_ref()
+        .filter(|card| card.runs == Runs::Here)
+    {
         let memory = card.memory.unwrap_or(0);
         return models.iter().rev().find(|model| {
             model.memory.saturating_add(CARD_ROOM) <= memory
@@ -211,10 +236,15 @@ pub fn why_not(hardware: &Hardware) -> String {
 /// The same, over any catalogue.
 pub fn why_not_of(hardware: &Hardware, models: &[crate::local::Model]) -> String {
     let smallest = &models[0];
-    // A usable card that is not offered a model: too little memory, or a
+    // A card the helper runs on that is not offered a model: too little
+    // memory, or a
     // wait not yet measured — said as the card's, since the processor was
     // not asked.
-    if let Some(card) = hardware.graphics.as_ref().filter(|card| card.usable) {
+    if let Some(card) = hardware
+        .graphics
+        .as_ref()
+        .filter(|card| card.runs == Runs::Here)
+    {
         let needs = crate::local::size_of(smallest.memory + CARD_ROOM);
         let mut why = match card.memory {
             Some(memory) if memory < smallest.memory.saturating_add(CARD_ROOM) => format!(
@@ -256,14 +286,31 @@ pub fn why_not_of(hardware: &Hardware, models: &[crate::local::Model]) -> String
             seconds(smallest.waits.processor)
         ),
     };
+    // The card, named, and **which** "no" it is: sending a person to fetch
+    // the graphics build they are already running is worse than saying
+    // nothing, and so is telling them a card from last year is too old.
     match &hardware.graphics {
-        // Named, since the other build of Officina would use it — and so
-        // would Ollama.
-        Some(card) => why.push_str(&format!(
-            " It has a graphics processor ({}) that this build of Officina cannot use: the \
-             graphics build would, and so would Ollama on this computer.",
-            card.name
-        )),
+        Some(card) => why.push_str(&match card.runs {
+            Runs::InTheGraphicsBuild => format!(
+                " It has a graphics processor ({}) that this build of Officina cannot use: the \
+                 graphics build would, and so would Ollama on this computer.",
+                card.name
+            ),
+            Runs::Nowhere => format!(
+                " It has a graphics processor ({}) that is older than Officina's helper can \
+                 use: that takes a card from 2020 on, the GeForce RTX 30 series or later. \
+                 Ollama on this computer, or Claude, can answer.",
+                card.name
+            ),
+            Runs::NotOpened => format!(
+                " It has a graphics processor ({}) that the driver would not open for \
+                 Officina — another program may have it to itself. Ollama on this computer, \
+                 or Claude, can answer.",
+                card.name
+            ),
+            // Unreachable: a card the helper runs on was answered for above.
+            Runs::Here => String::new(),
+        }),
         None => {
             why.push_str(" Ollama on a computer with a graphics processor, or Claude, can answer.")
         }
@@ -629,6 +676,7 @@ impl Row {
 /// How the computer is examined, one platform at a time.
 mod probe {
     use super::Graphics;
+    use super::Runs;
 
     /// The computer's memory in bytes.
     pub fn memory() -> Option<u64> {
@@ -697,29 +745,66 @@ mod probe {
     /// NVIDIA's is asked for now: it is the one candle could use, and the one
     /// most likely to be running an Ollama.
     pub fn graphics() -> Option<Graphics> {
-        let usable = crate::local::runs_on() == crate::local::Where::Graphics;
-        card_from(named_graphics(usable), usable)
-    }
-
-    /// The card, from what the driver's tool named and whether the device
-    /// answered: the tool's card when it named one; a card of unknown memory
-    /// when the device answered but the tool is not on the path — so that
-    /// the sentence for that case is said rather than the processor judged;
-    /// none otherwise.
-    pub fn card_from(named: Option<Graphics>, usable: bool) -> Option<Graphics> {
-        match (named, usable) {
-            (Some(card), _) => Some(card),
-            (None, true) => Some(Graphics {
-                name: "an NVIDIA graphics processor".to_owned(),
-                memory: None,
-                usable: true,
-            }),
-            (None, false) => None,
+        // With the driver linked in, the driver's own list is the answer.
+        // Asking a command-line tool to contradict it would add nothing and
+        // could only mislead: the tool cannot say why a card was not opened.
+        #[cfg(feature = "cuda")]
+        {
+            graphics_of(crate::local::card_in_use().as_ref(), crate::local::cards())
+        }
+        // A build with no driver linked into it has only the tool.
+        #[cfg(not(feature = "cuda"))]
+        {
+            named_graphics()
         }
     }
 
-    /// The graphics processor as its driver's own tool names it.
-    fn named_graphics(usable: bool) -> Option<Graphics> {
+    /// The card's row from what the driver said: the one open, which this
+    /// build can use by the fact of having chosen it; else the largest the
+    /// driver lists, which it cannot — the kernels are not in this binary,
+    /// or not for that card — so that the sentence names it and points at
+    /// the other archive. None where the driver lists nothing.
+    ///
+    /// Kept apart from asking the driver so that the rule can be tested
+    /// without a graphics processor.
+    #[cfg(any(feature = "cuda", test))]
+    pub fn graphics_of(
+        in_use: Option<&crate::local::Card>,
+        listed: &[crate::local::Card],
+    ) -> Option<Graphics> {
+        if let Some(card) = in_use {
+            return Some(from_driver(card, Runs::Here));
+        }
+        // Not running on one. Which "no" it is decides what the person is
+        // told: a card under the floor is under every build's floor, and
+        // telling them to fetch the graphics build would send them for what
+        // they already have.
+        let card = crate::local::largest_card(listed)?;
+        let runs = match card.runs_the_kernels() {
+            true => Runs::NotOpened,
+            false => Runs::Nowhere,
+        };
+        Some(from_driver(card, runs))
+    }
+
+    /// A card as the driver described it. **Its memory is always known**:
+    /// the driver said it, which is the whole reason for asking the driver
+    /// rather than a program that may not be installed.
+    #[cfg(any(feature = "cuda", test))]
+    pub fn from_driver(card: &crate::local::Card, runs: Runs) -> Graphics {
+        Graphics {
+            name: card.name.clone(),
+            memory: Some(card.memory),
+            runs,
+        }
+    }
+
+    /// The graphics processor as its driver's own tool names it. Only a
+    /// build without the CUDA feature comes here: one with it has the driver
+    /// itself to ask, which is better in every way, and needs no program to
+    /// be installed alongside.
+    #[cfg(not(feature = "cuda"))]
+    fn named_graphics() -> Option<Graphics> {
         // Asked the way `ant` is: no console window on Windows, and a
         // deadline, since a driver asleep can take seconds to answer.
         let mut command = std::process::Command::new("nvidia-smi");
@@ -728,7 +813,7 @@ mod probe {
             "--format=csv,noheader,nounits",
         ]);
         let line = super::first_line_within(command, std::time::Duration::from_secs(5))?;
-        Some(card_in_line(&line, usable))
+        Some(card_in_line(&line))
     }
 
     /// The card in one line of `nvidia-smi --query-gpu=name,memory.total
@@ -736,12 +821,20 @@ mod probe {
     /// 24576`. Kept apart from the running of the command so that what it
     /// makes of a line can be tested without a graphics card.
     ///
-    /// **The number is MiB**, as the tool's own header says. Read as millions
-    /// it understated every card by a twentieth — enough, on a card of 8 GB,
-    /// to put the 8B out of reach of memory that in fact holds it. A card
-    /// whose memory cannot be read is still a card: the sentence for that
-    /// says the memory is unknown rather than judging the processor instead.
-    pub fn card_in_line(line: &str, usable: bool) -> Graphics {
+    /// **The number is MiB**, as the tool's own header says; read as millions
+    /// it understated every card by a twentieth. No model is offered on the
+    /// strength of it — a card named this way is never one the helper runs
+    /// on — but the figure is printed to the person in the sentence about
+    /// the card, and a wrong one there is still wrong. A card whose memory
+    /// cannot be read is still a card: the sentence for that says the memory
+    /// is unknown rather than judging the processor instead.
+    ///
+    /// A card named this way is never one the helper runs on: only a build
+    /// with no CUDA in it asks the tool, and such a build has no kernels for
+    /// any card. The tool is not asked for the card's capability, so the
+    /// most that can be said of it is that *this* build cannot use it.
+    #[cfg(any(not(feature = "cuda"), test))]
+    pub fn card_in_line(line: &str) -> Graphics {
         // The memory is the last field, so that a card with a comma in its
         // name loses none of it; `--format=csv` does not quote, and the two
         // fields asked for are all there are.
@@ -754,7 +847,10 @@ mod probe {
         Graphics {
             name: name.trim().to_owned(),
             memory,
-            usable,
+            // A build with no CUDA in it is the only one that asks the tool,
+            // and the tool does not say the card's capability — so what can
+            // be said is that this build cannot, not that none could.
+            runs: Runs::InTheGraphicsBuild,
         }
     }
 }
@@ -798,7 +894,11 @@ pub fn ladder_of(machine: &dyn Machine, models: &[crate::local::Model]) -> Vec<R
     // The helper on this computer: the largest model the computer can hold,
     // or a row that says why there is none — never a helper below the bar.
     let hardware = machine.hardware();
-    let on = match hardware.graphics.as_ref().is_some_and(|card| card.usable) {
+    let on = match hardware
+        .graphics
+        .as_ref()
+        .is_some_and(|card| card.runs == Runs::Here)
+    {
         true => crate::local::Where::Graphics,
         false => crate::local::Where::Processor,
     };
@@ -987,32 +1087,192 @@ mod tests {
         );
     }
 
+    /// **Which "no" it is decides what the person is told.** A card under
+    /// the floor is under every build's floor, so telling its owner to fetch
+    /// the graphics build sends them for what they are already running; a
+    /// card this build simply has no kernels for is the opposite. Neither is
+    /// ever offered a model: that is what the first case of [`Runs`] means,
+    /// and a card offered one it cannot run dies at the first request with
+    /// `CUDA_ERROR_INVALID_PTX`.
+    #[test]
+    fn which_no_a_card_gets_decides_which_build_the_person_is_sent_for() {
+        let card = |ordinal, name: &str, memory, capability| crate::local::Card {
+            ordinal,
+            name: name.to_owned(),
+            memory,
+            capability,
+        };
+        let pascal = card(0, "Tesla P40", 24_000_000_000, (6, 1));
+        let ampere = card(1, "NVIDIA GeForce RTX 3090", 25_000_000_000, (8, 6));
+        let sentence = |row: Graphics| {
+            why_not_of(
+                &Hardware {
+                    memory: 64_000_000_000,
+                    fast_vectors: true,
+                    graphics: Some(row),
+                },
+                &FAST,
+            )
+        };
+
+        // Running on one: that card, and the helper is offered on it.
+        let row =
+            probe::graphics_of(Some(&ampere), &[pascal.clone(), ampere.clone()]).expect("a card");
+        assert_eq!(row.name, "NVIDIA GeForce RTX 3090");
+        assert_eq!(row.runs, Runs::Here);
+
+        // Listed, and older than any kernels candle builds: not offered, and
+        // **not** told to fetch the build they are running.
+        let row = probe::graphics_of(None, std::slice::from_ref(&pascal)).expect("a card");
+        assert_eq!(row.runs, Runs::Nowhere);
+        assert_eq!(row.memory, Some(24_000_000_000));
+        let why = sentence(row);
+        assert!(why.contains("Tesla P40"), "{why}");
+        assert!(
+            why.contains("older than Officina's helper can use"),
+            "{why}"
+        );
+        assert!(
+            !why.contains("graphics build"),
+            "a card no build can use must not send them for another build: {why}"
+        );
+
+        // Listed, new enough, and the driver would not open it.
+        let row = probe::graphics_of(None, std::slice::from_ref(&ampere)).expect("a card");
+        assert_eq!(row.runs, Runs::NotOpened);
+        let why = sentence(row);
+        assert!(why.contains("would not open"), "{why}");
+        assert!(!why.contains("older than"), "{why}");
+
+        // The tool's answer, which only a build with no kernels asks for:
+        // this build cannot, and the other one could.
+        let row = probe::card_in_line("NVIDIA GeForce RTX 3090, 24576");
+        assert_eq!(row.runs, Runs::InTheGraphicsBuild);
+        let why = sentence(row);
+        assert!(why.contains("the graphics build would"), "{why}");
+
+        // None of the three is ever offered a model.
+        for runs in [Runs::Nowhere, Runs::NotOpened, Runs::InTheGraphicsBuild] {
+            let hardware = Hardware {
+                memory: 64_000_000_000,
+                fast_vectors: false,
+                graphics: Some(Graphics {
+                    name: "a card".to_owned(),
+                    memory: Some(80_000_000_000),
+                    runs,
+                }),
+            };
+            assert_eq!(
+                tier_of(&hardware, &FAST),
+                None,
+                "{runs:?} must not be offered a model"
+            );
+        }
+
+        // The card named is the largest, not the first the driver lists.
+        let smaller = card(0, "NVIDIA GeForce GTX 1080", 8_000_000_000, (6, 1));
+        let bigger = card(1, "Tesla P40", 24_000_000_000, (6, 1));
+        let row = probe::graphics_of(None, &[smaller, bigger]).expect("a card");
+        assert_eq!(
+            row.name, "Tesla P40",
+            "the sentence names the card worth having, not whichever came first"
+        );
+
+        // Nothing listed: nothing said here.
+        assert_eq!(probe::graphics_of(None, &[]), None);
+    }
+
+    /// A card the driver described is never of unknown memory, whichever
+    /// build asked and whether or not its kernels run on it. The sentence
+    /// about memory Officina could not read is for the other source — the
+    /// command-line tool, which can answer `[N/A]`.
+    #[test]
+    fn a_card_the_driver_named_is_not_of_unknown_memory() {
+        let card = crate::local::Card {
+            ordinal: 1,
+            name: "NVIDIA GeForce RTX 3090".to_owned(),
+            memory: 25_769_803_776,
+            capability: (8, 6),
+        };
+        for runs in [Runs::Here, Runs::NotOpened] {
+            let row = probe::from_driver(&card, runs);
+            assert_eq!(row.name, "NVIDIA GeForce RTX 3090");
+            assert_eq!(
+                row.memory,
+                Some(25_769_803_776),
+                "the driver said the memory, so the row has it"
+            );
+            assert_eq!(row.runs, runs);
+        }
+        // And a card of that size, said by the driver, holds the 8B.
+        let offered = |memory| {
+            let hardware = Hardware {
+                memory: 8_000_000_000,
+                fast_vectors: false,
+                graphics: Some(probe::from_driver(
+                    &crate::local::Card {
+                        ordinal: 0,
+                        name: "a card".to_owned(),
+                        memory,
+                        capability: (8, 6),
+                    },
+                    Runs::Here,
+                )),
+            };
+            tier_of(&hardware, &crate::local::MODELS).map(|model| model.folder)
+        };
+        assert_eq!(
+            offered(25_769_803_776),
+            Some(crate::local::QWEN3_8B.folder),
+            "a processor too small for anything does not come into it"
+        );
+        // **What the driver reports is under what the box says**: about two
+        // per cent, because some of the card's memory is not the program's
+        // to have. So the guide's figures are a size larger than the
+        // arithmetic alone suggests — a card sold as 8 GB gets the smaller
+        // helper, and one sold as 10 GB the larger. When these move, the
+        // guide is wrong and this fails.
+        assert_eq!(
+            offered(8_361_279_488),
+            Some(crate::local::QWEN3_4B.folder),
+            "a card sold as 8 GB reports too little for the 8B"
+        );
+        assert_eq!(
+            offered(10_401_873_920),
+            Some(crate::local::QWEN3_8B.folder),
+            "a card sold as 10 GB reports enough"
+        );
+        assert_eq!(offered(4_000_000_000), None, "and a small card, nothing");
+    }
+
     /// What one line of `nvidia-smi` says about a card. The number is
     /// **MiB** — read as millions it understates every card by a twentieth,
     /// which on a card of 8 GB is the difference between the 8B being
     /// offered and not.
     #[test]
     fn a_cards_line_gives_its_name_and_its_memory_in_mebibytes() {
-        let card = probe::card_in_line("NVIDIA GeForce RTX 3090, 24576", true);
+        let card = probe::card_in_line("NVIDIA GeForce RTX 3090, 24576");
         assert_eq!(card.name, "NVIDIA GeForce RTX 3090");
         assert_eq!(card.memory, Some(24_576 * 1024 * 1024));
-        assert!(card.usable);
-        // 8 GB is 8192 MiB, and the 8B needs its memory and the room over.
-        let eight = probe::card_in_line("NVIDIA GeForce RTX 3070, 8192", true);
-        let needed = crate::local::QWEN3_8B.memory + CARD_ROOM;
+        // The tool is asked only by a build with no kernels for any card.
+        assert_eq!(card.runs, Runs::InTheGraphicsBuild);
+        // 8 GB is 8192 MiB, which is 8.59 GB and not 8.19: read as millions
+        // the tool's number understates every card by a twentieth.
+        let eight = probe::card_in_line("NVIDIA GeForce RTX 3070, 8192");
+        assert_eq!(eight.memory, Some(8_589_934_592));
         assert!(
-            eight.memory.unwrap_or(0) >= needed,
-            "a card of 8 GB holds the 8B: {:?} against {needed}",
+            eight.memory.unwrap_or(0) > 8_192 * 1_000_000,
+            "not millions: {:?}",
             eight.memory
         );
         // A comma in the name loses none of the memory.
-        let comma = probe::card_in_line("Some Card, Special Edition, 16384", false);
+        let comma = probe::card_in_line("Some Card, Special Edition, 16384");
         assert_eq!(comma.name, "Some Card, Special Edition");
         assert_eq!(comma.memory, Some(16_384 * 1024 * 1024));
-        assert!(!comma.usable);
+        assert_eq!(comma.runs, Runs::InTheGraphicsBuild);
         // A card whose memory will not read is still a card, with the memory
         // unknown — the sentence for that says so.
-        let unreadable = probe::card_in_line("Tesla P40, [N/A]", false);
+        let unreadable = probe::card_in_line("Tesla P40, [N/A]");
         assert_eq!(unreadable.name, "Tesla P40");
         assert_eq!(unreadable.memory, None);
     }
@@ -1415,7 +1675,7 @@ mod tests {
             graphics: Some(Graphics {
                 name: "NVIDIA GeForce RTX 3090".into(),
                 memory: Some(24_000_000_000),
-                usable: false,
+                runs: Runs::InTheGraphicsBuild,
             }),
         };
         assert!(
@@ -1485,7 +1745,7 @@ mod tests {
         card.graphics = Some(Graphics {
             name: "NVIDIA GeForce RTX 3090".into(),
             memory: Some(24_000_000_000),
-            usable: false,
+            runs: Runs::InTheGraphicsBuild,
         });
         assert!(
             why_not(&card).contains("the graphics build would, and so would Ollama"),
@@ -1541,7 +1801,7 @@ mod tests {
             graphics: Some(Graphics {
                 name: "NVIDIA GeForce RTX 3060".into(),
                 memory: Some(memory),
-                usable: true,
+                runs: Runs::Here,
             }),
         };
         let (small, large) = (&FAST[0], &FAST[1]);
@@ -1566,29 +1826,25 @@ mod tests {
             "{why}"
         );
 
-        // The device answered but the driver's tool is not on the path: a
-        // card of unknown memory, so that its sentence is said rather than
-        // the processor judged; and no card at all where neither says one.
-        let unnamed = probe::card_from(None, true).expect("a card");
-        assert!(unnamed.usable && unnamed.memory.is_none(), "{unnamed:?}");
+        // A card of unknown memory can still reach the tier — the tool can
+        // answer `[N/A]` — and it is judged as no memory rather than as a
+        // processor, so the sentence for it is said.
+        let unknown_memory = Graphics {
+            name: "Tesla P40".to_owned(),
+            memory: None,
+            runs: Runs::Here,
+        };
         assert_eq!(
             tier_of(
                 &Hardware {
                     memory: 64_000_000_000,
                     fast_vectors: true,
-                    graphics: Some(unnamed.clone())
+                    graphics: Some(unknown_memory)
                 },
                 &FAST
             ),
             None
         );
-        assert_eq!(probe::card_from(None, false), None);
-        let named = Graphics {
-            name: "GeForce".into(),
-            memory: Some(1),
-            usable: false,
-        };
-        assert_eq!(probe::card_from(Some(named.clone()), false), Some(named));
         assert!(why.contains("needs 5.5 GB of it"), "{why}");
         let mut unknown = card(0);
         unknown.graphics.as_mut().unwrap().memory = None;
@@ -1640,7 +1896,7 @@ mod tests {
             graphics: Some(Graphics {
                 name: "NVIDIA GeForce RTX 3090".into(),
                 memory: Some(24_000_000_000),
-                usable: false,
+                runs: Runs::InTheGraphicsBuild,
             }),
         };
         // Judged as a processor: the measured catalogue offers nothing there.
@@ -1681,7 +1937,7 @@ mod tests {
             graphics: Some(Graphics {
                 name: "NVIDIA GeForce RTX 3060".into(),
                 memory: Some(memory),
-                usable: true,
+                runs: Runs::Here,
             }),
         };
         use crate::local::{QWEN3_4B, QWEN3_8B};

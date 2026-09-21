@@ -1,18 +1,28 @@
-# Assist, phase 8: the helper on the graphics processor
+# Assist: the card is chosen for what it can run
 
-Phase 7 set the bar and measured it. On a processor alone no model of the
-catalogue meets its sixth item — 39 to 48 seconds before the first word on a
-fast desktop — and the same 8B on this workstation's graphics processor,
-reached through Ollama, met the whole bar: 17 of 20, 4.2 seconds to the first
-word at the median. The user's verdict at the desk: *"excellent speed and also
-wrote 2 paragraphs as asked."* So the model, the requests and the numbers are
-settled, and what is missing is Officina's own runtime on that hardware — a
-normal user has no Ollama. This phase gives the helper on this computer the
-graphics processor, and offers it only where one that meets the bar is found.
+The review of `c6f48d7` found that Officina picks its graphics card by **where
+it sits**. `assist::local::graphics_device` sets `CUDA_DEVICE_ORDER=PCI_BUS_ID`
+and opens device 0, so the card in the lowest slot wins. The ordering it
+overrides is CUDA's own `FASTEST_FIRST`, which ranks by the compute capability
+that decides whether the kernels load at all.
+
+`Device::new_cuda(0)` **succeeds** on a card whose kernels cannot run: only the
+first launch fails, with `CUDA_ERROR_INVALID_PTX`. So on a computer whose older
+card sits in the lower slot, Officina reports a graphics processor, reads the
+wrong card's memory, offers the 8B, and dies on the first request. This
+workstation — an RTX 3090 on bus `01` and a Tesla P40 on bus `10` — escapes by
+slot order alone, and the P40 is exactly the card that cannot run the kernels
+(ADR 0006: candle 0.9.2 compiles for Ampere and up).
+
+Two more findings from the same review fall out of the same change. The card's
+memory is read by running `nvidia-smi`, so a working card is refused where the
+driver's command-line tool is not installed — and the tool is asked from the
+look's background thread, where `std::env::set_var` is unsound and is `unsafe`
+from edition 2024.
 
 **This file is immutable while the work runs.** Nothing that does the work may
 edit it: not to reword an item, not to remove one, and above all not to mark one
-done. Phase 7's plan is in the history, and every item of it proved itself
+done. Phase 8's plan is in the history, and every item of it proved itself
 before it was replaced.
 
 Each item carries a `verify:` command and is finished exactly when that command
@@ -22,95 +32,56 @@ filter that matches no test exits zero, so every test item goes through
 
 ## Why
 
-Reading a thousand-token request is arithmetic over all of it. A processor does
-it at ten to twenty tokens a second; a graphics processor at thousands. No
-smaller model closes that gap, and the bar (ADR 0005) does not bend for it. So
-the helper runs where the request is read fast, or it is not offered. The rules
-this phase makes true:
+A card is not a slot. What decides whether Officina's helper can use a card is
+its compute capability against the kernels in this binary, and how much memory
+it has — both of which the CUDA driver will say, about every card, before any
+context is made. Asking the driver directly is shorter than asking a separate
+program to say it, is right where that program is not installed, and needs no
+environment variable written behind other threads' backs.
 
-- **The runtime reaches the graphics processor**: candle's CUDA kernels, behind
-  a Cargo feature that is off by default, so that the portable build and the
-  gate know nothing of it.
-- **The helper reads the model onto the graphics processor when it can, and
-  onto the processor when it cannot**, and says which in the pane.
-- **The computer decides with the card in view.** A graphics processor the
-  build can use, with memory enough for a model, offers that model at the
-  card's measured wait; a processor alone is judged as phase 7 left it.
-- **Two builds, said plainly.** A binary linked against the driver does not
-  start without it, so the release is two archives per platform: one for a
-  computer with an NVIDIA graphics processor, one for every other. The guide
-  says which to take, in words.
-- **Measured before believed**: the deck against the 4B and the 8B on this
-  workstation's card through Officina's own runtime, and the thresholds and
-  the words set from those numbers.
-- **No test touches a graphics processor, downloads, or reaches a helper.**
-  The gate builds and tests without the feature; what it proves about the
-  device choice is the processor half and the words.
+## Items
 
-Nothing here changes how a file is read or written: `cargo xtask fidelity`
-stays at zero failures, and `cargo xtask compare --check` holds.
+### K1 — the card is chosen for what it can run, not where it sits
 
----
+`assist::local` asks the CUDA driver about **every** card — its name, its
+memory and its compute capability — before opening anything, and chooses the
+one with the most memory among those whose capability meets the kernels'
+floor. A card below the floor is never opened, however large it is and
+whatever slot it is in. The choosing is a pure function over a list of cards,
+so it is tested without a graphics processor: a bigger, older card must not
+beat a smaller, newer one.
 
-### H1 — the runtime
+    verify: python3 .claude/hooks/proved.py -p assist a_bigger_older_card_does_not_win_over_one_the_kernels_can_run
+    verify: python3 -c "import pathlib,sys; t=pathlib.Path('crates/assist/src/local.rs').read_text(encoding='utf-8'); sys.exit(0 if 'KERNEL_FLOOR' in t else 1)"
 
-`assist` gains the feature `cuda` (`candle-core/cuda`, `candle-nn/cuda`,
-`candle-transformers/cuda`), and both applications and `xtask` pass it
-through. `assist::local` chooses its device once: the first CUDA device when
-the feature is in and the driver answers, else the processor; the choice is
-made without loading a model and can be forced to the processor. The model,
-the prompt tensors, the cache truncation and the sampling all run on the
-chosen device. The spike and the deck say which device answered and take
-`--cpu` to force the other.
+### K2 — the card says its own memory, and the tool is asked only when there is no driver to ask
 
-    verify: python3 -c "import pathlib,sys; t=pathlib.Path('crates/assist/Cargo.toml').read_text(encoding='utf-8'); sys.exit(0 if 'cuda = [' in t else 1)"
-    verify: python3 .claude/hooks/proved.py -p assist without_a_graphics_processor_the_helper_reads_onto_the_processor_and_says_so
-    verify: python3 -c "import pathlib,sys; t=pathlib.Path('xtask/src/eval.rs').read_text(encoding='utf-8'); sys.exit(0 if '--cpu' in t else 1)"
+Where the feature is in and the driver answers, `Hardware::graphics` takes the
+card's name and memory from the driver. `nvidia-smi` is asked only by a build
+that has no CUDA in it at all — the portable one, which must still name the
+card it cannot use so that the sentence can point at the other archive. A card
+the driver names is never of unknown memory.
 
-### H2 — the computer decides with the card in view
-
-`Hardware::graphics` says whether the card is one this build can use — the
-driver answered for it — besides its name and memory. `Model` carries two
-measured waits, the processor's and the graphics processor's, and `tier`
-judges a usable card by its memory (the model's, with room over) and the
-card's wait, and a processor as before. The row, the header and Settings say
-where the helper will run: "on this computer's graphics processor". A card
-that is there but not usable by this build is named, and the guide's words
-about the other build are pointed at.
-
-    verify: python3 .claude/hooks/proved.py -p assist a_usable_graphics_processor_offers_the_largest_model_it_holds_at_the_cards_wait
+    verify: python3 .claude/hooks/proved.py -p assist a_card_the_driver_named_is_not_of_unknown_memory
     verify: python3 .claude/hooks/proved.py -p assist a_graphics_processor_this_build_cannot_use_is_named_and_the_other_build_pointed_at
-    verify: python3 .claude/hooks/proved.py -p ui-kit the_header_and_the_card_say_where_the_helper_runs
 
-### H3 — measured
+### K3 — nothing writes the environment behind another thread
 
-The deck against the 4B and the 8B on this workstation's RTX 3090 through
-Officina's own runtime, thinking off, in the graphics build; the tables in
-the story's `bugs/assist-bar.md` beside phase 7's, the graphics waits in
-`Model` set from them, and the note saying which items the bar holds at.
+`CUDA_DEVICE_ORDER` is not set by Officina. The ordinal Officina opens is the
+one it chose from the driver's own list, which needs no ordering imposed on it.
 
-    verify: python3 -c "import pathlib,sys; p=pathlib.Path.home()/'dev/stories/st29-officina/bugs/assist-bar.md'; t=p.read_text(encoding='utf-8') if p.exists() else ''; sys.exit(0 if 'through Officina' in t and 'own runtime' in t else 1)"
-    verify: python3 .claude/hooks/proved.py -p assist the_graphics_waits_are_measured_and_within_the_bar
+    verify: python3 -c "import pathlib,sys; t=pathlib.Path('crates/assist/src/local.rs').read_text(encoding='utf-8'); sys.exit(0 if 'set_var' not in t else 1)"
+    verify: python3 .claude/hooks/proved.py -p assist without_a_graphics_processor_the_helper_reads_onto_the_processor_and_says_so
 
-### H4 — two builds, said plainly
+### K4 — the record
 
-`cargo xtask dist` builds the portable archive as before and, where the CUDA
-toolkit is on the build machine, a second archive for computers with an NVIDIA
-graphics processor, named so. `cargo xtask install` takes `--graphics` to
-install that one. The guide's section on what the assistant costs says which
-archive to take and what happens on a computer without the driver.
+ADR 0006 gains what this settles: a card is chosen by capability and memory,
+not by slot; the driver is the source for both; the floor is the kernels'.
+The bug note in the story, PROGRESS.md, and GUIDE.md where it tells a person
+which card will do.
 
-    verify: python3 .claude/hooks/proved.py -p xtask the_archive_name_says_what_it_will_and_will_not_run_on
-    verify: python3 .claude/hooks/proved.py -p scriva the_guide_says_which_build_to_take_for_a_graphics_processor
-
-### H5 — the record
-
-ADR 0005 gains a postscript, or ADR 0006 stands beside it: the helper runs
-where the request is read fast. PROGRESS.md, LEARNINGS.md, GUIDE.md,
-README.md, THIRD-PARTY-NOTICES.yml if the tree grew, and the story's HANDOFF.
-
-    verify: python3 -c "import pathlib,sys; t=pathlib.Path('adr').glob('000*.md'); t=''.join(p.read_text(encoding='utf-8') for p in t); sys.exit(0 if 'graphics processor' in t and 'two' in t else 1)"
-    verify: python3 .claude/hooks/proved.py -p ui-kit the_notices_name_every_crate_the_suite_ships
+    verify: python3 -c "import pathlib,sys; t=pathlib.Path('adr/0006-the-helper-runs-where-the-request-is-read-fast.md').read_text(encoding='utf-8'); sys.exit(0 if 'not by slot' in t else 1)"
+    verify: python3 -c "import pathlib,sys; p=pathlib.Path.home()/'dev/stories/st29-officina/bugs/the-card-was-chosen-by-its-slot.md'; sys.exit(0 if p.exists() and 'FASTEST_FIRST' in p.read_text(encoding='utf-8') else 1)"
 
 ## The end
 

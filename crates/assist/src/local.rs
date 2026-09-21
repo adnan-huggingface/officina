@@ -622,15 +622,18 @@ impl Where {
 }
 
 /// Where the helper on this computer runs, decided once and without loading
-/// a model: the first graphics processor this build was made for and the
-/// driver answers for, else the processor.
+/// a model: the best graphics processor this build can run, else the
+/// processor.
 ///
 /// **A build without the feature has no graphics processor**, whatever the
 /// computer has: the kernels are not in it. A build with the feature is
-/// linked against the driver and NVIDIA's runtime libraries and asks for a
-/// device; a driver with none, or one that fails, leaves the processor. The
-/// device is kept, not asked for again: making one is a context on the card
-/// and a few hundred milliseconds, and letting it go destroys the context.
+/// linked against the driver and NVIDIA's runtime libraries, asks it about
+/// every card, and opens the **best card it can run** — see [`best_card`] —
+/// not the first one, and not the one in the lowest slot. A driver with no
+/// card, none that meets the floor, or none that will open, leaves the
+/// processor. The device is kept, not asked for again: making one is a
+/// context on the card and a few hundred milliseconds, and letting it go
+/// destroys the context.
 pub fn runs_on() -> Where {
     match graphics_device() {
         Some(_) => Where::Graphics,
@@ -647,30 +650,169 @@ pub fn decided() -> Option<Where> {
     })
 }
 
-/// The one graphics device this process uses, or none, decided once.
-static DEVICE: std::sync::OnceLock<Option<Device>> = std::sync::OnceLock::new();
+/// The lowest compute capability the kernels in this binary are built for.
+///
+/// candle 0.9.2's kernels compile for **Ampere and up** and no lower — on
+/// Pascal `atomicAdd` on halves is missing, on Turing `__hmax_nan` — so
+/// `xtask` builds the archive with `CUDA_COMPUTE_CAP=80` and that is the
+/// floor (ADR 0006). PTX is compiled forward by the driver, so kernels built
+/// for 8.0 run on 8.6 and 9.0; they do not run downwards, and a card below
+/// this refuses them with `CUDA_ERROR_INVALID_PTX` at the **first launch** —
+/// long after the device opened, which is why opening one proves nothing.
+///
+/// A build that overrides `CUDA_COMPUTE_CAP` upwards is its builder's
+/// business: the floor here is the archive's.
+pub const KERNEL_FLOOR: (u32, u32) = (8, 0);
 
-/// The first graphics processor the driver answers for, when this build can
-/// use one, kept for the life of the process.
-fn graphics_device() -> Option<Device> {
+/// A graphics card as the driver describes it, before anything is opened on
+/// it: what it is called, what memory is its own, and what it can run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Card {
+    /// The driver's own index, which is what a device is opened by.
+    pub ordinal: usize,
+    pub name: String,
+    pub memory: u64,
+    /// Compute capability, major and minor.
+    pub capability: (u32, u32),
+}
+
+impl Card {
+    /// Whether the kernels in this binary will run on it.
+    pub fn runs_the_kernels(&self) -> bool {
+        self.capability >= KERNEL_FLOOR
+    }
+}
+
+/// The card to use out of the driver's list: **the most memory among those
+/// the kernels run on**, the lower index settling a tie.
+///
+/// A card below the floor is never chosen, however large it is and whatever
+/// slot it is in. This is the whole of the rule that a card is chosen for
+/// what it can run and not for where it sits, which is why it is a function
+/// over a list and can be tested without a graphics processor.
+pub fn best_card(cards: &[Card]) -> Option<&Card> {
+    cards_to_try(cards).into_iter().next()
+}
+
+/// Every card worth trying, best first: those the kernels run on, the most
+/// memory first, the lower index settling a tie.
+///
+/// **The best card is not always the one that opens** — another process may
+/// hold it to itself, or a container may not have it — so the order matters
+/// and not only its first element.
+pub fn cards_to_try(cards: &[Card]) -> Vec<&Card> {
+    let mut fit: Vec<&Card> = cards
+        .iter()
+        .filter(|card| card.runs_the_kernels())
+        .collect();
+    fit.sort_by_key(|card| (std::cmp::Reverse(card.memory), card.ordinal));
+    fit
+}
+
+/// The card to name when the helper is not running on one — the largest, so
+/// that the sentence names the card worth having. It covers both reasons
+/// there is no card in use: none met the floor, and none that met it would
+/// open.
+pub fn largest_card(cards: &[Card]) -> Option<&Card> {
+    largest(cards.iter())
+}
+
+fn largest<'a>(cards: impl Iterator<Item = &'a Card>) -> Option<&'a Card> {
+    cards.max_by_key(|card| (card.memory, std::cmp::Reverse(card.ordinal)))
+}
+
+/// Every graphics card the driver lists, asked once.
+///
+/// **Asking is not free, and it does open something.** The safe interface
+/// describes a card only through a context of its own, and making one retains
+/// that card's primary context — memory on the card and the driver's
+/// host-side state — which is released again as soon as the card is
+/// described. Every card is described, the ones below the floor included,
+/// because the floor cannot be applied to a card that has not said what it
+/// is. Nothing is ever *run* on a card that is not chosen, which is the part
+/// that would fail below the floor.
+///
+/// Two cards took a quarter of a second here. On a computer whose driver is
+/// not held open by a display — no desktop, and persistence mode off — each
+/// retain and release can take seconds instead, and this runs on the look's
+/// thread, in front of a person. Describing a card without a context is
+/// possible and would cost nothing, but every call that does it is `unsafe`.
+pub fn cards() -> &'static [Card] {
+    static CARDS: std::sync::OnceLock<Vec<Card>> = std::sync::OnceLock::new();
+    CARDS.get_or_init(|| {
+        #[cfg(feature = "cuda")]
+        {
+            listed_cards()
+        }
+        #[cfg(not(feature = "cuda"))]
+        {
+            Vec::new()
+        }
+    })
+}
+
+/// The driver's list, read through the one candle already links.
+///
+/// Each card is described through a context of its own, which is what the
+/// safe interface gives — this crate forbids `unsafe`, and the calls that
+/// describe a card without a context are all unsafe. A context is made and
+/// let go again for every card, the chosen one included; letting go releases
+/// the primary context, and candle retains it again when it opens the
+/// device. Nothing is ever *run* on a card that is not chosen, which is the
+/// part that would fail on a card below the floor.
+#[cfg(feature = "cuda")]
+fn listed_cards() -> Vec<Card> {
+    use candle_core::cuda::cudarc::driver::CudaContext;
+    let count = CudaContext::device_count().unwrap_or(0);
+    (0..count)
+        .filter_map(|ordinal| {
+            let context = CudaContext::new(ordinal as usize).ok()?;
+            let (major, minor) = context.compute_capability().ok()?;
+            Some(Card {
+                ordinal: ordinal as usize,
+                name: context.name().ok()?,
+                memory: context.total_mem().ok()? as u64,
+                capability: (major.max(0) as u32, minor.max(0) as u32),
+            })
+        })
+        .collect()
+}
+
+/// The one graphics device this process uses, and the card it is, decided
+/// once.
+static DEVICE: std::sync::OnceLock<Option<(Device, Card)>> = std::sync::OnceLock::new();
+
+/// The card the helper runs on and the device open on it, decided once: the
+/// cards that meet the floor, largest first, and the first of those the
+/// driver will actually open.
+///
+/// **The best card is not always the one that opens.** Another process may
+/// hold it in exclusive mode, or a container may not have it. Trying the next
+/// one down costs nothing and is the difference between a second card doing
+/// the work and Officina saying it has none.
+fn chosen() -> Option<(Device, Card)> {
     DEVICE
         .get_or_init(|| {
-            #[cfg(feature = "cuda")]
-            {
-                // The driver's own order puts the fastest card first; the
-                // tool the card's name and memory are read from lists them
-                // by bus. Told to order by bus, both name the same card 0.
-                if std::env::var_os("CUDA_DEVICE_ORDER").is_none() {
-                    std::env::set_var("CUDA_DEVICE_ORDER", "PCI_BUS_ID");
-                }
-                Device::new_cuda(0).ok()
-            }
-            #[cfg(not(feature = "cuda"))]
-            {
-                None
-            }
+            cards_to_try(cards()).into_iter().find_map(|card| {
+                // The ordinal is the driver's own, so no ordering is imposed
+                // on it and nothing writes the environment behind another
+                // thread.
+                Device::new_cuda(card.ordinal)
+                    .ok()
+                    .map(|device| (device, card.clone()))
+            })
         })
         .clone()
+}
+
+/// The card the helper is running on, if it is running on one.
+pub fn card_in_use() -> Option<Card> {
+    chosen().map(|(_, card)| card)
+}
+
+/// The device [`chosen`] opened.
+fn graphics_device() -> Option<Device> {
+    chosen().map(|(device, _)| device)
 }
 
 /// Where a model goes: the processor when it was asked for — without so much

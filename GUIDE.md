@@ -302,8 +302,9 @@ Assist asks you once, before it can do anything, which helper should answer:
   helper on this computer is not offered and points at Ollama or Claude; and
   the **`-nvidia` archive**, for a computer with an NVIDIA graphics processor,
   which runs the helper there — the larger where the card has 8.5 GB of its
-  own memory, which a card sold as 8 GB has just over, and the smaller from
-  5.5 GB, which a card sold as 6 GB has. Take the `-nvidia` one if you have such
+  own memory and the smaller from 5.5 GB, measured as the driver reports it,
+  which is a little under the number on the box. In practice the larger wants
+  a card of 10 GB or more, and the smaller a card of 6 GB. Take the `-nvidia` one if you have such
   a card from 2020 on (the GeForce RTX 30 series or later). It needs NVIDIA's driver **and its CUDA 12 runtime libraries**
   (`libcublas` and `libcurand`, from the CUDA toolkit or your distribution's
   `libcublas12`/`libcurand10` packages): it will not start without them, and

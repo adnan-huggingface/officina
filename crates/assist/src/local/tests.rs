@@ -1466,3 +1466,86 @@ fn the_model_is_read_once_and_kept() {
     forget();
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A card is chosen for what it can run, not for where it sits or how big it
+/// is. The driver's own order puts the card it thinks fastest first, and
+/// Officina used to override that with the slot order and take the first —
+/// so a Tesla P40 in the lower slot would be opened, reported, offered a
+/// model its memory holds, and would then refuse the kernels at the first
+/// launch with `CUDA_ERROR_INVALID_PTX`. The card it can run wins, even when
+/// the other has four times the memory.
+#[test]
+fn a_bigger_older_card_does_not_win_over_one_the_kernels_can_run() {
+    let card = |ordinal, name: &str, gigabytes: u64, capability| Card {
+        ordinal,
+        name: name.to_owned(),
+        memory: gigabytes * 1_000_000_000,
+        capability,
+    };
+    // Pascal, in the lower slot, with four times the memory.
+    let old_and_big = card(0, "Tesla P40", 48, (6, 1));
+    let new_and_small = card(1, "NVIDIA GeForce RTX 3060", 12, (8, 6));
+    let both = [old_and_big.clone(), new_and_small.clone()];
+    assert_eq!(
+        best_card(&both),
+        Some(&new_and_small),
+        "the kernels' floor decides before the memory does"
+    );
+    // And the one to name, when the sentence must point at a card, is the
+    // largest whatever it can run.
+    assert_eq!(largest_card(&both), Some(&old_and_big));
+
+    // The order is the whole rule, not only its first card: the best card
+    // is not always the one that opens, and the next one down doing the work
+    // is the difference between a helper and none.
+    let busy = card(0, "NVIDIA A100", 40, (8, 0));
+    let free = card(1, "NVIDIA GeForce RTX 3090", 24, (8, 6));
+    let useless = card(2, "Tesla P40", 48, (6, 1));
+    let three = [busy.clone(), free.clone(), useless];
+    let order: Vec<&str> = cards_to_try(&three)
+        .into_iter()
+        .map(|card| card.name.as_str())
+        .collect();
+    assert_eq!(
+        order,
+        ["NVIDIA A100", "NVIDIA GeForce RTX 3090"],
+        "largest first, and the card below the floor is not tried at all"
+    );
+
+    // Among cards that all run the kernels, the most memory wins.
+    let smaller = card(0, "NVIDIA GeForce RTX 3060", 12, (8, 6));
+    let larger = card(1, "NVIDIA GeForce RTX 3090", 24, (8, 6));
+    assert_eq!(best_card(&[smaller, larger.clone()]), Some(&larger));
+
+    // A tie in memory goes to the lower index, so the choice is the same
+    // every time it is made.
+    let first = card(0, "A", 24, (8, 6));
+    let second = card(1, "B", 24, (9, 0));
+    assert_eq!(best_card(&[first.clone(), second]), Some(&first));
+
+    // Nothing at the floor is nothing to choose, however much memory there
+    // is; the card is still there to be named.
+    let only_old = [
+        card(0, "Tesla P40", 48, (6, 1)),
+        card(1, "GTX 1080", 8, (6, 1)),
+    ];
+    assert_eq!(best_card(&only_old), None);
+    assert_eq!(
+        largest_card(&only_old).map(|c| c.name.as_str()),
+        Some("Tesla P40")
+    );
+    assert_eq!(best_card(&[]), None);
+    assert_eq!(largest_card(&[]), None);
+
+    // The floor is the archive's, and Turing is below it: candle's kernels
+    // do not compile for it at all.
+    assert!(!card(0, "Quadro RTX 4000", 8, (7, 5)).runs_the_kernels());
+    assert!(card(0, "NVIDIA GeForce RTX 3090", 24, (8, 6)).runs_the_kernels());
+    // **The minor digit matters.** A floor of 8.1 rather than 8.0 would drop
+    // every sm_80 card — the A100 and the A30, which are exactly the cards
+    // most likely to be running this — so it is written out rather than
+    // compared against itself.
+    assert_eq!(KERNEL_FLOOR, (8, 0));
+    assert!(card(0, "NVIDIA A100", 40, (8, 0)).runs_the_kernels());
+    assert!(!card(0, "a card just under", 40, (7, 9)).runs_the_kernels());
+}

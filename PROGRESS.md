@@ -6987,6 +6987,40 @@ Test: `lines_pasted_at_a_headings_end_and_rejected_leave_it_a_heading`. Three
 mutations, one rule broken at a time, were each caught. A fourth, which applies
 the rule to pastes within one paragraph too, changes nothing a test can see.
 
+## The card was chosen by its slot, not by what it could run (2026-09-20, night)
+
+The review of the fix above found it. `assist::local::graphics_device` set
+`CUDA_DEVICE_ORDER=PCI_BUS_ID` and opened device 0, so the card in the lowest
+slot won. The ordering it overrode is CUDA's own `FASTEST_FIRST`, which ranks
+by the compute capability that decides whether the kernels load at all: candle
+0.9.2 compiles for Ampere and up, and `Device::new_cuda` **succeeds** on a card
+below that — only the first launch fails, with `CUDA_ERROR_INVALID_PTX`. So a
+computer whose older card sat lower would have reported a graphics processor,
+read the wrong card's memory, offered the 8B, and died on the first request.
+This workstation escaped by slot order alone: the RTX 3090 is on bus `01` and
+the Tesla P40, which cannot run the kernels, on bus `10`.
+
+Officina asks the driver about every card before opening anything — name,
+memory, compute capability — and takes the one with the most memory among
+those meeting `KERNEL_FLOOR`. The choosing is a pure function over a list, so
+the rule is tested without a graphics processor: a 48 GB Pascal card in slot 0
+must lose to a 12 GB Ampere card in slot 1.
+
+Two more findings from the same review fall out of it. A usable card's memory
+now comes from the driver, not `nvidia-smi`, so a working card is no longer
+refused where the tool is not installed; the tool is asked only by a build with
+no CUDA linked in, which must still name the card it cannot use. And nothing
+writes the environment behind another thread: `set_var` from the look's
+background thread is unsound in a multithreaded process and `unsafe` from
+edition 2024.
+
+Describing a card costs a context, because the crate forbids `unsafe` and every
+context-free call that describes one is unsafe. Two cards took 236 ms, and
+nothing is ever run on a card that is not chosen. The driver reports about two
+per cent less memory than the box does — 23.6 GiB on this 24 GB card — which is
+the honest figure and is what the tier judges, so the guide now says the larger
+model wants a card of 10 GB rather than one sold as 8.
+
 ## A second graphics card closed the pipe, and the helper was withheld (2026-09-20, night)
 
 The graphics build, installed and opened on the workstation it was measured
